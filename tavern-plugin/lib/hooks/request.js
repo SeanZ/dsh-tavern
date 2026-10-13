@@ -34,12 +34,12 @@ export function registerRequestHooks({
 
   ctx.on('agent/pre-step', async function (payload, next) {
     const sessionId = payload.agent && payload.agent.session ? payload.agent.session.id : ''
-    // Tavern drives only top-level sessions; child agents (its own background
-    // agents, plugin agents, DSH subagents) never get a turn frame or status.
-    if (backgroundAgentRunner.owns(sessionId) || payload.agent.session.header?.parentSession) return next()
+    if (backgroundAgentRunner.owns(sessionId)) return next()
     const decision = await next()
     if (decision.kind === 'reject') return decision
     const chat = await chatForSession(sessionId)
+    // 原生分叉也带 parentSession；已登记的游玩局继续走前台，仅未登记的子 Agent 跳过。
+    if (!chat && payload.agent.session.header?.parentSession) return decision
     if (chat) await synchronizeTemplateHistory(payload.agent.session, chat, session => sessionStore.flush(session))
     if (chat) await synchronizeBodyEdits(payload.agent.session, chat, session => sessionStore.flush(session), persistClearedBodyEdits)
     const prepared = await foregroundStrategies.prepareStep({
