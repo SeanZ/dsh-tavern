@@ -53,7 +53,8 @@ function installVisualViewportPin(doc) {
         if (!(height > 0)) return;
         setPx("--dsh-vv-top", top);
         setPx("--dsh-vv-height", height);
-        html.classList.add("dsh-tavern-viewport-pinned");
+        // 状态不变时不写 class，避免触发所有消息的配色观察器。
+        html.classList.toggle("dsh-tavern-viewport-pinned", true);
         // 整个外壳使用可视区高度，输入条仍贴外壳底部，避免重复叠加键盘补偿。
         const headerBottom = header ? header.getBoundingClientRect().bottom - top : 44;
         setPx("--dsh-header-bottom", headerBottom);
