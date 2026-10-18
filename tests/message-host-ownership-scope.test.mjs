@@ -30,6 +30,74 @@ const retentionSource = await readFile(
   "utf8",
 );
 
+test("空 scope 不观察宿主变更，延迟原生挂载按需观察并在释放后停止", async () => {
+  const dom = new JSDOM("<body></body>", { runScripts: "outside-only" });
+  try {
+    const { window } = dom,
+      Native = window.MutationObserver;
+    let created = 0,
+      callbacks = 0;
+    const active = new Set();
+    window.MutationObserver = class extends Native {
+      constructor(callback) {
+        super((records, observer) => {
+          callbacks++;
+          callback(records, observer);
+        });
+        created++;
+      }
+      observe(...args) {
+        active.add(this);
+        return super.observe(...args);
+      }
+      disconnect() {
+        active.delete(this);
+        return super.disconnect();
+      }
+    };
+    window.eval(factory + ";window.makeScope=createTavernHostArtifactScope");
+    const scopes = Array.from({ length: 100 }, () =>
+      window.makeScope({ document: window.document }),
+    );
+    for (let i = 0; i < 10; i++) {
+      const unrelated = window.document.createElement("div");
+      window.document.body.append(unrelated);
+      unrelated.remove();
+      await Promise.resolve();
+    }
+    assert.equal(created, 0);
+    assert.equal(callbacks, 0);
+    const scope = scopes[0];
+    scope.setVisible(false);
+    const node = scope.trackNode(window.document.createElement("button"));
+    node.id = "delayed";
+    assert.equal(created, 1);
+    window.document.body.append(node);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(window.document.getElementById("delayed"), null);
+    assert.equal(scope.findElementById("delayed"), node);
+    scope.setVisible(true);
+    assert.equal(window.document.getElementById("delayed"), node);
+    scope.dispose();
+    assert.equal(active.size, 0);
+    const before = callbacks;
+    const late = scope.trackNode(window.document.createElement("button"));
+    scope.mutateRoot(window.document.body, () =>
+      window.document.body.append(late),
+    );
+    scopes[1].dispose();
+    scopes[1].trackNode(late);
+    await Promise.resolve();
+    assert.equal(callbacks, before);
+    assert.equal(created, 1);
+    assert.equal(late.isConnected, false);
+    scopes.forEach((item) => item.dispose());
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("保留帧只在切局停放宿主 UI，离屏卸载不停止脚本，切回复用原实例", () => {
   const dom = new JSDOM("<body><main></main></body>", {
     runScripts: "outside-only",

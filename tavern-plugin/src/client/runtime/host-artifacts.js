@@ -166,7 +166,9 @@
             function captureCreated() {
                 for (const node of created) if (roots.includes(node.parentNode)) remember(node, node.parentNode);
             }
-            if (host && host.MutationObserver) {
+            // 同步代理已直接记录挂载；只有 trackNode 后的延迟原生插入需要观察。
+            function observeCreated() {
+                if (observer || disposed || !host?.MutationObserver) return;
                 observer = new host.MutationObserver(function (changes) {
                     for (const change of changes) for (const node of change.addedNodes) {
                         if (created.has(node)) remember(node, change.target);
@@ -176,7 +178,10 @@
                 for (const root of roots) observer.observe(root, { childList: true });
             }
             return Object.freeze({
-                trackNode: function (node) { created.add(node); return node; },
+                trackNode: function (node) {
+                    if (!disposed) { created.add(node); observeCreated(); }
+                    return node;
+                },
                 findElementById: function (id) {
                     const node = hostDocument.getElementById(id);
                     if (node && (!ownerOf(node) || ownerOf(node) === identity)) return node;
