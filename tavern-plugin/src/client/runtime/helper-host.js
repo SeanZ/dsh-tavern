@@ -217,7 +217,7 @@
 			return release;
 		}
 
-		function releaseTavernHostJQueryHandlers(host, frameWindow) {
+		function releaseTavernHostJQueryHandlers(host, frameWindow, artifacts) {
             if (!host || !frameWindow || !frameWindow.Function) return;
             // A trusted script can use either jQuery instance to bind live message
             // nodes. Each instance owns a separate event cache, so inspect both.
@@ -234,6 +234,7 @@
             }
             addDocument(host, host.document);
             addDocument(frameWindow, frameWindow.document);
+            artifacts?.forEachNode(function (node) { targets.add(node); });
             const sessionId = frameWindow.frameElement?.__dshTavernSessionId;
             if (sessionId) for (const frame of host.document?.querySelectorAll?.('iframe.dsh-tavern-message-frame') || []) {
                 if (frame.__dshTavernSessionId !== sessionId) continue;

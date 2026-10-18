@@ -35,7 +35,10 @@ function createRetainedTavernFrames(options) {
     // cannot attribute to it. Leaving the conversation closes those panels so the next
     // game is not covered; returning reloads them.
     if (typeof retention.onLeave === "function") retention.onLeave(function (sessionId) {
-        for (const record of Array.from(records.values())) if (record.sessionId === sessionId && record.persistent) release(record);
+        for (const record of Array.from(records.values())) if (record.sessionId === sessionId) {
+            if (record.persistent) release(record);
+            else record.lifecycle.setForeground?.(false);
+        }
     });
     const retirements = new Map();
     function parked() {
@@ -213,6 +216,7 @@ function createRetainedTavernFrames(options) {
         },
         mount: function (props, home) {
             const record = get(props);
+            record.lifecycle.setForeground?.(true);
             move(record.node, home);
             const unmount = retention.mount(props.sessionId);
             record.unmount = unmount;

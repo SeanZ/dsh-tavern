@@ -117,7 +117,7 @@
             const roots = [hostDocument && hostDocument.head, hostDocument && hostDocument.body].filter(Boolean);
             const owned = new Map();
             const owners = hostDocument.__dshTavernArtifactOwners || (hostDocument.__dshTavernArtifactOwners = new WeakMap());
-            const identity = {};
+            const identity = options && options.owner || {};
             const host = hostDocument.defaultView;
             // Keep the card's DOM searchable while it is absent from the shared
             // document. In particular, delayed callbacks query fixed IDs again.
@@ -131,7 +131,12 @@
             let observer = null;
             function parkNode(node, previous) {
                 previous.nextSibling = node.nextSibling;
-                const container = parkingRoots.get(previous.root);
+                let container = parkingRoots.get(previous.root);
+                if (!container && parking) {
+                    container = hostDocument.createElement("div");
+                    parking.appendChild(container);
+                    parkingRoots.set(previous.root, container);
+                }
                 if (container) container.appendChild(node);
                 else previous.root.removeChild(node);
                 previous.parked = true;
@@ -149,7 +154,7 @@
             function remember(node, root) {
                 // Prose highlights belong to the host renderer, even if React mounts
                 // them while a card frame is being initialized.
-                if (owned.has(node) || owners.has(node) || node.hasAttribute?.("data-tavern-retained-frames")
+                if (owned.has(node) || ownerOf(node) || node.hasAttribute?.("data-tavern-retained-frames")
                     || node.hasAttribute?.("data-dsh-tavern-text-colors")) return;
                 owners.set(node, identity);
                 node.setAttribute?.("data-dsh-tavern-host-artifact", "");
@@ -181,6 +186,7 @@
                     return null;
                 },
                 mutateRoot: function (root, mutate) {
+                    if (disposed) return;
                     const before = new Set(root.childNodes);
                     try { return mutate(); }
                     finally {
@@ -192,13 +198,14 @@
                 },
                 // Scope the mounting operation, not the whole asynchronous import.
                 // Other conversations and the app can render while that import waits.
-                bindJQuery: function (jquery) {
+                bindJQuery: function (jquery, queryDocument) {
                     const wrappers = new WeakMap();
                     const mutations = new Set(["append", "prepend", "before", "after", "appendTo", "prependTo", "insertBefore", "insertAfter", "replaceWith", "replaceAll", "html"]);
+                    const destinations = new Set(["appendTo", "prependTo", "insertBefore", "insertAfter", "replaceAll"]);
                     function select(selector, context, result) {
                         result = result.filter(function () { const owner = ownerOf(this); return !owner || owner === identity; });
                         if (!parking || disposed) return result;
-                        const contexts = context == null ? [hostDocument] : context.jquery ? context.toArray() : [context];
+                        const contexts = context == null ? [queryDocument || hostDocument] : context.jquery ? context.toArray() : [context];
                         for (const root of contexts) {
                             const container = root === hostDocument ? parking : parkingRoots.get(root);
                             if (container) result = result.add(jquery(container).find(selector).filter(function () { return ownerOf(this) === identity; }));
@@ -212,7 +219,17 @@
                             const method = target[key];
                             if (typeof method !== "function" || key === "constructor") return method;
                             return function () {
-                                const before = mutations.has(key) ? roots.map(root => ({ root, nodes: new Set(root.childNodes) })) : null;
+                                // 旧文档的回调仍可能被宿主持有；已释放的代理不再写入或订阅。
+                                if (disposed) return proxy;
+                                // 只检查本次同步调用的实际宿主目标，不按异步时间窗口归属整页新增节点。
+                                const targets = new Set(roots);
+                                if (mutations.has(key)) {
+                                    const candidates = target.toArray().concat(destinations.has(key) ? jquery(arguments[0]).toArray() : []);
+                                    for (const node of candidates) for (const root of [node, node?.parentNode]) {
+                                        if (root?.ownerDocument === hostDocument && root.childNodes) targets.add(root);
+                                    }
+                                }
+                                const before = mutations.has(key) ? Array.from(targets, root => ({ root, nodes: new Set(root.childNodes) })) : null;
                                 // Explicit removal must not resurrect a parked panel
                                 // when the conversation becomes visible again.
                                 if (key === "remove") {
@@ -227,6 +244,7 @@
                                     if (before) for (const entry of before) for (const node of Array.from(entry.root.childNodes)) {
                                         if (!entry.nodes.has(node)) { if (disposed) node.remove(); else remember(node, entry.root); }
                                     }
+                                    park();
                                 }
                                 if (key === "find" && typeof arguments[0] === "string") result = select(arguments[0], target, result);
                                 return wrap(result);
@@ -236,6 +254,7 @@
                         return proxy;
                     }
                     return new Proxy(jquery, { apply(target, receiver, args) {
+                        if (disposed) return wrap(jquery());
                         let result = Reflect.apply(target, receiver, args);
                         if (typeof args[0] === "string" && !args[0].trim().startsWith("<")) result = select(args[0], args[1], result);
                         return wrap(result);
@@ -263,6 +282,13 @@
                         if (previous.nextSibling && previous.nextSibling.parentNode === previous.root) {
                             previous.root.insertBefore(node, previous.nextSibling);
                         } else previous.root.append(node);
+                    }
+                },
+                // 已停放节点不在宿主 document 中，但仍须按原脚本 realm 解绑事件。
+                forEachNode: function (visit) {
+                    for (const node of owned.keys()) {
+                        visit(node);
+                        for (const child of node.querySelectorAll?.("*") || []) visit(child);
                     }
                 },
                 dispose: function () {

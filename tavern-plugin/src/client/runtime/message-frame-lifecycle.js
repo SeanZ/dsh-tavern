@@ -192,6 +192,8 @@
 			const frameSizeObservers = new Map();
             const sizingObservers = new Map();
             const frameVisibility = new Map();
+			const artifactOwners = new Map();
+			let foreground = true;
 			let props = initial;
 			let frozenHelperContext = initial.helperContext;
 			let helperContext = frozenHelperContext;
@@ -224,7 +226,7 @@
 					helperContext: tavernFrameHelperContext(helperContext, props.turn), turn: props.turn,
 					heightKey: tavernFrameHeightKey(props), content: props.content,
                     sizing: tavernFrameSizing(props.content, props.frameSizing, props.persistent ? props.panelId : undefined),
-					sessionId: props.sessionId,
+						sessionId: props.sessionId, partIndex: props.partIndex,
 					trustedCardMode: props.trustedCardMode, refreshRequested: false
 				};
 				document.html = buildTavernFrameDocument({ content: props.content, frameSizing: props.frameSizing, panelId: props.panelId, token: document.token, openingPreview: props.openingPreview, helperContext: tavernFrameHelperContext(helperContext, props.turn), trustedCardMode: props.trustedCardMode === true, turn: props.turn, observeMvuView: props.observeMvuView, runtimeReporting: props.runtimeReporting, persistent: props.persistent, preserveInstance: props.preserveInstance, textColorsEnabled: tavernTextColorsEnabled(hostWindow), colorScheme: hostWindow.document?.body && typeof hostWindow.getComputedStyle === "function" ? currentTavernHostTheme(hostWindow).colorScheme : undefined });
@@ -238,7 +240,19 @@
                     const previous = frameSizeObservers.get(document.token);
                     if (previous) { previous.disconnect(); frameSizeObservers.delete(document.token); }
 					touchRelay.stop();
-                    if (node) node.__dshTavernSessionId = document.sessionId;
+					const previousNode = channel.element();
+					if (previousNode && previousNode !== node) releaseArtifacts(document);
+					if (node) {
+						node.__dshTavernSessionId = document.sessionId;
+						if (document.trustedCardMode && hostWindow.document?.createElement && !artifactOwners.has(document.token)) {
+							const scope = createTavernHostArtifactScope({ document: hostWindow.document,
+								owner: Object.freeze({ sessionId: document.sessionId, turn: document.turn, partIndex: document.partIndex, token: document.token }) });
+							// 每个真实文档单独持有 scope；同轮替换期间新旧 token 可以并存。
+							node.__dshTavernHostArtifacts = scope;
+							artifactOwners.set(document.token, { scope, frame: node, window: node.contentWindow });
+							scope.setVisible(foreground);
+						}
+					}
                     channel.attach(node);
                     if (node && hostWindow.document && typeof node.addEventListener === "function") {
                         let nearby = true;
@@ -282,6 +296,13 @@
                     if (!node) { retireGenerations(document); channels.delete(document.token); }
 				};
 				return document;
+			}
+			function releaseArtifacts(document) {
+				const owner = artifactOwners.get(document.token);
+				if (!owner) return;
+				artifactOwners.delete(document.token);
+				releaseTavernHostJQueryHandlers(hostWindow, owner.window, owner.scope);
+				owner.scope.dispose();
 			}
             function applySizing(document, channel, measured) {
                 const config = document.sizing;
@@ -543,12 +564,12 @@
 			}
 			return Object.freeze({
 				update: update, snapshot: snapshot,
+				setForeground: function (next) {
+					foreground = next !== false;
+					for (const owner of artifactOwners.values()) owner.scope.setVisible(foreground);
+				},
 				start: function (onChange) {
 					listener = onChange;
-					// Preview companions can import modules that append UI to the real host.
-					// Give them the same lifetime cleanup as the conversation script runtime.
-					const openingArtifacts = props.openingPreview && props.trustedCardMode
-						? createTavernHostArtifactScope({ document: hostWindow.document }) : null;
 					hostWindow.addEventListener("message", receive);
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
@@ -569,13 +590,7 @@
 					return function () {
                         touchRelay.stop();
 						releaseComposer();
-						if (openingArtifacts) {
-							for (const channel of channels.values()) {
-								const frame = channel.element();
-								if (frame) releaseTavernHostJQueryHandlers(hostWindow, frame.contentWindow);
-							}
-							openingArtifacts.dispose();
-						}
+						for (const token of Array.from(artifactOwners.keys())) releaseArtifacts({ token });
 						if (unsubscribeTheme) unsubscribeTheme();
                         frameSizeObservers.forEach(function (observer) { observer.disconnect(); });
                         frameSizeObservers.clear();

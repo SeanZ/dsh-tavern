@@ -223,7 +223,7 @@
 				}
 				if (record.initializationTimer) hostWindow.clearTimeout(record.initializationTimer);
 				if (record.mvuDataTimer) hostWindow.clearTimeout(record.mvuDataTimer);
-				if (record.trustedCardMode) releaseTavernHostJQueryHandlers(hostWindow, record.frame.contentWindow);
+				if (record.trustedCardMode) releaseTavernHostJQueryHandlers(hostWindow, record.frame.contentWindow, record.hostArtifacts);
 				record.frame.remove();
 				if (record.hostArtifacts) record.hostArtifacts.dispose();
 				records.delete(id);
