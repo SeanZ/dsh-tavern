@@ -5815,6 +5815,7 @@ function tavernModelRefusalNotice(text) {
 		  return 0;
 		}
         // 在消息 iframe 内运行。保留未知卡片的完整兼容扫描，只在单次测量内复用读取结果。
+        // eslint-disable-next-line no-unused-vars -- 由 frame-document.js 注入 iframe 使用。
         function installTavernFrameHeightReporter(
           token,
           viewportFloor,
@@ -5862,7 +5863,7 @@ function tavernModelRefusalNotice(text) {
               let style;
               try {
                 style = reads.style(node);
-              } catch (_) {
+              } catch {
                 return;
               }
               if (style.display === "none") return;
