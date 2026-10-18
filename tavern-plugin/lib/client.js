@@ -5698,52 +5698,306 @@ function tavernModelRefusalNotice(text) {
 		    };
 		}
 
-		// A viewport-sized card cannot determine its own iframe viewport. Use the host
-		// viewport as a floor for page layouts, while retaining authored local scrollers.
-		function tavernFrameViewportFloor() {
-			var viewport = 600;
-			try { viewport = window.parent.innerHeight || viewport; } catch (_) {}
-			viewport = Math.max(160, Math.min(1200, viewport));
-			function viewportHeight(style) {
-				return /(?:^|[^\d.])100(?:d|s|l)?vh\b/i.test((style.height || '') + ' ' + (style.minHeight || ''));
-			}
-			function visible(node) {
-		        // The embedding adapter resets document roots to content height. An
-		        // overridden author rule on body/html is not a live viewport-sized panel.
-		        if (node === document.body || node === document.documentElement) return false;
-		        for (var ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
-		            if (ancestor.tagName === 'DETAILS' && !ancestor.open) {
-		                var summary = ancestor.querySelector('summary');
-		                if (!summary || !summary.contains(node)) return false;
-		            }
-		        }
-				var rect = node.getBoundingClientRect();
-				var style = getComputedStyle(node);
-				return rect.width > window.innerWidth / 2 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-			}
-			function matchesRules(rules) {
-				for (var rule of Array.from(rules || [])) {
-					if (rule.media && !matchMedia(rule.media.mediaText).matches) continue;
-					if (rule.selectorText && rule.style && viewportHeight(rule.style)) {
-						try { if (Array.from(document.querySelectorAll(rule.selectorText)).some(visible)) return true; } catch (_) {}
-					}
-					if (rule.cssRules && matchesRules(rule.cssRules)) return true;
-				}
-				return false;
-			}
-			for (var sheet of Array.from(document.styleSheets)) {
-				try { if (!sheet.disabled && (!sheet.media.mediaText || matchMedia(sheet.media.mediaText).matches) && matchesRules(sheet.cssRules)) return viewport; } catch (_) {}
-			}
-			for (var node of document.body.querySelectorAll('*')) {
-				// Check the cheap conditions first; visible() measures layout.
-				var style = getComputedStyle(node);
-				// Full-page fixed shells have no normal-flow height at all. Floating
-				// buttons or small dialogs must not enlarge the frame.
-				if (!viewportHeight(node.style) && !(style.position === 'fixed' && style.top === '0px' && style.bottom === '0px')) continue;
-				if (visible(node)) return viewport;
-			}
-			return 0;
+		// 视口尺寸卡片无法自行确定 iframe 高度，沿用宿主视口下限并保留卡片内部滚动。
+		function tavernFrameViewportFloor(reads) {
+		  const readStyle = reads ? reads.style : (node) => getComputedStyle(node);
+		  const readRect = reads ? reads.rect : (node) => node.getBoundingClientRect();
+		  var viewport = 600;
+		  try {
+		    viewport = window.parent.innerHeight || viewport;
+		  } catch (_) {}
+		  viewport = Math.max(160, Math.min(1200, viewport));
+		  function viewportHeight(style) {
+		    return /(?:^|[^\d.])100(?:d|s|l)?vh\b/i.test(
+		      (style.height || "") + " " + (style.minHeight || ""),
+		    );
+		  }
+		  function visible(node) {
+		    // 嵌入适配器将文档根恢复为内容高度，body/html 的旧规则不能作为视口面板。
+		    if (node === document.body || node === document.documentElement)
+		      return false;
+		    for (
+		      var ancestor = node.parentElement;
+		      ancestor;
+		      ancestor = ancestor.parentElement
+		    ) {
+		      if (ancestor.tagName === "DETAILS" && !ancestor.open) {
+		        var summary = ancestor.querySelector("summary");
+		        if (!summary || !summary.contains(node)) return false;
+		      }
+		    }
+		    var rect = readRect(node);
+		    var style = readStyle(node);
+		    return (
+		      rect.width > window.innerWidth / 2 &&
+		      rect.height > 0 &&
+		      style.visibility !== "hidden" &&
+		      style.display !== "none"
+		    );
+		  }
+		  function matchesRules(rules) {
+		    for (var rule of Array.from(rules || [])) {
+		      if (rule.media && !matchMedia(rule.media.mediaText).matches) continue;
+		      if (rule.selectorText && rule.style && viewportHeight(rule.style)) {
+		        try {
+		          if (
+		            Array.from(document.querySelectorAll(rule.selectorText)).some(
+		              visible,
+		            )
+		          )
+		            return true;
+		        } catch (_) {}
+		      }
+		      if (rule.cssRules && matchesRules(rule.cssRules)) return true;
+		    }
+		    return false;
+		  }
+		  for (var sheet of Array.from(document.styleSheets)) {
+		    try {
+		      if (
+		        !sheet.disabled &&
+		        (!sheet.media.mediaText || matchMedia(sheet.media.mediaText).matches) &&
+		        matchesRules(sheet.cssRules)
+		      )
+		        return viewport;
+		    } catch (_) {}
+		  }
+		  for (var node of document.body.querySelectorAll("*")) {
+		    // 先检查不依赖几何的条件，再测量可见性。
+		    var style = readStyle(node);
+		    // 全屏固定面板没有普通流高度；小浮动按钮和对话框不能撑高 iframe。
+		    if (
+		      !viewportHeight(node.style) &&
+		      !(
+		        style.position === "fixed" &&
+		        style.top === "0px" &&
+		        style.bottom === "0px"
+		      )
+		    )
+		      continue;
+		    if (visible(node)) return viewport;
+		  }
+		  return 0;
 		}
+        // 在消息 iframe 内运行。保留未知卡片的完整兼容扫描，只在单次测量内复用读取结果。
+        function installTavernFrameHeightReporter(
+          token,
+          viewportFloor,
+          useViewportFloor,
+        ) {
+          let last = 0,
+            queued = null,
+            active = true,
+            generation = 0;
+          let lastFrame = 0,
+            lastGap = null,
+            lockGap = null;
+          function measure() {
+            const body = document.body;
+            if (!body) return 48;
+            const styles = new WeakMap(),
+              rects = new WeakMap();
+            const reads = {
+              style(node) {
+                let style = styles.get(node);
+                if (!style) {
+                  style = getComputedStyle(node);
+                  styles.set(node, style);
+                }
+                return style;
+              },
+              rect(node) {
+                let rect = rects.get(node);
+                if (!rect) {
+                  rect = node.getBoundingClientRect();
+                  rects.set(node, rect);
+                }
+                return rect;
+              },
+            };
+            const bodyRect = reads.rect(body),
+              scrollY = window.scrollY || 0;
+            let height = Math.max(
+              body.scrollHeight || 0,
+              Math.ceil(bodyRect.bottom + scrollY),
+              48,
+              useViewportFloor === false ? 0 : viewportFloor(reads),
+            );
+            function visit(node, clipTop, clipBottom) {
+              let style;
+              try {
+                style = reads.style(node);
+              } catch (_) {
+                return;
+              }
+              if (style.display === "none") return;
+              if (style.visibility !== "hidden" && style.position !== "fixed") {
+                const rect = reads.rect(node);
+                if (rect.width !== 0 || rect.height !== 0) {
+                  const top = Math.max(rect.top, clipTop);
+                  const bottom = Math.min(
+                    rect.bottom + Math.max(0, parseFloat(style.marginBottom) || 0),
+                    clipBottom,
+                  );
+                  if (bottom > top)
+                    height = Math.max(height, Math.ceil(bottom + scrollY));
+                }
+              }
+              if (
+                String(style.overflowY || style.overflow || "visible") !== "visible"
+              ) {
+                const own = reads.rect(node);
+                clipTop = Math.max(clipTop, own.top);
+                clipBottom = Math.min(clipBottom, own.bottom);
+                if (clipBottom <= clipTop) return;
+              }
+              let children = node.children;
+              if (
+                String(node.tagName || "").toLowerCase() === "details" &&
+                !node.open
+              ) {
+                const summary = node.querySelector("summary");
+                children = summary ? [summary] : [];
+              }
+              for (let i = 0; i < children.length; i++)
+                visit(children[i], clipTop, clipBottom);
+            }
+            visit(body, -Infinity, Infinity);
+            return height;
+          }
+          function report() {
+            queued = null;
+            const root = document.documentElement;
+            if (!active || !root) return;
+            const frame = window.innerHeight;
+            let height = measure();
+            const gap = height - frame;
+            // 标题加 100vh 没有能自洽的 iframe 高度，保留既有反馈锁并改用内部滚动。
+            if (lockGap !== null && Math.abs(gap - lockGap) > 1) lockGap = null;
+            if (
+              lockGap === null &&
+              gap > 1 &&
+              lastGap !== null &&
+              frame !== lastFrame &&
+              Math.abs(gap - lastGap) <= 1
+            )
+              lockGap = gap;
+            lastFrame = frame;
+            lastGap = gap;
+            if (lockGap !== null) height = frame;
+            root.toggleAttribute(
+              "data-dsh-tavern-scroll",
+              height >= 32000 || lockGap !== null,
+            );
+            if (height === last) return;
+            last = height;
+            parent.postMessage({ type: "dsh-tavern-frame-height", token, height }, "*");
+          }
+          function schedule() {
+            if (!active || queued !== null) return;
+            const current = generation;
+            const run = function () {
+              if (current === generation) report();
+            };
+            queued =
+              typeof requestAnimationFrame === "function"
+                ? requestAnimationFrame(run)
+                : setTimeout(run, 0);
+          }
+          function cancel() {
+            generation += 1;
+            if (queued !== null) {
+              if (typeof requestAnimationFrame === "function") {
+                if (typeof cancelAnimationFrame === "function")
+                  cancelAnimationFrame(queued);
+              } else clearTimeout(queued);
+            }
+            queued = null;
+          }
+          const observer =
+            typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+          addEventListener("load", schedule);
+          addEventListener("toggle", schedule, true);
+          if (document.fonts && document.fonts.ready)
+            document.fonts.ready.then(schedule);
+          const paintOnly = {
+            transform: 1,
+            "transform-origin": 1,
+            translate: 1,
+            rotate: 1,
+            scale: 1,
+            opacity: 1,
+            color: 1,
+            "background-color": 1,
+            filter: 1,
+            "box-shadow": 1,
+          };
+          function layoutChanged(record) {
+            if (record.type === "characterData") return false;
+            if (record.type === "childList") {
+              const nodes = Array.from(record.addedNodes).concat(
+                Array.from(record.removedNodes),
+              );
+              return nodes.some((node) => node.nodeType !== 3);
+            }
+            if (record.oldValue === record.target.getAttribute(record.attributeName))
+              return false;
+            if (record.attributeName !== "style") return true;
+            const after = record.target.style;
+            if (!after) return true;
+            const before = document.createElement("span").style;
+            before.cssText = record.oldValue || "";
+            const names = Array.from(before).concat(Array.from(after));
+            for (const name of names) {
+              if (paintOnly[name]) continue;
+              if (
+                before.getPropertyValue(name) !== after.getPropertyValue(name) ||
+                before.getPropertyPriority(name) !== after.getPropertyPriority(name)
+              )
+                return true;
+            }
+            return false;
+          }
+          const mutations = new MutationObserver(function (records) {
+            if (records.some(layoutChanged)) schedule();
+          });
+          function observe() {
+            const root = document.documentElement;
+            if (!root) return;
+            mutations.observe(root, {
+              subtree: true,
+              childList: true,
+              attributes: true,
+              attributeOldValue: true,
+              characterData: true,
+            });
+            if (observer) {
+              observer.observe(root);
+              if (document.body) observer.observe(document.body);
+            }
+          }
+          addEventListener("message", function (event) {
+            const data = event.data;
+            if (
+              event.source !== parent ||
+              !data ||
+              data.token !== token ||
+              data.type !== "dsh-tavern-frame-measure-active"
+            )
+              return;
+            active = data.active !== false;
+            if (active) {
+              observe();
+              schedule();
+            } else {
+              cancel();
+              mutations.disconnect();
+              if (observer) observer.disconnect();
+            }
+          });
+          observe();
+          schedule();
+        }
         function normalizeFrameSizing(value) {
           if (!value || !['content', 'viewport', 'fixed'].includes(value.mode)) return null
           const result = { mode: value.mode, minHeight: 48, maxHeight: 32000 }
@@ -5990,21 +6244,14 @@ function tavernModelRefusalNotice(text) {
 			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var captureDom=' + JSON.stringify(!(input && input.persistent === true)) + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(){timer=0;var dom="";try{if(captureDom&&document.body){var copy=document.body.cloneNode(true);Array.prototype.forEach.call(copy.querySelectorAll("script[data-dsh-tavern-frame],script[data-dsh-tavern-storage],script[data-dsh-tavern-layout]"),function(node){node.remove();});dom=copy.innerHTML;}}catch(e){}if(dom.length>100000)dom=dom.slice(0,100000)+"<!-- 已截断 -->";parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,runtime:{capturedAt:Date.now(),dom:dom,console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
 			// Text replacement and paint-only style writes (clocks, counters, animations) skip the
 			// full-document scan: in-flow growth still reaches the ResizeObserver on html/body.
-			// Content that grows by exactly as much as the frame just did is sized by the frame
-			// (e.g. a 100vh panel below a header). No height fits it, so keep the frame and
-			// scroll inside instead of feeding the measurement back forever.
-			// Card scripts can briefly remove the root. Skip that measurement; the next
-			// activation reattaches observers to the current root without a polling watcher.
-			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var bodyRect=body.getBoundingClientRect();var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor());function visit(node,clipTop,clipBottom){var style;try{style=getComputedStyle(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=node.getBoundingClientRect();if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=node.getBoundingClientRect();clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
+            // 测量器保留未知布局的兼容扫描、视口反馈锁及临时移除根节点的恢复路径。
+            let reporter = '<script data-dsh-tavern-frame>(' + installTavernFrameHeightReporter.toString() + ')(' + token + ',' + tavernFrameViewportFloor.toString() + ',' + JSON.stringify(!sizing) + ');<\/script>';
 			// Animated/polling cards may never become DOM-idle; bound the wait so
 			// their authenticated variable channel can start receiving updates.
 			const readyReporter = '<script data-dsh-tavern-frame-ready>(function(){var token=' + token + ',armed=false,timer=0,deadline=0,reported=false;function report(){if(reported)return;reported=true;clearTimeout(timer);clearTimeout(deadline);observer.disconnect();var finish=function(){parent.postMessage({type:"dsh-tavern-frame-ready",token:token},"*");};if(typeof requestAnimationFrame==="function")requestAnimationFrame(function(){requestAnimationFrame(finish);});else setTimeout(finish,0);}function schedule(){if(!armed||reported)return;if(timer)clearTimeout(timer);timer=setTimeout(report,240);}var observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});addEventListener("load",schedule);Promise.resolve(window.__dshTavernHelperReady).catch(function(){return false;}).then(function(){armed=true;deadline=setTimeout(report,1000);schedule();});})();<\/script>';
 			const layoutNormalizer = '<script data-dsh-tavern-layout>(function(){if(!document.body)return;function clean(){Array.prototype.slice.call(document.body.childNodes).forEach(function(node){var value=String(node.nodeValue||"");if(node.nodeType===3&&!/\\S/.test(value)&&/[\\r\\n]/.test(value))node.nodeValue="";});}clean();if(typeof MutationObserver!=="undefined"){var observer=new MutationObserver(clean);observer.observe(document.body,{childList:true});addEventListener("pagehide",function(){observer.disconnect();},{once:true});}})();<\/script>';
             const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source!==parent||!data||data.token!==' + token + ')return;if(data.type==="dsh-tavern-frame-measure-active"){colors.setActive(data.active);return;}if(data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
-            if (sizing) {
-                if (sizing.mode !== "content") reporter = "";
-                else reporter = reporter.replace("48,viewportFloor()", "48");
-            }
+            if (sizing && sizing.mode !== "content") reporter = "";
             const sizingRuntime = '<script data-dsh-tavern-sizing>(' + installTavernFrameSizing.toString() + ')(' + token + ',' + JSON.stringify(sizing) + ');<\/script>';
             const sizingStyle = !sizing ? "" : '<style data-dsh-tavern-sizing>html[data-dsh-tavern-sizing-scroll]{overflow-y:auto!important}html[data-dsh-tavern-sizing-scroll] body{overflow-y:visible!important}' + (sizing.mode === "content" ? '' : 'html:root,html:root body{height:100%!important;min-height:0!important}html:root body{white-space:normal}') + '</style>';
 			// Card module scripts wait for the helper globals (z, YAML) as the script sandbox does;
