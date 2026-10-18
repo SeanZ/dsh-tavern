@@ -8,6 +8,123 @@ import {
   light,
 } from "./fixtures/frame-runtime-harness.mjs";
 
+test("显式快照只采前台会话，切回来沿用同一文档通道", async () => {
+  const shared = host(),
+    a = frames({}, { host: shared }),
+    b = frames({ sessionId: "B" }, { host: shared });
+  const af = a.attach(),
+    bf = b.attach(),
+    service = shared.client.tavernUiService;
+  a.lifecycle.setForeground(false);
+  await assert.rejects(
+    service.captureFrameSnapshot({ gameId: "A" }),
+    /没有挂着/,
+  );
+  await assert.rejects(a.lifecycle.requestRuntimeSnapshot({}), /不在当前页面/);
+  assert.equal(a.posts.length, 0);
+  const foregroundSelection = service.captureFrameSnapshot({ gameId: "B" });
+  await tick();
+  bf.message("dsh-tavern-frame-runtime", {
+    requestId: b.posts.at(-1).requestId,
+    runtime: {
+      dom: "",
+      domSnapshot: { status: "empty", documentToken: bf.document.token },
+    },
+  });
+  assert.equal((await foregroundSelection).gameId, "B");
+  b.lifecycle.setForeground(false);
+  a.lifecycle.setForeground(true);
+  const restored = service.captureFrameSnapshot({ gameId: "A" });
+  await tick();
+  assert.equal(a.posts.at(-1).token, af.document.token);
+  af.message("dsh-tavern-frame-runtime", {
+    requestId: a.posts.at(-1).requestId,
+    runtime: {
+      dom: "",
+      domSnapshot: { status: "empty", documentToken: af.document.token },
+    },
+  });
+  assert.equal((await restored).gameId, "A");
+  a.stop();
+  b.stop();
+});
+
+test("切局取消未决显式采集并释放服务串行锁，其它前台会话可立即采集", async () => {
+  const shared = host(),
+    a = frames({}, { host: shared }),
+    b = frames({ sessionId: "B" }, { host: shared });
+  a.attach();
+  const bf = b.attach(),
+    service = shared.client.tavernUiService;
+  const pending = service.captureFrameSnapshot({ gameId: "A" });
+  await tick();
+  const cancelled = assert.rejects(pending, /已取消/);
+  a.lifecycle.setForeground(false);
+  await cancelled;
+  assert.equal(shared.timers.size, 0);
+  const next = service.captureFrameSnapshot({ gameId: "B" });
+  await tick();
+  bf.message("dsh-tavern-frame-runtime", {
+    requestId: b.posts.at(-1).requestId,
+    runtime: {
+      dom: "",
+      domSnapshot: { status: "empty", documentToken: bf.document.token },
+    },
+  });
+  assert.equal((await next).gameId, "B");
+  a.stop();
+  b.stop();
+});
+
+test("被原生移除而仍留通道的 iframe 不参与显式采集，重连后恢复", async () => {
+  const h = frames(),
+    frame = h.attach(),
+    service = h.client.tavernUiService;
+  frame.node.isConnected = false;
+  await assert.rejects(
+    service.captureFrameSnapshot({ gameId: "A" }),
+    /没有挂着/,
+  );
+  await assert.rejects(h.lifecycle.requestRuntimeSnapshot({}), /尚未就绪/);
+  assert.equal(h.posts.length, 0);
+  frame.node.isConnected = true;
+  const restored = service.captureFrameSnapshot({ gameId: "A" });
+  await tick();
+  frame.message("dsh-tavern-frame-runtime", {
+    requestId: h.posts.at(-1).requestId,
+    runtime: {
+      dom: "",
+      domSnapshot: { status: "empty", documentToken: frame.document.token },
+    },
+  });
+  assert.equal((await restored).gameId, "A");
+  h.stop();
+});
+
+test("切局只取消显式采集，普通上报窗口与 MVU 调用继续执行", async () => {
+  const h = frames(),
+    frame = h.attach();
+  frame.message("dsh-tavern-frame-runtime", {
+    runtime: light(frame.document.token),
+  });
+  const pending = h.lifecycle.requestRuntimeSnapshot({});
+  const cancelled = assert.rejects(pending, /已取消/);
+  h.lifecycle.setForeground(false);
+  await cancelled;
+  assert.equal(h.timers.size, 1, "保留普通上报的 1 秒计时器");
+  frame.message("dsh-tavern-mvu-view-used");
+  await tick();
+  assert.ok(h.calls.some((call) => call.args.runtime?.mvuViewUsed === true));
+  await h.runTimer((timer) => timer.delay === 1000);
+  assert.ok(
+    h.calls.some(
+      (call) => call.args.runtime?.domSnapshot?.status === "not_collected",
+    ),
+  );
+  h.stop();
+  assert.equal(h.timers.size, 0);
+});
+
 test("宿主 requestRuntimeSnapshot 经既有 frame 通道发请求，回包兑现等待并与同文档轻量包合并后持久化；ready/MVU 分支不变", async () => {
   const h = frames(),
     frame = h.attach();

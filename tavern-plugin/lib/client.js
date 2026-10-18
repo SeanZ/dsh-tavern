@@ -11074,10 +11074,11 @@ function bindTavernFontZoom(node, win) {
 			}
 			function requestRuntimeSnapshot(requestOptions) {
 				return new Promise(function (resolve, reject) {
+					if (!foreground) return reject(new Error("这一局不在当前页面，无法采集 DOM"));
 					const document = visible;
 					const channel = document && channels.get(document.token);
 					const node = channel && channel.element();
-					if (!listener || !node || !node.contentWindow) return reject(new Error("消息 iframe 尚未就绪，无法采集 DOM"));
+					if (!listener || !node || node.isConnected === false || !node.contentWindow) return reject(new Error("消息 iframe 尚未就绪，无法采集 DOM"));
 					if (props.runtimeReporting === false) return reject(new Error("该 iframe 未启用运行诊断上报"));
 					const budget = normalizeTavernFrameSnapshotBudget(requestOptions, TAVERN_FRAME_SNAPSHOT_LIMITS, TAVERN_FRAME_SNAPSHOT_CEILING);
 					const timeoutMs = Math.max(100, Math.min(60000, Number(requestOptions && requestOptions.timeoutMs) || 8000));
@@ -11514,6 +11515,8 @@ function bindTavernFontZoom(node, win) {
 				update: update, snapshot: snapshot,
 				setForeground: function (next) {
 					foreground = next !== false;
+					// 切局只撤销显式诊断请求，普通上报与业务脚本继续沿用原生命周期。
+					if (!foreground) cancelSnapshotRequests("DOM 采集已取消：已切换到其它会话");
 					for (const owner of artifactOwners.values()) owner.scope.setVisible(foreground);
 				},
 				// 宿主诊断入口：向当前可见 iframe 发起一次受预算限制的 DOM 采集，返回该次 runtime 回包。
@@ -11523,9 +11526,10 @@ function bindTavernFontZoom(node, win) {
 					if (registry && !unregister) unregister = registry.register({
 						// 只描述真正挂着的活 frame：有通道、有节点、有 contentWindow；否则 null，注册表会跳过。
 						describe: function () {
+							if (!foreground) return null;
 							const channel = listener && visible && channels.get(visible.token);
 							const node = channel && channel.element();
-							if (!node || !node.contentWindow) return null;
+							if (!node || node.isConnected === false || !node.contentWindow) return null;
 							return { sessionId: props.sessionId, turn: props.turn, partIndex: props.partIndex, panelId: props.panelId, persistent: props.persistent === true };
 						},
 						requestRuntimeSnapshot: requestRuntimeSnapshot
