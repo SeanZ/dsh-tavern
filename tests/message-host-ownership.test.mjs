@@ -325,4 +325,112 @@ test("普通可信消息按文档回收宿主节点和 jQuery 事件，切局保
       .count(),
     0,
   );
+
+  await t.test(
+    "真实保留帧接线在切局后恢复原 iframe，撤回释放所有资源",
+    async (t) => {
+      if (
+        !(await page.evaluate(
+          () => typeof document.body.moveBefore === "function",
+        ))
+      ) {
+        t.skip("当前引擎没有 moveBefore，实际 UI 不启用 retained frame 分支");
+        return;
+      }
+      await page.evaluate(() => {
+        const home = document.createElement("main");
+        document.body.append(home);
+        const retention = client.createTavernSessionRetention({ window });
+        const frames = client.createRetainedTavernFrames({
+          window,
+          retention,
+          createLifecycle: (props) =>
+            client.createTavernMessageFrameLifecycle(props, {
+              window,
+              rpc: async () => ({}),
+            }),
+        });
+        const props = {
+          sessionId: "retained-A",
+          turn: 1,
+          partIndex: 0,
+          frameOwner: {},
+          trustedCardMode: true,
+          runtimeReporting: false,
+          helperContext: { version: 1, stateRevision: 1, messages: [] },
+          content:
+            '<input value="initial"><script type="module">await window.__dshTavernHelperReady;const host=parent;host.retainedRuns=(host.retainedRuns||0)+1;const button=$(\'<button id="retained-overlay">保留面板</button>\');$(host.document.body).append(button);button.on("click",()=>host.retainedClicks=(host.retainedClicks||0)+1);host.retainedStarted=true;</' +
+            "script>",
+        };
+        retention.select("retained-A");
+        window.retained = {
+          home,
+          retention,
+          frames,
+          props,
+          lease: frames.mount(props, home),
+        };
+      });
+      await page.waitForFunction(() => window.retainedStarted === true);
+      await page.evaluate(() => {
+        window.retainedFrame = retained.home.querySelector("iframe");
+        window.retainedWindow = retainedFrame.contentWindow;
+        window.retainedOverlay = document.getElementById("retained-overlay");
+        retainedFrame.contentDocument.querySelector("input").value =
+          "preserved";
+        retained.lease.detach();
+      });
+      assert.equal(
+        await page.locator("#retained-overlay").count(),
+        1,
+        "离屏卸载仍保留面板语义",
+      );
+      await page.evaluate(() => retained.retention.select("retained-B"));
+      assert.equal(await page.locator("#retained-overlay").count(), 0);
+      assert.ok(
+        await page.evaluate(
+          () =>
+            retainedFrame.isConnected && retained.frames.has(retained.props),
+        ),
+      );
+      await page.evaluate(() => {
+        retained.retention.select("retained-A");
+        retained.lease = retained.frames.mount(retained.props, retained.home);
+      });
+      assert.ok(
+        await page.evaluate(
+          () =>
+            retained.home.querySelector("iframe") === retainedFrame &&
+            retainedFrame.contentWindow === retainedWindow,
+        ),
+      );
+      assert.equal(
+        await page.evaluate(
+          () => retainedFrame.contentDocument.querySelector("input").value,
+        ),
+        "preserved",
+      );
+      assert.ok(
+        await page.evaluate(
+          () => document.getElementById("retained-overlay") === retainedOverlay,
+        ),
+      );
+      assert.equal(
+        await page.evaluate(() => retainedRuns),
+        1,
+        "回局不重复执行脚本",
+      );
+      await page.locator("#retained-overlay").click();
+      assert.equal(await page.evaluate(() => retainedClicks), 1);
+      // 撤回沿用既有 frameOwner 失效入口，不添加新的消息状态源。
+      await page.evaluate(() => {
+        retained.frames.invalidateOwner(retained.props.frameOwner);
+        retained.retention.clear();
+        retainedOverlay.click();
+      });
+      assert.equal(await page.locator("#retained-overlay").count(), 0);
+      assert.equal(await page.evaluate(() => retainedFrame.isConnected), false);
+      assert.equal(await page.evaluate(() => retainedClicks), 1);
+    },
+  );
 });
