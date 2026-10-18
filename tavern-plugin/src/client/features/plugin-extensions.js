@@ -149,6 +149,24 @@
 					composer.input.setDraft(composer.text);
 					return Promise.resolve(composer.input.submit("queue")).then(function () { return { submitted: true }; });
 				},
+				// 诊断：对当前页面挂着的一个消息 iframe 做一次受预算限制的 DOM 采集（apiVersion 2）。
+				// 只作用于一个活 frame，不遍历历史；同一时刻只允许一次；结果 status 为 empty/complete/partial/not_collected。
+				captureFrameSnapshot(input) {
+					if (!input || typeof input.gameId !== "string" || !input.gameId) return Promise.reject(new TypeError("captureFrameSnapshot 需要 gameId"));
+					const query = { gameId: input.gameId };
+					for (const key of ["turn", "partIndex"]) if (input[key] !== undefined) {
+						const value = Number(input[key]);
+						if (!Number.isInteger(value) || value < 0) return Promise.reject(new TypeError("captureFrameSnapshot 的 " + key + " 必须是非负整数"));
+						query[key] = value;
+					}
+					if (input.panelId !== undefined) {
+						if (typeof input.panelId !== "string") return Promise.reject(new TypeError("captureFrameSnapshot 的 panelId 必须是字符串"));
+						query.panelId = input.panelId;
+					}
+					const budget = input.budget && typeof input.budget === "object" ? Object.assign({}, input.budget) : {};
+					if (input.timeoutMs !== undefined) budget.timeoutMs = input.timeoutMs;
+					return tavernFrameRuntimeRegistry.capture(query, budget);
+				},
 				// A layer over the whole page for the plugin's own screen (a battle, a map). Escape closes it
 				// unless dismissible is false; it closes by itself when the plugin unloads.
 				openOverlay(input) {

@@ -638,6 +638,22 @@ ctx.tavernUi.registerStartGroup({ title: '叙事锚定', tabs: ['narrative-ancho
 - 插件分组排在 Tavern 自带的「本局」「资料库」「偏好」之后、「插件」之前，按注册顺序。Tavern 自己的页不能移进插件分组；同一页被几个分组声明时只显示在第一个里。
 - 列出的页没有注册时不显示；整组都没有可显示的页时，整组隐藏。插件卸载时分组自动移除。
 
+### `captureFrameSnapshot({ gameId, turn?, partIndex?, panelId?, budget?, timeoutMs? })`（第 2 版）
+
+诊断用：对这一局当前页面挂着的一个消息 iframe 做一次受预算限制的 DOM 采集，返回 Promise。消息 iframe 平时只上报控制台、错误、网络和布局，不再克隆或序列化整个 DOM；要看 DOM 就显式调用这个方法。
+
+- 只作用于一个活着的 iframe：不传 `turn` 取当前页面挂着的最新一轮，同轮多个面板取 `partIndex` 最小者，也可用 `panelId` 指定；不会遍历历史存档。同一时刻只允许一次采集。
+- `budget` 可选 `{ maxNodes, maxChars, maxTextChars, maxAttributes, maxAttributeChars, maxChildren, maxDepth }`，超过硬上限会被压回。采集是 iframe 内的同步遍历，预算只保证工作量有界，不保证页面不卡顿。
+- 返回 `{ gameId, turn, partIndex, panelId, status, dom, domSnapshot }`。`status` 为 `empty`（body 没有子节点）、`complete`、`partial`（被预算截断，`domSnapshot.reasons` 给出原因）或 `not_collected`（该 iframe 拒绝采集）；`dom` 是转义后的 HTML 文本，文本与属性里的标签不再有标签语义，宿主注入的内部脚本已过滤。`domSnapshot.visited`/`emitted`/`skipped` 是访问与截断计数。
+- `domSnapshot.capturedAt` 是这次 DOM 采集的时间，`domSnapshot.documentToken` 是被采集的 iframe 文档身份；之后该 iframe 的常规上报（不采 DOM）会保留这两个值，换了文档（重新生成、刷新）则不再延续旧快照。
+- Promise 兑现只表示采集结果已返回给调用方。结果随后经既有的 1 秒合并通道异步尝试保存到该轮的运行证据侧车（不改变存档版本），这次保存的 RPC 也可能失败，Promise 不代表落盘确认；`turn` 为 0 的 iframe（开场预览等）只返回采集结果，不写历史轮侧车。iframe 没挂着、这一局不在当前页面、或正在另一次采集时报错。
+
+```js
+const result = await ctx.tavernUi.captureFrameSnapshot({ gameId, budget: { maxNodes: 500 } })
+if (result.status === 'partial') console.log('截断原因', result.domSnapshot.reasons)
+console.log(result.dom.slice(0, 200))
+```
+
 ### `registerCardListView({ id, label, render })`（第 2 版）
 
 换一种方式显示人物卡列表，例如按分组排的书架、带更多信息的卡片。「人物卡库」和「选择人物卡 · 开始游玩」两处都会用到。列表上方本来就有 Tavern 自带的「列表 / 宫格」切换，注册后多出一个 `<label>`，用户选哪个，这台浏览器就记住哪个。搜索、分组筛选、批量管理的工具栏（全选、删除、移动分组）仍由 Tavern 显示在列表上方，插件只负责画卡片。

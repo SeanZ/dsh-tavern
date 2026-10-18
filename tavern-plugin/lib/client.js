@@ -242,10 +242,45 @@ window.__ModuleLoader__.load({
 		    while (records.length && (records.length > limit || records[0].at < cutoff)) records.shift();
 		  }
 		  function record(type, detail) {
-		    records.push(Object.assign({ at: Date.now(), type, visible: doc.visibilityState === "visible", focused: doc.hasFocus(), active: kind(doc.activeElement) }, detail));
+		    records.push(Object.assign({ at: Date.now(), type, visible: Boolean(doc) && doc.visibilityState === "visible", focused: Boolean(doc) && typeof doc.hasFocus === "function" && doc.hasFocus(), active: kind(doc && doc.activeElement) }, detail));
 		    trim();
 		  }
-		  function snapshot() { trim(); return { version: 1, retainedMinutes: 10, maxRecords: limit, events: records.map(item => ({ ...item })) }; }
+		  // 消息 iframe 运行上报的累计指标：只收白名单里的计数与枚举，正文永远不进环；
+		  // 每 60 秒最多汇总一条进环；窗口内未汇总的累计以只读 pending 字段随 snapshot()/download 导出，不重复计数。
+		  const frameRuntimeSummaryInterval = 60 * 1000;
+		  const frameRuntime = { reports: 0, snapshots: 0, partial: 0, visitedNodes: 0, visitedChars: 0, emittedChars: 0, consoleEntries: 0, errorEntries: 0, since: 0, lastSummaryAt: 0 };
+		  function count(value) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0; }
+		  function frameRuntimeSummary(now) {
+		    return { windowMs: Math.max(0, now - frameRuntime.since), reports: frameRuntime.reports, snapshots: frameRuntime.snapshots, partial: frameRuntime.partial,
+		      visitedNodes: frameRuntime.visitedNodes, visitedChars: frameRuntime.visitedChars, emittedChars: frameRuntime.emittedChars,
+		      maxConsoleEntries: frameRuntime.consoleEntries, maxErrorEntries: frameRuntime.errorEntries };
+		  }
+		  function resetFrameRuntime(now) {
+		    frameRuntime.reports = 0; frameRuntime.snapshots = 0; frameRuntime.partial = 0; frameRuntime.visitedNodes = 0; frameRuntime.visitedChars = 0; frameRuntime.emittedChars = 0;
+		    frameRuntime.consoleEntries = 0; frameRuntime.errorEntries = 0; frameRuntime.since = now;
+		  }
+		  function pendingFrameRuntime() {
+		    return frameRuntime.reports + frameRuntime.snapshots > 0 ? frameRuntimeSummary(Date.now()) : null;
+		  }
+		  function snapshot() {
+		    trim();
+		    return { version: 1, retainedMinutes: 10, maxRecords: limit, events: records.map(item => ({ ...item })), pendingFrameRuntime: pendingFrameRuntime() };
+		  }
+		  function noteFrameRuntime(input) {
+		    const now = Date.now();
+		    if (!frameRuntime.since) frameRuntime.since = now;
+		    if (input && input.kind === "snapshot") frameRuntime.snapshots += 1; else frameRuntime.reports += 1;
+		    if (input && input.truncated === true) frameRuntime.partial += 1;
+		    frameRuntime.visitedNodes += count(input && input.visitedNodes);
+		    frameRuntime.visitedChars += count(input && input.visitedChars);
+		    frameRuntime.emittedChars += count(input && input.emittedChars);
+		    frameRuntime.consoleEntries = Math.max(frameRuntime.consoleEntries, count(input && input.consoleEntries));
+		    frameRuntime.errorEntries = Math.max(frameRuntime.errorEntries, count(input && input.errorEntries));
+		    if (frameRuntime.lastSummaryAt && now - frameRuntime.lastSummaryAt < frameRuntimeSummaryInterval) return;
+		    frameRuntime.lastSummaryAt = now;
+		    record("frame-runtime-summary", frameRuntimeSummary(now));
+		    resetFrameRuntime(now);
+		  }
 		  function start() {
 		    const removers = [], timers = new Set();
 		    function on(target, name, handler) { target.addEventListener(name, handler, true); removers.push(() => target.removeEventListener(name, handler, true)); }
@@ -288,7 +323,7 @@ window.__ModuleLoader__.load({
 		    doc.body.appendChild(link); link.click(); link.remove();
 		    win.setTimeout(() => win.URL.revokeObjectURL(url), 1000);
 		  }
-		  return { start, snapshot, download };
+		  return { start, snapshot, download, noteFrameRuntime };
 		}
 		const tavernInteractionDiagnostics = createInteractionDiagnostics(window);
 
@@ -6190,6 +6225,711 @@ function tavernModelRefusalNotice(text) {
 		 });
 		}
 
+		/* eslint-disable no-unused-vars -- include 片段的符号由同一 factory 内其它源码使用。 */
+		// 消息 iframe 的运行诊断上报器。整段以 toString() 注入 iframe，只能用 ES5 语法，
+		// 不能引用工厂作用域里的其他符号；需要的协作函数通过参数传入。
+		//
+		// 协议（runtime.domSnapshot）：
+		//   status not_collected —— 默认轻量包：load/resize/console/error/network 触发，不遍历、不克隆、不序列化 body；
+		//   status empty         —— 宿主显式请求，body 存在但没有任何子节点；
+		//   status complete      —— 宿主显式请求，预算内走完整棵树；
+		//   status partial       —— 宿主显式请求，命中节点/字符/属性/深度/兄弟预算，reasons 给出原因。
+		//   documentToken        —— 采集所属 iframe 文档的 token；capturedAt 只在显式采集时写入，表示 DOM 的采集时间。
+		// 显式请求消息 dsh-tavern-frame-snapshot-request 只接受 event.source === parent 且 token 一致的来源。
+		var TAVERN_FRAME_SNAPSHOT_LIMITS = Object.freeze({
+		  maxNodes: 2000,
+		  maxChars: 60000,
+		  maxTextChars: 2000,
+		  maxAttributes: 16,
+		  maxAttributeChars: 256,
+		  maxChildren: 200,
+		  maxDepth: 64,
+		});
+		var TAVERN_FRAME_SNAPSHOT_CEILING = Object.freeze({
+		  maxNodes: 5000,
+		  maxChars: 100000,
+		  maxTextChars: 8000,
+		  maxAttributes: 32,
+		  maxAttributeChars: 2000,
+		  maxChildren: 1000,
+		  maxDepth: 128,
+		});
+		// 宿主注入 iframe 的内部脚本标记；采集时按固定列表做常数成本的 hasAttribute 判断，卡片自己的 script 保留。
+		var TAVERN_FRAME_INTERNAL_SCRIPT_MARKERS = Object.freeze([
+		  "data-dsh-tavern-frame",
+		  "data-dsh-tavern-frame-ready",
+		  "data-dsh-tavern-storage",
+		  "data-dsh-tavern-layout",
+		  "data-dsh-tavern-text-colors",
+		  "data-dsh-tavern-touch",
+		  "data-dsh-tavern-sizing",
+		  "data-dsh-tavern-helper",
+		  "data-dsh-tavern-interactive-helper",
+		  "data-dsh-tavern-mvu-view-observer",
+		  "data-dsh-tavern-crypto",
+		  "data-dsh-tavern-tilt-guard",
+		  "data-dsh-tavern-remote-document",
+		  "data-dsh-tavern-legacy-composer",
+		  "data-dsh-tavern-frame-variable-aliases",
+		  "data-dsh-tavern-status-refresh",
+		  "data-dsh-tavern-session-opening",
+		  "data-dsh-tavern-opening-preview",
+		  "data-dsh-tavern-opening-host",
+		  "data-dsh-tavern-status-host",
+		  "data-dsh-tavern-helper-dependency",
+		  "data-dsh-tavern-static-cache",
+		  "data-dsh-tavern-host-artifacts",
+		  "data-dsh-preserve-lines",
+		]);
+
+		// 宿主与 iframe 共用：把外部传入的预算压到 [1, 上限]，未知字段丢弃。
+		function normalizeTavernFrameSnapshotBudget(input, defaults, ceiling) {
+		  var out = {};
+		  Object.keys(defaults).forEach(function (key) {
+		    var value = input && typeof input === "object" ? Number(input[key]) : NaN;
+		    if (!isFinite(value) || value < 1) value = defaults[key];
+		    out[key] = Math.min(ceiling[key], Math.max(1, Math.floor(value)));
+		  });
+		  return out;
+		}
+
+		// 受预算限制的迭代式 DOM 采集：先判预算再取子节点，visited.nodes 严格不超过 maxNodes。
+		// 不 clone、不读 innerHTML/outerHTML；文本用 substringData 按预算截取，属性值截断后再转义。
+		// 输出是转义后的 HTML 风格文本：文本与属性里的 < > & " 都被转义，不会再构成标签。
+		function collectTavernFrameDomSnapshot(root, budget, options) {
+		  var limits = budget || {};
+		  var markers =
+		    options && Array.isArray(options.internalScriptMarkers)
+		      ? options.internalScriptMarkers
+		      : [];
+		  var out = [],
+		    chars = 0;
+		  var visited = { nodes: 0, chars: 0, attributes: 0, maxDepth: 0 };
+		  var emitted = { nodes: 0, text: 0, attributes: 0 };
+		  var skipped = {
+		    nodes: 0,
+		    children: 0,
+		    text: 0,
+		    attributes: 0,
+		    attributeChars: 0,
+		    depth: 0,
+		    internalScripts: 0,
+		  };
+		  var reasons = [];
+		  function reason(name) {
+		    if (reasons.indexOf(name) < 0) reasons.push(name);
+		  }
+		  function escapeText(value) {
+		    return String(value)
+		      .replace(/&/g, "&amp;")
+		      .replace(/</g, "&lt;")
+		      .replace(/>/g, "&gt;");
+		  }
+		  function escapeAttribute(value) {
+		    return escapeText(value).replace(/"/g, "&quot;");
+		  }
+		  function write(text) {
+		    if (chars + text.length > limits.maxChars) {
+		      var room = Math.max(0, limits.maxChars - chars);
+		      if (room > 0) {
+		        out.push(text.slice(0, room));
+		        chars += room;
+		      }
+		      reason("chars");
+		      return false;
+		    }
+		    out.push(text);
+		    chars += text.length;
+		    return true;
+		  }
+		  function internalScript(node) {
+		    if (
+		      !markers.length ||
+		      String(node.nodeName || "").toLowerCase() !== "script" ||
+		      typeof node.hasAttribute !== "function"
+		    )
+		      return false;
+		    for (var i = 0; i < markers.length; i += 1)
+		      if (node.hasAttribute(markers[i])) return true;
+		    return false;
+		  }
+		  function textOf(node) {
+		    var length = Number(node.length) || 0;
+		    visited.chars += Math.min(length, limits.maxTextChars);
+		    var text =
+		      typeof node.substringData === "function"
+		        ? node.substringData(0, Math.min(length, limits.maxTextChars))
+		        : String(node.nodeValue || "").slice(0, limits.maxTextChars);
+		    if (length > limits.maxTextChars) {
+		      skipped.text += length - limits.maxTextChars;
+		      reason("text");
+		      text += "…";
+		    }
+		    return text;
+		  }
+		  function openTag(node) {
+		    var tag = String(node.nodeName || "").toLowerCase();
+		    var attributes = node.attributes || [];
+		    var parts = ["<" + tag];
+		    var count = Math.min(attributes.length, limits.maxAttributes);
+		    for (var i = 0; i < count; i += 1) {
+		      var name = String(attributes[i].name || "");
+		      var raw = String(attributes[i].value == null ? "" : attributes[i].value);
+		      visited.attributes += 1;
+		      var value =
+		        raw.length > limits.maxAttributeChars
+		          ? raw.slice(0, limits.maxAttributeChars) + "…"
+		          : raw;
+		      if (raw.length > limits.maxAttributeChars) {
+		        skipped.attributeChars += raw.length - limits.maxAttributeChars;
+		        reason("attribute-chars");
+		      }
+		      emitted.attributes += 1;
+		      parts.push(" " + name + '="' + escapeAttribute(value) + '"');
+		    }
+		    if (attributes.length > count) {
+		      skipped.attributes += attributes.length - count;
+		      reason("attributes");
+		      parts.push(
+		        ' data-dsh-snapshot-omitted-attributes="' +
+		          (attributes.length - count) +
+		          '"',
+		      );
+		    }
+		    return parts.join("") + ">";
+		  }
+		  var stopped = false;
+		  if (!root) return finish("empty");
+		  var children = root.childNodes || [];
+		  if (!children.length) return finish("empty");
+		  // 显式栈代替递归：深树不会爆栈；每层记录下一个子索引和已发出的子节点数。
+		  var stack = [{ node: root, index: 0, emitted: 0, depth: 0, close: "" }];
+		  while (stack.length && !stopped) {
+		    var frame = stack[stack.length - 1];
+		    var list = frame.node.childNodes || [];
+		    if (frame.index >= list.length) {
+		      stack.pop();
+		      if (frame.close && !write(frame.close)) stopped = true;
+		      continue;
+		    }
+		    if (frame.emitted >= limits.maxChildren) {
+		      var omitted = list.length - frame.index;
+		      skipped.children += omitted;
+		      frame.index = list.length;
+		      reason("children");
+		      if (!write("<!-- 省略 " + omitted + " 个兄弟节点 -->")) stopped = true;
+		      continue;
+		    }
+		    // 节点预算先于任何子节点访问。
+		    if (visited.nodes >= limits.maxNodes) {
+		      skipped.nodes += list.length - frame.index;
+		      reason("nodes");
+		      stopped = true;
+		      continue;
+		    }
+		    var child = list[frame.index];
+		    frame.index += 1;
+		    visited.nodes += 1;
+		    var depth = frame.depth + 1;
+		    if (depth > visited.maxDepth) visited.maxDepth = depth;
+		    var type = child.nodeType;
+		    if (type === 3) {
+		      frame.emitted += 1;
+		      emitted.nodes += 1;
+		      emitted.text += 1;
+		      if (!write(escapeText(textOf(child)))) stopped = true;
+		    } else if (type === 8) {
+		      frame.emitted += 1;
+		      emitted.nodes += 1;
+		      if (!write("<!--" + escapeText(textOf(child)) + "-->")) stopped = true;
+		    } else if (type === 1) {
+		      if (internalScript(child)) {
+		        skipped.internalScripts += 1;
+		        continue;
+		      }
+		      frame.emitted += 1;
+		      emitted.nodes += 1;
+		      if (!write(openTag(child))) {
+		        stopped = true;
+		        continue;
+		      }
+		      var tag = String(child.nodeName || "").toLowerCase();
+		      if (depth >= limits.maxDepth) {
+		        if ((child.childNodes || []).length) {
+		          skipped.depth += 1;
+		          reason("depth");
+		          write("<!-- 深度已截断 -->");
+		        }
+		        if (!write("</" + tag + ">")) stopped = true;
+		      } else
+		        stack.push({
+		          node: child,
+		          index: 0,
+		          emitted: 0,
+		          depth: depth,
+		          close: "</" + tag + ">",
+		        });
+		    }
+		  }
+		  return finish(reasons.length ? "partial" : "complete");
+		  function finish(status) {
+		    return {
+		      status: status,
+		      html: out.join(""),
+		      reasons: reasons.slice(),
+		      limits: limits,
+		      visited: {
+		        nodes: visited.nodes,
+		        chars: visited.chars,
+		        attributes: visited.attributes,
+		        maxDepth: visited.maxDepth,
+		      },
+		      emitted: {
+		        nodes: emitted.nodes,
+		        text: emitted.text,
+		        attributes: emitted.attributes,
+		        chars: chars,
+		      },
+		      skipped: skipped,
+		    };
+		  }
+		}
+
+		// iframe 内安装：console/error/unhandledrejection/fetch/XHR 轻量记录，load/resize 触发汇报；
+		// 默认包永不碰 body。显式快照只响应父窗口带正确 token 的请求。
+		function installTavernFrameRuntimeReporter(
+		  token,
+		  options,
+		  collectDomSnapshot,
+		  normalizeBudget,
+		) {
+		  var config = options || {};
+		  var snapshotAllowed = config.allowSnapshot !== false;
+		  var limits = config.limits || {},
+		    ceiling = config.ceiling || limits,
+		    markers = config.internalScriptMarkers || [];
+		  var logs = [],
+		    network = [],
+		    errors = [],
+		    timer = 0,
+		    counters = { reports: 0, snapshots: 0 };
+		  function trim(list) {
+		    if (list.length > 100) list.splice(0, list.length - 100);
+		  }
+		  function value(input, depth) {
+		    if (depth > 3) return "[深度已截断]";
+		    if (
+		      input === null ||
+		      input === undefined ||
+		      typeof input === "boolean" ||
+		      typeof input === "number" ||
+		      typeof input === "string"
+		    )
+		      return typeof input === "string" && input.length > 4000
+		        ? input.slice(0, 4000) + "…[已截断]"
+		        : input;
+		    try {
+		      if (
+		        input instanceof Error ||
+		        Object.prototype.toString.call(input) === "[object Error]"
+		      )
+		        return {
+		          name: String(input.name),
+		          message: String(input.message).slice(0, 4000),
+		          stack: String(input.stack || "").slice(0, 4000),
+		        };
+		      if (Array.isArray(input))
+		        return input.slice(0, 30).map(function (item) {
+		          return value(item, depth + 1);
+		        });
+		      if (typeof input === "object") {
+		        var out = {};
+		        Object.keys(input)
+		          .slice(0, 30)
+		          .forEach(function (key) {
+		            out[key] = value(input[key], depth + 1);
+		          });
+		        return out;
+		      }
+		    } catch (e) {}
+		    return String(input);
+		  }
+		  function cleanUrl(input) {
+		    try {
+		      var parsed = new URL(String(input), location.href);
+		      return parsed.protocol + "//" + parsed.host + parsed.pathname;
+		    } catch (e) {
+		      return String(input || "")
+		        .split(/[?#]/)[0]
+		        .slice(0, 1000);
+		    }
+		  }
+		  function layout() {
+		    try {
+		      return window.__dshTavernFrameLayout
+		        ? window.__dshTavernFrameLayout()
+		        : null;
+		    } catch (e) {
+		      return null;
+		    }
+		  }
+		  function post(dom, snapshot, requestId) {
+		    snapshot.documentToken = token;
+		    snapshot.reports = counters.reports;
+		    snapshot.snapshots = counters.snapshots;
+		    var runtime = {
+		      capturedAt: Date.now(),
+		      layout: layout(),
+		      dom: dom,
+		      domSnapshot: snapshot,
+		      console: logs.slice(),
+		      network: network.slice(),
+		      errors: errors.slice(),
+		    };
+		    var message = {
+		      type: "dsh-tavern-frame-runtime",
+		      token: token,
+		      runtime: runtime,
+		    };
+		    if (requestId) message.requestId = requestId;
+		    parent.postMessage(message, "*");
+		  }
+		  function send() {
+		    timer = 0;
+		    counters.reports += 1;
+		    post("", { status: "not_collected" });
+		  }
+		  function schedule() {
+		    if (timer) return;
+		    timer = setTimeout(send, 350);
+		  }
+		  function snapshot(request) {
+		    var requestId = String(request.requestId || "");
+		    var budget = normalizeBudget(request.budget, limits, ceiling);
+		    if (!snapshotAllowed) {
+		      post("", { status: "not_collected", reason: "disabled" }, requestId);
+		      return;
+		    }
+		    var collected;
+		    try {
+		      collected = collectDomSnapshot(document.body, budget, {
+		        internalScriptMarkers: markers,
+		      });
+		    } catch (e) {
+		      post(
+		        "",
+		        {
+		          status: "not_collected",
+		          reason: "error",
+		          error: String((e && e.message) || e).slice(0, 500),
+		        },
+		        requestId,
+		      );
+		      return;
+		    }
+		    counters.snapshots += 1;
+		    post(
+		      collected.html,
+		      {
+		        status: collected.status,
+		        capturedAt: Date.now(),
+		        reasons: collected.reasons,
+		        limits: collected.limits,
+		        visited: collected.visited,
+		        emitted: collected.emitted,
+		        skipped: collected.skipped,
+		      },
+		      requestId,
+		    );
+		  }
+		  ["log", "info", "warn", "error"].forEach(function (level) {
+		    var original = console[level];
+		    console[level] = function () {
+		      logs.push({
+		        at: Date.now(),
+		        level: level,
+		        args: Array.prototype.map.call(arguments, function (item) {
+		          return value(item, 0);
+		        }),
+		      });
+		      trim(logs);
+		      schedule();
+		      return original && original.apply(console, arguments);
+		    };
+		  });
+		  addEventListener(
+		    "error",
+		    function (event) {
+		      var target = event.target;
+		      if (target && target !== window)
+		        errors.push({
+		          at: Date.now(),
+		          kind: "resource",
+		          tag: String(target.tagName || ""),
+		          url: cleanUrl(target.src || target.href || ""),
+		        });
+		      else
+		        errors.push({
+		          at: Date.now(),
+		          kind: "error",
+		          message: String(event.message || ""),
+		          source: cleanUrl(event.filename || ""),
+		          line: Number(event.lineno) || 0,
+		          column: Number(event.colno) || 0,
+		        });
+		      trim(errors);
+		      schedule();
+		    },
+		    true,
+		  );
+		  addEventListener("unhandledrejection", function (event) {
+		    errors.push({
+		      at: Date.now(),
+		      kind: "unhandledrejection",
+		      message: String(
+		        (event.reason && event.reason.message) || event.reason || "",
+		      ),
+		    });
+		    trim(errors);
+		    schedule();
+		  });
+		  if (typeof window.fetch === "function") {
+		    var nativeFetch = window.fetch;
+		    window.fetch = function (input, init) {
+		      var started = Date.now(),
+		        method = String((init && init.method) || "GET").toUpperCase(),
+		        url = cleanUrl((input && input.url) || input);
+		      return nativeFetch.apply(this, arguments).then(
+		        function (response) {
+		          network.push({
+		            at: started,
+		            kind: "fetch",
+		            method: method,
+		            url: url,
+		            status: Number(response.status) || 0,
+		            durationMs: Date.now() - started,
+		          });
+		          trim(network);
+		          if (!response.ok) schedule();
+		          return response;
+		        },
+		        function (error) {
+		          network.push({
+		            at: started,
+		            kind: "fetch",
+		            method: method,
+		            url: url,
+		            failed: true,
+		            durationMs: Date.now() - started,
+		            error: String((error && error.message) || error),
+		          });
+		          trim(network);
+		          schedule();
+		          throw error;
+		        },
+		      );
+		    };
+		  }
+		  if (typeof XMLHttpRequest === "function") {
+		    var nativeOpen = XMLHttpRequest.prototype.open,
+		      nativeSend = XMLHttpRequest.prototype.send;
+		    XMLHttpRequest.prototype.open = function (method, url) {
+		      this.__dshRequest = {
+		        started: 0,
+		        method: String(method || "GET").toUpperCase(),
+		        url: cleanUrl(url),
+		      };
+		      return nativeOpen.apply(this, arguments);
+		    };
+		    XMLHttpRequest.prototype.send = function () {
+		      var request = this.__dshRequest || { method: "GET", url: "" };
+		      request.started = Date.now();
+		      this.addEventListener("loadend", function () {
+		        network.push({
+		          at: request.started,
+		          kind: "xhr",
+		          method: request.method,
+		          url: request.url,
+		          status: Number(this.status) || 0,
+		          durationMs: Date.now() - request.started,
+		        });
+		        trim(network);
+		        if (Number(this.status) >= 400) schedule();
+		      });
+		      return nativeSend.apply(this, arguments);
+		    };
+		  }
+		  addEventListener("message", function (event) {
+		    var data = event && event.data;
+		    if (
+		      !data ||
+		      event.source !== parent ||
+		      data.token !== token ||
+		      data.type !== "dsh-tavern-frame-snapshot-request"
+		    )
+		      return;
+		    snapshot(data);
+		  });
+		  addEventListener("load", schedule);
+		  addEventListener("resize", schedule);
+		  schedule();
+		}
+
+		// 宿主侧：1 秒合并窗口内，后到的轻量包不得覆盖同一文档先到的显式快照；换文档后不继承。
+		function tavernFrameRuntimeSnapshotCollected(runtime) {
+		  var status = runtime && runtime.domSnapshot && runtime.domSnapshot.status;
+		  return status === "complete" || status === "partial" || status === "empty";
+		}
+		function mergeTavernFrameRuntimeReports(previous, next) {
+		  if (
+		    !previous ||
+		    !next ||
+		    tavernFrameRuntimeSnapshotCollected(next) ||
+		    !tavernFrameRuntimeSnapshotCollected(previous)
+		  )
+		    return next;
+		  var previousToken =
+		      previous.domSnapshot && previous.domSnapshot.documentToken,
+		    nextToken = next.domSnapshot && next.domSnapshot.documentToken;
+		  if (!previousToken || previousToken !== nextToken) return next;
+		  return Object.assign({}, next, {
+		    dom: previous.dom,
+		    domSnapshot: previous.domSnapshot,
+		  });
+		}
+
+		// 宿主侧：只放行白名单里的数值/枚举，DOM 正文、日志参数一律不进诊断环。
+		function tavernFrameRuntimeMetrics(runtime, requested) {
+		  var snapshot =
+		    runtime && runtime.domSnapshot && typeof runtime.domSnapshot === "object"
+		      ? runtime.domSnapshot
+		      : {};
+		  var status =
+		    ["not_collected", "empty", "complete", "partial"].indexOf(
+		      snapshot.status,
+		    ) >= 0
+		      ? snapshot.status
+		      : "not_collected";
+		  function count(value) {
+		    var number = Number(value);
+		    return isFinite(number) && number > 0 ? Math.floor(number) : 0;
+		  }
+		  return {
+		    kind: requested ? "snapshot" : "report",
+		    status: status,
+		    visitedNodes: count(snapshot.visited && snapshot.visited.nodes),
+		    visitedChars: count(snapshot.visited && snapshot.visited.chars),
+		    emittedChars: count(snapshot.emitted && snapshot.emitted.chars),
+		    truncated: status === "partial",
+		    consoleEntries: count(
+		      runtime && Array.isArray(runtime.console) && runtime.console.length,
+		    ),
+		    errorEntries: count(
+		      runtime && Array.isArray(runtime.errors) && runtime.errors.length,
+		    ),
+		  };
+		}
+
+		// 活跃消息 iframe 生命周期的注册表：公开诊断入口只在这里找当前页面真实挂着的 frame，
+		// 不遍历历史存档；同一时刻只允许一次显式采集。
+		function createTavernFrameRuntimeRegistry() {
+		  var entries = new Set();
+		  var busy = false;
+		  function match(entry, query) {
+		    var state = entry.describe();
+		    if (!state || !state.sessionId || state.sessionId !== query.gameId)
+		      return false;
+		    if (query.turn !== undefined && Number(state.turn) !== Number(query.turn))
+		      return false;
+		    if (
+		      query.partIndex !== undefined &&
+		      Number(state.partIndex) !== Number(query.partIndex)
+		    )
+		      return false;
+		    if (
+		      query.panelId !== undefined &&
+		      String(state.panelId || "") !== String(query.panelId)
+		    )
+		      return false;
+		    return true;
+		  }
+		  return {
+		    register: function (entry) {
+		      entries.add(entry);
+		      return function () {
+		        entries.delete(entry);
+		      };
+		    },
+		    size: function () {
+		      return entries.size;
+		    },
+		    // 未指定轮次时取当前挂载里最新一轮；同轮多个 part 取 partIndex 最小者，除非指定。
+		    find: function (query) {
+		      var best = null,
+		        bestState = null;
+		      entries.forEach(function (entry) {
+		        if (!match(entry, query)) return;
+		        var state = entry.describe();
+		        if (!state) return;
+		        if (
+		          !best ||
+		          Number(state.turn) > Number(bestState.turn) ||
+		          (Number(state.turn) === Number(bestState.turn) &&
+		            Number(state.partIndex) < Number(bestState.partIndex))
+		        ) {
+		          best = entry;
+		          bestState = state;
+		        }
+		      });
+		      return best;
+		    },
+		    capture: function (query, budget) {
+		      if (busy)
+		        return Promise.reject(new Error("已有一次 DOM 采集进行中，请稍后再试"));
+		      var entry = this.find(query);
+		      if (!entry)
+		        return Promise.reject(
+		          new Error("这一局当前页面没有挂着符合条件的消息 iframe"),
+		        );
+		      var state = entry.describe();
+		      if (!state)
+		        return Promise.reject(
+		          new Error("这一局当前页面没有挂着符合条件的消息 iframe"),
+		        );
+		      busy = true;
+		      return Promise.resolve()
+		        .then(function () {
+		          return entry.requestRuntimeSnapshot(budget);
+		        })
+		        .then(
+		          function (runtime) {
+		            busy = false;
+		            var snapshot =
+		              runtime &&
+		              runtime.domSnapshot &&
+		              typeof runtime.domSnapshot === "object"
+		                ? runtime.domSnapshot
+		                : { status: "not_collected" };
+		            return {
+		              gameId: state.sessionId,
+		              turn: state.turn,
+		              partIndex: state.partIndex,
+		              panelId: state.panelId || "",
+		              status: snapshot.status,
+		              dom: typeof runtime.dom === "string" ? runtime.dom : "",
+		              domSnapshot: snapshot,
+		            };
+		          },
+		          function (error) {
+		            busy = false;
+		            throw error;
+		          },
+		        );
+		    },
+		  };
+		}
+		const tavernFrameRuntimeRegistry = createTavernFrameRuntimeRegistry();
+
 		// 卡片常写“鼠标在哪卡就朝哪倾斜”的 3D 特效，按钮随鼠标跑，很难点中（如《道渊》开场白）。
 		// 鼠标移动期间脚本写入的小角度 rotateX/rotateY 在绘制前还原；翻牌等大角度和样式表动画不受影响。
 		// Chromium 的 style.transform 不是可改写的访问器，只能在写入后用 MutationObserver 还原。
@@ -6241,7 +6981,8 @@ function tavernModelRefusalNotice(text) {
 			const interactiveHelperShim = input && input.helperContext ? '<script data-dsh-tavern-interactive-helper>(function(){var token=' + token + ',nextId=1,pending=Object.create(null);function copy(value){try{return structuredClone(value);}catch(e){return JSON.parse(JSON.stringify(value));}}function call(method,args){return new Promise(function(resolve,reject){var requestId="interactive:"+String(nextId++);pending[requestId]={resolve:resolve,reject:reject};parent.postMessage({type:"dsh-tavern-helper-call",token:token,requestId:requestId,method:method,args:copy(args||{})},"*");});}addEventListener("message",function(event){var data=event&&event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-helper-response")return;var task=pending[data.requestId];if(!task)return;delete pending[data.requestId];if(data.ok)task.resolve(data.result);else task.reject(new Error(String(data.error||"Helper 调用失败")));});function payload(entries){if(!Array.isArray(entries))throw new TypeError("世界书条目必须是数组");return copy(entries).map(function(entry){delete entry.uid;return entry;});}async function fresh(name){var result=await call("getTavernHelperWorldbook",{name:String(name||"")});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}async function replace(name,entries,expectedEntries){var result=await call("replaceTavernHelperWorldbook",{name:String(name||""),entries:copy(entries),expectedEntries:copy(expectedEntries)});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}window.getWorldbook=async function(name){return await fresh(name);};window.updateWorldbookWith=async function(name,updater){if(typeof updater!=="function")throw new TypeError("世界书更新器必须是函数");var current=await fresh(name),draft=copy(current),next=await updater(draft);return await replace(name,next===undefined?draft:next,current);};window.createWorldbookEntries=async function(name,entries){var additions=payload(entries),previous;var worldbook=await window.updateWorldbookWith(name,function(current){previous=new Set(current.map(function(entry){return entry.uid;}));return current.concat(additions);});return{worldbook:worldbook,new_entries:worldbook.filter(function(entry){return!previous.has(entry.uid);})};};window.deleteWorldbookEntries=async function(name,predicate){if(typeof predicate!=="function")throw new TypeError("世界书删除条件必须是函数");var deleted=[];var worldbook=await window.updateWorldbookWith(name,function(current){return current.filter(function(entry){if(!predicate(copy(entry)))return true;deleted.push(copy(entry));return false;});});return{worldbook:worldbook,deleted_entries:deleted};};window.createChatMessages=async function(messages,option){var result=await call("createTavernHelperMessages",{messages:copy(Array.isArray(messages)?messages:[]),option:copy(option&&typeof option==="object"?option:{})});if(result&&result.stale)throw new Error("聊天已变化，消息未创建");};window.triggerSlash=function(line){return call("triggerTavernSlash",{line:window.substitudeMacros(String(line||""))}).then(function(result){return result&&Object.prototype.hasOwnProperty.call(result,"pipe")?result.pipe:result;});};window.TavernHelper=window.TavernHelper||{};["formatAsTavernRegexedString","isCharacterTavernRegexesEnabled","triggerSlash","getMessageId","getIframeName","errorCatched","retrieveDisplayedMessage","waitGlobalInitialized","getCurrentMessageId","getLastMessageId","getChatMessages","setChatMessages","getAllVariables","getCurrentCharacterName","getVariables","deleteVariable","replaceVariables","insertOrAssignVariables","insertVariables","updateVariablesWith","generateRaw","createChatMessages","getWorldbook","getCharWorldbookNames","getWorldbookNames","updateWorldbookWith","createWorldbookEntries","deleteWorldbookEntries"].forEach(function(name){Object.defineProperty(window.TavernHelper,name,{enumerable:true,configurable:true,get:function(){return window[name];},set:function(value){window[name]=value;}});});})();<\/script>' : '';
 			const mvuViewObservationShim = input && input.helperContext && input.observeMvuView !== false ? '<script data-dsh-tavern-mvu-view-observer>(function(){var token=' + token + ',reported=false;function report(){if(reported)return;reported=true;window.__dshTavernMvuViewUsed=true;parent.postMessage({type:"dsh-tavern-mvu-view-used",token:token,mvuViewUsed:true},"*");}var getMvuData=window.Mvu&&window.Mvu.getMvuData;if(typeof getMvuData==="function")window.Mvu.getMvuData=function(){report();return getMvuData.apply(window.Mvu,arguments);};var getVariables=window.getVariables;if(typeof getVariables==="function")window.getVariables=function(){report();return getVariables.apply(window,arguments);};})();<\/script>' : '';
 			// parent.Mvu may throw an Error from another iframe: instanceof alone loses its stack.
-			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var captureDom=' + JSON.stringify(!(input && input.persistent === true)) + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(){timer=0;var dom="";try{if(captureDom&&document.body){var copy=document.body.cloneNode(true);Array.prototype.forEach.call(copy.querySelectorAll("script[data-dsh-tavern-frame],script[data-dsh-tavern-storage],script[data-dsh-tavern-layout]"),function(node){node.remove();});dom=copy.innerHTML;}}catch(e){}if(dom.length>100000)dom=dom.slice(0,100000)+"<!-- 已截断 -->";parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,runtime:{capturedAt:Date.now(),dom:dom,console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
+			// 默认上报永不遍历/克隆 body；DOM 只在宿主显式请求时按预算采集（见 runtime/frame-runtime-reporter.js）。
+			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(' + installTavernFrameRuntimeReporter.toString() + ')(' + token + ',' + JSON.stringify({ allowSnapshot: true, limits: TAVERN_FRAME_SNAPSHOT_LIMITS, ceiling: TAVERN_FRAME_SNAPSHOT_CEILING, internalScriptMarkers: TAVERN_FRAME_INTERNAL_SCRIPT_MARKERS }) + ',' + collectTavernFrameDomSnapshot.toString() + ',' + normalizeTavernFrameSnapshotBudget.toString() + ');<\/script>';
 			// Text replacement and paint-only style writes (clocks, counters, animations) skip the
 			// full-document scan: in-flow growth still reaches the ResizeObserver on html/body.
             // 测量器保留未知布局的兼容扫描、视口反馈锁及临时移除根节点的恢复路径。
@@ -6257,7 +6998,7 @@ function tavernModelRefusalNotice(text) {
 			// Card module scripts wait for the helper globals (z, YAML) as the script sandbox does;
 			// otherwise a module using them at top level races the async import.
 			const frameHtml = helperShim || preparationRuntime ? String(html).replace(/<script\b[^>]*\btype\s*=\s*["']?module["']?[^>]*>/gi, tag => /\bsrc\s*=/i.test(tag) ? tag : tag + 'await window.__dshTavernHelperReady;') : html;
-			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,").replace('dom=copy.innerHTML;', 'Array.from(copy.querySelectorAll("script[data-dsh-tavern-text-colors],script[data-dsh-tavern-touch]")).forEach(function(node){node.remove();});dom=copy.innerHTML;');
+			const cleanRuntimeReporter = runtimeReporter;
 			return '<!doctype html><html><head><meta charset="utf-8">'
                 + '<script data-dsh-tavern-crypto>(' + installTavernCryptoSubtlePolyfill.toString() + ')(window);<\/script>'
                 + '<script data-dsh-tavern-tilt-guard>(' + installTavernPointerTiltGuard.toString() + ')(window);<\/script>'
@@ -10314,7 +11055,40 @@ function bindTavernFontZoom(node, win) {
 			const invoke = options && options.rpc || rpc;
 			const configuredSlashExecutor = options && options.executeSlash;
 			const invalidate = options && options.invalidate || function (sessionId) { liveTavernView.invalidate(sessionId); };
+			// 无正文诊断环：只累计上报/快照的计数与预算指标。
+			const diagnostics = options && options.diagnostics !== undefined ? options.diagnostics : (typeof tavernInteractionDiagnostics !== "undefined" ? tavernInteractionDiagnostics : null);
+			// 公开诊断入口通过注册表找到活着的 lifecycle；stop 时注销。
+			const registry = options && options.registry !== undefined ? options.registry : (typeof tavernFrameRuntimeRegistry !== "undefined" ? tavernFrameRuntimeRegistry : null);
+			let unregister = null;
 			const channels = new Map();
+			// 显式 DOM 快照请求：按 requestId 等待同一文档 token 的回包，超时或文档失效即拒绝。
+			const snapshotRequests = new Map();
+			let snapshotSequence = 0;
+			function cancelSnapshotRequests(reason, token) {
+				snapshotRequests.forEach(function (request, requestId) {
+					if (token !== undefined && request.token !== token) return;
+					hostWindow.clearTimeout(request.timer);
+					request.reject(new Error(reason));
+					snapshotRequests.delete(requestId);
+				});
+			}
+			function requestRuntimeSnapshot(requestOptions) {
+				return new Promise(function (resolve, reject) {
+					const document = visible;
+					const channel = document && channels.get(document.token);
+					const node = channel && channel.element();
+					if (!listener || !node || !node.contentWindow) return reject(new Error("消息 iframe 尚未就绪，无法采集 DOM"));
+					if (props.runtimeReporting === false) return reject(new Error("该 iframe 未启用运行诊断上报"));
+					const budget = normalizeTavernFrameSnapshotBudget(requestOptions, TAVERN_FRAME_SNAPSHOT_LIMITS, TAVERN_FRAME_SNAPSHOT_CEILING);
+					const timeoutMs = Math.max(100, Math.min(60000, Number(requestOptions && requestOptions.timeoutMs) || 8000));
+					const requestId = "snapshot:" + String(++snapshotSequence);
+					const timer = hostWindow.setTimeout(function () {
+						if (snapshotRequests.get(requestId)) { snapshotRequests.delete(requestId); reject(new Error("DOM 采集超时")); }
+					}, timeoutMs);
+					snapshotRequests.set(requestId, { token: document.token, resolve: resolve, reject: reject, timer: timer });
+					node.contentWindow.postMessage({ type: "dsh-tavern-frame-snapshot-request", token: document.token, requestId: requestId, budget: budget }, "*");
+				});
+			}
             const generationOwners = new Set();
             function retireGenerations(document) {
                 if (!document?.generationJobs) return;
@@ -10353,6 +11127,7 @@ function bindTavernFontZoom(node, win) {
 			let refreshRevision = 0;
 			let runtimeTimer = null;
 			let pendingRuntime = null;
+			let runtimeToken = null;
 			let listener = null;
 			let lifetime = 0;
 			let synchronizationKey = "";
@@ -10446,7 +11221,7 @@ function bindTavernFontZoom(node, win) {
                         document.layout = layout;
                         if (document.sizing.mode !== "content") applySizing(document, channel, layout.height);
                     }));
-                    if (!node) { retireGenerations(document); channels.delete(document.token); }
+                    if (!node) { retireGenerations(document); channels.delete(document.token); cancelSnapshotRequests("DOM 采集已取消：消息 iframe 已卸载", document.token); }
 				};
 				return document;
 			}
@@ -10473,6 +11248,8 @@ function bindTavernFontZoom(node, win) {
 				if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 				runtimeTimer = null;
 				pendingRuntime = null;
+				runtimeToken = null;
+				cancelSnapshotRequests("DOM 采集已取消：消息 iframe 已切换或关闭");
 			}
 			function sendContext(document, mode) {
 				const channel = document && channels.get(document.token);
@@ -10577,14 +11354,32 @@ function bindTavernFontZoom(node, win) {
 					invoke("captureDisplayRuntime", { turn: props.turn, partIndex: props.partIndex, runtime: { capturedAt: Date.now(), mvuViewUsed: true } }, props.sessionId).then(function (result) {
 						if (current() && result && result.captured === true) invalidate(requestProps.sessionId);
 					}, function () {});
-				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false && props.sessionId && props.turn > 0) {
-					pendingRuntime = Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
+				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false) {
+					// 显式快照回包先兑现宿主的等待，再走和普通上报相同的持久化路径。
+					const snapshotRequest = data.requestId ? snapshotRequests.get(String(data.requestId)) : null;
+					if (snapshotRequest && snapshotRequest.token === data.token) {
+						snapshotRequests.delete(String(data.requestId));
+						hostWindow.clearTimeout(snapshotRequest.timer);
+						snapshotRequest.resolve(data.runtime && typeof data.runtime === "object" ? data.runtime : {});
+					}
+					if (diagnostics && typeof diagnostics.noteFrameRuntime === "function") diagnostics.noteFrameRuntime(tavernFrameRuntimeMetrics(data.runtime, Boolean(snapshotRequest)));
+					if (!props.sessionId || !(props.turn > 0)) return;
+					// 合并窗口与文档同属一个 token，不能用旧文档的有效性检查丢弃新快照。
+					// 这里只清旧报告，保留刚收到回包的显式请求及其它文档请求。
+					if (runtimeTimer !== null && runtimeToken !== data.token) {
+						hostWindow.clearTimeout(runtimeTimer);
+						runtimeTimer = null;
+						pendingRuntime = null;
+					}
+					runtimeToken = data.token;
+					pendingRuntime = mergeTavernFrameRuntimeReports(pendingRuntime, Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
                         availableHeight: sourceDocument.layout?.available, reason: sourceDocument.sizing?.mode === "content" ? "content" : sourceDocument.layout?.reason || "content",
                         mode: sourceDocument.sizing?.mode || "legacy", source: sourceDocument.sizing?.source || "legacy"
-                    }) });
+                    }) }));
 					if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(function () {
 						runtimeTimer = null;
 						const runtime = pendingRuntime; pendingRuntime = null;
+						runtimeToken = null;
 						if (current()) invoke("captureDisplayRuntime", { turn: requestProps.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, requestProps.sessionId).catch(function () {});
 					}, 1000);
 				} else if ((data.type === "dsh-tavern-opening-worldbook" || data.type === "dsh-tavern-opening-save" || data.type === "dsh-tavern-opening-read") && !props.sessionId && props.openingPreview) {
@@ -10721,8 +11516,20 @@ function bindTavernFontZoom(node, win) {
 					foreground = next !== false;
 					for (const owner of artifactOwners.values()) owner.scope.setVisible(foreground);
 				},
+				// 宿主诊断入口：向当前可见 iframe 发起一次受预算限制的 DOM 采集，返回该次 runtime 回包。
+				requestRuntimeSnapshot: requestRuntimeSnapshot,
 				start: function (onChange) {
 					listener = onChange;
+					if (registry && !unregister) unregister = registry.register({
+						// 只描述真正挂着的活 frame：有通道、有节点、有 contentWindow；否则 null，注册表会跳过。
+						describe: function () {
+							const channel = listener && visible && channels.get(visible.token);
+							const node = channel && channel.element();
+							if (!node || !node.contentWindow) return null;
+							return { sessionId: props.sessionId, turn: props.turn, partIndex: props.partIndex, panelId: props.panelId, persistent: props.persistent === true };
+						},
+						requestRuntimeSnapshot: requestRuntimeSnapshot
+					});
 					hostWindow.addEventListener("message", receive);
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
@@ -10753,6 +11560,7 @@ function bindTavernFontZoom(node, win) {
                         frameVisibility.clear();
                         for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 						listener = null; lifetime++;
+						if (unregister) { unregister(); unregister = null; }
 						hostWindow.removeEventListener("message", receive);
 						cancelRuntimeReport();
 					};
@@ -11391,6 +12199,24 @@ function bindTavernFontZoom(node, win) {
 					if (!composer.text.trim()) return Promise.reject(new TypeError("submitInput 的 text 不能为空"));
 					composer.input.setDraft(composer.text);
 					return Promise.resolve(composer.input.submit("queue")).then(function () { return { submitted: true }; });
+				},
+				// 诊断：对当前页面挂着的一个消息 iframe 做一次受预算限制的 DOM 采集（apiVersion 2）。
+				// 只作用于一个活 frame，不遍历历史；同一时刻只允许一次；结果 status 为 empty/complete/partial/not_collected。
+				captureFrameSnapshot(input) {
+					if (!input || typeof input.gameId !== "string" || !input.gameId) return Promise.reject(new TypeError("captureFrameSnapshot 需要 gameId"));
+					const query = { gameId: input.gameId };
+					for (const key of ["turn", "partIndex"]) if (input[key] !== undefined) {
+						const value = Number(input[key]);
+						if (!Number.isInteger(value) || value < 0) return Promise.reject(new TypeError("captureFrameSnapshot 的 " + key + " 必须是非负整数"));
+						query[key] = value;
+					}
+					if (input.panelId !== undefined) {
+						if (typeof input.panelId !== "string") return Promise.reject(new TypeError("captureFrameSnapshot 的 panelId 必须是字符串"));
+						query.panelId = input.panelId;
+					}
+					const budget = input.budget && typeof input.budget === "object" ? Object.assign({}, input.budget) : {};
+					if (input.timeoutMs !== undefined) budget.timeoutMs = input.timeoutMs;
+					return tavernFrameRuntimeRegistry.capture(query, budget);
 				},
 				// A layer over the whole page for the plugin's own screen (a battle, a map). Escape closes it
 				// unless dismissible is false; it closes by itself when the plugin unloads.
@@ -20904,6 +21730,15 @@ function bindTavernFontZoom(node, win) {
 		exports.inject = inject;
 		exports.buildOpeningPreviewDocument = buildOpeningPreviewDocument;
 		exports.buildTavernFrameDocument = buildTavernFrameDocument;
+		exports.collectTavernFrameDomSnapshot = collectTavernFrameDomSnapshot;
+		exports.installTavernFrameRuntimeReporter = installTavernFrameRuntimeReporter;
+		exports.normalizeTavernFrameSnapshotBudget = normalizeTavernFrameSnapshotBudget;
+		exports.mergeTavernFrameRuntimeReports = mergeTavernFrameRuntimeReports;
+		exports.tavernFrameRuntimeMetrics = tavernFrameRuntimeMetrics;
+		exports.createInteractionDiagnostics = createInteractionDiagnostics;
+		exports.createTavernFrameRuntimeRegistry = createTavernFrameRuntimeRegistry;
+		exports.tavernFrameRuntimeRegistry = tavernFrameRuntimeRegistry;
+		exports.tavernUiService = tavernUiExtensions.service;
 		exports.openingPreviewSelection = openingPreviewSelection;
 		exports.syncTavernSubagentCatalogs = syncTavernSubagentCatalogs;
 		exports.syncTavernCardAgentResources = syncTavernCardAgentResources;

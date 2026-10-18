@@ -986,6 +986,15 @@ window.__ModuleLoader__.load({
 		exports.inject = inject;
 		exports.buildOpeningPreviewDocument = buildOpeningPreviewDocument;
 		exports.buildTavernFrameDocument = buildTavernFrameDocument;
+		exports.collectTavernFrameDomSnapshot = collectTavernFrameDomSnapshot;
+		exports.installTavernFrameRuntimeReporter = installTavernFrameRuntimeReporter;
+		exports.normalizeTavernFrameSnapshotBudget = normalizeTavernFrameSnapshotBudget;
+		exports.mergeTavernFrameRuntimeReports = mergeTavernFrameRuntimeReports;
+		exports.tavernFrameRuntimeMetrics = tavernFrameRuntimeMetrics;
+		exports.createInteractionDiagnostics = createInteractionDiagnostics;
+		exports.createTavernFrameRuntimeRegistry = createTavernFrameRuntimeRegistry;
+		exports.tavernFrameRuntimeRegistry = tavernFrameRuntimeRegistry;
+		exports.tavernUiService = tavernUiExtensions.service;
 		exports.openingPreviewSelection = openingPreviewSelection;
 		exports.syncTavernSubagentCatalogs = syncTavernSubagentCatalogs;
 		exports.syncTavernCardAgentResources = syncTavernCardAgentResources;

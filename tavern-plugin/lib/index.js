@@ -170,6 +170,7 @@ import { createPlayChatDebugReference, readPlayChatDebugTurn } from './domain/pl
 import { createSaveMaintenance } from './domain/save-maintenance.js'
 import { createServerScriptExecutor } from './domain/server-script-executor.js'
 import { createDisplayRuntimeStore, displayRuntimeReceipt } from './domain/display-runtime-store.js'
+import { sanitizeDomSnapshot, preserveCollectedDom, comparableDomSnapshot } from './domain/display-runtime-metadata.js'
 import { createPhoneChat } from './domain/phone-chat.js'
 import { createPresetLibrary } from './domain/preset-library.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
@@ -1671,6 +1672,7 @@ export async function apply(ctx) {
       panelId: str(input.panelId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
       placement: input.placement === "sidebar" ? "sidebar" : "message",
       dom: str(input.dom).slice(0, 100000),
+      domSnapshot: sanitizeDomSnapshot(input.domSnapshot, str(input.dom)),
       layout: sanitizeFrameLayout(input.layout),
       console: (Array.isArray(input.console) ? input.console : []).slice(-100).map(function (item) {
         return { at: Math.max(0, Number(item && item.at) || 0), level: ['log', 'info', 'warn', 'error'].includes(item && item.level) ? item.level : 'log', args: scalar(item && item.args, 12000) }
@@ -1691,6 +1693,7 @@ export async function apply(ctx) {
       panelId: str(runtime.panelId),
       placement: runtime.placement,
       dom: str(runtime.dom),
+      domSnapshot: comparableDomSnapshot(runtime.domSnapshot),
       layout: runtime.layout || null,
       console: (Array.isArray(runtime.console) ? runtime.console : []).map(function (item) {
         return { level: item && item.level, args: item && item.args }
@@ -1736,13 +1739,18 @@ export async function apply(ctx) {
       const receiptFrames = receipt && Array.isArray(receipt.frames) ? receipt.frames : []
       const existingFrame = (stored && Array.isArray(stored.frames) ? stored.frames : []).find(samePanel)
       if (receiptFrames.find(samePanel)?.mvuViewUsed === true || (existingFrame && existingFrame.mvuViewUsed === true)) capture.mvuViewUsed = true
-      if (existingFrame && capture.mvuViewUsed === true && capture.dom === '' && capture.console.length === 0 && capture.network.length === 0 && capture.errors.length === 0) {
+      // 只有原始输入本身是 MVU-only 通知（带标志、没有任何 DOM/快照证据）才沿用旧 frame；
+      // 已带 domSnapshot 的新协议包（显式空 DOM、换文档的轻量包）不能被继承来的标志拉回旧 DOM。
+      const mvuOnlyNotice = runtime && typeof runtime === 'object' && runtime.mvuViewUsed === true && runtime.domSnapshot === undefined && !str(runtime.dom)
+      if (existingFrame && mvuOnlyNotice && capture.console.length === 0 && capture.network.length === 0 && capture.errors.length === 0) {
         capture = Object.assign({}, existingFrame, {
           capturedAt: capture.capturedAt,
           captureKind: capture.captureKind,
           mvuViewUsed: true
         })
       }
+      // 默认轻量包（未采 DOM）不得覆盖侧车里已有的显式快照。
+      capture = preserveCollectedDom(capture, existingFrame)
       const frame = Object.assign({ partIndex: index }, capture)
       const nextReceipt = displayRuntimeReceipt(receiptFrames.filter(function (item) { return !samePanel(item) }).concat([frame]))
       const receiptChanged = JSON.stringify(receipt) !== JSON.stringify(nextReceipt)

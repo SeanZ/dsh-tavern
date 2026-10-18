@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createChatPersistence } from '../tavern-plugin/lib/domain/chat-persistence.js'
 import { createDisplayRuntimeStore, displayRuntimeReceipt } from '../tavern-plugin/lib/domain/display-runtime-store.js'
+import { sanitizeDomSnapshot, preserveCollectedDom, comparableDomSnapshot } from '../tavern-plugin/lib/domain/display-runtime-metadata.js'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 
 async function harness(t) {
@@ -23,16 +24,17 @@ async function harness(t) {
   const body = source.slice(source.indexOf('  function cleanRuntimeUrl('), source.indexOf('  const tavernScriptHostAdapter ='))
   const hooks = { beforePatch: async () => {} }
   const displayRuntimeStore = createDisplayRuntimeStore({ store: createProfileDataStore({ dataRoot: root }) })
+  const capturePersistence = { ...persistence }
   const capture = vm.runInNewContext(`(function(){${body};return captureDisplayRuntime})()`, {
     str: value => String(value ?? ''), groupOfMode: () => 'play',
     chatForSession: () => persistence.read('chat'), readSessionMap: async () => ({ session: 'chat' }),
-    chatPersistence: persistence,
+    chatPersistence: capturePersistence,
     updateChat: (...args) => persistence.update(...args),
     patchChat: async (...args) => { await hooks.beforePatch(); return persistence.patch(...args) },
-    displayRuntimeStore, displayRuntimeReceipt,
+    displayRuntimeStore, displayRuntimeReceipt, sanitizeDomSnapshot, preserveCollectedDom, comparableDomSnapshot,
     projectDisplayRuntimeState, Date, Math, Object, Array, Number, JSON
   })
-  return { records, persistence, capture, hooks, root, displayRuntimeStore }
+  return { records, persistence, capturePersistence, capture, hooks, root, displayRuntimeStore }
 }
 
 test('concurrent panels survive CAS retries, preserve valid undo and replay from disk', async t => {
@@ -146,6 +148,65 @@ test('repainting frames update diagnostics without adding save revisions', async
   assert.equal((await records.read('chat'))._storageRevision, first + 1)
 })
 
+test('显式空 DOM / partial / complete 的状态变化不被去重丢失，轻量包不覆盖同文档快照，receipt 只保留业务字段', async t => {
+  const { capture, records, displayRuntimeStore } = await harness(t)
+  const token = 'doc-a'
+  const light = { panelId: 'status', dom: '', domSnapshot: { status: 'not_collected', documentToken: token } }
+  assert.equal((await capture('session', 459, 0, light)).captured, true)
+  assert.equal((await capture('session', 459, 0, light)).captured, false)
+  const revision = (await records.read('chat'))._storageRevision
+  const now = Date.now()
+  assert.equal((await capture('session', 459, 0, { ...light, domSnapshot: { status: 'empty', documentToken: token, capturedAt: now } })).captured, true, 'not_collected → explicit empty 不被去重')
+  assert.equal((await capture('session', 459, 0, { ...light, domSnapshot: { status: 'empty', documentToken: token, capturedAt: now, reports: 9, snapshots: 2 } })).captured, false, '递增计数不破坏去重')
+  assert.equal((await capture('session', 459, 0, { ...light, dom: '<p>a</p>', domSnapshot: { status: 'partial', documentToken: token, capturedAt: now + 1, reasons: ['nodes'] } })).captured, true)
+  assert.equal((await capture('session', 459, 0, { ...light, dom: '<p>a</p>', domSnapshot: { status: 'complete', documentToken: token, capturedAt: now + 2 } })).captured, true, 'partial → complete 同 dom 仍记录')
+  // 同文档轻量包保留快照与其采集时间；换文档后清空。
+  await capture('session', 459, 0, light)
+  let stored = (await displayRuntimeStore.read('chat', 459)).frames[0]
+  assert.equal(stored.dom, '<p>a</p>')
+  assert.deepEqual(stored.domSnapshot, { status: 'complete', documentToken: token, capturedAt: now + 2 })
+  await capture('session', 459, 0, { ...light, domSnapshot: { status: 'not_collected', documentToken: 'doc-b' } })
+  stored = (await displayRuntimeStore.read('chat', 459)).frames[0]
+  assert.equal(stored.dom, '')
+  assert.equal(stored.domSnapshot.status, 'not_collected')
+  const saved = await records.read('chat')
+  assert.equal(saved._storageRevision, revision, 'DOM 证据变化不增加存档 revision')
+  assert.deepEqual(saved.messages[458].displayRuntime, { version: 2, frames: [{ partIndex: 0, panelId: 'status', placement: 'message' }] })
+  // MVU 入口语义不变：只带标志的包保留已有 DOM 证据并写一次 receipt。
+  await capture('session', 459, 0, { ...light, dom: '<p>a</p>', domSnapshot: { status: 'complete', documentToken: 'doc-b', capturedAt: now + 3 } })
+  await capture('session', 459, 0, { panelId: 'status', mvuViewUsed: true })
+  stored = (await displayRuntimeStore.read('chat', 459)).frames[0]
+  assert.equal(stored.dom, '<p>a</p>')
+  assert.equal(stored.mvuViewUsed, true)
+  assert.deepEqual((await records.read('chat')).messages[458].displayRuntime.frames, [{ partIndex: 0, panelId: 'status', placement: 'message', mvuViewUsed: true }])
+  // 继承来的 MVU 标志不能把新协议包拉回旧 DOM：显式空 DOM 与换文档轻量包都按自身协议保存，receipt 标志仍为 true。
+  await capture('session', 459, 0, { ...light, domSnapshot: { status: 'empty', documentToken: 'doc-b', capturedAt: now + 4 } })
+  stored = (await displayRuntimeStore.read('chat', 459)).frames[0]
+  assert.equal(stored.dom, '')
+  assert.deepEqual(stored.domSnapshot, { status: 'empty', documentToken: 'doc-b', capturedAt: now + 4 })
+  assert.equal(stored.mvuViewUsed, true)
+  await capture('session', 459, 0, { ...light, domSnapshot: { status: 'not_collected', documentToken: 'doc-c' } })
+  stored = (await displayRuntimeStore.read('chat', 459)).frames[0]
+  assert.deepEqual(stored.domSnapshot, { status: 'not_collected', documentToken: 'doc-c' })
+  assert.equal(stored.dom, '')
+  assert.deepEqual((await records.read('chat')).messages[458].displayRuntime.frames, [{ partIndex: 0, panelId: 'status', placement: 'message', mvuViewUsed: true }])
+})
+
+test('首次 receipt 时不同面板并发采集：侧车保留同一回复世代的全部面板，旧世代面板在新回复时清除', async t => {
+  const { capture, persistence, records, displayRuntimeStore } = await harness(t)
+  const now = Date.now()
+  await Promise.all([
+    capture('session', 459, 0, { panelId: 'a', dom: '<p>a</p>', domSnapshot: { status: 'complete', documentToken: 'token-a', capturedAt: now } }),
+    capture('session', 459, 1, { panelId: 'b', dom: '<p>b</p>', domSnapshot: { status: 'complete', documentToken: 'token-b', capturedAt: now } })
+  ])
+  assert.deepEqual((await records.read('chat')).messages[458].displayRuntime.frames.map(frame => frame.panelId), ['a', 'b'])
+  assert.deepEqual((await displayRuntimeStore.read('chat', 459)).frames.map(frame => [frame.panelId, frame.dom]), [['a', '<p>a</p>'], ['b', '<p>b</p>']])
+  // 新回复（回退重生成后 receipt 被清、updatedAt 变化）：旧世代的面板不再延续。
+  await persistence.update('chat', chat => { delete chat.messages[458].displayRuntime; chat.updatedAt = Date.now() + 1000; return chat })
+  await capture('session', 459, 0, { panelId: 'a', dom: '', domSnapshot: { status: 'not_collected', documentToken: 'token-a' } })
+  assert.deepEqual((await displayRuntimeStore.read('chat', 459)).frames.map(frame => [frame.panelId, frame.dom, frame.domSnapshot.status]), [['a', '', 'not_collected']])
+})
+
 test('captures kept inline by older saves shrink to a receipt on the next capture', async t => {
   const { capture, persistence, records, displayRuntimeStore } = await harness(t)
   await persistence.update('chat', chat => {
@@ -158,3 +219,14 @@ test('captures kept inline by older saves shrink to a receipt on the next captur
   assert.equal(JSON.stringify(saved.messages[458].displayRuntime).includes('xxxx'), false)
   assert.equal((await displayRuntimeStore.read('chat', 459)).frames.length, 2)
 })
+
+test('旧文档已发出的诊断 RPC 晚完成时不覆盖同页面新快照',async t=>{
+ const h=await harness(t);let release,entered;const gate=new Promise(resolve=>{release=resolve});const started=new Promise(resolve=>{entered=resolve});
+ const read=h.capturePersistence.readDisplayRuntimeState;let blocked=false;
+ h.capturePersistence.readDisplayRuntimeState=async(...args)=>{if(!blocked){blocked=true;entered();await gate;}return read(...args)};
+ const report=(capturedAt,documentToken)=>({capturedAt,dom:documentToken,domSnapshot:{status:'complete',documentToken,capturedAt}});
+ const old=h.capture('session',459,0,report(100,'old-document'));await started;
+ await h.capture('session',459,0,report(200,'new-document'));release();await old;
+ const frame=(await h.displayRuntimeStore.read('chat',459)).frames[0];
+ assert.equal(frame.dom,'new-document');assert.equal(frame.capturedAt,200);assert.equal(frame.domSnapshot.documentToken,'new-document');
+});

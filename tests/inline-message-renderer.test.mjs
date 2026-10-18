@@ -87,8 +87,10 @@ test('消息 iframe 将可信远程资源转入持久缓存，同时保留不透
   assert.match(document, /unhandledrejection/)
   assert.match(document, /XMLHttpRequest/)
   assert.match(document, /window\.fetch/)
-  assert.match(document, /document\.body\.cloneNode\(true\)/)
-  assert.match(document, /script\[data-dsh-tavern-frame\]/)
+  // 默认上报不再克隆/序列化整个 body；DOM 只在宿主显式请求时按预算采集。
+  assert.doesNotMatch(document, /document\.body\.cloneNode\(true\)/)
+  assert.match(document, /dsh-tavern-frame-snapshot-request/)
+  assert.match(document, /not_collected/)
   assert.match(document, /height-token/)
   assert.match(document, /body\{padding:0 1px;overflow-wrap:anywhere;white-space:pre-wrap\}/)
   assert.match(document, /body>\*\{white-space:normal\}/)
@@ -174,7 +176,8 @@ test('消息 iframe 首次缺少 Helper Context 时，在上下文抵达后重�
     helperContext: null, eager: true
   }, { window: { crypto: { randomUUID: (() => { let id = 0; return () => `late-context-${++id}` })() }, sessionStorage: { getItem() { return null }, setItem() {} }, document: null, setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {} } })
   const first = lifecycle.snapshot().visibleDocument
-  assert.doesNotMatch(first.html, /data-dsh-tavern-helper/)
+  // 上报器的内部脚本标记列表里含有该字符串，只检查 helper shim 的 script 标签本身。
+  assert.doesNotMatch(first.html, /<script data-dsh-tavern-helper>/)
 
   lifecycle.update({
     sessionId: 'session-late-context', content: '<button>开始游戏</button>', turn: 1, partIndex: 0,
@@ -182,7 +185,7 @@ test('消息 iframe 首次缺少 Helper Context 时，在上下文抵达后重�
   })
   const pending = lifecycle.snapshot().pendingDocument
   assert.ok(pending)
-  assert.match(pending.html, /data-dsh-tavern-helper/)
+  assert.match(pending.html, /<script data-dsh-tavern-helper>/)
 })
 
 test('Helper Context 首次快照后只发送消息和变量增量', () => {
@@ -1158,6 +1161,7 @@ test('右侧持久页面记录被捕获的按钮异常和执行日志，但不�
   for (const fn of pending) fn()
   const runtime = reports.at(-1).runtime
   assert.equal(runtime.dom, '')
+  assert.equal(runtime.domSnapshot.status, 'not_collected')
   assert.equal(runtime.console[0].args[0], '角色数据已写入')
   assert.equal(runtime.console[1].args[1].message, '消息追加失败')
   assert.match(runtime.console[1].args[1].stack, /消息追加失败/)
