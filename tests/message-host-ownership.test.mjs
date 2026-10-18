@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import path from "node:path";
 import test from "node:test";
 import { chromium, webkit } from "playwright";
 import { assembleTavernClient } from "../bin/build-tavern-client.mjs";
@@ -8,6 +10,22 @@ import { assembleTavernClient } from "../bin/build-tavern-client.mjs";
 // 使用实际消息文档、生命周期和 iframe 脚本，不读取任何用户数据。
 test("普通可信消息按文档回收宿主节点和 jQuery 事件，切局保留脚本状态", async (t) => {
   const client = await assembleTavernClient();
+  const require = createRequire(import.meta.url);
+  const names = ["react", "scheduler", "react-dom", "react-dom/client"];
+  const files = [
+    "react.production.js",
+    "scheduler.production.js",
+    "react-dom.production.js",
+    "react-dom-client.production.js",
+  ];
+  let reactSource = "window.reactModules={};";
+  for (let i = 0; i < names.length; i++) {
+    const source = await readFile(
+      path.join(path.dirname(require.resolve(names[i])), "cjs", files[i]),
+      "utf8",
+    );
+    reactSource += `window.reactModules[${JSON.stringify(names[i])}]=(()=>{const module={exports:{}};const exports=module.exports;const require=name=>window.reactModules[name];${source}\nreturn module.exports;})();`;
+  }
   const server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://fixture").pathname;
     if (pathname === "/")
@@ -52,10 +70,13 @@ test("普通可信消息按文档回收宿主节点和 jQuery 事件，切局保
   t.diagnostic("浏览器：" + engine.name() + " " + browser.version());
   const page = await browser.newPage();
   await page.goto("http://127.0.0.1:" + server.address().port);
+  await page.evaluate((source) => window.eval(source), reactSource);
   await page.evaluate((client) => {
     window.__ModuleLoader__ = {
       load(descriptor) {
-        window.client = descriptor.factory(() => ({}));
+        window.client = descriptor.factory(
+          (name) => window.reactModules[name] || {},
+        );
       },
     };
     window.eval(client);
@@ -327,14 +348,91 @@ test("普通可信消息按文档回收宿主节点和 jQuery 事件，切局保
   );
 
   await t.test(
-    "真实保留帧接线在切局后恢复原 iframe，撤回释放所有资源",
+    "真实消息组件按能力保留或重建 iframe，撤回释放所有资源",
     async (t) => {
       if (
         !(await page.evaluate(
           () => typeof document.body.moveBefore === "function",
         ))
       ) {
-        t.skip("当前引擎没有 moveBefore，实际 UI 不启用 retained frame 分支");
+        t.diagnostic("当前引擎没有 moveBefore，验证真实 React 释放/重建分支");
+        await page.evaluate(() => {
+          const home = document.createElement("main");
+          document.body.append(home);
+          const React = reactModules.react;
+          const root = reactModules["react-dom/client"].createRoot(home);
+          window.fallbackRuns = {};
+          window.fallbackClicks = 0;
+          const content = (id) =>
+            '<input value="initial"><script type="module">await window.__dshTavernHelperReady;const host=parent;const id=' +
+            JSON.stringify(id) +
+            ';host.fallbackRuns[id]=(host.fallbackRuns[id]||0)+1;const button=$(`<button data-fallback-owner="${id}">${id}</button>`);$(host.document.body).append(button);button.on("click",()=>host.fallbackClicks++);</' +
+            "script>";
+          window.fallback = {
+            home,
+            root,
+            mount(id) {
+              root.render(
+                React.createElement(client.TavernMessageFrame, {
+                  key: id,
+                  sessionId: id,
+                  turn: 1,
+                  partIndex: 0,
+                  eager: true,
+                  trustedCardMode: true,
+                  runtimeReporting: false,
+                  content: content(id),
+                  helperContext: { version: 1, stateRevision: 1, messages: [] },
+                }),
+              );
+            },
+          };
+          fallback.mount("A");
+        });
+        await page.waitForFunction(() => fallbackRuns.A === 1);
+        await page.evaluate(() => {
+          window.fallbackOldFrame = fallback.home.querySelector("iframe");
+          window.fallbackOldOverlay = document.querySelector(
+            '[data-fallback-owner="A"]',
+          );
+          fallback.root.render(null);
+        });
+        await page.waitForFunction(
+          () =>
+            !fallback.home.querySelector("iframe") &&
+            !document.querySelector('[data-fallback-owner="A"]'),
+        );
+        assert.equal(
+          await page.evaluate(() => fallbackOldFrame.isConnected),
+          false,
+        );
+        await page.evaluate(() => fallback.mount("B"));
+        await page.waitForFunction(() => fallbackRuns.B === 1);
+        await page.evaluate(() => fallback.mount("A"));
+        await page.waitForFunction(
+          () =>
+            fallbackRuns.A === 2 &&
+            !document.querySelector('[data-fallback-owner="B"]'),
+        );
+        assert.equal(
+          await page.locator('[data-fallback-owner="A"]').count(),
+          1,
+        );
+        assert.equal(
+          await page.evaluate(
+            () => fallback.home.querySelector("iframe") === fallbackOldFrame,
+          ),
+          false,
+        );
+        await page.locator('[data-fallback-owner="A"]').click();
+        assert.equal(await page.evaluate(() => fallbackClicks), 1);
+        await page.evaluate(() => fallback.root.unmount());
+        assert.equal(
+          await page.locator("iframe,[data-fallback-owner]").count(),
+          0,
+        );
+        await page.evaluate(() => fallbackOldOverlay.click());
+        assert.equal(await page.evaluate(() => fallbackClicks), 1);
         return;
       }
       await page.evaluate(() => {
