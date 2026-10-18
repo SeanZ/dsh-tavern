@@ -240,19 +240,19 @@
 					touchRelay.stop();
                     if (node) node.__dshTavernSessionId = document.sessionId;
                     channel.attach(node);
-                    if (node && typeof hostWindow.IntersectionObserver === "function") {
+                    if (node && hostWindow.document && typeof node.addEventListener === "function") {
                         let nearby = true;
                         const sync = () => node.contentWindow?.postMessage({ type: "dsh-tavern-frame-measure-active", token: document.token,
                             active: nearby && hostWindow.document.visibilityState !== "hidden" }, "*");
-                        const observer = new hostWindow.IntersectionObserver(entries => {
+                        const observer = typeof hostWindow.IntersectionObserver === "function" ? new hostWindow.IntersectionObserver(entries => {
                             nearby = entries[entries.length - 1]?.isIntersecting === true;
                             sync();
-                        }, { rootMargin: "240px 0px" });
-                        observer.observe(node);
+                        }, { rootMargin: "240px 0px" }) : null;
+                        if (observer) observer.observe(node);
                         node.addEventListener("load", sync);
                         hostWindow.document.addEventListener("visibilitychange", sync);
                         const stop = () => {
-                            observer.disconnect();
+                            if (observer) observer.disconnect();
                             node.removeEventListener("load", sync);
                             hostWindow.document.removeEventListener("visibilitychange", sync);
                         };

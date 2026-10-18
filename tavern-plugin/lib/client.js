@@ -5174,144 +5174,359 @@ function tavernModelRefusalNotice(text) {
 		}
 
 		function findTavernQuoteRanges(text) {
-		    // Match only complete same-line pairs, including the delimiters.
-		    const pattern = /"[^"\r\n]+"|“[^”\r\n]+”|«[^»\r\n]+»|「[^」\r\n]+」|『[^』\r\n]+』|＂[^＂\r\n]+＂/g;
-		    return Array.from(String(text).matchAll(pattern), match => [match.index, match.index + match[0].length]);
+		  // 只匹配同一行内闭合的引号，范围包含定界符。
+		  const pattern =
+		    /"[^"\r\n]+"|“[^”\r\n]+”|«[^»\r\n]+»|「[^」\r\n]+」|『[^』\r\n]+』|＂[^＂\r\n]+＂/g;
+		  return Array.from(String(text).matchAll(pattern), (match) => [
+		    match.index,
+		    match.index + match[0].length,
+		  ]);
 		}
 
 		function installTavernTextColors(root, options, findQuotes) {
-		    const doc = root.ownerDocument, win = doc.defaultView;
-		    if (!win.CSS || !win.CSS.highlights || typeof win.Highlight !== 'function') return { setEnabled() {}, setColors() {}, dispose() {} };
-		    const prefix = 'dsh-tavern-text-' + Math.random().toString(36).slice(2);
-		    const colors = { 'quote-light': true, 'quote-dark': true, 'em-light': true, 'em-dark': true };
-		    const highlights = new Map();
-		    const style = doc.createElement('style');
-		    style.setAttribute('data-dsh-tavern-text-colors', '');
-		    function setColors(overrides) {
-		        style.textContent = Object.entries(colors).map(([kind, fallback]) => {
-		            const value = overrides && overrides[kind.startsWith('quote') ? 'quote' : 'em'];
-		            const color = typeof value === 'string' && win.CSS.supports('color', value) && !/[;{}]/.test(value)
-		                ? value : 'var(--dsw-alias-brand-primary, currentColor)';
-		            return '::highlight(' + prefix + '-' + kind + '){color:' + color + '}';
-		        }).join('\n');
-		    }
-		    setColors(options.colors);
-		    doc.head.appendChild(style);
-		    for (const kind of Object.keys(colors)) {
-		        const highlight = new win.Highlight();
-		        highlight.priority = kind.startsWith('quote') ? 2 : 1;
-		        highlights.set(kind, highlight);
-		        win.CSS.highlights.set(prefix + '-' + kind, highlight);
-		    }
-		    let enabled = options.enabled !== false, disposed = false, timer = null;
-		    const excluded = 'script,style,textarea,input,select,button,a,code,pre,kbd,samp,svg,math,[hidden],[contenteditable]:not([contenteditable="false"]),[role="button"],[role="textbox"]';
-		    const blocks = 'p,div,li,td,th,blockquote,section,article,h1,h2,h3,h4,h5,h6';
-		    // A refresh reads the same ancestors for many text nodes. Cache only for this
-		    // synchronous pass so later theme/card mutations always get fresh styles.
-		    let computedColors, explicitColors;
-		    function computedColor(element) {
-		        if (!computedColors.has(element)) computedColors.set(element, win.getComputedStyle(element).color);
-		        return computedColors.get(element);
-		    }
-		    function explicitColor(element) {
-		        if (explicitColors.has(element)) return explicitColors.get(element);
-		        const own = element.hasAttribute('color') || Boolean(element.style.color || element.style.webkitTextFillColor)
-		            || (element.matches('span,font,q,em,i,b,strong,u,mark') && element.parentElement
-		                && computedColor(element) !== computedColor(element.parentElement));
-		        const result = Boolean(own || (element !== root && element.parentElement && explicitColor(element.parentElement)));
-		        explicitColors.set(element, result);
-		        return result;
-		    }
-		    const paletteCache = new Map();
-		    let canvas;
-		    function palette(element) {
-		        const color = computedColor(element);
-		        if (paletteCache.has(color)) return paletteCache.get(color);
-		        let rgb = color.match(/[\d.]+/g) || [];
-		        if (!/^rgba?\(/.test(color)) {
-		            // Modern themes may use oklch/display-p3; read their sRGB equivalent.
-		            if (!canvas) { canvas = doc.createElement('canvas'); canvas.width = canvas.height = 1; }
-		            const context = canvas.getContext('2d', { willReadFrequently: true });
-		            if (context) { context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1); rgb = context.getImageData(0, 0, 1, 1).data; }
-		        }
-		        const result = Number(rgb[0]) * .2126 + Number(rgb[1]) * .7152 + Number(rgb[2]) * .0722 > 145 ? 'dark' : 'light';
-		        paletteCache.set(color, result);
-		        return result;
-		    }
-		    function add(kind, entry, start, end) {
-		        const range = doc.createRange();
-		        range.setStart(entry.node, start); range.setEnd(entry.node, end);
-		        highlights.get(kind + '-' + entry.palette).add(range);
-		    }
-		    function refresh() {
-		        timer = null;
-		        for (const highlight of highlights.values()) highlight.clear();
-		        if (disposed || !enabled) return;
-		        computedColors = new WeakMap(); explicitColors = new WeakMap();
-		        const walker = doc.createTreeWalker(root, 4); // SHOW_TEXT; never edit React/card-owned DOM.
-		        let group = [], block = null, text = '';
-		        function flush() {
-		            for (const [start, end] of findQuotes(text)) for (const entry of group) {
-		                const from = Math.max(start, entry.offset), to = Math.min(end, entry.offset + entry.node.length);
-		                if (from < to) add('quote', entry, from - entry.offset, to - entry.offset);
-		            }
-		            group = []; text = '';
-		        }
-		        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-		            const element = node.parentElement;
-		            if (!element || element.closest(excluded) || explicitColor(element)) { flush(); block = null; continue; }
-		            const owner = element.closest(blocks) || root;
-		            // <br> is a rendered line break even without a newline text node.
-		            if (owner !== block || (node.previousSibling && node.previousSibling.nodeName === 'BR')) flush();
-		            block = owner;
-		            const entry = { node, offset: text.length, palette: palette(element) };
-		            group.push(entry); text += node.data;
-		            if (element.closest('q')) add('quote', entry, 0, node.length);
-		            else if (element.closest('em,i')) add('em', entry, 0, node.length);
-		        }
-		        flush();
-		    }
-		    function schedule() { if (!disposed && enabled && timer === null) timer = win.setTimeout(refresh, 32); }
-		    const observer = new win.MutationObserver(schedule);
-		    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'color', 'hidden'] });
-		    if (doc.documentElement !== root) observer.observe(doc.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
-		    // Batch mounts before reading computed styles; each message adds a stylesheet.
-		    schedule();
+		  const doc = root.ownerDocument,
+		    win = doc.defaultView;
+		  if (!win.CSS || !win.CSS.highlights || typeof win.Highlight !== "function")
 		    return {
-		        setColors,
-		        setEnabled(value) {
-		            enabled = value !== false;
-		            if (timer !== null) win.clearTimeout(timer);
-		            timer = null;
-		            if (enabled) schedule();
-		            else for (const highlight of highlights.values()) highlight.clear();
-		        },
-		        dispose() {
-		            disposed = true; observer.disconnect(); if (timer !== null) win.clearTimeout(timer);
-		            for (const kind of highlights.keys()) win.CSS.highlights.delete(prefix + '-' + kind);
-		            style.remove();
-		        }
+		      setEnabled() {},
+		      setColors() {},
+		      setActive() {},
+		      refreshTheme() {},
+		      dispose() {},
 		    };
+		  const prefix = "dsh-tavern-text-" + Math.random().toString(36).slice(2);
+		  const colors = {
+		    "quote-light": true,
+		    "quote-dark": true,
+		    "em-light": true,
+		    "em-dark": true,
+		  };
+		  const highlights = new Map();
+		  const style = doc.createElement("style");
+		  style.setAttribute("data-dsh-tavern-text-colors", "");
+		  function setColors(overrides) {
+		    const stylesheet = Object.entries(colors)
+		      .map(([kind]) => {
+		        const value =
+		          overrides && overrides[kind.startsWith("quote") ? "quote" : "em"];
+		        const color =
+		          typeof value === "string" &&
+		          win.CSS.supports("color", value) &&
+		          !/[;{}]/.test(value)
+		            ? value
+		            : "var(--dsw-alias-brand-primary, currentColor)";
+		        return "::highlight(" + prefix + "-" + kind + "){color:" + color + "}";
+		      })
+		      .join("\n");
+		    if (style.textContent !== stylesheet) style.textContent = stylesheet;
+		  }
+		  setColors(options.colors);
+		  doc.head.appendChild(style);
+		  for (const kind of Object.keys(colors)) {
+		    const highlight = new win.Highlight();
+		    highlight.priority = kind.startsWith("quote") ? 2 : 1;
+		    highlights.set(kind, highlight);
+		    win.CSS.highlights.set(prefix + "-" + kind, highlight);
+		  }
+		  let enabled = options.enabled !== false,
+		    active = options.active !== false,
+		    disposed = false,
+		    timer = null;
+		  let observing = false,
+		    dirty = true;
+		  const excluded =
+		    'script,style,textarea,input,select,button,a,code,pre,kbd,samp,svg,math,[hidden],[contenteditable]:not([contenteditable="false"]),[role="button"],[role="textbox"]';
+		  const blocks = "p,div,li,td,th,blockquote,section,article,h1,h2,h3,h4,h5,h6";
+		  // 同一次扫描复用祖先样式；下一次扫描重新读取，保留卡片和主题的动态变化。
+		  let computedColors, explicitColors;
+		  function computedColor(element) {
+		    if (!computedColors.has(element))
+		      computedColors.set(element, win.getComputedStyle(element).color);
+		    return computedColors.get(element);
+		  }
+		  function explicitColor(element) {
+		    if (explicitColors.has(element)) return explicitColors.get(element);
+		    const own =
+		      element.hasAttribute("color") ||
+		      Boolean(element.style.color || element.style.webkitTextFillColor) ||
+		      (element.matches("span,font,q,em,i,b,strong,u,mark") &&
+		        element.parentElement &&
+		        computedColor(element) !== computedColor(element.parentElement));
+		    const result = Boolean(
+		      own ||
+		      (element !== root &&
+		        element.parentElement &&
+		        explicitColor(element.parentElement)),
+		    );
+		    explicitColors.set(element, result);
+		    return result;
+		  }
+		  const paletteCache = new Map();
+		  let canvas;
+		  function palette(element) {
+		    const color = computedColor(element);
+		    if (paletteCache.has(color)) return paletteCache.get(color);
+		    let rgb = color.match(/[\d.]+/g) || [];
+		    if (!/^rgba?\(/.test(color)) {
+		      // 现代主题可能使用 oklch/display-p3，转换为 sRGB 后判断明暗。
+		      if (!canvas) {
+		        canvas = doc.createElement("canvas");
+		        canvas.width = canvas.height = 1;
+		      }
+		      const context = canvas.getContext("2d", { willReadFrequently: true });
+		      if (context) {
+		        context.clearRect(0, 0, 1, 1);
+		        context.fillStyle = color;
+		        context.fillRect(0, 0, 1, 1);
+		        rgb = context.getImageData(0, 0, 1, 1).data;
+		      }
+		    }
+		    const result =
+		      Number(rgb[0]) * 0.2126 +
+		        Number(rgb[1]) * 0.7152 +
+		        Number(rgb[2]) * 0.0722 >
+		      145
+		        ? "dark"
+		        : "light";
+		    paletteCache.set(color, result);
+		    return result;
+		  }
+		  function add(kind, entry, start, end) {
+		    const range = doc.createRange();
+		    range.setStart(entry.node, start);
+		    range.setEnd(entry.node, end);
+		    highlights.get(kind + "-" + entry.palette).add(range);
+		  }
+		  function refresh() {
+		    timer = null;
+		    if (!running()) return;
+		    dirty = false;
+		    for (const highlight of highlights.values()) highlight.clear();
+		    computedColors = new WeakMap();
+		    explicitColors = new WeakMap();
+		    const walker = doc.createTreeWalker(root, 4); // SHOW_TEXT，不修改 React 或卡片持有的 DOM。
+		    let group = [],
+		      block = null,
+		      text = "";
+		    function flush() {
+		      for (const [start, end] of findQuotes(text))
+		        for (const entry of group) {
+		          const from = Math.max(start, entry.offset),
+		            to = Math.min(end, entry.offset + entry.node.length);
+		          if (from < to)
+		            add("quote", entry, from - entry.offset, to - entry.offset);
+		        }
+		      group = [];
+		      text = "";
+		    }
+		    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+		      const element = node.parentElement;
+		      if (!element || element.closest(excluded) || explicitColor(element)) {
+		        flush();
+		        block = null;
+		        continue;
+		      }
+		      const owner = element.closest(blocks) || root;
+		      // <br> 即使没有换行文本节点，也表示渲染换行。
+		      if (
+		        owner !== block ||
+		        (node.previousSibling && node.previousSibling.nodeName === "BR")
+		      )
+		        flush();
+		      block = owner;
+		      const entry = { node, offset: text.length, palette: palette(element) };
+		      group.push(entry);
+		      text += node.data;
+		      if (element.closest("q")) add("quote", entry, 0, node.length);
+		      else if (element.closest("em,i")) add("em", entry, 0, node.length);
+		    }
+		    flush();
+		  }
+		  function running() {
+		    return !disposed && enabled && active && doc.visibilityState !== "hidden";
+		  }
+		  function cancel() {
+		    if (timer !== null) win.clearTimeout(timer);
+		    timer = null;
+		  }
+		  function schedule() {
+		    dirty = true;
+		    if (running() && timer === null) timer = win.setTimeout(refresh, 32);
+		  }
+		  // 根布局属性经常由视口同步写入，只在颜色依赖可能改变时重扫。
+		  // 未知 class 和 CSS 变量仍保守失效，避免漏掉作者的后代颜色规则。
+		  function themeStyle(value) {
+		    const probe = doc.createElement("span").style;
+		    probe.cssText = value || "";
+		    return Array.from(probe)
+		      .filter(
+		        (name) =>
+		          name.startsWith("--") ||
+		          /^(color|color-scheme|-webkit-text-fill-color)$/.test(name),
+		      )
+		      .sort()
+		      .map(
+		        (name) =>
+		          name +
+		          ":" +
+		          probe.getPropertyValue(name) +
+		          "!" +
+		          probe.getPropertyPriority(name),
+		      )
+		      .join(";");
+		  }
+		  let themeClass = "",
+		    themeStyles = "";
+		  function rememberTheme() {
+		    themeClass = doc.documentElement.getAttribute("class") || "";
+		    themeStyles = themeStyle(doc.documentElement.getAttribute("style"));
+		  }
+		  const observer = new win.MutationObserver(function (records) {
+		    if (
+		      records.some(
+		        (record) =>
+		          record.target !== doc.documentElement || root === doc.documentElement,
+		      )
+		    ) {
+		      schedule();
+		      return;
+		    }
+		    const nextClass = doc.documentElement.getAttribute("class") || "";
+		    const nextStyles = themeStyle(doc.documentElement.getAttribute("style"));
+		    if (nextClass !== themeClass || nextStyles !== themeStyles) schedule();
+		    themeClass = nextClass;
+		    themeStyles = nextStyles;
+		  });
+		  function sync() {
+		    if (!running()) {
+		      observer.disconnect();
+		      observing = false;
+		      cancel();
+		      dirty = true;
+		      return;
+		    }
+		    if (!observing) {
+		      rememberTheme();
+		      observer.observe(root, {
+		        subtree: true,
+		        childList: true,
+		        characterData: true,
+		        attributes: true,
+		        attributeFilter: ["style", "class", "color", "hidden"],
+		      });
+		      if (options.observeTheme !== false && doc.documentElement !== root)
+		        observer.observe(doc.documentElement, {
+		          attributes: true,
+		          attributeFilter: ["style", "class"],
+		        });
+		      observing = true;
+		    }
+		    if (dirty) schedule();
+		  }
+		  doc.addEventListener("visibilitychange", sync);
+		  // 批量挂载后再读取样式，避免每条消息插入样式表都强制刷新布局。
+		  sync();
+		  return {
+		    setColors,
+		    refreshTheme: schedule,
+		    setActive(value) {
+		      const next = value !== false;
+		      if (next === active || disposed) return;
+		      active = next;
+		      sync();
+		    },
+		    setEnabled(value) {
+		      const next = value !== false;
+		      if (next === enabled || disposed) return;
+		      enabled = next;
+		      sync();
+		      if (!enabled)
+		        for (const highlight of highlights.values()) highlight.clear();
+		    },
+		    dispose() {
+		      disposed = true;
+		      observer.disconnect();
+		      cancel();
+		      doc.removeEventListener("visibilitychange", sync);
+		      for (const kind of highlights.keys())
+		        win.CSS.highlights.delete(prefix + "-" + kind);
+		      style.remove();
+		    },
+		  };
 		}
 
-		// Display colors belong to the host theme; legacy per-browser overrides are ignored.
-		function tavernTextColorsEnabled() { return true; }
+		// 显示颜色由宿主主题提供，忽略旧的浏览器级覆盖设置。
+		function tavernTextColorsEnabled() {
+		  return true;
+		}
 		function tavernTextColorOverrides(host) {
-		    const doc = host.document;
-		    const probe = doc.createElement('span');
-		    probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--dsw-alias-brand-primary, currentColor)';
-		    doc.body.appendChild(probe);
-		    const accent = host.getComputedStyle(probe).color;
-		    probe.remove();
-		    return { quote: accent, em: accent };
+		  const doc = host.document;
+		  const probe = doc.createElement("span");
+		  probe.style.cssText =
+		    "position:absolute;visibility:hidden;color:var(--dsw-alias-brand-primary, currentColor)";
+		  doc.body.appendChild(probe);
+		  const accent = host.getComputedStyle(probe).color;
+		  probe.remove();
+		  return { quote: accent, em: accent };
+		}
+		// 普通正文共享一个观察器；iframe 使用宿主已有的临近视区通道。
+		const tavernTextColorVisibility = new Map();
+		let tavernTextColorIntersection = null;
+		function subscribeTavernTextColorVisibility(root, listener) {
+		  const win = root.ownerDocument.defaultView;
+		  if (typeof win.IntersectionObserver !== "function") {
+		    listener(true);
+		    return function () {};
+		  }
+		  if (!tavernTextColorIntersection)
+		    tavernTextColorIntersection = new win.IntersectionObserver(
+		      function (entries) {
+		        for (const entry of entries) {
+		          const notify = tavernTextColorVisibility.get(entry.target);
+		          if (notify) notify(entry.isIntersecting === true);
+		        }
+		      },
+		      { rootMargin: "240px 0px" },
+		    );
+		  tavernTextColorVisibility.set(root, listener);
+		  listener(false);
+		  tavernTextColorIntersection.observe(root);
+		  return function () {
+		    tavernTextColorVisibility.delete(root);
+		    tavernTextColorIntersection.unobserve(root);
+		    if (!tavernTextColorVisibility.size) {
+		      tavernTextColorIntersection.disconnect();
+		      tavernTextColorIntersection = null;
+		    }
+		  };
 		}
 		function TavernColoredMarkdown(props) {
-		    const root = React.useRef(null);
-		    React.useEffect(function () {
-		        const colors = installTavernTextColors(root.current, {}, findTavernQuoteRanges);
-		        return () => colors.dispose();
-		    }, []);
-		    return React.createElement('div', { ref: root, className: 'dsh-tavern-colored-markdown' }, React.createElement(DshUi.MarkdownText, props));
+		  const root = React.useRef(null);
+		  React.useEffect(function () {
+		    const win = root.current.ownerDocument.defaultView;
+		    const colors = installTavernTextColors(
+		      root.current,
+		      { active: false, observeTheme: false },
+		      findTavernQuoteRanges,
+		    );
+		    const stopVisibility = subscribeTavernTextColorVisibility(
+		      root.current,
+		      (value) => colors.setActive(value),
+		    );
+		    const stopTheme = subscribeTavernHostTheme(win, function () {
+		      colors.refreshTheme();
+		    });
+		    return () => {
+		      stopVisibility();
+		      stopTheme();
+		      colors.dispose();
+		    };
+		  }, []);
+		  return React.createElement(
+		    "div",
+		    { ref: root, className: "dsh-tavern-colored-markdown" },
+		    React.createElement(DshUi.MarkdownText, props),
+		  );
 		}
 
 		function substituteTavernIdentityMacros(value, context) {
@@ -5752,7 +5967,7 @@ function tavernModelRefusalNotice(text) {
 			// their authenticated variable channel can start receiving updates.
 			const readyReporter = '<script data-dsh-tavern-frame-ready>(function(){var token=' + token + ',armed=false,timer=0,deadline=0,reported=false;function report(){if(reported)return;reported=true;clearTimeout(timer);clearTimeout(deadline);observer.disconnect();var finish=function(){parent.postMessage({type:"dsh-tavern-frame-ready",token:token},"*");};if(typeof requestAnimationFrame==="function")requestAnimationFrame(function(){requestAnimationFrame(finish);});else setTimeout(finish,0);}function schedule(){if(!armed||reported)return;if(timer)clearTimeout(timer);timer=setTimeout(report,240);}var observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});addEventListener("load",schedule);Promise.resolve(window.__dshTavernHelperReady).catch(function(){return false;}).then(function(){armed=true;deadline=setTimeout(report,1000);schedule();});})();<\/script>';
 			const layoutNormalizer = '<script data-dsh-tavern-layout>(function(){if(!document.body)return;function clean(){Array.prototype.slice.call(document.body.childNodes).forEach(function(node){var value=String(node.nodeValue||"");if(node.nodeType===3&&!/\\S/.test(value)&&/[\\r\\n]/.test(value))node.nodeValue="";});}clean();if(typeof MutationObserver!=="undefined"){var observer=new MutationObserver(clean);observer.observe(document.body,{childList:true});addEventListener("pagehide",function(){observer.disconnect();},{once:true});}})();<\/script>';
-            const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source===parent&&data&&data.token===' + token + '&&data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
+            const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source!==parent||!data||data.token!==' + token + ')return;if(data.type==="dsh-tavern-frame-measure-active"){colors.setActive(data.active);return;}if(data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
             if (sizing) {
                 if (sizing.mode !== "content") reporter = "";
                 else reporter = reporter.replace("48,viewportFloor()", "48");
@@ -5799,61 +6014,144 @@ function tavernModelRefusalNotice(text) {
             return import(url).finally(release);
         }
 
-// One observer of DSH theme tokens shared by every message frame and inline fragment.
-// DSH emits preferences as CSS variables and stylesheets, so each head/root style
-// mutation is re-read once here instead of once per mounted card.
+// 消息 iframe 和普通正文共享主题观察器。
+// DSH 通过 CSS 变量和样式表提供主题，每批变动只读取一次。
 const tavernHostThemeListeners = new Set();
-let tavernHostThemeObserver = null, tavernHostTheme = null;
+let tavernHostThemeObserver = null,
+  tavernHostTheme = null;
+// 共享主题也承载作者后代选择器的失效；布局属性不影响正文配色。
+function tavernHostTextColorContext(win) {
+  return JSON.stringify(
+    [win.document.documentElement, win.document.body].map(function (node) {
+      const style = node.style;
+      const values = Array.from(style)
+        .filter(
+          (name) =>
+            name.startsWith("--") ||
+            /^(color|color-scheme|-webkit-text-fill-color)$/.test(name),
+        )
+        .sort()
+        .map((name) => [
+          name,
+          style.getPropertyValue(name),
+          style.getPropertyPriority(name),
+        ]);
+      return [node.getAttribute("class") || "", values];
+    }),
+  );
+}
+function tavernAuthorStylesheetChanged(record) {
+  function authored(node) {
+    if (node.nodeType === 3) node = node.parentElement;
+    return Boolean(
+      node &&
+      node.matches &&
+      node.matches(
+        'style:not([data-dsh-tavern-text-colors]),link[rel="stylesheet"]',
+      ),
+    );
+  }
+  return (
+    authored(record.target) ||
+    Array.from(record.addedNodes || [])
+      .concat(Array.from(record.removedNodes || []))
+      .some(authored)
+  );
+}
 function readTavernHostTheme(win) {
-    const value = parseFloat(win.getComputedStyle(win.document.body).getPropertyValue("--dsh-content-font-size"));
-    // DSH resolves its theme on <html color-scheme> and marks dark with body[data-ds-dark-theme].
-    return { fontSize: Number.isFinite(value) && value >= 8 && value <= 48 ? value : 14, textColorOverrides: tavernTextColorOverrides(win),
-        colorScheme: win.document.body.hasAttribute("data-ds-dark-theme") ? "dark" : "light" };
+  const value = parseFloat(
+    win
+      .getComputedStyle(win.document.body)
+      .getPropertyValue("--dsh-content-font-size"),
+  );
+  // DSH 在 html 上设置 color-scheme，并通过 body 的 data-ds-dark-theme 标记深色主题。
+  return {
+    textColorContext: tavernHostTextColorContext(win),
+    fontSize: Number.isFinite(value) && value >= 8 && value <= 48 ? value : 14,
+    textColorOverrides: tavernTextColorOverrides(win),
+    colorScheme: win.document.body.hasAttribute("data-ds-dark-theme")
+      ? "dark"
+      : "light",
+  };
 }
 function currentTavernHostTheme(win) {
-    return tavernHostTheme || readTavernHostTheme(win);
+  return tavernHostTheme || readTavernHostTheme(win);
 }
 function subscribeTavernHostTheme(win, listener) {
-    if (!tavernHostThemeObserver) {
-        tavernHostTheme = readTavernHostTheme(win);
-        // Mounting card fragments inserts many <style> nodes, each in its own task. Reading
-        // computed style per mutation forced a full-page style recalc every time; read once
-        // per frame instead, when the browser recalculates styles anyway.
-        let queued = false;
-        const schedule = win.requestAnimationFrame ? function (work) { win.requestAnimationFrame(work); } : function (work) { win.setTimeout(work, 16); };
-        tavernHostThemeObserver = new win.MutationObserver(function () {
-            if (queued) return;
-            queued = true;
-            schedule(function () {
-                queued = false;
-                if (!tavernHostThemeObserver) return;
-                const next = readTavernHostTheme(win);
-                if (next.fontSize === tavernHostTheme.fontSize && next.textColorOverrides.quote === tavernHostTheme.textColorOverrides.quote && next.colorScheme === tavernHostTheme.colorScheme) return;
-                tavernHostTheme = next;
-                tavernHostThemeListeners.forEach(function (notify) { notify(next); });
-            });
+  if (!tavernHostThemeObserver) {
+    tavernHostTheme = readTavernHostTheme(win);
+    // 卡片分批挂载时会插入多张样式表，合并到下一帧读取，避免逐条强制重算样式。
+    let queued = false,
+      pendingStylesheet = false;
+    const schedule = win.requestAnimationFrame
+      ? function (work) {
+          win.requestAnimationFrame(work);
+        }
+      : function (work) {
+          win.setTimeout(work, 16);
+        };
+    const observer = new win.MutationObserver(function (records) {
+      pendingStylesheet =
+        pendingStylesheet || records.some(tavernAuthorStylesheetChanged);
+      if (queued) return;
+      queued = true;
+      schedule(function () {
+        queued = false;
+        if (tavernHostThemeObserver !== observer) return;
+        const next = readTavernHostTheme(win);
+        const stylesheetChanged = pendingStylesheet;
+        pendingStylesheet = false;
+        if (
+          !stylesheetChanged &&
+          next.textColorContext === tavernHostTheme.textColorContext &&
+          next.fontSize === tavernHostTheme.fontSize &&
+          next.textColorOverrides.quote ===
+            tavernHostTheme.textColorOverrides.quote &&
+          next.colorScheme === tavernHostTheme.colorScheme
+        )
+          return;
+        tavernHostTheme = next;
+        tavernHostThemeListeners.forEach(function (notify) {
+          notify(next);
         });
-        tavernHostThemeObserver.observe(win.document.head, { subtree: true, childList: true, characterData: true });
-        [win.document.documentElement, win.document.body].filter(Boolean).forEach(function (node) { tavernHostThemeObserver.observe(node, { attributes: true, attributeFilter: ["style", "class", "data-ds-dark-theme"] }); });
-    }
-    tavernHostThemeListeners.add(listener);
-    return function () {
-        tavernHostThemeListeners.delete(listener);
-        if (tavernHostThemeListeners.size || !tavernHostThemeObserver) return;
-        tavernHostThemeObserver.disconnect();
-        tavernHostThemeObserver = null;
-        tavernHostTheme = null;
-    };
+      });
+    });
+    tavernHostThemeObserver = observer;
+    tavernHostThemeObserver.observe(win.document.head, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    [win.document.documentElement, win.document.body]
+      .filter(Boolean)
+      .forEach(function (node) {
+        tavernHostThemeObserver.observe(node, {
+          attributes: true,
+          attributeFilter: ["style", "class", "data-ds-dark-theme"],
+        });
+      });
+  }
+  tavernHostThemeListeners.add(listener);
+  return function () {
+    tavernHostThemeListeners.delete(listener);
+    if (tavernHostThemeListeners.size || !tavernHostThemeObserver) return;
+    tavernHostThemeObserver.disconnect();
+    tavernHostThemeObserver = null;
+    tavernHostTheme = null;
+  };
 }
 
-// Card iframes keep their own typography (their text is never rewritten). Zoom
-// the plugin-owned slot instead: the frame's viewport shrinks by the same factor,
-// so the card reflows at a larger scale and viewport units cannot overflow.
+// 保留卡片内部排版，只缩放插件持有的容器；iframe 视口同比缩小，避免视口单位溢出。
 function bindTavernFontZoom(node, win) {
-    function apply(theme) { node.style.zoom = theme.fontSize === 14 ? "" : String(theme.fontSize / 14); }
-    const unsubscribe = subscribeTavernHostTheme(win, apply);
-    apply(currentTavernHostTheme(win));
-    return function () { unsubscribe(); node.style.zoom = ""; };
+  function apply(theme) {
+    node.style.zoom = theme.fontSize === 14 ? "" : String(theme.fontSize / 14);
+  }
+  const unsubscribe = subscribeTavernHostTheme(win, apply);
+  apply(currentTavernHostTheme(win));
+  return function () {
+    unsubscribe();
+    node.style.zoom = "";
+  };
 }
 
 		function createTavernHelperTransport(options) {
@@ -9813,19 +10111,19 @@ function bindTavernFontZoom(node, win) {
 					touchRelay.stop();
                     if (node) node.__dshTavernSessionId = document.sessionId;
                     channel.attach(node);
-                    if (node && typeof hostWindow.IntersectionObserver === "function") {
+                    if (node && hostWindow.document && typeof node.addEventListener === "function") {
                         let nearby = true;
                         const sync = () => node.contentWindow?.postMessage({ type: "dsh-tavern-frame-measure-active", token: document.token,
                             active: nearby && hostWindow.document.visibilityState !== "hidden" }, "*");
-                        const observer = new hostWindow.IntersectionObserver(entries => {
+                        const observer = typeof hostWindow.IntersectionObserver === "function" ? new hostWindow.IntersectionObserver(entries => {
                             nearby = entries[entries.length - 1]?.isIntersecting === true;
                             sync();
-                        }, { rootMargin: "240px 0px" });
-                        observer.observe(node);
+                        }, { rootMargin: "240px 0px" }) : null;
+                        if (observer) observer.observe(node);
                         node.addEventListener("load", sync);
                         hostWindow.document.addEventListener("visibilitychange", sync);
                         const stop = () => {
-                            observer.disconnect();
+                            if (observer) observer.disconnect();
                             node.removeEventListener("load", sync);
                             hostWindow.document.removeEventListener("visibilitychange", sync);
                         };
