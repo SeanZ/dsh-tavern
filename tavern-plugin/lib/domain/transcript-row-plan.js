@@ -1,5 +1,6 @@
 import { surfaceReplacementRange } from './session-events.js'
 import { createImmutableTurnFields } from './freeze-json.js'
+import { createReplySeatResolver } from './reply-seat.js'
 
 // The conversation page's row plan (docs/design/transcript-row-plan.md). The host draws
 // every append-origin message forever; instead of listing what to hide, say for each
@@ -95,6 +96,7 @@ export function createTranscriptFold() {
     // A log, or a tail of one: seqs are contiguous, so an event sits at seq - first seq.
     const offset = Number.isSafeInteger(events[0]?.seq) ? events[0].seq : 0
     const eventAt = seq => (events[seq - offset]?.seq === seq ? events[seq - offset] : undefined)
+    const resolveSeat = createReplySeatResolver(eventAt)
     for (let index = Math.max(0, from); index < events.length; index++) {
       const event = events[index]
       folded = index
@@ -143,15 +145,8 @@ export function createTranscriptFold() {
       // its tail when that is a reply append (the projection's copy, or the attempt's
       // own streamed reply), else the last reply append with text inside the range (an
       // old tool submission's fold copy). With none, the round keeps its own row.
-      const range = surfaceReplacementRange(event.surfaceOp)
-      const end = eventAt(Number(range.end))
-      if (isAppendReply(end)) { setDrawn(story, Number(end.data?.turn)); continue }
-      let copy = null
-      for (let seq = Number(range.end); seq >= Number(range.start) && copy === null; seq--) {
-        const source = eventAt(seq)
-        if (isAppendReply(source) && textOf(source.data?.message) !== '' && Number(source.data?.turn) > 0) copy = source
-      }
-      setDrawn(story, copy ? Number(copy.data.turn) : story)
+      const seat = resolveSeat(event)
+      if (seat) setDrawn(story, seat.turn)
     }
   }
 

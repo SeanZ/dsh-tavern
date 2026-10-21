@@ -512,7 +512,7 @@
 				const turn = turnRef ? Number(turnRef.turn) : 0;
 				const settled = data.status !== "running";
 				const revision = String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "");
-				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)]]);
+				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)], ["transcriptTurns", String(turn)], ["transcriptFrom"]]);
 				const storyTurn = tavernStoryTurnForDshTurn(mapping.view, turn);
 				const currentView = liveTavernView.getSnapshot(props.sessionId).view;
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));

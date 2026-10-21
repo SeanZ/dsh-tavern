@@ -345,6 +345,11 @@
 		}
 
 		function tavernStoryTurnForDshTurn(view, turn) {
+            // 正文及其操作按钮使用同一行计划；窗口外或旧视图才回退到旧映射。
+            if (view?.transcriptTurns && (view.transcriptFrom == null || Number(turn) >= Number(view.transcriptFrom))) {
+                const row = view.transcriptTurns[String(turn)];
+                return row?.reply === 0 ? 0 : Number(row?.story ?? turn);
+            }
 			const mappings = view && view.regeneratedDshTurns && typeof view.regeneratedDshTurns === "object" ? view.regeneratedDshTurns : {};
 			const lookup = createSessionViewReader.storyTurnLookup;
 			if (lookup?.has(mappings)) return lookup.read(mappings,turn);

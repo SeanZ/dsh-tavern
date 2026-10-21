@@ -13570,6 +13570,11 @@ function bindTavernFontZoom(node, win) {
 		}
 
 		function tavernStoryTurnForDshTurn(view, turn) {
+            // 正文及其操作按钮使用同一行计划；窗口外或旧视图才回退到旧映射。
+            if (view?.transcriptTurns && (view.transcriptFrom == null || Number(turn) >= Number(view.transcriptFrom))) {
+                const row = view.transcriptTurns[String(turn)];
+                return row?.reply === 0 ? 0 : Number(row?.story ?? turn);
+            }
 			const mappings = view && view.regeneratedDshTurns && typeof view.regeneratedDshTurns === "object" ? view.regeneratedDshTurns : {};
 			const lookup = createSessionViewReader.storyTurnLookup;
 			if (lookup?.has(mappings)) return lookup.read(mappings,turn);
@@ -14398,7 +14403,7 @@ function bindTavernFontZoom(node, win) {
 				const turn = turnRef ? Number(turnRef.turn) : 0;
 				const settled = data.status !== "running";
 				const revision = String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "");
-				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)]]);
+				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)], ["transcriptTurns", String(turn)], ["transcriptFrom"]]);
 				const storyTurn = tavernStoryTurnForDshTurn(mapping.view, turn);
 				const currentView = liveTavernView.getSnapshot(props.sessionId).view;
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));

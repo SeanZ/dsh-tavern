@@ -1,3 +1,4 @@
+import { createReplySeatResolver } from './reply-seat.js'
 import { storyEventTurn } from './session-upgrade-references.js'
 import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 import { inputAttachments } from './player-input-content.js'
@@ -202,26 +203,15 @@ export function supersededRegenerationTurns({ events = [], nodes = [], keepTurns
 export function projectedReplyTurns({ events = [], nodes = [] } = {}) {
   const visible = new Set(nodes.map(Number))
   const bySeq = new Map(events.filter(event => Number.isSafeInteger(event?.seq)).map(event => [event.seq, event]))
+  const resolveSeat = createReplySeatResolver(seq => bySeq.get(seq))
   const turns = new Map()
   for (const event of events) {
     if (event?.type !== 'assistant/message' || event.surfaceOp?.op !== 'replace') continue
     if (visible.size && !visible.has(Number(event.seq))) continue
     const story = Number(event.data?.message?.source?.tavernStoryTurn)
     if (!Number.isSafeInteger(story) || story < 1) continue
-    const range = surfaceReplacementRange(event.surfaceOp)
-    const end = bySeq.get(range.end)
-    const drawn = end?.type === 'assistant/message' && end.surfaceOp === 'append' ? Number(end.data?.turn) : NaN
-    if (Number.isSafeInteger(drawn) && drawn > 0) { turns.set(story, drawn); continue }
-    // Inside the range, the last assistant append with text is the row the
-    // transcript drew for this round (the fold copy of a tool submission, or the
-    // attempt's own reply). Its text is the previous body when applying a
-    // replacement, so the row is located by shape, not by matching the new body.
-    const copy = events.findLast(source => source?.type === 'assistant/message' &&
-      source.surfaceOp === 'append' &&
-      Number(source.seq) >= Number(range.start) && Number(source.seq) <= Number(range.end) &&
-      contentText(source.data?.message) !== '' &&
-      Number(source.data?.turn) > 0 && Number(source.data?.turn) !== story)
-    turns.set(story, copy ? Number(copy.data.turn) : Number(event.data?.turn))
+    const seat = resolveSeat(event)
+    if (seat) turns.set(story, seat.turn)
   }
   return turns
 }
@@ -305,7 +295,11 @@ export function keptPlayerInputTurns(input = {}) {
       queued = []
       continue
     }
-    if (event.type === 'turn/end') { turn = null; continue }
+    if (event.type === 'turn/end') {
+      // 已完成的普通输入不应跨越边界，成为随后无输入尝试的玩家输入。
+      if (event.data?.reason?.kind === 'completed') lastInput = null
+      turn = null; continue
+    }
     if (event.type === 'user/message' && event.surfaceOp === 'append' && event.data?.source?.kind === 'user') {
       if (contentText(event.data) === '') continue
       const item = { seq: Number(event.seq), turn }
