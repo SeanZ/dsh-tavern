@@ -12,4 +12,4 @@ const hostRequire = createRequire(pluginRequire.resolve('@deepseek-ai/dsh-tools'
 const sessionUrl = process.env.DSH_BOOT_MODULE
   ? new URL('../../dsh-session/lib/index.js', pathToFileURL(process.env.DSH_BOOT_MODULE))
   : pathToFileURL(hostRequire.resolve('@deepseek-ai/dsh-session'))
-export const { Session, adoptSessionEvent, KNOWN_SESSION_EVENT_TYPES } = await import(sessionUrl.href)
+export const { Session, buildForkSeed, adoptSessionEvent, KNOWN_SESSION_EVENT_TYPES } = await import(sessionUrl.href)

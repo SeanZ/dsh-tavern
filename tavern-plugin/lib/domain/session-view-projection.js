@@ -78,7 +78,7 @@ export function createSessionViewProjection({
     }
     const activity = activityOf(chat)
     const { debugTurns, latestAssistantTurn: latestStoryTurn, latestAssistantMessageId } = latestTurnFields(chat)
-    const forkTurnsByMessageId = forkTurnsForChat(chat)
+    const forkTurnsByMessageId = forkTurnsForChat(chat, transcriptPlan)
     const {inputSources,inputTemplateDisplays}=inputFieldsProjection.project(persistedProjection ? chat : {...chat,_storageRevision:undefined}, options.inputChanges)
     const cardUpdate = ['story', 'script'].includes(chat.mode || 'story') && chat.requestMode !== 'sillytavern'
       ? await cardUpdateStatus(chat, { card, fresh: options.freshSnapshot === true, busy: activity.busy || ['pending', 'running', 'waiting-runtime'].includes(chat.settleStatus)
@@ -264,9 +264,9 @@ export function createSessionViewProjection({
   function mvuReceiptsOf(chat, changes) { return sessionStateView.receipts(chat, changes) }
   function rollbackViewFields(chat, evidence, changes) { return sessionStateView.rollback(chat, evidence, changes) }
   // Derived from live session events, which change without a chat revision (see conversation-fork-targets.js).
-  function forkTurnsForChat(chat) {
+  function forkTurnsForChat(chat, plan) {
     const session = sessionStore.get(str(chat?.sessionId)) || agentRegistry.get(str(chat?.sessionId))?.session
-    return forkTargetsFromSession(session, chat?.regeneratedDshTurns)
+    return forkTargetsFromSession(session, chat?.regeneratedDshTurns, plan && { turns: plan.transcriptTurns, from: plan.transcriptFrom })
   }
   // The newest player input that actually committed a Chat message. Failed or
   // withdrawn turns keep only an append node in the transcript, so they must not
@@ -350,8 +350,8 @@ export function createSessionViewProjection({
   }
   function volatileSessionViewFields(chat, activity, changes) {
     const fields = sessionStateView.volatile(chat, activity, changes)
-    return { ...fields, forkTurnsByMessageId: forkTurnsForChat(chat), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat),
-      ...transcriptPlanFields(chat, sessionDebugEvidence(chat.sessionId), fields.replacingDshTurns, fields.keptInputTurns) }
+    const plan = transcriptPlanFields(chat, sessionDebugEvidence(chat.sessionId), fields.replacingDshTurns, fields.keptInputTurns)
+    return { ...fields, forkTurnsByMessageId: forkTurnsForChat(chat, plan), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat), ...plan }
   }
 
   async function projectCachedSessionView(chat, previous, activity) {

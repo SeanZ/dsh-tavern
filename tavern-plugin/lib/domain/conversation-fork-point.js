@@ -19,7 +19,9 @@ export async function conversationStateAtTurn(source, requestedTurn, readRevisio
     const identity = state.id + ':' + state._storageRevision
     if (visited.has(identity)) throw new Error('历史快照链重复，无法安全分叉')
     visited.add(identity)
-    const next = (state.timeline?.checkpoints || []).find(item => Number(item.turn) > turn && Number.isSafeInteger(item.beforeRevision))
+    // checkpoint 记录生成时的原生轮；重生成后保存正文仍保留原故事轮。
+    const checkpointTurn = Number(state.regeneratedDshTurns?.[turn]) || turn
+    const next = (state.timeline?.checkpoints || []).find(item => Number(item.turn) > checkpointTurn && Number.isSafeInteger(item.beforeRevision))
     const parent = state.forkedFrom
     const chatId = next ? state.id : parent?.stateChatId || parent?.chatId
     const revision = next ? next.beforeRevision : parent?.stateRevision ?? parent?.storageRevision
@@ -44,8 +46,26 @@ export function conversationForkBoundary(session, state, turn) {
   const nativeTurn = Number(state.regeneratedDshTurns?.[turn]) || turn
   const end = events.findLast(event => event.type === 'turn/end' && Number(event.data?.turn) === nativeTurn)
   if (!end || end.data?.reason?.kind !== 'completed') throw new Error('该回合缺少已完成的原生上下文边界')
-  const result = assistantResultForTurn(session, turn)
+  let result = assistantResultForTurn(session, turn)
+  const projected = events.findLast(event => event.type === 'assistant/message' &&
+    Number(event.data?.message?.source?.tavernStoryTurn) === turn && event.data.message.source.kind === 'model')
+  if (projected && (!result || projected.seq > result.event.seq)) result = { event: projected }
   const following = events.find(event => event.type === 'turn/start' && event.seq > end.seq)
-  if (!result || (following && result.event.seq >= following.seq)) throw new Error('该回合正文曾在后续上下文中修改，无法按旧边界安全分叉')
+  if (!result) throw new Error('该回合正文曾在后续上下文中修改，无法按旧边界安全分叉')
+  if (following && result.event.seq >= following.seq) {
+    // 提交后的纯投影可拥有独立编辑轮；不能跨越真实输入、模型调用或其它故事。
+    const projectedEnd = events.find(event => event.seq > result.event.seq && event.type === 'turn/end' &&
+      Number(event.data?.turn) === Number(result.event.data?.turn))
+    const extension = projectedEnd && events.filter(event => event.seq > end.seq && event.seq <= projectedEnd.seq)
+    const administrative = extension && extension.every(event => {
+      if (event.type === 'turn/end') return event.data?.reason?.kind === 'completed'
+      if (['turn/start', 'step/start', 'step/end'].includes(event.type)) return true
+      if (event.type === 'dsh-tavern/required-session-patch-v1') return true
+      return event.type === 'assistant/message' && Number(event.data?.message?.source?.tavernStoryTurn) === turn &&
+        (event.surfaceOp?.op === 'replace' || event.surfaceOp === 'append')
+    })
+    if (!administrative) throw new Error('该回合正文曾在后续上下文中修改，无法按旧边界安全分叉')
+    return projectedEnd.seq
+  }
   return end.seq
 }
