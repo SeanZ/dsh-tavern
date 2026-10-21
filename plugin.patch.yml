@@ -137,7 +137,7 @@
 
           # 用户代码与清单都在持久数据目录；更新只保留这个加载入口。
           - id: user-tools
-            name: ./tavern-plugin/lib/user-tools-bridge.js
+            name: dsh-profile-tavern/tavern-plugin/lib/user-tools-bridge.js
 
           # 复用 DSH 原生上下文压缩能力，并恢复 /compact 命令。
           # 压缩器与工具结果裁剪器共享同一隔离域，保持与 DSH 标准模式一致。
@@ -154,7 +154,7 @@
                   thresholdRatio: 0.5
 
               - id: tavern-compaction
-                name: ./tavern-plugin/lib/agent-compaction.js
+                name: dsh-profile-tavern/tavern-plugin/lib/agent-compaction.js
 
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
@@ -202,7 +202,7 @@
                   thresholdRatio: 0.5
 
               - id: tavern-compaction
-                name: ./tavern-plugin/lib/agent-compaction.js
+                name: dsh-profile-tavern/tavern-plugin/lib/agent-compaction.js
 
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'

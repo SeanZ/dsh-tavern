@@ -6,6 +6,10 @@ const root = new URL('../', import.meta.url)
 // bundle patch 里的 `name: dsh-tavern-plugin` 不被替换，profile patch 因此丢掉
 // `./tavern-plugin/lib/index.js` 这个入口。读入时统一归一为 LF。
 const read = name => readFileSync(new URL(name, root), 'utf8').replace(/\r\n/g, '\n')
+// 预设 config.plugins 里的行不经 DSH 锚定（宿主只把顶层与 group 的 insert 行转成补丁旁的
+// file URL），以 profile 目录为基准解析，相对路径会落空。标准插件包是 profile 的直接依赖，
+// 这些行改用本包包名的子路径，经 profile 的 node_modules 解析到包内文件。
+const packageName = JSON.parse(read('package.json')).name
 // The host Profile already supplies the Web layer. The standard plugin bundle
 // only adds Tavern and its bundled extensions; relative entry names are anchored by DSH.
 const content = [
@@ -23,8 +27,8 @@ const content = [
   // the preset's own plugin lines included, into this package instead.
   read('tavern-plugin/cordis.patch.yml')
     .replace('name: dsh-tavern-plugin/cordis-inspect', 'name: ./tavern-plugin/lib/cordis-inspect.js')
-    .replaceAll('name: dsh-tavern-plugin/user-tools-bridge', 'name: ./tavern-plugin/lib/user-tools-bridge.js')
-    .replaceAll('name: dsh-tavern-plugin/compaction', 'name: ./tavern-plugin/lib/agent-compaction.js')
+    .replaceAll('name: dsh-tavern-plugin/user-tools-bridge', `name: ${packageName}/tavern-plugin/lib/user-tools-bridge.js`)
+    .replaceAll('name: dsh-tavern-plugin/compaction', `name: ${packageName}/tavern-plugin/lib/agent-compaction.js`)
     .replace('name: dsh-tavern-plugin\n', 'name: ./tavern-plugin/lib/index.js\n'),
   read('tavern-plugin/packages/dsh-tavern-remote/cordis.patch.yml')
     .replace('name: dsh-tavern-remote', 'name: ./tavern-plugin/packages/dsh-tavern-remote/lib/index.js'),

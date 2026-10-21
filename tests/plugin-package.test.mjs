@@ -63,6 +63,13 @@ test('standard package ships runtime resources without local links, host copies 
     assert.ok(exported, `${specifier} 未在 tavern-plugin/package.json 的 exports 中声明`)
     assert.ok(files.has(path.posix.join('tavern-plugin', exported.replace(/^\.\//, ''))), `${specifier} 指向的文件不在发布包内`)
   }
+  // 标准插件包的预设行不经宿主锚定、按 profile 目录解析：只能用本包包名的子路径，且目标随包发布。
+  const bundlePatch = read('plugin.patch.yml')
+  const presets = bundlePatch.slice(bundlePatch.indexOf('- id: preset-tavern\n'), bundlePatch.indexOf('- id: dsh-tavern-remote\n'))
+  assert.deepEqual([...presets.matchAll(/^\s*name: (\.\.?\/\S+)\s*$/gm)].map(match => match[1]), [])
+  const ownRows = [...presets.matchAll(new RegExp(`^\\s*name: ${manifest.name}/(\\S+)\\s*$`, 'gm'))].map(match => match[1])
+  assert.deepEqual(ownRows, ['tavern-plugin/lib/user-tools-bridge.js', 'tavern-plugin/lib/agent-compaction.js', 'tavern-plugin/lib/agent-compaction.js'])
+  for (const file of ownRows) assert.ok(files.has(file), `预设行指向的文件不在发布包内：${file}`)
   parse(read('tavern-plugin/lib/client.js'), { ecmaVersion: 'latest', sourceType: 'script' })
 })
 
