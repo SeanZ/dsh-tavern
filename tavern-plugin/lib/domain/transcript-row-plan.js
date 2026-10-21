@@ -146,7 +146,14 @@ export function createTranscriptFold() {
       // own streamed reply), else the last reply append with text inside the range (an
       // old tool submission's fold copy). With none, the round keeps its own row.
       const seat = resolveSeat(event)
-      if (seat) setDrawn(story, seat.turn)
+      if (seat) {
+        setDrawn(story, seat.turn)
+        // 替换正文与原生座位不同，保留座位但必须从存档投影当前正文。
+        if (textOf(event.data?.message) !== textOf(eventAt(seat.seq)?.data?.message)) {
+          savedReplies.add(story)
+          dirty.add(seat.turn)
+        }
+      }
     }
   }
 
