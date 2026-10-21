@@ -6032,9 +6032,27 @@ function tavernModelRefusalNotice(text) {
 		    };
 		}
 
+		// 一次高度采样内同一节点的样式与几何只读一次；采样结束即丢弃，下次采样重新读取。
+		// 以源码注入 iframe，只能使用自身作用域内的名字。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernLayoutSample() {
+			var styles = new Map(), rects = new Map();
+			return {
+				style: function (node) {
+					if (!styles.has(node)) styles.set(node, getComputedStyle(node));
+					return styles.get(node);
+				},
+				rect: function (node) {
+					if (!rects.has(node)) rects.set(node, node.getBoundingClientRect());
+					return rects.get(node);
+				}
+			};
+		}
+
 		// A viewport-sized card cannot determine its own iframe viewport. Use the host
 		// viewport as a floor for page layouts, while retaining authored local scrollers.
-		function tavernFrameViewportFloor() {
+		function tavernFrameViewportFloor(sample) {
+			if (!sample) sample = { style: function (node) { return getComputedStyle(node); }, rect: function (node) { return node.getBoundingClientRect(); } };
 			var viewport = 600;
 			try { viewport = window.parent.innerHeight || viewport; } catch (_) {}
 			viewport = Math.max(160, Math.min(1200, viewport));
@@ -6051,8 +6069,8 @@ function tavernModelRefusalNotice(text) {
 		                if (!summary || !summary.contains(node)) return false;
 		            }
 		        }
-				var rect = node.getBoundingClientRect();
-				var style = getComputedStyle(node);
+				var rect = sample.rect(node);
+				var style = sample.style(node);
 				return rect.width > window.innerWidth / 2 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
 			}
 			function matchesRules(rules) {
@@ -6070,7 +6088,7 @@ function tavernModelRefusalNotice(text) {
 			}
 			for (var node of document.body.querySelectorAll('*')) {
 				// Check the cheap conditions first; visible() measures layout.
-				var style = getComputedStyle(node);
+				var style = sample.style(node);
 				// Full-page fixed shells have no normal-flow height at all. Floating
 				// buttons or small dialogs must not enlarge the frame.
 				if (!viewportHeight(node.style) && !(style.position === 'fixed' && style.top === '0px' && style.bottom === '0px')) continue;
@@ -6506,7 +6524,7 @@ function tavernModelRefusalNotice(text) {
 			// scroll inside instead of feeding the measurement back forever.
 			// Card scripts can briefly remove the root. Skip that measurement; the next
 			// activation reattaches observers to the current root without a polling watcher.
-			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var bodyRect=body.getBoundingClientRect();var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor());function visit(node,clipTop,clipBottom){var style;try{style=getComputedStyle(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=node.getBoundingClientRect();if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=node.getBoundingClientRect();clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
+			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var createSample=' + createTavernLayoutSample.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var sample=createSample();var bodyRect=sample.rect(body);var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor(sample));function visit(node,clipTop,clipBottom){var style;try{style=sample.style(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=sample.rect(node);if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=sample.rect(node);clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
 			// Animated/polling cards may never become DOM-idle; bound the wait so
 			// their authenticated variable channel can start receiving updates.
 			const readyReporter = '<script data-dsh-tavern-frame-ready>(function(){var token=' + token + ',armed=false,timer=0,deadline=0,reported=false;function report(){if(reported)return;reported=true;clearTimeout(timer);clearTimeout(deadline);observer.disconnect();var finish=function(){parent.postMessage({type:"dsh-tavern-frame-ready",token:token},"*");};if(typeof requestAnimationFrame==="function")requestAnimationFrame(function(){requestAnimationFrame(finish);});else setTimeout(finish,0);}function schedule(){if(!armed||reported)return;if(timer)clearTimeout(timer);timer=setTimeout(report,240);}var observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});addEventListener("load",schedule);Promise.resolve(window.__dshTavernHelperReady).catch(function(){return false;}).then(function(){armed=true;deadline=setTimeout(report,1000);schedule();});})();<\/script>';
@@ -6514,7 +6532,7 @@ function tavernModelRefusalNotice(text) {
             const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source===parent&&data&&data.token===' + token + '&&data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
             if (sizing) {
                 if (sizing.mode !== "content") reporter = "";
-                else reporter = reporter.replace("48,viewportFloor()", "48");
+                else reporter = reporter.replace("48,viewportFloor(sample)", "48");
             }
             const sizingRuntime = '<script data-dsh-tavern-sizing>(' + installTavernFrameSizing.toString() + ')(' + token + ',' + JSON.stringify(sizing) + ');<\/script>';
             const sizingStyle = !sizing ? "" : '<style data-dsh-tavern-sizing>html[data-dsh-tavern-sizing-scroll]{overflow-y:auto!important}html[data-dsh-tavern-sizing-scroll] body{overflow-y:visible!important}' + (sizing.mode === "content" ? '' : 'html:root,html:root body{height:100%!important;min-height:0!important}html:root body{white-space:normal}') + '</style>';
@@ -13245,12 +13263,15 @@ function bindTavernFontZoom(node, win) {
                 // A capped seat keeps its own box size while content grows, so watch its children too.
                 if (seat) for (const child of seat.children) observer?.observe(child);
             }
+            // classList.add/remove 状态不变也会重写 class 属性，惊动观察根节点 class 的主题/配色观察器；
+            // toggle 带 force 只在状态变化时写入。
+            function setClass(name, on) { html.classList.toggle(name, on); }
             function sync() {
                 frame = 0;
                 if (disposed) return;
-                html.classList.toggle("dsh-tavern-coarse-play", narrow.matches);
+                setClass("dsh-tavern-coarse-play", narrow.matches);
                 if (!narrow.matches && !touch.matches) {
-                    html.classList.remove("dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll");
+                    for (const name of ["dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll"]) setClass(name, false);
                     restore();
                     return;
                 }
@@ -13262,12 +13283,12 @@ function bindTavernFontZoom(node, win) {
                 if (!(height > 0)) return;
                 setPx("--dsh-vv-top", top);
                 setPx("--dsh-vv-height", height);
-                html.classList.add("dsh-tavern-viewport-pinned");
+                setClass("dsh-tavern-viewport-pinned", true);
                 // 整个外壳使用可视区高度，输入条仍贴外壳底部，避免重复叠加键盘补偿。
                 const headerBottom = header ? header.getBoundingClientRect().bottom - top : 44;
                 setPx("--dsh-header-bottom", headerBottom);
                 // 横屏键盘下优先保留编辑和发送；展开列表改为可关闭的覆盖层。
-                html.classList.toggle("dsh-tavern-short-viewport", height - headerBottom < 280);
+                setClass("dsh-tavern-short-viewport", height - headerBottom < 280);
                 const pin = seat || doc.querySelector("[data-composer-card]");
                 if (pin) {
                     const rectTop = pin.getBoundingClientRect().top;
@@ -13286,7 +13307,7 @@ function bindTavernFontZoom(node, win) {
                 }
                 // Only scroll the seat when its content really exceeds the cap: a scrolling seat clips
                 // every menu that opens upward from the composer (更多, access mode, model picker).
-                html.classList.toggle("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
+                setClass("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
             }
 
             function schedule() {

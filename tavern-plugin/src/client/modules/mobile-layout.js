@@ -36,12 +36,15 @@ function installVisualViewportPin(doc) {
         // A capped seat keeps its own box size while content grows, so watch its children too.
         if (seat) for (const child of seat.children) observer?.observe(child);
     }
+    // classList.add/remove 状态不变也会重写 class 属性，惊动观察根节点 class 的主题/配色观察器；
+    // toggle 带 force 只在状态变化时写入。
+    function setClass(name, on) { html.classList.toggle(name, on); }
     function sync() {
         frame = 0;
         if (disposed) return;
-        html.classList.toggle("dsh-tavern-coarse-play", narrow.matches);
+        setClass("dsh-tavern-coarse-play", narrow.matches);
         if (!narrow.matches && !touch.matches) {
-            html.classList.remove("dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll");
+            for (const name of ["dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll"]) setClass(name, false);
             restore();
             return;
         }
@@ -53,12 +56,12 @@ function installVisualViewportPin(doc) {
         if (!(height > 0)) return;
         setPx("--dsh-vv-top", top);
         setPx("--dsh-vv-height", height);
-        html.classList.add("dsh-tavern-viewport-pinned");
+        setClass("dsh-tavern-viewport-pinned", true);
         // 整个外壳使用可视区高度，输入条仍贴外壳底部，避免重复叠加键盘补偿。
         const headerBottom = header ? header.getBoundingClientRect().bottom - top : 44;
         setPx("--dsh-header-bottom", headerBottom);
         // 横屏键盘下优先保留编辑和发送；展开列表改为可关闭的覆盖层。
-        html.classList.toggle("dsh-tavern-short-viewport", height - headerBottom < 280);
+        setClass("dsh-tavern-short-viewport", height - headerBottom < 280);
         const pin = seat || doc.querySelector("[data-composer-card]");
         if (pin) {
             const rectTop = pin.getBoundingClientRect().top;
@@ -77,7 +80,7 @@ function installVisualViewportPin(doc) {
         }
         // Only scroll the seat when its content really exceeds the cap: a scrolling seat clips
         // every menu that opens upward from the composer (更多, access mode, model picker).
-        html.classList.toggle("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
+        setClass("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
     }
 
     function schedule() {
