@@ -14,11 +14,13 @@ import {
 import { planNativeSurfaceRepair, applyNativeSurfaceRepair } from '../tavern-plugin/lib/domain/native-surface-repair.js'
 import { Session } from './fixtures/dsh-session-host.mjs'
 
-function failed(session, turn, queued = false) {
+const textInput = [{ type: 'text', text: '失败的输入' }]
+const imageInput = [{ type: 'image', attachment: { attachmentId: 'failed-photo', mediaType: 'image/png', bytes: 1 } }]
+function failed(session, turn, queued = false, content = textInput) {
   const data = {
     id: `failed-${turn}`,
     role: 'user',
-    content: [{ type: 'text', text: '失败的输入' }],
+    content,
     source: { kind: 'user' },
   }
   if (queued) appendSessionEvent(session, 'user/message', data, { surfaceOp: 'append' })
@@ -88,17 +90,26 @@ test('准备阶段失败的排队输入能重放，不能丢失在 turn/start �
   assert.equal(replayableFailedTurn({ events: sessionEvents(session) })?.userText, '失败的输入')
 })
 
-test('末尾存在失败输入时修复前轮正文应延后，不能吞掉失败输入', () => {
-  const { session, chat } = nativeRepairGame()
-  failed(session, 4)
-  chat.messages.at(-1).text = '需要修复的正文'
-  const count = sessionEvents(session).length
-  const plan = planNativeSurfaceRepair({ chat, ...repairEvidence(session) })
-  assert.equal(plan.status, 'deferred')
-  assert.equal(applyNativeSurfaceRepair(session, chat, plan, { repairId: 'deferred' }).applied, false)
-  assert.equal(sessionEvents(session).length, count)
-  assert.equal(replayableFailedTurn({ events: sessionEvents(session) })?.turn, 4)
-})
+for (const [label, content] of [
+  ['文字', textInput],
+  ['只有图片的', imageInput],
+])
+  test(`末尾存在${label}失败输入时修复前轮正文应延后，不能吞掉失败输入`, () => {
+    const { session, chat } = nativeRepairGame()
+    failed(session, 4, false, content)
+    chat.messages.at(-1).text = '需要修复的正文'
+    const cold = Session.fromRestore(session.id, JSON.parse(JSON.stringify(sessionEvents(session))))
+    for (const current of [session, cold]) {
+      const count = sessionEvents(current).length
+      const plan = planNativeSurfaceRepair({ chat, ...repairEvidence(current) })
+      assert.equal(plan.status, 'deferred')
+      assert.equal(applyNativeSurfaceRepair(current, chat, plan, { repairId: 'deferred' }).applied, false)
+      assert.equal(sessionEvents(current).length, count)
+      const replay = replayableFailedTurn({ events: sessionEvents(current) })
+      assert.equal(replay?.turn, 4)
+      assert.deepEqual(replay?.inputAttachments ?? [], content === imageInput ? imageInput : [])
+    }
+  })
 
 test('排队输入的失败清理覆盖输入本身，前一轮正文保持', () => {
   const { session, chat } = nativeRepairGame()

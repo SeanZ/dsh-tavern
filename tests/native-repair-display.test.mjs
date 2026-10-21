@@ -76,6 +76,32 @@ test('每个修复轮保留独立宿主正文，写入磁盘并冷读后仍可�
   assert.deepEqual(visible(restored, chat), expected)
 })
 
+test('没有 turn 字段的旧存档修复后，各轮仍显示修复正文，冷读后不变', () => {
+  const { session, chat } = nativeRepairGame()
+  revise(chat)
+  for (const message of chat.messages) {
+    delete message.turn
+    delete message.nativeAnchor
+  }
+  const result = repairNativeSurface(session, chat, { repairId: 'turnless' })
+  assert.equal(result.applied, true)
+  // 与行计划相同的推算：开场为 1，否则为此前玩家输入数加 1。
+  assert.deepEqual(
+    result.plan.rounds.map((round) => round.turn),
+    [2, 3],
+  )
+  assert.equal(recordNativeSurfaceRepair(chat, chat, result.anchors), true)
+  assert.ok(chat.messages.at(-1).nativeAnchor)
+  const restored = Session.fromRestore(
+    session.id,
+    JSON.parse(JSON.stringify(sessionEvents(session))),
+    session.header,
+    0,
+    'detached',
+  )
+  for (const current of [session, restored]) assert.deepEqual(visible(current, chat), expected)
+})
+
 // 按旧格式构造一个编辑步骤的多轮输出；新代码不能靠重写这些存量日志修复显示。
 function appendLegacyRepair(session) {
   const mutator = createSessionSurfaceMutator(session)

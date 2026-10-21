@@ -19,13 +19,16 @@ function textOf(content) {
 function chatRounds(chat) {
   const rounds = []
   let users = []
+  let inputs = 0
   for (const [index, message] of (chat.messages || []).entries()) {
-    if (message?.role === 'user') { users.push(String(message.text ?? '')); continue }
+    if (message?.role === 'user') { users.push(String(message.text ?? '')); inputs++; continue }
     if (message?.role !== 'assistant') continue
     // The native reply holds the raw model output (sourceText) unless an edit wrote the
     // projected text; both are this round. Saved texts are trimmed, native ones may not be.
     const texts = new Set([message.text, message.sourceText, message.projectionText].filter(value => typeof value === 'string').map(value => value.trim()))
-    rounds.push({ messageIndex: index, turn: Number(message.turn) || 0, greeting: message.greeting === true,
+    // 旧存档没有 turn：与行计划 setFloors 同样推算，开场为 1，否则为此前玩家输入数加 1。
+    const turn = Number(message.turn) || (message.greeting === true ? 1 : inputs + 1)
+    rounds.push({ messageIndex: index, turn, greeting: message.greeting === true,
       userText: users.length ? users.join('\n\n') : null, replyText: String(message.text ?? ''), texts, anchor: message.nativeAnchor })
     users = []
   }
@@ -110,8 +113,9 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
   // Keeping every node and writing nothing is no repair at all.
   const failedInputs = new Set([...ended].filter(([, reason]) => isFailedTurnEnd(reason))
     .map(([turn]) => inputEventForTurn({ events }, turn)?.seq).filter(Number.isSafeInteger))
-  const protectedNode = seq => isStoryResidue(bySeq.get(seq)) &&
-    (failedInputs.has(seq) || isFailedTurnEnd(ended.get(turnOfSeq.get(seq))))
+  // 失败输入本身总受保护：只发附件的输入没有文字，不算残留，但仍要留给失败重放。
+  const protectedNode = seq => failedInputs.has(seq) ||
+    (isStoryResidue(bySeq.get(seq)) && isFailedTurnEnd(ended.get(turnOfSeq.get(seq))))
   const plan = (status, keep, rewrite) => {
     // 未完成回合及失败输入有独立的恢复入口，普通正文修复不能顺带吞掉它们。
     if ((rewrite.length || keep < nodes.length) && (openTurnStep(events).turn !== null || nodes.slice(keep).some(protectedNode))) {
@@ -190,7 +194,7 @@ export function recordNativeSurfaceRepair(current, repaired, anchors) {
   if (current.nativeSync) { delete current.nativeSync; changed = true }
   for (const { messageIndex, anchor } of anchors) {
     const row = current.messages?.[messageIndex], read = repaired.messages?.[messageIndex]
-    if (!anchor || row?.role !== 'assistant' || row.text !== read?.text || Number(row.turn) !== Number(read?.turn)) continue
+    if (!anchor || row?.role !== 'assistant' || row.text !== read?.text || (Number(row.turn) || 0) !== (Number(read?.turn) || 0)) continue
     row.nativeAnchor = anchor
     // The rewritten reply already carries the edit; replaying the marker would target a shadowed node.
     delete row.bodyEdit
