@@ -63,8 +63,13 @@ export function inputEventForTurn(session, turn) {
   const events = sessionEvents(session)
   const start = turnStartIndex(events, turn)
   if (start < 0) return null
+  // 宿主可能先入队输入，再开启回合；只看上一个生命周期边界之后的队列。
+  let queued = start
+  while (queued > 0 && !['turn/start', 'turn/end'].includes(events[queued - 1]?.type)) queued--
+  for (let index = queued; index < start; index++) if (isNewTurnInput(events[index])) return events[index]
   for (let index = start + 1; index < events.length; index++) {
     const event = events[index]
+    if (event?.type === 'turn/start' || event?.type === 'turn/end') break
     if (isNewTurnInput(event)) return event
   }
   return null

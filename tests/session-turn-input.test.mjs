@@ -64,3 +64,13 @@ test('找出模型看过、存档却没记下的已完成轮次；回退、失�
   assert.deepEqual(uncommittedRounds(session, header).map(item => [item.turn, item.requestId, item.userText, item.assistantText]), [[4, 'rpc-4', '漏记的一轮', '漏记的一轮的回复']])
   assert.deepEqual(uncommittedRounds(session, { nativeCommits: {} }), [], 'saves without commit records are left alone')
 })
+
+test('没有输入的回合不能拿后续回合的玩家输入', () => {
+  const session = Session.create('input-boundary')
+  appendSessionEvent(session, 'turn/start', { turn: 1 })
+  appendSessionEvent(session, 'turn/end', { turn: 1, reason: { kind: 'error' } })
+  appendSessionEvent(session, 'turn/start', { turn: 2 })
+  appendSessionEvent(session, 'user/message', input('later', '后续输入', 'rpc-later'), { surfaceOp: 'append' })
+  assert.equal(userMessageForTurn(session, 1), '')
+  assert.equal(userMessageForTurn(session, 2).content[0].text, '后续输入')
+})

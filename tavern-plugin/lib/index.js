@@ -4876,6 +4876,7 @@ export async function apply(ctx) {
     if (!chat || chat.regenInProgress || !['story', 'script'].includes(chat.mode || 'story')) return null
     try {
       const result = repairNativeSurface(session, chat, { repairId: randomUUID() })
+      if (result.plan.status === 'deferred') return result
       if (result.applied) await sessionStore.flush(session)
       await updateChat(chat.id, current => recordNativeSurfaceRepair(current, chat, result.anchors) ? current : undefined, { source: 'native-repair' })
       if (result.applied) console.warn('dsh-tavern: 模型上下文与存档不一致（' + reason + '），已按存档重写最近 ' + result.plan.rounds.length + ' 轮')
