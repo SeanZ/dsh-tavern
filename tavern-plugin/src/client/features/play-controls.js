@@ -52,6 +52,8 @@
 				async function exportLogs() {
 					setBusy(true);
 					try {
+						// 只有显式导出日志时才让当前会话的卡片按预算采集 DOM；采集失败不影响导出。
+						await tavernFrameDiagnostics.capture(props.sessionId).catch(function () {});
 						const result = await rpc("exportTavernLogs", {}, props.sessionId);
 						const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0); });
 						downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename);

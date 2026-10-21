@@ -1094,6 +1094,7 @@ window.__ModuleLoader__.load({
 		exports.TavernMessageFrame = TavernMessageFrame;
 		exports.TavernPersistentStatusRuntime = TavernPersistentStatusRuntime;
 		exports.createTavernMessageFrameLifecycle = createTavernMessageFrameLifecycle;
+		exports.createTavernFrameDiagnostics = createTavernFrameDiagnostics;
 		exports.createTavernScriptExecutionModule = createTavernScriptExecutionModule;
 		exports.createTavernScriptSessionOwner = createTavernScriptSessionOwner;
 		exports.createTavernSessionRetention = createTavernSessionRetention;

@@ -154,11 +154,17 @@
 			});
 		}
 
+		// @include modules/frame-diagnostics.js
+		const tavernFrameDiagnostics = createTavernFrameDiagnostics(window);
+
 		// Owns document replacement, authenticated frame messages and their cleanup.
 		// React only renders the visible/pending documents and controls lazy activation.
 		function createTavernMessageFrameLifecycle(initial, options) {
 			const hostWindow = options && options.window || window;
 			const invoke = options && options.rpc || rpc;
+			const diagnostics = options && options.diagnostics || tavernFrameDiagnostics;
+			// 显式 DOM 快照的等待者，按文档 token；frame 重建或生命周期结束时一并结清。
+			const snapshotWaiters = new Map();
 			const configuredSlashExecutor = options && options.executeSlash;
 			const invalidate = options && options.invalidate || function (sessionId) { liveTavernView.invalidate(sessionId); };
 			const channels = new Map();
@@ -281,7 +287,7 @@
                         document.layout = layout;
                         if (document.sizing.mode !== "content") applySizing(document, channel, layout.height);
                     }));
-                    if (!node) { retireGenerations(document); channels.delete(document.token); }
+                    if (!node) { retireGenerations(document); channels.delete(document.token); settleSnapshot(document.token, false); }
 				};
 				return document;
 			}
@@ -301,6 +307,23 @@
 				if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 				runtimeTimer = null;
 				pendingRuntime = null;
+			}
+			function settleSnapshot(token, captured) {
+				const waiter = snapshotWaiters.get(token);
+				if (!waiter) return;
+				snapshotWaiters.delete(token);
+				hostWindow.clearTimeout(waiter.timer);
+				waiter.resolve(captured);
+			}
+			// 只在显式请求时让当前可见 frame 按预算采集 DOM；状态栏页面不采集 DOM。
+			function requestSnapshot() {
+				const token = visible.token, channel = channels.get(token), node = channel && channel.element();
+				if (!listener || visible.key !== desired.key || !diagnostics.foreground(visible.sessionId) || props.persistent || props.runtimeReporting === false || !props.sessionId || !(props.turn > 0) || !node || !node.contentWindow) return Promise.resolve(false);
+				settleSnapshot(token, false);
+				return new Promise(function (resolve) {
+					snapshotWaiters.set(token, { resolve: resolve, timer: hostWindow.setTimeout(function () { settleSnapshot(token, false); }, TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS) });
+					node.contentWindow.postMessage({ type: "dsh-tavern-frame-dom-snapshot", token: token }, "*");
+				});
 			}
 			function sendContext(document, mode) {
 				const channel = document && channels.get(document.token);
@@ -336,11 +359,12 @@
 				props = next;
 				if (sessionChanged || props.eager === true) frozenHelperContext = props.helperContext;
 				helperContext = props.eager === true ? props.helperContext : frozenHelperContext;
-				if (desired.key !== documentKey()) desired = createDocument();
+				if (desired.key !== documentKey()) { cancelRuntimeReport(); desired = createDocument(); }
 				if (sessionChanged) {
 					// Never keep an old conversation's page eligible for writes in a new one.
                     for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 					channels.clear();
+					for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 					visible = desired; pending = null;
 					height = (props.openingPreview ? 160 : restoredTavernFrameHeight(visible.heightKey, visible.content));
 					publish();
@@ -423,15 +447,22 @@
 						if (current() && result && result.captured === true) invalidate(requestProps.sessionId);
 					}, function () {});
 				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false && props.sessionId && props.turn > 0) {
+					// 后台保留的会话页面不写诊断，诊断只归属当前前台会话。
+					if (sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId)) { settleSnapshot(data.token, false); return; }
 					pendingRuntime = Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
                         availableHeight: sourceDocument.layout?.available, reason: sourceDocument.sizing?.mode === "content" ? "content" : sourceDocument.layout?.reason || "content",
                         mode: sourceDocument.sizing?.mode || "legacy", source: sourceDocument.sizing?.source || "legacy"
                     }) });
-					if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(function () {
+					const flush = function () {
+						if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 						runtimeTimer = null;
 						const runtime = pendingRuntime; pendingRuntime = null;
-						if (current()) invoke("captureDisplayRuntime", { turn: requestProps.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, requestProps.sessionId).catch(function () {});
-					}, 1000);
+						if (!current() || sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId) || !runtime) return Promise.resolve(false);
+						return Promise.resolve(invoke("captureDisplayRuntime", { turn: requestProps.persistent ? requestProps.turn : sourceDocument.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, sourceDocument.sessionId)).then(function () { return true; }, function () { return false; });
+					};
+					// 显式快照立即写入，导出日志时才能读到；常规报告仍合并一秒。
+					if (data.explicit === true) flush().then(function (captured) { settleSnapshot(data.token, captured); });
+					else if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(flush, 1000);
 				} else if ((data.type === "dsh-tavern-opening-worldbook" || data.type === "dsh-tavern-opening-save" || data.type === "dsh-tavern-opening-read") && !props.sessionId && props.openingPreview) {
 					void (async function () {
 					try {
@@ -569,6 +600,7 @@
 					const openingArtifacts = props.openingPreview && props.trustedCardMode
 						? createTavernHostArtifactScope({ document: hostWindow.document }) : null;
 					hostWindow.addEventListener("message", receive);
+					const unregisterDiagnostics = diagnostics.register({ sessionId: function () { return props.sessionId; }, snapshot: requestSnapshot });
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
                             const channel = channels.get(visible.token);
@@ -606,6 +638,8 @@
                         for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 						listener = null; lifetime++;
 						hostWindow.removeEventListener("message", receive);
+						unregisterDiagnostics();
+						for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 						cancelRuntimeReport();
 					};
 				}

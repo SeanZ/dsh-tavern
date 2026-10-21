@@ -6096,6 +6096,133 @@ function tavernModelRefusalNotice(text) {
 			}
 			return 0;
 		}
+		// 显式快照只访问预算内的节点，再序列化选中的小树。节点、深度及 UTF-8 字节都有硬上限；
+		// 不整树 clone，不读取 innerHTML，也不先展开全部兄弟节点或转义超长文本。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function captureTavernBoundedDom(root, budget) {
+		    function limit(name, fallback) {
+		        var value = Number(budget && budget[name]);
+		        return Number.isFinite(value) && value > 0 ? Math.min(fallback, Math.floor(value)) : fallback;
+		    }
+		    var limits = { nodes: limit("nodes", 2000), depth: limit("depth", 32), bytes: limit("bytes", 100000) };
+		    var nodes = 0,
+		        visited = 0,
+		        bytes = 0,
+		        deepest = 0,
+		        truncated = false;
+		    var voids = /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/;
+		    function escaped(value, available, attribute) {
+		        var out = "",
+		            used = 0,
+		            index = 0;
+		        for (; index < value.length; index += part.length) {
+		            var code = value.codePointAt(index),
+		                part = String.fromCodePoint(code);
+		            var replacement =
+		                part === "&"
+		                    ? "&amp;"
+		                    : part === "<"
+		                      ? "&lt;"
+		                      : part === ">"
+		                        ? "&gt;"
+		                        : attribute && part === '"'
+		                          ? "&quot;"
+		                          : part;
+		            var cost =
+		                replacement === part ? (code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4) : replacement.length;
+		            if (used + cost > available) break;
+		            out += replacement;
+		            used += cost;
+		        }
+		        return { text: out, bytes: used, complete: index === value.length };
+		    }
+		    function own(node) {
+		        if (!/^(?:script|style)$/i.test(node.tagName)) return false;
+		        // 属性遍历也受字节预算约束，避免巨大属性集合绕过工作量限制。
+		        for (var i = 0; i < Math.min(node.attributes.length, limits.bytes); i++) {
+		            if (node.attributes[i].name.indexOf("data-dsh-tavern") === 0) return true;
+		        }
+		        return false;
+		    }
+		    function tagParts(node, available) {
+		        var name = node.tagName.toLowerCase(),
+		            close = voids.test(name) ? "" : "</" + name + ">";
+		        var head = "<" + name;
+		        var boundedName = escaped(name, available, false);
+		        if (!boundedName.complete) return null;
+		        var cost = 2 + boundedName.bytes + (close ? 3 + boundedName.bytes : 0);
+		        if (cost > available) return null;
+		        for (var i = 0; i < node.attributes.length; i++) {
+		            var attr = node.attributes[i],
+		                prefix = " " + attr.name + '="';
+		            var boundedAttribute = escaped(attr.name, available - cost, false);
+		            if (!boundedAttribute.complete) return null;
+		            cost += boundedAttribute.bytes + 4;
+		            if (cost > available) return null;
+		            var value = escaped(attr.value, available - cost, true);
+		            if (!value.complete) return null;
+		            head += prefix + value.text + '"';
+		            cost += value.bytes;
+		        }
+		        return { head: head + ">", close: close, bytes: cost };
+		    }
+		    var kept = { children: [] };
+		    var stack = [{ next: root.firstChild, depth: 1, parent: kept }];
+		    while (stack.length) {
+		        var frame = stack[stack.length - 1],
+		            node = frame.next;
+		        if (!node) {
+		            stack.pop();
+		            continue;
+		        }
+		        if (visited >= limits.nodes || bytes >= limits.bytes) {
+		            truncated = true;
+		            break;
+		        }
+		        visited++;
+		        frame.next = node.nextSibling;
+		        if (node.nodeType !== 1 && node.nodeType !== 3) continue;
+		        if (frame.depth > limits.depth) {
+		            truncated = true;
+		            continue;
+		        }
+		        if (node.nodeType === 1 && own(node)) continue;
+		        var entry;
+		        if (node.nodeType === 3) {
+		            var text = escaped(node.data, limits.bytes - bytes, false);
+		            entry = { text: text.text };
+		            bytes += text.bytes;
+		            if (!text.complete) truncated = true;
+		        } else {
+		            var tag = tagParts(node, limits.bytes - bytes);
+		            if (!tag) {
+		                truncated = true;
+		                break;
+		            }
+		            entry = { head: tag.head, close: tag.close, children: [] };
+		            bytes += tag.bytes;
+		        }
+		        frame.parent.children.push(entry);
+		        nodes++;
+		        deepest = Math.max(deepest, frame.depth);
+		        if (node.nodeType === 1 && entry.close)
+		            stack.push({ next: node.firstChild, depth: frame.depth + 1, parent: entry });
+		        if (node.nodeType === 3 && !text.complete) break;
+		    }
+		    function serialize(entry) {
+		        return entry.text !== undefined
+		            ? entry.text
+		            : entry.head + entry.children.map(serialize).join("") + entry.close;
+		    }
+		    var dom = kept.children.map(serialize).join("");
+		    var marker = "<!-- 已截断 -->",
+		        markerBytes = 18;
+		    if (truncated && bytes + markerBytes <= limits.bytes) {
+		        dom += marker;
+		        bytes += markerBytes;
+		    }
+		    return { dom: dom, truncated: truncated, nodes: nodes, visited: visited, depth: deepest, bytes: bytes };
+		}
         function normalizeFrameSizing(value) {
           if (!value || !['content', 'viewport', 'fixed'].includes(value.mode)) return null
           const result = { mode: value.mode, minHeight: 48, maxHeight: 32000 }
@@ -6516,7 +6643,7 @@ function tavernModelRefusalNotice(text) {
 			const interactiveHelperShim = input && input.helperContext ? '<script data-dsh-tavern-interactive-helper>(function(){var token=' + token + ',nextId=1,pending=Object.create(null);function copy(value){try{return structuredClone(value);}catch(e){return JSON.parse(JSON.stringify(value));}}function call(method,args){return new Promise(function(resolve,reject){var requestId="interactive:"+String(nextId++);pending[requestId]={resolve:resolve,reject:reject};parent.postMessage({type:"dsh-tavern-helper-call",token:token,requestId:requestId,method:method,args:copy(args||{})},"*");});}addEventListener("message",function(event){var data=event&&event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-helper-response")return;var task=pending[data.requestId];if(!task)return;delete pending[data.requestId];if(data.ok)task.resolve(data.result);else task.reject(new Error(String(data.error||"Helper 调用失败")));});function payload(entries){if(!Array.isArray(entries))throw new TypeError("世界书条目必须是数组");return copy(entries).map(function(entry){delete entry.uid;return entry;});}async function fresh(name){var result=await call("getTavernHelperWorldbook",{name:String(name||"")});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}async function replace(name,entries,expectedEntries){var result=await call("replaceTavernHelperWorldbook",{name:String(name||""),entries:copy(entries),expectedEntries:copy(expectedEntries)});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}window.getWorldbook=async function(name){return await fresh(name);};window.updateWorldbookWith=async function(name,updater){if(typeof updater!=="function")throw new TypeError("世界书更新器必须是函数");var current=await fresh(name),draft=copy(current),next=await updater(draft);return await replace(name,next===undefined?draft:next,current);};window.createWorldbookEntries=async function(name,entries){var additions=payload(entries),previous;var worldbook=await window.updateWorldbookWith(name,function(current){previous=new Set(current.map(function(entry){return entry.uid;}));return current.concat(additions);});return{worldbook:worldbook,new_entries:worldbook.filter(function(entry){return!previous.has(entry.uid);})};};window.deleteWorldbookEntries=async function(name,predicate){if(typeof predicate!=="function")throw new TypeError("世界书删除条件必须是函数");var deleted=[];var worldbook=await window.updateWorldbookWith(name,function(current){return current.filter(function(entry){if(!predicate(copy(entry)))return true;deleted.push(copy(entry));return false;});});return{worldbook:worldbook,deleted_entries:deleted};};window.createChatMessages=async function(messages,option){var result=await call("createTavernHelperMessages",{messages:copy(Array.isArray(messages)?messages:[]),option:copy(option&&typeof option==="object"?option:{})});if(result&&result.stale)throw new Error("聊天已变化，消息未创建");};window.triggerSlash=function(line){return call("triggerTavernSlash",{line:window.substitudeMacros(String(line||""))}).then(function(result){return result&&Object.prototype.hasOwnProperty.call(result,"pipe")?result.pipe:result;});};window.TavernHelper=window.TavernHelper||{};["formatAsTavernRegexedString","isCharacterTavernRegexesEnabled","triggerSlash","getMessageId","getIframeName","errorCatched","retrieveDisplayedMessage","waitGlobalInitialized","getCurrentMessageId","getLastMessageId","getChatMessages","setChatMessages","getAllVariables","getCurrentCharacterName","getVariables","deleteVariable","replaceVariables","insertOrAssignVariables","insertVariables","updateVariablesWith","generateRaw","createChatMessages","getWorldbook","getCharWorldbookNames","getWorldbookNames","updateWorldbookWith","createWorldbookEntries","deleteWorldbookEntries"].forEach(function(name){Object.defineProperty(window.TavernHelper,name,{enumerable:true,configurable:true,get:function(){return window[name];},set:function(value){window[name]=value;}});});})();<\/script>' : '';
 			const mvuViewObservationShim = input && input.helperContext && input.observeMvuView !== false ? '<script data-dsh-tavern-mvu-view-observer>(function(){var token=' + token + ',reported=false;function report(){if(reported)return;reported=true;window.__dshTavernMvuViewUsed=true;parent.postMessage({type:"dsh-tavern-mvu-view-used",token:token,mvuViewUsed:true},"*");}var getMvuData=window.Mvu&&window.Mvu.getMvuData;if(typeof getMvuData==="function")window.Mvu.getMvuData=function(){report();return getMvuData.apply(window.Mvu,arguments);};var getVariables=window.getVariables;if(typeof getVariables==="function")window.getVariables=function(){report();return getVariables.apply(window,arguments);};})();<\/script>' : '';
 			// parent.Mvu may throw an Error from another iframe: instanceof alone loses its stack.
-			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var captureDom=' + JSON.stringify(!(input && input.persistent === true)) + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(){timer=0;var dom="";try{if(captureDom&&document.body){var copy=document.body.cloneNode(true);Array.prototype.forEach.call(copy.querySelectorAll("script[data-dsh-tavern-frame],script[data-dsh-tavern-storage],script[data-dsh-tavern-layout]"),function(node){node.remove();});dom=copy.innerHTML;}}catch(e){}if(dom.length>100000)dom=dom.slice(0,100000)+"<!-- 已截断 -->";parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,runtime:{capturedAt:Date.now(),dom:dom,console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
+			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var domAllowed=' + JSON.stringify(!(input && input.persistent === true)) + ',captureDom=' + captureTavernBoundedDom.toString() + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(snapshot){timer=0;parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,explicit:Boolean(snapshot),runtime:{capturedAt:Date.now(),dom:snapshot?snapshot.dom:"",console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}addEventListener("message",function(event){var data=event.data;if(!domAllowed||event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-dom-snapshot")return;var snapshot={dom:""};try{if(document.body)snapshot=captureDom(document.body);}catch(e){}if(timer)clearTimeout(timer);send(snapshot);});function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
 			// Text replacement and paint-only style writes (clocks, counters, animations) skip the
 			// full-document scan: in-flow growth still reaches the ResizeObserver on html/body.
 			// Content that grows by exactly as much as the frame just did is sized by the frame
@@ -6539,7 +6666,7 @@ function tavernModelRefusalNotice(text) {
 			// Card module scripts wait for the helper globals (z, YAML) as the script sandbox does;
 			// otherwise a module using them at top level races the async import.
 			const frameHtml = helperShim || preparationRuntime ? String(html).replace(/<script\b[^>]*\btype\s*=\s*["']?module["']?[^>]*>/gi, tag => /\bsrc\s*=/i.test(tag) ? tag : tag + 'await window.__dshTavernHelperReady;') : html;
-			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,").replace('dom=copy.innerHTML;', 'Array.from(copy.querySelectorAll("script[data-dsh-tavern-text-colors],script[data-dsh-tavern-touch]")).forEach(function(node){node.remove();});dom=copy.innerHTML;');
+			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,");
 			return '<!doctype html><html><head><meta charset="utf-8">'
                 + '<script data-dsh-tavern-crypto>(' + installTavernCryptoSubtlePolyfill.toString() + ')(window);<\/script>'
                 + '<script data-dsh-tavern-tilt-guard>(' + installTavernPointerTiltGuard.toString() + ')(window);<\/script>'
@@ -10611,11 +10738,56 @@ function bindTavernFontZoom(node, win) {
 			});
 		}
 
+		// 人物卡消息 frame 的诊断登记处。诊断只归属当前前台会话：后台保留的 frame 不写运行报告，
+		// 显式 DOM 快照也只向前台会话的 frame 索取。frame 重建或注销时由生命周期释放登记与等待。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		const TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS = 2000;
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernFrameDiagnostics(host) {
+		    const entries = new Set();
+		    function foreground(sessionId) {
+		        const selected = String((host && host.__dshTavernSelectedSessionId) || "");
+		        return Boolean(sessionId) && (!selected || selected === String(sessionId));
+		    }
+		    return Object.freeze({
+		        foreground: foreground,
+		        register: function (entry) {
+		            entries.add(entry);
+		            return function () {
+		                entries.delete(entry);
+		            };
+		        },
+		        // 导出日志前调用：等待前台会话各 frame 的快照写入；单个 frame 超时只算未采集，不阻塞导出。
+		        capture: function (sessionId) {
+		            if (!foreground(sessionId)) return Promise.resolve(0);
+		            const pending = Array.from(entries)
+		                .filter(function (entry) {
+		                    return String(entry.sessionId()) === String(sessionId);
+		                })
+		                .map(function (entry) {
+		                    return Promise.resolve(entry.snapshot()).catch(function () {
+		                        return false;
+		                    });
+		                });
+		            return Promise.all(pending).then(function (results) {
+		                return results.filter(Boolean).length;
+		            });
+		        },
+		        size: function () {
+		            return entries.size;
+		        },
+		    });
+		}
+		const tavernFrameDiagnostics = createTavernFrameDiagnostics(window);
+
 		// Owns document replacement, authenticated frame messages and their cleanup.
 		// React only renders the visible/pending documents and controls lazy activation.
 		function createTavernMessageFrameLifecycle(initial, options) {
 			const hostWindow = options && options.window || window;
 			const invoke = options && options.rpc || rpc;
+			const diagnostics = options && options.diagnostics || tavernFrameDiagnostics;
+			// 显式 DOM 快照的等待者，按文档 token；frame 重建或生命周期结束时一并结清。
+			const snapshotWaiters = new Map();
 			const configuredSlashExecutor = options && options.executeSlash;
 			const invalidate = options && options.invalidate || function (sessionId) { liveTavernView.invalidate(sessionId); };
 			const channels = new Map();
@@ -10738,7 +10910,7 @@ function bindTavernFontZoom(node, win) {
                         document.layout = layout;
                         if (document.sizing.mode !== "content") applySizing(document, channel, layout.height);
                     }));
-                    if (!node) { retireGenerations(document); channels.delete(document.token); }
+                    if (!node) { retireGenerations(document); channels.delete(document.token); settleSnapshot(document.token, false); }
 				};
 				return document;
 			}
@@ -10758,6 +10930,23 @@ function bindTavernFontZoom(node, win) {
 				if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 				runtimeTimer = null;
 				pendingRuntime = null;
+			}
+			function settleSnapshot(token, captured) {
+				const waiter = snapshotWaiters.get(token);
+				if (!waiter) return;
+				snapshotWaiters.delete(token);
+				hostWindow.clearTimeout(waiter.timer);
+				waiter.resolve(captured);
+			}
+			// 只在显式请求时让当前可见 frame 按预算采集 DOM；状态栏页面不采集 DOM。
+			function requestSnapshot() {
+				const token = visible.token, channel = channels.get(token), node = channel && channel.element();
+				if (!listener || visible.key !== desired.key || !diagnostics.foreground(visible.sessionId) || props.persistent || props.runtimeReporting === false || !props.sessionId || !(props.turn > 0) || !node || !node.contentWindow) return Promise.resolve(false);
+				settleSnapshot(token, false);
+				return new Promise(function (resolve) {
+					snapshotWaiters.set(token, { resolve: resolve, timer: hostWindow.setTimeout(function () { settleSnapshot(token, false); }, TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS) });
+					node.contentWindow.postMessage({ type: "dsh-tavern-frame-dom-snapshot", token: token }, "*");
+				});
 			}
 			function sendContext(document, mode) {
 				const channel = document && channels.get(document.token);
@@ -10793,11 +10982,12 @@ function bindTavernFontZoom(node, win) {
 				props = next;
 				if (sessionChanged || props.eager === true) frozenHelperContext = props.helperContext;
 				helperContext = props.eager === true ? props.helperContext : frozenHelperContext;
-				if (desired.key !== documentKey()) desired = createDocument();
+				if (desired.key !== documentKey()) { cancelRuntimeReport(); desired = createDocument(); }
 				if (sessionChanged) {
 					// Never keep an old conversation's page eligible for writes in a new one.
                     for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 					channels.clear();
+					for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 					visible = desired; pending = null;
 					height = (props.openingPreview ? 160 : restoredTavernFrameHeight(visible.heightKey, visible.content));
 					publish();
@@ -10880,15 +11070,22 @@ function bindTavernFontZoom(node, win) {
 						if (current() && result && result.captured === true) invalidate(requestProps.sessionId);
 					}, function () {});
 				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false && props.sessionId && props.turn > 0) {
+					// 后台保留的会话页面不写诊断，诊断只归属当前前台会话。
+					if (sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId)) { settleSnapshot(data.token, false); return; }
 					pendingRuntime = Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
                         availableHeight: sourceDocument.layout?.available, reason: sourceDocument.sizing?.mode === "content" ? "content" : sourceDocument.layout?.reason || "content",
                         mode: sourceDocument.sizing?.mode || "legacy", source: sourceDocument.sizing?.source || "legacy"
                     }) });
-					if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(function () {
+					const flush = function () {
+						if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 						runtimeTimer = null;
 						const runtime = pendingRuntime; pendingRuntime = null;
-						if (current()) invoke("captureDisplayRuntime", { turn: requestProps.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, requestProps.sessionId).catch(function () {});
-					}, 1000);
+						if (!current() || sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId) || !runtime) return Promise.resolve(false);
+						return Promise.resolve(invoke("captureDisplayRuntime", { turn: requestProps.persistent ? requestProps.turn : sourceDocument.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, sourceDocument.sessionId)).then(function () { return true; }, function () { return false; });
+					};
+					// 显式快照立即写入，导出日志时才能读到；常规报告仍合并一秒。
+					if (data.explicit === true) flush().then(function (captured) { settleSnapshot(data.token, captured); });
+					else if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(flush, 1000);
 				} else if ((data.type === "dsh-tavern-opening-worldbook" || data.type === "dsh-tavern-opening-save" || data.type === "dsh-tavern-opening-read") && !props.sessionId && props.openingPreview) {
 					void (async function () {
 					try {
@@ -11026,6 +11223,7 @@ function bindTavernFontZoom(node, win) {
 					const openingArtifacts = props.openingPreview && props.trustedCardMode
 						? createTavernHostArtifactScope({ document: hostWindow.document }) : null;
 					hostWindow.addEventListener("message", receive);
+					const unregisterDiagnostics = diagnostics.register({ sessionId: function () { return props.sessionId; }, snapshot: requestSnapshot });
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
                             const channel = channels.get(visible.token);
@@ -11063,6 +11261,8 @@ function bindTavernFontZoom(node, win) {
                         for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 						listener = null; lifetime++;
 						hostWindow.removeEventListener("message", receive);
+						unregisterDiagnostics();
+						for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 						cancelRuntimeReport();
 					};
 				}
@@ -21245,6 +21445,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				async function exportLogs() {
 					setBusy(true);
 					try {
+						// 只有显式导出日志时才让当前会话的卡片按预算采集 DOM；采集失败不影响导出。
+						await tavernFrameDiagnostics.capture(props.sessionId).catch(function () {});
 						const result = await rpc("exportTavernLogs", {}, props.sessionId);
 						const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0); });
 						downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename);
@@ -23337,6 +23539,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 		exports.TavernMessageFrame = TavernMessageFrame;
 		exports.TavernPersistentStatusRuntime = TavernPersistentStatusRuntime;
 		exports.createTavernMessageFrameLifecycle = createTavernMessageFrameLifecycle;
+		exports.createTavernFrameDiagnostics = createTavernFrameDiagnostics;
 		exports.createTavernScriptExecutionModule = createTavernScriptExecutionModule;
 		exports.createTavernScriptSessionOwner = createTavernScriptSessionOwner;
 		exports.createTavernSessionRetention = createTavernSessionRetention;
