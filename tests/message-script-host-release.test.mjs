@@ -152,3 +152,28 @@ test('消息脚本层卸载时清理副本上的宿主 jQuery 事件并通知释
     dom.window.close()
   }
 })
+
+test('消息先卸载、异步渲染后完成时，迟到浮层仍被清理；随后重建不沿用旧归属', async () => {
+  const dom = await hostDom()
+  try {
+    const { window } = dom,
+      { document } = window
+    const scope = window.makeScope({ document })
+    const end = scope.beginMessage('8')
+    scope.releaseMessage('8')
+    scope.mutateRoot(document.body, () => document.body.append(document.createElement('aside')))
+    end()
+    assert.equal(document.querySelector('aside'), null)
+    assert.equal(window.observers.live, 0)
+    const next = scope.beginMessage('8')
+    scope.mutateRoot(document.body, () => document.body.append(document.createElement('aside')))
+    next()
+    assert.ok(document.querySelector('aside'))
+    scope.releaseMessage('8')
+    assert.equal(document.querySelector('aside'), null)
+    assert.equal(window.observers.live, 0)
+    scope.dispose()
+  } finally {
+    dom.window.close()
+  }
+})
