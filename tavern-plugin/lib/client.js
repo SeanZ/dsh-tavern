@@ -19475,14 +19475,16 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				link.href = "/api/dsh-tavern/card-export?path=" + encodeURIComponent(card.path);
 				document.body.appendChild(link); link.click(); link.remove();
 			}
+			// 引用按钮只认真实可用的回调：制卡会话且注入了回调才显示。
+			const mention = sessionMode === "card" && typeof props.appendMention === "function" ? props.appendMention : null;
 			const h = React.createElement;
 			if (selectedPath) {
 				if (!card) return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" }, h("div", { className: "dsh-tavern-status-head" }, h("button", { className: "dsh-tavern-btn", onClick: clearCard }, "← 返回人物卡库")), loading ? h("div", { className: "dsh-tavern-empty" }, "正在读取人物卡…") : error ? h("div", { className: "dsh-tavern-dock-error" }, error, h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")) : h("div", { className: "dsh-tavern-empty" }, "人物卡读取失败", h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")));
-				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: sessionMode === "card" ? function () { props.appendMention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
+				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: mention ? function () { mention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
 			}
 			const visible = organization.visible;
 			// "@" quotes a card into the card workspace conversation; only there does it mean anything.
-			const mentionButton = sessionMode === "card" ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); props.appendMention(item.path, item.name); } }, "@"); } : null;
+			const mentionButton = mention ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); mention(item.path, item.name); } }, "@"); } : null;
 			return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" },
 				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "人物卡库"), h("div", { className: "dsh-tavern-question-sub" }, cards.length + " 张人物卡"), h("div", { className: "dsh-tavern-library-head-actions" }, h(MobileCardImportButton, { inputRef: importInput, disabled: busy, onImported: async function (imported) { await refreshCards(); await loadCard(imported.path); notifyTavernDataChanged(["cards"], "cards"); } }), h("input", { ref: importInput, type: "file", multiple: true, accept: TAVERN_CARD_FILE_ACCEPT, style: { display: "none" }, onChange: function (event) { const files = Array.from(event.target.files || []); importCardFiles(files); event.target.value = ""; } }))),
 				h("div", { className: "dsh-tavern-question-sub dsh-tavern-card-import-hint", role: "status" }, importStatus || "支持多选 PNG、JSON、CHARX、DSH 人物卡一起导入"),
@@ -19850,8 +19852,12 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				order: 3,
 				single: true,
 				component: function (props) {
+					// 只给制卡会话注入引用回调；其他会话不注入空回调，人物卡库也就不显示引用按钮。
+					const sessionId = props.scope.sessionId;
+					const mode = useTavernSessionMode(sessionId);
 					return React.createElement(CardLibraryTab, Object.assign({}, props, {
-						appendMention: function (path, label) { appendMention(props.scope.sessionId, "card", path, label); },
+						appendMention: mode === "card" && sessionId && typeof appendMention === "function"
+							? function (path, label) { appendMention(sessionId, "card", path, label); } : undefined,
 						archiveSession: function (sessionId) { return ctx.workspaces.archiveSession(sessionId); },
 						openWorldBook: function (source) {
 							openTavernSidebarTab(ctx, { type: "dsh-tavern:worldbooks", meta: { worldBookSource: source } }, { sessionId: props.scope.sessionId });
