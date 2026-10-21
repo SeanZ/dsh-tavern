@@ -68,7 +68,13 @@ export function inputEventForTurn(session, turn) {
   let queued = start
   while (queued > 0 && !['turn/start', 'turn/end'].includes(events[queued - 1]?.type)) queued--
   if (queued === 0 || events[queued - 1]?.type === 'turn/end') {
-    for (let index = queued; index < start; index++) if (isNewTurnInput(events[index])) return events[index]
+    let input = null
+    for (let index = queued; index < start; index++) {
+      // 旧日志开头可能没有生命周期标记；已有回复结束了此前输入，不能再当作排队消息。
+      if (events[index]?.type === 'assistant/message') input = null
+      else if (!input && isNewTurnInput(events[index])) input = events[index]
+    }
+    if (input) return input
   }
   for (let index = start + 1; index < events.length; index++) {
     const event = events[index]

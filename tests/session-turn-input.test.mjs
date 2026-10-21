@@ -98,3 +98,16 @@ test('没有输入的回合不能拿后续回合的玩家输入', () => {
   assert.equal(userMessageForTurn(session, 1), '')
   assert.equal(userMessageForTurn(session, 2).content[0].text, '后续输入')
 })
+
+test('无生命周期标记的旧正文结束此前输入，只接纳它之后的排队输入', () => {
+  for (const queued of [false, true]) {
+    const session = Session.create('legacy-queue-' + queued)
+    appendSessionEvent(session, 'user/message', input('old', '旧输入', 'old-rpc'), { surfaceOp: 'append' })
+    appendSessionEvent(session, 'assistant/message', reply('old-body', 1, '旧正文'), { surfaceOp: 'append' })
+    if (queued) appendSessionEvent(session, 'user/message', input('new', '新输入', 'new-rpc'), { surfaceOp: 'append' })
+    appendSessionEvent(session, 'turn/start', { turn: 2 })
+    if (!queued) appendSessionEvent(session, 'user/message', input('new', '新输入', 'new-rpc'), { surfaceOp: 'append' })
+    assert.equal(requestIdForTurn(session, 2), 'new-rpc')
+    assert.equal(userMessageForTurn(session, 2).content[0].text, '新输入')
+  }
+})
