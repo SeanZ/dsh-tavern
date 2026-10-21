@@ -1,5 +1,6 @@
 import { upgradeReferences, upgradedAnchor } from './session-upgrade-references.js'
 import { sessionEvents } from './session-events.js'
+import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 
 // A story round records where it first entered the native session: the seq of
 // the player's input and of the reply, as appended. Those events never change;
@@ -41,14 +42,46 @@ export function createRoundAnchorResolver({ events, nodes }) {
   const of = lineage(events)
   const references = upgradeReferences(events)
   const surface = nodes.map(Number)
+  const bySeq = new Map(events.map(event => [event.seq, event]))
+  const repaired = new Map()
+  const inputs = new Map()
+  for (const seq of surface) {
+    const event = bySeq.get(seq)
+    if (event?.type === 'user/message' && !isCompactionCheckpoint(event)) {
+      for (const root of of(seq)) {
+        const source = bySeq.get(root)
+        if (source?.type === 'user/message') inputs.set(source.data?.id, seq)
+      }
+    }
+    const message = event?.data?.message
+    const story = Number(message?.source?.tavernStoryTurn)
+    if (event?.type !== 'assistant/message' || !Number.isSafeInteger(story) || story < 1) continue
+    const repair = [...of(seq)].map(root => bySeq.get(root)).filter(source =>
+      source?.type === 'assistant/message' && source.data?.message?.source?.model === 'native-repair' &&
+      Number(source.data.message.source.tavernStoryTurn) === story).sort((a, b) => b.seq - a.seq)[0]
+    if (!repair) continue
+    const candidates = repaired.get(story) || []
+    candidates.push({ event, repair })
+    repaired.set(story, candidates)
+  }
   return function resolve(anchor) {
     if (!validAnchor(anchor)) return null
     anchor = upgradedAnchor(anchor, references)
+    // 整段修复的首个替换覆盖多个旧锚点；按显式故事身份找新正文，不能用整段血缘归属。
+    const candidates = repaired.get(anchor.turn)
+    if (candidates) {
+      if (candidates.length !== 1) return { input: null, reply: null, ambiguous: true }
+      const { event, repair } = candidates[0]
+      const inputId = String(repair.data.message.id).replace(/:reply$/, ':input')
+      return { input: inputs.get(inputId) ?? null, reply: event.seq }
+    }
     let input = null, reply = null
     for (const seq of surface) {
       const roots = of(seq)
-      if (input === null && roots.has(anchor.input)) input = seq
-      if (roots.has(anchor.reply)) reply = seq
+      const event = bySeq.get(seq)
+      const checkpoint = isCompactionCheckpoint(event)
+      if (input === null && roots.has(anchor.input) && (event?.type === 'user/message' || checkpoint)) input = seq
+      if (roots.has(anchor.reply) && (event?.type === 'assistant/message' || checkpoint)) reply = seq
     }
     return { input, reply }
   }

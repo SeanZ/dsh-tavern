@@ -93,6 +93,7 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
     }
     if (validAnchor(round.anchor)) {
       const found = resolve(round.anchor)
+      if (found?.ambiguous) return { index: -1, summarized: false }
       if (found?.reply != null) {
         const index = nodes.indexOf(found.reply)
         const event = at(index)
