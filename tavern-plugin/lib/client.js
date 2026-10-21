@@ -5724,6 +5724,8 @@ function tavernModelRefusalNotice(text) {
 		    }
 		    function refresh() {
 		        timer = null;
+		        // 定时器排队期间可能已离屏；此时不清除旧区间，等恢复后再扫。
+		        if (!disposed && enabled && paused()) { dirty = true; return; }
 		        clearOwned();
 		        if (disposed || !enabled) return;
 		        computedColors = new WeakMap(); explicitColors = new WeakMap();
@@ -5750,9 +5752,29 @@ function tavernModelRefusalNotice(text) {
 		        }
 		        flush();
 		    }
-		    function schedule() { if (!disposed && enabled && timer === null) timer = win.setTimeout(refresh, 32); }
+		    // 离屏或页面隐藏时暂停扫描：保留已有区间，只记下“有变化”，恢复可见后再刷新一次。
+		    // 预读边距让即将滚入视口的消息提前着色。
+		    const visibleMargin = '600px 0px';
+		    let onscreen = true, dirty = false;
+		    function paused() { return doc.visibilityState === 'hidden' || !onscreen; }
+		    function schedule() {
+		        if (disposed || !enabled) return;
+		        if (paused()) { dirty = true; return; }
+		        if (timer === null) timer = win.setTimeout(refresh, 32);
+		    }
+		    function resume() {
+		        if (!dirty || paused()) return;
+		        dirty = false;
+		        schedule();
+		    }
 		    const observer = new win.MutationObserver(schedule);
 		    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'color', 'hidden'] });
+		    const viewport = typeof win.IntersectionObserver === 'function' ? new win.IntersectionObserver(function (entries) {
+		        onscreen = entries[entries.length - 1].isIntersecting;
+		        resume();
+		    }, { rootMargin: visibleMargin }) : null;
+		    if (viewport) viewport.observe(root);
+		    doc.addEventListener('visibilitychange', resume);
 		    shared.themed.add(schedule);
 		    // Batch mounts before reading computed styles; each message adds a stylesheet.
 		    schedule();
@@ -5761,13 +5783,15 @@ function tavernModelRefusalNotice(text) {
 		        setEnabled(value) {
 		            enabled = value !== false;
 		            if (timer !== null) win.clearTimeout(timer);
-		            timer = null;
+		            timer = null; dirty = false;
 		            if (enabled) schedule();
 		            else clearOwned();
 		        },
 		        dispose() {
 		            if (disposed) return;
 		            disposed = true; observer.disconnect(); if (timer !== null) win.clearTimeout(timer);
+		            if (viewport) viewport.disconnect();
+		            doc.removeEventListener('visibilitychange', resume);
 		            clearOwned();
 		            shared.themed.delete(schedule);
 		            if (--shared.users) return;
