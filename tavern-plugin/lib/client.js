@@ -3489,6 +3489,27 @@ window.__ModuleLoader__.load({
                 parkingRoots.set(root, container);
             }
             let observer = null;
+            // 正在处理渲染事件的消息；只有恰好一条在途时，新增节点才归属该消息，避免并发时串号。
+            const renderingMessages = new Map();
+            function currentMessage() {
+                return renderingMessages.size === 1 ? renderingMessages.keys().next().value : null;
+            }
+            // 空作用域不挂文档观察器：首次登记节点时才开始观察；按消息释放后若已无节点则断开。
+            function ensureObserver() {
+                if (observer || disposed || !host || !host.MutationObserver) return;
+                observer = new host.MutationObserver(function (changes) {
+                    for (const change of changes) for (const node of change.addedNodes) {
+                        if (created.has(node)) remember(node, change.target);
+                    }
+                    park();
+                });
+                for (const root of roots) observer.observe(root, { childList: true });
+            }
+            function releaseObserverIfEmpty() {
+                if (!observer || owned.size || created.size) return;
+                observer.disconnect();
+                observer = null;
+            }
             function parkNode(node, previous) {
                 previous.nextSibling = node.nextSibling;
                 const container = parkingRoots.get(previous.root);
@@ -3514,24 +3535,45 @@ window.__ModuleLoader__.load({
                 owners.set(node, identity);
                 node.setAttribute?.("data-dsh-tavern-host-artifact", "");
                 owned.set(node, { hidden: node.hidden, disabled: node.disabled, body: root === hostDocument.body,
-                    root: root, nextSibling: node.nextSibling, parked: false });
+                    root: root, nextSibling: node.nextSibling, parked: false, message: currentMessage() });
+                ensureObserver();
             }
             let disposed = false, visible = true;
             const created = new Set();
             function captureCreated() {
                 for (const node of created) if (roots.includes(node.parentNode)) remember(node, node.parentNode);
             }
-            if (host && host.MutationObserver) {
-                observer = new host.MutationObserver(function (changes) {
-                    for (const change of changes) for (const node of change.addedNodes) {
-                        if (created.has(node)) remember(node, change.target);
-                    }
-                    park();
-                });
-                for (const root of roots) observer.observe(root, { childList: true });
-            }
             return Object.freeze({
-                trackNode: function (node) { created.add(node); return node; },
+                trackNode: function (node) { if (!disposed) { created.add(node); ensureObserver(); } return node; },
+                // 返回结束函数；同一消息可重入，计数归零才结束归属。
+                beginMessage: function (key) {
+                    if (disposed) return function () {};
+                    captureCreated();
+                    renderingMessages.set(key, (renderingMessages.get(key) || 0) + 1);
+                    let ended = false;
+                    return function () {
+                        if (ended) return;
+                        ended = true;
+                        // 观察器回调是微任务；先收下事件期间插入的节点再结束归属。
+                        captureCreated();
+                        const count = renderingMessages.get(key) - 1;
+                        if (count > 0) renderingMessages.set(key, count); else renderingMessages.delete(key);
+                    };
+                },
+                releaseMessage: function (key) {
+                    if (disposed) return;
+                    captureCreated();
+                    const jq = host && host.jQuery;
+                    for (const [node, previous] of Array.from(owned)) {
+                        if (previous.message !== key) continue;
+                        // 脚本可能用宿主 jQuery 给浮层绑过事件；按 jQuery.remove 的方式一并清掉。
+                        if (jq && typeof jq.cleanData === "function" && node.nodeType === 1) jq.cleanData([node].concat(Array.from(node.getElementsByTagName("*"))));
+                        owned.delete(node); owners.delete(node);
+                        for (const tracked of created) if (tracked === node || node.contains?.(tracked)) created.delete(tracked);
+                        node.remove();
+                    }
+                    releaseObserverIfEmpty();
+                },
                 findElementById: function (id) {
                     const node = hostDocument.getElementById(id);
                     if (node && (!ownerOf(node) || ownerOf(node) === identity)) return node;
@@ -8523,9 +8565,14 @@ function bindTavernFontZoom(node, win) {
                 disposed = true;
                 layerObserver.disconnect();
                 nativeObserver.disconnect();
+                // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。
+                const jq = view.jQuery;
+                if (jq && typeof jq.cleanData === "function") jq.cleanData(Array.from(layer.getElementsByTagName("*")));
                 layer.replaceChildren();
                 layer.hidden = true;
                 native.hidden = false;
+                // 消息销毁或重建：通知脚本运行时释放归属这条消息的宿主浮层。
+                view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-released", { detail: { sessionId: String(options.sessionId), messageId: Number(options.messageId) } }));
             };
         }
         function tavernScriptLayers(document, sessionId, messageId) {
@@ -9126,13 +9173,25 @@ function bindTavernFontZoom(node, win) {
 			}
 			// The host renderer announces a settled message DOM; scripts that decorate
 			// messages (SillyTavern CHARACTER_MESSAGE_RENDERED) apply their edits then.
-			if (typeof hostWindow.addEventListener === "function") hostWindow.addEventListener("dsh-tavern-message-rendered", function (event) {
+			// 处理某条消息渲染事件期间挂到宿主页的浮层归属该消息；消息销毁或重建时只释放它自己的。
+			function onMessageRendered(event) {
 				const detail = event && event.detail || {};
 				for (const record of records.values()) {
 					if (record.sessionId !== String(detail.sessionId || "") || !record.trustedCardMode) continue;
-					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {});
+					const end = record.hostArtifacts ? record.hostArtifacts.beginMessage(String(detail.messageId)) : function () {};
+					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {}).then(end);
 				}
-			});
+			}
+			function onMessageReleased(event) {
+				const detail = event && event.detail || {};
+				for (const record of records.values()) {
+					if (record.sessionId === String(detail.sessionId || "") && record.hostArtifacts) record.hostArtifacts.releaseMessage(String(detail.messageId));
+				}
+			}
+			if (typeof hostWindow.addEventListener === "function") {
+				hostWindow.addEventListener("dsh-tavern-message-rendered", onMessageRendered);
+				hostWindow.addEventListener("dsh-tavern-message-released", onMessageReleased);
+			}
 			async function emit(name, args, context, diagnostics, hostEventId) {
 				let current = clone(Array.isArray(args) ? args : []);
 				for (const record of records.values()) current = await emitToRecord(record, name, current, context, diagnostics, hostEventId);
@@ -9664,7 +9723,14 @@ function bindTavernFontZoom(node, win) {
 				},
                 // An overdue probe means the page itself stalled; the watchdog re-probes before judging.
                 eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && (now() - pending.contactAt < eventTimeoutMs || now() - pending.probeDueAt > pending.probeIntervalMs)); },
-				dispose: function () { hostWindow.removeEventListener("message", receive); clear(); releaseHostStylesheetBridge(); },
+				dispose: function () {
+					hostWindow.removeEventListener("message", receive);
+					if (typeof hostWindow.removeEventListener === "function") {
+						hostWindow.removeEventListener("dsh-tavern-message-rendered", onMessageRendered);
+						hostWindow.removeEventListener("dsh-tavern-message-released", onMessageReleased);
+					}
+					clear(); releaseHostStylesheetBridge();
+				},
 				inspect: function () {
 					const record = records.get("shared");
 					const scripts = record ? Array.from(record.scripts.values()).map(function (script) { return { id: script.id, loaded: script.loaded, subscriptionsReady: script.subscriptionsReady, initializationFailed: script.initializationFailed }; }) : [];
@@ -10604,6 +10670,8 @@ function bindTavernFontZoom(node, win) {
 				const channel = createTavernFrameContextChannel(document);
 				// Stable callback identity preserves the per-document delta baseline.
 				document.ref = function (node) {
+                    const previousFrame = channel.element();
+                    if (document.trustedCardMode && previousFrame && previousFrame !== node) releaseTavernHostJQueryHandlers(hostWindow, previousFrame.contentWindow);
                     const previousSizing = sizingObservers.get(document.token);
                     if (previousSizing) { previousSizing.stop(); sizingObservers.delete(document.token); }
                     const stopVisibility = frameVisibility.get(document.token);
@@ -10960,13 +11028,13 @@ function bindTavernFontZoom(node, win) {
 					return function () {
                         touchRelay.stop();
 						releaseComposer();
-						if (openingArtifacts) {
+						if (props.trustedCardMode) {
 							for (const channel of channels.values()) {
 								const frame = channel.element();
 								if (frame) releaseTavernHostJQueryHandlers(hostWindow, frame.contentWindow);
 							}
-							openingArtifacts.dispose();
 						}
+                        if (openingArtifacts) openingArtifacts.dispose();
 						if (unsubscribeTheme) unsubscribeTheme();
                         frameSizeObservers.forEach(function (observer) { observer.disconnect(); });
                         frameSizeObservers.clear();

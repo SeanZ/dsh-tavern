@@ -114,9 +114,14 @@
                 disposed = true;
                 layerObserver.disconnect();
                 nativeObserver.disconnect();
+                // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。
+                const jq = view.jQuery;
+                if (jq && typeof jq.cleanData === "function") jq.cleanData(Array.from(layer.getElementsByTagName("*")));
                 layer.replaceChildren();
                 layer.hidden = true;
                 native.hidden = false;
+                // 消息销毁或重建：通知脚本运行时释放归属这条消息的宿主浮层。
+                view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-released", { detail: { sessionId: String(options.sessionId), messageId: Number(options.messageId) } }));
             };
         }
         function tavernScriptLayers(document, sessionId, messageId) {

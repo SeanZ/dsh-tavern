@@ -231,6 +231,8 @@
 				const channel = createTavernFrameContextChannel(document);
 				// Stable callback identity preserves the per-document delta baseline.
 				document.ref = function (node) {
+                    const previousFrame = channel.element();
+                    if (document.trustedCardMode && previousFrame && previousFrame !== node) releaseTavernHostJQueryHandlers(hostWindow, previousFrame.contentWindow);
                     const previousSizing = sizingObservers.get(document.token);
                     if (previousSizing) { previousSizing.stop(); sizingObservers.delete(document.token); }
                     const stopVisibility = frameVisibility.get(document.token);
@@ -587,13 +589,13 @@
 					return function () {
                         touchRelay.stop();
 						releaseComposer();
-						if (openingArtifacts) {
+						if (props.trustedCardMode) {
 							for (const channel of channels.values()) {
 								const frame = channel.element();
 								if (frame) releaseTavernHostJQueryHandlers(hostWindow, frame.contentWindow);
 							}
-							openingArtifacts.dispose();
 						}
+                        if (openingArtifacts) openingArtifacts.dispose();
 						if (unsubscribeTheme) unsubscribeTheme();
                         frameSizeObservers.forEach(function (observer) { observer.disconnect(); });
                         frameSizeObservers.clear();

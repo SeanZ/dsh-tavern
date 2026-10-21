@@ -351,13 +351,25 @@
 			}
 			// The host renderer announces a settled message DOM; scripts that decorate
 			// messages (SillyTavern CHARACTER_MESSAGE_RENDERED) apply their edits then.
-			if (typeof hostWindow.addEventListener === "function") hostWindow.addEventListener("dsh-tavern-message-rendered", function (event) {
+			// 处理某条消息渲染事件期间挂到宿主页的浮层归属该消息；消息销毁或重建时只释放它自己的。
+			function onMessageRendered(event) {
 				const detail = event && event.detail || {};
 				for (const record of records.values()) {
 					if (record.sessionId !== String(detail.sessionId || "") || !record.trustedCardMode) continue;
-					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {});
+					const end = record.hostArtifacts ? record.hostArtifacts.beginMessage(String(detail.messageId)) : function () {};
+					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {}).then(end);
 				}
-			});
+			}
+			function onMessageReleased(event) {
+				const detail = event && event.detail || {};
+				for (const record of records.values()) {
+					if (record.sessionId === String(detail.sessionId || "") && record.hostArtifacts) record.hostArtifacts.releaseMessage(String(detail.messageId));
+				}
+			}
+			if (typeof hostWindow.addEventListener === "function") {
+				hostWindow.addEventListener("dsh-tavern-message-rendered", onMessageRendered);
+				hostWindow.addEventListener("dsh-tavern-message-released", onMessageReleased);
+			}
 			async function emit(name, args, context, diagnostics, hostEventId) {
 				let current = clone(Array.isArray(args) ? args : []);
 				for (const record of records.values()) current = await emitToRecord(record, name, current, context, diagnostics, hostEventId);
@@ -889,7 +901,14 @@
 				},
                 // An overdue probe means the page itself stalled; the watchdog re-probes before judging.
                 eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && (now() - pending.contactAt < eventTimeoutMs || now() - pending.probeDueAt > pending.probeIntervalMs)); },
-				dispose: function () { hostWindow.removeEventListener("message", receive); clear(); releaseHostStylesheetBridge(); },
+				dispose: function () {
+					hostWindow.removeEventListener("message", receive);
+					if (typeof hostWindow.removeEventListener === "function") {
+						hostWindow.removeEventListener("dsh-tavern-message-rendered", onMessageRendered);
+						hostWindow.removeEventListener("dsh-tavern-message-released", onMessageReleased);
+					}
+					clear(); releaseHostStylesheetBridge();
+				},
 				inspect: function () {
 					const record = records.get("shared");
 					const scripts = record ? Array.from(record.scripts.values()).map(function (script) { return { id: script.id, loaded: script.loaded, subscriptionsReady: script.subscriptionsReady, initializationFailed: script.initializationFailed }; }) : [];
