@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Session } from './fixtures/dsh-session-host.mjs'
-import { appendSessionEvent } from '../tavern-plugin/lib/domain/session-events.js'
+import { appendSessionEvent, sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import { synchronizeTemplateHistory } from '../tavern-plugin/lib/domain/template-history.js'
 import { userMessageForTurn, requestIdForTurn } from '../tavern-plugin/lib/domain/session-turn-input.js'
 
@@ -63,6 +63,30 @@ test('找出模型看过、存档却没记下的已完成轮次；回退、失�
   const header = { nativeCommits: { 1: { turn: 1 }, 2: { turn: 2 } }, suppressedDshTurns: [6] }
   assert.deepEqual(uncommittedRounds(session, header).map(item => [item.turn, item.requestId, item.userText, item.assistantText]), [[4, 'rpc-4', '漏记的一轮', '漏记的一轮的回复']])
   assert.deepEqual(uncommittedRounds(session, { nativeCommits: {} }), [], 'saves without commit records are left alone')
+})
+
+test('中断回合没有 turn/end 时，它的输入不会被当成下一回合的排队输入', async () => {
+  const { uncommittedRounds } = await import('../tavern-plugin/lib/domain/uncommitted-rounds.js')
+  const session = Session.create('interrupted-input')
+  appendSessionEvent(session, 'turn/start', { turn: 1 })
+  appendSessionEvent(session, 'user/message', input('in-1', '第一轮', 'rpc-1'), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'assistant/message', reply('out-1', 1, '第一轮正文'), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  // 服务中途停止，第 2 轮没有 turn/end。
+  appendSessionEvent(session, 'turn/start', { turn: 2 })
+  appendSessionEvent(session, 'user/message', input('in-2', '中断的输入', 'rpc-2'), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'turn/start', { turn: 3 })
+  const in3 = appendSessionEvent(session, 'user/message', input('in-3', '第三轮', 'rpc-3'), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'assistant/message', reply('out-3', 3, '第三轮正文'), { surfaceOp: 'append' })
+  appendSessionEvent(session, 'turn/end', { turn: 3, reason: { kind: 'completed' } })
+  const cold = Session.fromRestore(session.id, JSON.parse(JSON.stringify(sessionEvents(session))))
+  for (const current of [session, cold]) {
+    assert.equal(userMessageForTurn(current, 2).content[0].text, '中断的输入')
+    assert.equal(userMessageForTurn(current, 3).content[0].text, '第三轮')
+    assert.equal(requestIdForTurn(current, 3), 'rpc-3')
+    const [round] = uncommittedRounds(current, { nativeCommits: { 1: { turn: 1 } } })
+    assert.deepEqual([round?.turn, round?.requestId, round?.userText, round?.nativeAnchor?.input], [3, 'rpc-3', '第三轮', in3.seq])
+  }
 })
 
 test('没有输入的回合不能拿后续回合的玩家输入', () => {
