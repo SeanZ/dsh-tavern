@@ -1,5 +1,5 @@
 import { worldBookDisplayName } from './worldbook-resource.js'
-import { planTranscriptWindow } from './transcript-row-plan.js'
+import { planTranscriptWindow, savedReplyTurns } from './transcript-row-plan.js'
 import { createInputFieldsProjection } from './input-fields-projection.js'
 import { createScopedMessages } from './scoped-messages.js'
 import { createSessionStateView, settlementTurn } from './chat-session-state.js'
@@ -51,6 +51,9 @@ export function createSessionViewProjection({
     const activePresetSnapshot = groupOfMode(chat.mode) === 'play' && chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object'
       ? chat.runtimePresetSnapshot
       : null
+    const rollbackEvidence = sessionDebugEvidence(chat.sessionId, true)
+    const rollbackFields = rollbackViewFields(chat, rollbackEvidence, options.inputChanges)
+    const transcriptPlan = await requestPerformance.stage('transcriptRowPlan', async () => transcriptPlanFields(chat, rollbackEvidence, rollbackFields.replacingDshTurns, rollbackFields.keptInputTurns))
     let replyDisplay = { projections: replyProjectionsOf(chat), presentation: null, latestSourceBacked: false }
     let extensionSettings = {}
     let cardExtensions = { regexScripts: [], helperScripts: [] }
@@ -68,7 +71,7 @@ export function createSessionViewProjection({
       replyDisplay = await requestPerformance.stage('historyProjection', () => incrementalReplyView.project(persistedProjection ? chat : { ...chat, _storageRevision: undefined }, {
         charName: chat.cardName, macroState: chat.macroState,
         regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts),
-        placement: 2, isMarkdown: true, isEdit: false, depth: 0
+        placement: 2, isMarkdown: true, isEdit: false, depth: 0, forcedTurns: savedReplyTurns(transcriptPlan.transcriptTurns)
       }, { charName: chat.cardName, macroState: chat.macroState, regexScripts: cardExtensions.regexScripts }, {shared:true}))
       replyDisplay = await liveCardUpdate.project(chat, card, replyDisplay, {charName:chat.cardName,macroState:chat.macroState,regexScripts:cardExtensions.regexScripts})
       replyDisplay.projections = withLegacyPresentationProjection(chat, replyDisplay.projections)
@@ -113,9 +116,6 @@ export function createSessionViewProjection({
     const helperContext = helperEnabled
       ? await requestPerformance.stage('helperMessagesProjection', () => projectTavernHelperContext(chat, { skeletonUntil, indexed:true }))
       : null
-    const rollbackEvidence = sessionDebugEvidence(chat.sessionId, true)
-    const rollbackFields = rollbackViewFields(chat, rollbackEvidence, options.inputChanges)
-    const transcriptPlan = await requestPerformance.stage('transcriptRowPlan', async () => transcriptPlanFields(chat, rollbackEvidence, rollbackFields.replacingDshTurns, rollbackFields.keptInputTurns))
     return {
       chatId: chat.id,
       contextCompaction: chat.contextCompaction || null,
@@ -357,6 +357,8 @@ export function createSessionViewProjection({
   async function projectCachedSessionView(chat, previous, activity) {
     const mode = chat.mode || 'story'
     const reused = Object.assign({}, previous, volatileSessionViewFields(chat, activity, {baseRevision:chat._storageRevision,indices:[],layoutChanged:false}))
+    // 原生日志变化不一定推进存档 revision；强制投影集合变化时不能沿用旧正文缓存。
+    if (JSON.stringify(savedReplyTurns(previous.transcriptTurns)) !== JSON.stringify(savedReplyTurns(reused.transcriptTurns))) return projectFullSessionView(chat)
     if (mode === 'script') reused.scriptProgress = await scriptProgressOf(chat)
     return reused
   }
@@ -412,7 +414,7 @@ export function createSessionViewProjection({
       let replyDisplay = await requestPerformance.stage('historyProjection', () => incrementalReplyView.project(chat, {
         charName: chat.cardName, macroState: chat.macroState,
         regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts),
-        placement: 2, isMarkdown: true, isEdit: false, depth: 0
+        placement: 2, isMarkdown: true, isEdit: false, depth: 0, forcedTurns: savedReplyTurns(next.transcriptTurns)
       }, { charName: chat.cardName, macroState: chat.macroState, regexScripts: cardExtensions.regexScripts }, {shared:true}))
       const renderChat = {...chat,messages:createScopedMessages(chat.messages.length,[],index=>{const message=chat.messages[index];return message.variables ? message : {...message,variables:helperCore.messages[index]?.swipes_data || []}})}
       replyDisplay = await liveCardUpdate.project(renderChat, card, replyDisplay, {charName:chat.cardName,macroState:chat.macroState,regexScripts:cardExtensions.regexScripts})

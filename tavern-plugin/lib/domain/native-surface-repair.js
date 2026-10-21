@@ -144,22 +144,24 @@ export function applyNativeSurfaceRepair(session, chat, plan, { repairId }) {
   const source = { kind: 'model', provider: 'dsh-tavern', model: 'native-repair' }
   const storySource = turn => Number.isSafeInteger(Number(turn)) && Number(turn) > 0 ? { ...source, tavernStoryTurn: Number(turn) } : source
   const anchors = []
-  // The repair runs between rounds, where no step is open: all its writes share one
-  // edit step. Each reply keeps its story turn in tavernStoryTurn (story alignment
-  // reads it), since its event carries the edit step's numbers.
-  mutator.editStep(() => {
-    for (const [index, round] of plan.rounds.entries()) {
+  // 宿主按步骤绘制最终正文。每个故事轮单独结束步骤，不能让后轮覆盖前轮。
+  for (const [index, round] of plan.rounds.entries()) {
+    mutator.editStep(() => {
       const id = `tavern-native-repair:${repairId}:${index}`
       const turn = round.turn
+      // 没有玩家输入承接替换时，先清掉旧尾部，再追加可绘制的开场正文。
+      if (pending && round.userText === null) write('assistant/message', { turn, step: 1,
+        message: { id: id + ':clear', role: 'assistant', content: [], source } })
       const input = round.userText === null ? null : write('user/message', { id: id + ':input', role: 'user',
         content: [{ type: 'text', text: round.userText }], source: { kind: 'user', repair: { id: repairId } } })
       const reply = write('assistant/message', { turn, step: 1, message: { id: round.greeting ? nativeOpeningMessageId(chat.id) : id + ':reply',
         role: 'assistant', content: [{ type: 'text', text: round.replyText }], source: storySource(turn) } })
       anchors.push({ messageIndex: round.messageIndex, anchor: input ? roundAnchor(turn, input, reply) : null })
-    }
-    // A stale tail with nothing to write in its place: shadow it with an empty node.
-    if (pending) write('assistant/message', { turn: 0, step: 1, message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } })
-  })
+    })
+  }
+  // 没有需要恢复的正文时，只用空节点遮蔽已撤回的尾部。
+  if (pending) mutator.editStep(() => write('assistant/message', { turn: 0, step: 1,
+    message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } }))
   return { applied: true, anchors }
 }
 

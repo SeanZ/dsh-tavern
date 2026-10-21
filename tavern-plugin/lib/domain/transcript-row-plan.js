@@ -34,6 +34,7 @@ export function createTranscriptFold() {
   let inputSeq = null, queuedSeq = null // where the last turn's player input sits in the log
   const inputTurns = new Set() // native turns a player's input opened
   const drawn = new Map() // story -> the native turn that draws its reply
+  const savedReplies = new Set() // 旧修复步骤包含多个最终正文时，原座位必须显示存档版本
   const pending = new Map() // step -> rewrites appended in it, decided when it ends
   const stepReplies = new Map() // step -> reply appends with text
   // From the save: one entry per floor.
@@ -58,6 +59,7 @@ export function createTranscriptFold() {
     dirty.add(turn)
   }
   function setDrawn(story, turn) {
+    if (savedReplies.delete(story)) dirty.add(replyOf(story))
     if (drawn.get(story) === turn) return
     const isRound = rounds.has(story)
     if (isRound) link(story, replyOf(story), false)
@@ -81,6 +83,10 @@ export function createTranscriptFold() {
     // The host draws one row per step. A repair that rewrote many rounds put them all
     // in one step: that row is every round at once, so it stands for none of them.
     if (rewrites && stepReplies.get(key) === 1) setDrawn(rewrites[0].story, rewrites[0].turn)
+    else for (const rewrite of rewrites || []) {
+      savedReplies.add(rewrite.story)
+      dirty.add(replyOf(rewrite.story))
+    }
     stepReplies.delete(key)
   }
 
@@ -212,8 +218,9 @@ export function createTranscriptFold() {
     const reply = Boolean(stories?.size)
     const story = reply ? Math.max(...stories) : turn
     if (!input && !reply && !turns.has(turn)) return undefined
-    if (input && reply && story === turn) return undefined
-    return { input: input ? 1 : 0, reply: reply ? 1 : 0, ...(reply && story !== turn ? { story } : {}) }
+    const fromSave = reply && savedReplies.has(story)
+    if (input && reply && story === turn && !fromSave) return undefined
+    return { input: input ? 1 : 0, reply: reply ? 1 : 0, ...(reply && story !== turn ? { story } : {}), ...(fromSave ? { fromSave: 1 } : {}) }
   }
   /** The plan as an immutable turn-keyed map; unchanged turns keep their identity. */
   function result() {
@@ -309,4 +316,10 @@ export function planShowsRow(plan, row, from = null) {
 /** The story round a native turn's reply row is drawn as, or the turn itself. */
 export function planStoryTurn(plan, turn) {
   return plan?.[String(turn)]?.story ?? Number(turn)
+}
+
+/** 普通原生行无需投影；只有无法保存独立正文的旧修复行强制从存档读取。 */
+export function savedReplyTurns(plan) {
+  return Object.entries(plan || {}).filter(([, row]) => row.fromSave === 1)
+    .map(([turn, row]) => Number(row.story ?? turn)).sort((a, b) => a - b)
 }
