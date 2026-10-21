@@ -348,6 +348,12 @@ function assertContentPreserved(before, after) {
   if (!isDeepStrictEqual(summaries(before), summaries(after))) throw new Error('迁移未能完整保留压缩摘要，保留原档')
 }
 
+// 旧版在 step 关闭后补写的管理性正文行：正文替换，以及旧版折叠工具正文时先追加的
+// reply-projection 副本（结算在回合结束后才运行，副本与随后的替换都落在任何 step 之外）。
+const isLateEdit = row => (['assistant/message', 'system/message'].includes(row?.type) && row.surfaceOp?.op === 'replace')
+  || (row?.type === 'assistant/message' && row.surfaceOp === 'append'
+    && row.data?.message?.source?.provider === 'dsh-tavern' && row.data.message.source.model === 'reply-projection')
+
 // Older rollback/fork writers recorded replacements after a closed step. Bind
 // those administrative edits to the next existing step, without shifting any
 // generated turn numbers. A final edit gets its own new turn when none follows.
@@ -361,7 +367,7 @@ function normalizeHistoricalEdits(artifact) {
     if (event.type === 'step/start') step = event.data.step
     if (event.type === 'step/end') step = null
     if (event.type === 'turn/end') turn = null
-    if (!['assistant/message', 'system/message'].includes(event.type) || event.surfaceOp?.op !== 'replace' || step !== null) continue
+    if (!isLateEdit(event) || step !== null) continue
     const followingStep = events.slice(index + 1).find(row => row.type === 'step/start')
     // The edit's own rows run up to the next step, whichever turn that step is in.
     const end = followingStep ? events.indexOf(followingStep) : events.length
@@ -380,7 +386,7 @@ function normalizeHistoricalEdits(artifact) {
       && events.slice(index + 1, events.indexOf(nextTurn)).some(row => (row.type === 'compaction/start' && (row.data?.turn ?? null) === null)
         || row.type === 'session/end-seed' || row.type === 'command/run')) {
       let last = index
-      while (['assistant/message', 'system/message'].includes(events[last + 1]?.type) && events[last + 1].surfaceOp?.op === 'replace') last++
+      while (isLateEdit(events[last + 1])) last++
       for (const row of events.slice(index, last + 1)) { row.data.turn = turnEnd.data.turn; row.data.step = stepEnd.data.step }
       events.splice(index - 2, 2)
       events.splice(last - 1, 0, stepEnd, turnEnd)
@@ -388,7 +394,7 @@ function normalizeHistoricalEdits(artifact) {
       index = last
       continue
     }
-    const replacements = events.slice(index, end).filter(row => (['assistant/message', 'system/message'].includes(row.type) && row.surfaceOp?.op === 'replace') || row.type === 'tool/result')
+    const replacements = events.slice(index, end).filter(row => isLateEdit(row) || row.type === 'tool/result')
     const restoredCalls = []
     // Undo replay wrote an empty tool-result placeholder, followed immediately
     // by an exact copy of an earlier result. Reuse the recorded call as explicit
