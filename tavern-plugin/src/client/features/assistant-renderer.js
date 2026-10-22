@@ -740,8 +740,10 @@
 						React.createElement(TavernIllustrateIcon, null)));
 			}
 			function register(input) {
+				// Fork contract C4: in story view mode the chat rows are the host's own (modules/story-view-mode.js).
+				const chatEffect = function (run, label) { return input.ctx.effect(whileTavernDrawsChat(run), label); };
 				// uiWorkspace 由 dsh-client-ui-workspace 提供；缺失时（老宿主/未加载）退化为 sessions.retain。
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					installTavernReplyRuns(input.ctx.sessions);
 					return function () { disposeTavernReplyRuns(); };
 				}, "dsh-tavern: reply reveal runs");
@@ -759,7 +761,7 @@
 						name: "conversation.session.header.actions", id: "dsh-tavern-script-runtime", order: -140, label: "人物卡脚本运行时"
 					}, function () { return React.createElement(TavernScriptRuntime, { owner: scriptOwner }); }); });
 				}, "dsh-tavern: conversation script lifecycle");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "assistant-step",
@@ -777,7 +779,7 @@
 							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "user",
@@ -787,13 +789,13 @@
 							React.createElement(TavernUserNodeView, props));
 					}); });
 				}, "dsh-tavern: raw user message renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-fork", order: 20,
 						inject: function (sessionId) { return { sessionId: sessionId }; }
 					}, TavernForkAssistantAction); });
 				}, "dsh-tavern: conversation fork action");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-illustrate", order: 21,
 						inject: function (sessionId) { return { sessionId: sessionId }; }

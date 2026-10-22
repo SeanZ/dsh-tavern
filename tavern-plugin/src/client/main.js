@@ -829,6 +829,7 @@ window.__ModuleLoader__.load({
 
 // @include features/cast-stage.js
 
+// @include modules/story-view-mode.js
 // @include ui/message-frame.js
 
 // @include features/assistant-renderer.js
@@ -887,6 +888,7 @@ window.__ModuleLoader__.load({
 			window.__dshTavernLoaded = true;
 			ctx.effect(function () { return tavernTextLayoutFeature.register(ctx); }, "dsh-tavern: text layout in appearance settings");
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
+			ctx.effect(() => tavernStoryViewMode.start(), "dsh-tavern: story view mode setting");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
@@ -1185,6 +1187,7 @@ window.__ModuleLoader__.load({
         exports.renderTavernProjection = renderTavernProjection;
 		exports.latestTavernUserTurn = latestTavernUserTurn;
 		exports.liveTavernView = liveTavernView;
+		exports.tavernStoryViewMode = tavernStoryViewMode;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;

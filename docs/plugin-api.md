@@ -137,6 +137,19 @@ export function apply(ctx) {
 
 Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【酒馆状态】」这类提示；带 `parentSession` 的子 Agent 会话一律不加，插件 Agent 收到的只有插件自己给的内容。
 
+## 故事视图契约（本 fork）
+
+本 fork（`trunkbase`）为独立的故事视图插件（`dsh-tavern-new-ui`）提供的契约，上游没有。服务端部分（楼层折叠 `lib/domain/story-rounds.js`、中断墓碑、楼层快照 RPC）见 `docs/design/transcript-row-plan.md`、`last-round-replacement.md`、`html-in-dsh-messages.md` 末尾小节。
+
+### 故事视图模式：关闭 Tavern 的聊天行渲染（C4）
+
+全局设置 `storyViewMode`（默认关闭）开启后，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮，也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、输入框 dock、侧栏页签照常。关闭时与上游完全一致。
+
+- 读改：`getTavernSettings` / `updateTavernSettings({ patch: { storyViewMode } })`。变更立即生效，不用刷新；其他标签页经本地缓存同步。
+- 本机缓存上次读到的值，开启状态下打开页面不会先挂上 Tavern 行再撤下。
+- 设置是全局的：开启后卡片工作台会话的聊天行也是宿主原生（没有 HTML 草图预览）。
+- 稳定性：键名、默认值与「开启即不注册上述三类条目」只加不改。
+
 ## 暂时没有的
 
 下面这些目前还没有接口，不代表不能开放。有实际需要时请提[插件接口需求](https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml)，写清要做的插件和卡在哪一步，能开放的会按需补上。

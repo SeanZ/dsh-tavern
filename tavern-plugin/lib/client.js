@@ -13427,6 +13427,64 @@ function bindTavernFontZoom(node, win) {
 				fullscreen ? require("react-dom").createPortal(h(TavernStageFullscreen, { view: choice.view, sessionId: props.sessionId, data: data, generating: props.generating, onSubmit: function (text) { return props.submit(props.sessionId, text); }, onClose: function () { setFullscreen(false); } }), document.body) : null);
 		}
 
+// Fork contract C4 (docs/plugin-api.md「故事视图契约」): with the global storyViewMode
+// setting on, a story-view plugin draws the story and Tavern stops drawing chat rows, so
+// the chat view falls back to the host's own rendering. Off (the default) changes nothing.
+// The last value read is cached per browser, so a page opened in story view mode does not
+// mount Tavern rows (and their card iframes) first and drop them once the setting loads.
+function createTavernStoryViewMode(host) {
+	const key = "dsh-tavern:story-view-mode";
+	const listeners = new Set();
+	let enabled = false, loading = null;
+	try { enabled = host.localStorage.getItem(key) === "1"; } catch (_) {}
+	function apply(value) {
+		const next = value === true;
+		try { host.localStorage.setItem(key, next ? "1" : "0"); } catch (_) {}
+		if (next === enabled) return;
+		enabled = next;
+		listeners.forEach(function (listener) { listener(); });
+	}
+	function refresh() {
+		if (!loading) loading = rpc("getTavernSettings").then(function (result) { apply(result && result.settings && result.settings.storyViewMode); }, function () {})
+			.then(function () { loading = null; });
+		return loading;
+	}
+	return Object.freeze({
+		enabled: function () { return enabled; },
+		subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; },
+		refresh: refresh,
+		async set(value) {
+			if (typeof value !== "boolean") throw new Error("故事视图模式设置必须是布尔值");
+			const result = await rpc("updateTavernSettings", { patch: { storyViewMode: value } });
+			apply(result && result.settings && result.settings.storyViewMode);
+			return enabled;
+		},
+		start: function () {
+			void refresh();
+			// Another tab changed it: its write to the cache reaches this tab as a storage event.
+			const onStorage = function (event) { if (event.key === key) apply(event.newValue === "1"); };
+			if (typeof host.addEventListener !== "function") return function () {};
+			host.addEventListener("storage", onStorage);
+			return function () { host.removeEventListener("storage", onStorage); };
+		}
+	});
+}
+const tavernStoryViewMode = createTavernStoryViewMode(window);
+// An effect that keeps `register()` (returning its disposer) active only while Tavern
+// draws the chat rows, re-registering when the setting changes.
+function whileTavernDrawsChat(register) {
+	return function () {
+		let dispose = null;
+		function sync() {
+			const wanted = !tavernStoryViewMode.enabled();
+			if (wanted && !dispose) dispose = register() || function () {};
+			else if (!wanted && dispose) { const release = dispose; dispose = null; release(); }
+		}
+		sync();
+		const stop = tavernStoryViewMode.subscribe(sync);
+		return function () { stop(); if (dispose) dispose(); dispose = null; };
+	};
+}
         function composerOffsetPx(layoutHeight, visualOffsetTop, rectTop) {
             // DOMRect 和 fixed 的定位都基于布局视口；offsetTop 已包含在 rectTop 中，不能再次相加。
             return Math.max(0, Math.round(Number(layoutHeight) - Number(rectTop)));
@@ -14955,8 +15013,10 @@ function bindTavernFontZoom(node, win) {
 						React.createElement(TavernIllustrateIcon, null)));
 			}
 			function register(input) {
+				// Fork contract C4: in story view mode the chat rows are the host's own (modules/story-view-mode.js).
+				const chatEffect = function (run, label) { return input.ctx.effect(whileTavernDrawsChat(run), label); };
 				// uiWorkspace 由 dsh-client-ui-workspace 提供；缺失时（老宿主/未加载）退化为 sessions.retain。
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					installTavernReplyRuns(input.ctx.sessions);
 					return function () { disposeTavernReplyRuns(); };
 				}, "dsh-tavern: reply reveal runs");
@@ -14974,7 +15034,7 @@ function bindTavernFontZoom(node, win) {
 						name: "conversation.session.header.actions", id: "dsh-tavern-script-runtime", order: -140, label: "人物卡脚本运行时"
 					}, function () { return React.createElement(TavernScriptRuntime, { owner: scriptOwner }); }); });
 				}, "dsh-tavern: conversation script lifecycle");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "assistant-step",
@@ -14992,7 +15052,7 @@ function bindTavernFontZoom(node, win) {
 							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "user",
@@ -15002,13 +15062,13 @@ function bindTavernFontZoom(node, win) {
 							React.createElement(TavernUserNodeView, props));
 					}); });
 				}, "dsh-tavern: raw user message renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-fork", order: 20,
 						inject: function (sessionId) { return { sessionId: sessionId }; }
 					}, TavernForkAssistantAction); });
 				}, "dsh-tavern: conversation fork action");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-illustrate", order: 21,
 						inject: function (sessionId) { return { sessionId: sessionId }; }
@@ -23399,6 +23459,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			window.__dshTavernLoaded = true;
 			ctx.effect(function () { return tavernTextLayoutFeature.register(ctx); }, "dsh-tavern: text layout in appearance settings");
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
+			ctx.effect(() => tavernStoryViewMode.start(), "dsh-tavern: story view mode setting");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
@@ -23697,6 +23758,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         exports.renderTavernProjection = renderTavernProjection;
 		exports.latestTavernUserTurn = latestTavernUserTurn;
 		exports.liveTavernView = liveTavernView;
+		exports.tavernStoryViewMode = tavernStoryViewMode;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;
