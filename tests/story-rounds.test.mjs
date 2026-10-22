@@ -134,6 +134,31 @@ test('逐条喂入与一次喂完结果相同，重复喂入的事件被跳过',
   assert.equal(fold.folded, events.at(-1).seq)
 })
 
+// The client's first page starts at some event, often after a turn/start: the turn's own
+// events (its steps, its end) say which turn its input belongs to.
+test('窗口从回合中间开始：输入按该轮 step/turn/end 归属，下一轮失败也不误列废弃；无法判断时 turn 为 null', () => {
+  for (const failure of ['aborted', 'error']) {
+    const session = game('story-rounds-window-' + failure)
+    playTurn(session, 4, '下一轮', '半截', failure)
+    const events = sessionEvents(session)
+    const start = events.findIndex(event => event.type === 'turn/start' && event.data.turn === 3)
+    const tail = events.slice(start + 1)
+    // With its steps, and with only the reply and turn/end naming the turn.
+    for (const [from, window] of [['steps', tail], ['no-steps', tail.filter(event => !event.type.startsWith('step/'))]]) {
+      const rounds = foldStoryRounds(window)
+      const floor = rounds.floors.find(item => item.story === 3)
+      assert.deepEqual(floor.inputs.map(input => [input.text, input.turn]), [['继续', 3]], '窗口起点 ' + from)
+      assert.deepEqual(rounds.abandoned.map(item => [item.text, item.turn, item.reason]), [['下一轮', 4, failure]])
+    }
+  }
+  // Only the input and nothing that names its turn: unknown, never abandoned.
+  const session = game('story-rounds-window-unknown')
+  const input = sessionEvents(session).find(event => event.data?.id === 'in-3')
+  const rounds = foldStoryRounds([input])
+  assert.deepEqual(rounds.abandoned, [])
+  assert.deepEqual(rounds.open.inputs.map(item => [item.text, item.turn]), [['继续', null]])
+})
+
 // The #311 log (tests/fixtures/transcript/issue-311.json): an old save repaired many times
 // and rolled back twice. The save holds the opening and rounds 2, 3, 5 and 12.
 test('#311 旧存档日志：楼层正是存档里的开场与 2、3、5、12 轮，修复副本不重复，两次撤回列为废弃', async () => {

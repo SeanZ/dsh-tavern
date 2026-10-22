@@ -139,4 +139,4 @@ planTranscriptRows({ chat, events, nodes }) → {
 - 每层的 `history` 沿当前正文的替换来源（`sourceEventSeqs`）列出这一轮有过的全部正文，复制自来源的投影副本不重复列；`current` 标出当前那份，供「切换历史结果」。
 - 只读事件、不改调用方：服务端与浏览器共用。文件不 import 任何模块、不用 Node/DOM API，可直接 `// @include-domain story-rounds.js` 嵌入客户端；导出 `createStoryRoundsFold()`（按序增量喂入，重复事件跳过）与 `foldStoryRounds(events)`。
 
-稳定性：输出字段（`floors[].story/inputs/reply/history`、`abandoned[].reason`、`open`）只加不改，供 fork 的故事视图插件依赖；现有行计划与其调用方不受影响。窗口不从日志开头起时，跨窗口的 replace 按 `sourceEventSeqs` 尽量还原，窗口内楼层可信、窗口第一轮之前不保证。测试见 `tests/story-rounds.test.mjs`（含 #311 夹具）。
+稳定性：输出字段（`floors[].story/inputs/reply/history`、`abandoned[].reason`、`open`）只加不改，供 fork 的故事视图插件依赖；现有行计划与其调用方不受影响。窗口不从日志开头起时，跨窗口的 replace 按 `sourceEventSeqs` 尽量还原，窗口内楼层可信、窗口第一轮之前不保证。窗口起点落在回合中间（`turn/start` 在窗口外）时，此前的输入按该轮随后的 `step/*`、追加正文的 `data.turn` 或 `turn/end` 归属；都没有时 `turn` 为 `null`，只进 `open`，不列入 `abandoned`。测试见 `tests/story-rounds.test.mjs`（含 #311 夹具）。
