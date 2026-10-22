@@ -191,9 +191,18 @@ function createStoryRoundsFold() {
     }
     const found = reachable(current.seq)
     if (!found.length) return [{ seq: current.seq, turn: Number(current.data.turn), text: textOf(current), current: true }]
-    const named = Number(current.data.message.source.tavernResultSeq)
-    const currentSeq = !storyRoundsIsReplace(current) ? current.seq
-      : found.some(event => event.seq === named) ? named : found[found.length - 1].seq
+    // 单一来源的正文编辑沿用被编辑结果的选择；重生成合并多个来源时，默认选最新生成。
+    const visited = new Set()
+    function selectedResult(event) {
+      if (!event || visited.has(event.seq) || event.type !== 'assistant/message') return undefined
+      visited.add(event.seq)
+      const named = Number(event.data.message.source?.tavernResultSeq)
+      if (found.some(item => item.seq === named)) return named
+      if (!storyRoundsIsReplace(event)) return found.some(item => item.seq === event.seq) ? event.seq : undefined
+      const sources = event.sourceEventSeqs
+      return Array.isArray(sources) && sources.length === 1 ? selectedResult(events.get(sources[0])) : undefined
+    }
+    const currentSeq = selectedResult(current) ?? found[found.length - 1].seq
     return found.map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
   }
   function failedEnd(turn) {

@@ -86,6 +86,27 @@ test('重生成 replace：尝试轮不另起楼层；落定后同一楼层换正
   assert.deepEqual(rounds.abandoned, [])
 })
 
+test('切换历史结果后连续编辑正文仍指向选中版本，新一次重生成则选择新结果', () => {
+  const session = game('story-rounds-edited-result')
+  regenerate(session, 3, 4, '重写一', 'op-1')
+  const current = () => foldStoryRounds(sessionEvents(session)).floors.at(-1)
+  const original = current().history[0]
+  let target = current().reply.seq
+  replaceSessionSurface(session, 'assistant/message', reply('switch-old', 3, original.text,
+    { ...MODEL, tavernStoryTurn: 3, tavernResultSeq: original.seq }), { start: target, end: target, sourceEventSeqs: [target] })
+  for (const text of ['第一次手动编辑', '第二次手动编辑']) {
+    target = current().reply.seq
+    replaceSessionSurface(session, 'assistant/message', reply('edit-' + target, 3, text,
+      { ...MODEL, model: 'body-edit', tavernStoryTurn: 3 }), { start: target, end: target, sourceEventSeqs: [target] })
+    assert.equal(current().reply.text, text)
+    assert.equal(current().history.find(item => item.current).seq, original.seq)
+  }
+  regenerate(session, 3, Math.max(...sessionEvents(session).map(event => Number(event.data?.turn) || 0)) + 1, '新生成的结果', 'op-2')
+  assert.deepEqual(current().history.map(item => item.current), [false, false, true])
+  const restored = Session.create(session.id, JSON.parse(JSON.stringify(sessionEvents(session))), session.header)
+  assert.deepEqual(foldStoryRounds(sessionEvents(restored)).floors.at(-1).history, current().history)
+})
+
 test('打断：半截正文与该轮输入不成楼层，打墓碑前后都列为废弃，后续新消息照常成楼层', () => {
   const session = game('story-rounds-interrupted')
   const cut = playTurn(session, 4, '说到一半', '半截', 'aborted')
