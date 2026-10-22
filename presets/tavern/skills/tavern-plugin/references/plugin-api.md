@@ -156,7 +156,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 
 | 方法 | 说明 |
 |---|---|
-| `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层变化时回调 `{ floors, abandoned, open, interrupted, hasMore, from }`，返回取消函数。流式块不回调；加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
+| `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层或生成尝试变化时回调 `{ floors, abandoned, open, attempt, interrupted, hasMore, from }`，返回取消函数。流式块不回调；加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
 | `listResults(sessionId, storyTurn)` | 这一层模型每次生成的原文 `{ seq, turn, text, current }`（旧到新；投影、重写正文、编辑不另算；`current` 为当前显示的那次，切换过时按切换目标），没有该层时为 `null` |
 | `switchResult(sessionId, storyTurn, replySeq)` | 只用于最新楼层、前台空闲时：改为显示 `listResults` 里 `seq` 为 `replySeq` 的那次生成（服务端 `switchFloorResult`）。返回 `{ switched, turn, replySeq, mvu, view }`；`mvu` 为 `'stale'` 时变量仍对应切换前的正文，需要重新结算 |
 | `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
@@ -168,6 +168,8 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
 | `render` | 楼层渲染运行时，见下节 |
 
+`attempt` 是已加载事件窗口内的最新生成尝试，字段为 `{ turn, seq, phase, inputs, accepted, error }`，没有尝试时为 `null`。`phase` 在输入模板准备时为 `preparing`，模型步骤开始后为 `generating`，结束后为原生 `turn/end.reason.kind`；`error` 为结束事件的错误消息。`inputs` 从原生队列保留已提交文字，在 `user/message` 写入后由正式输入替换，避免重复。`accepted` 表示已有正式用户消息；未接纳输入的早期失败不会生成楼层，也不能用 `retryFailed` 回放。此时界面可显示错误并将已知文字恢复到输入框，不自动重发。窗口缺少早期队列事件时，`inputs` 可能为空。
+
 稳定性：方法名、参数与返回字段只加不改；不兼容的改动提高 `apiVersion`。
 
 ### 楼层渲染：`tavernStory.render`（C7）
@@ -176,7 +178,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 
 - `projectFloor(sessionId, storyTurn)` → `{ storyTurn, mode, projection, parts, hasScript, helperContext, frameSizing, trustedCardMode, latestTurn, waitingForHistory }`：该层正则/美化后的投影（与聊天行相同的 `replyProjections`）、Helper 上下文与运行策略。`waitingForHistory` 为真时该层在 Tavern 历史窗口外，用 `loadOlderProjections(sessionId)` 往前扩一页。
 - `readInputTemplate(sessionId, inputTurn)` → 玩家输入的显示模板 HTML 或 `null`（`inputTurn` 是输入所在的原生轮次，即楼层 `inputs[].turn`；改过的输入不再用模板）。用 `StaticHtml` 显示。
-- `FloorBody` 组件，props `{ sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?, revision?, containerRef? }`。`live` 时与聊天行一样用 Tavern 的消息 frame 运行卡片 HTML；否则显示 `snapshotHtml`，没有快照时显示文字和去掉脚本的 HTML。静态 HTML 按白名单重建（常见排版、列表、表格、标题、链接、details、style、惰性的 button/input/progress 等元素与 class/style/title/src/href/data-*/aria-* 等属性；src/href 只允许 http(s)、相对路径与 data:image；未知元素只留文字与允许的子节点；svg、math、script、iframe、form 等整段移除；样式里的 @import、expression、behavior、-moz-binding 和脚本或非图片 url 剥掉），放在 shadow root 里，`html`/`body`/`:root` 样式改为作用于楼层。`revision` 建议传 `floor.reply.seq`。
+- `FloorBody` 组件，props `{ sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?, revision?, containerRef?, fallbackText? }`。`live` 时与聊天行一样用 Tavern 的消息 frame 运行卡片 HTML；否则显示 `snapshotHtml`，没有快照时显示投影文字和去掉脚本的 HTML。没有投影且不在等待历史时，用 `fallbackText`（通常为 `floor.reply.text`）显示配色 Markdown。原文、静态 HTML 和快照中的对白与斜体均使用主题配色，保留卡片显式颜色。静态 HTML 按白名单重建（常见排版、列表、表格、标题、链接、details、style、惰性的 button/input/progress 等元素与 class/style/title/src/href/data-*/aria-* 等属性；src/href 只允许 http(s)、相对路径与 data:image；未知元素只留文字与允许的子节点；svg、math、script、iframe、form 等整段移除；样式里的 @import、expression、behavior、-moz-binding 和脚本或非图片 url 剥掉），放在 shadow root 里，`html`/`body`/`:root` 样式改为作用于楼层。`revision` 建议传 `floor.reply.seq`。
 - **frame 归属**：Tavern 的消息 frame 在 React 卸载后仍会停放保留（同一局离开前不销毁），以免卡片状态丢失。`FloorBody` 在 `live` 变为假或卸载时释放自己 `owner`（默认每个组件实例一个）名下的 frame，活 frame 数因此等于同时 live 的楼层数。要让同一层在重挂载后接回原 frame，可传固定的 `owner` 对象，并在不再需要时卸载或置 `live: false`。frame 按（会话、楼层、片段序号）复用；Tavern 聊天行也画同一层时（未开启故事视图模式）两者会共用同一个 frame，所以只在故事视图模式下使用。
 - `captureFloorSnapshot(element, budget?)` → `{ html, truncated, frames, missed }`：`element` 为 `FloorBody` 的容器（`containerRef`）或单个 iframe。每个 frame 经已有的带预算 DOM 快照通道读取（同源 frame 直接读，沙箱 frame 走 frame 内报告脚本的消息），其余片段读页面 DOM；结果净化同上，超出预算时 `truncated` 为真并带截断标记；读不到的 frame 计入 `missed`（canvas、WebGL 等只能拿到 DOM 结构）。沙箱 frame 的读取也会像诊断快照一样写一份显示运行时记录。
 - `StaticHtml`（`{ html }`）、`sanitizeHtml(html)`：同一套净化与 shadow root 显示。
