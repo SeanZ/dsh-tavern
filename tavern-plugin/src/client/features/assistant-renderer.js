@@ -325,6 +325,7 @@
 			function TavernPlannedRow(props) {
 				const turn = String(props.turn);
 				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				React.useEffect(function () { return tavernChatPresence.mount(props.sessionId); }, [props.sessionId]);
 				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
 			}
 			// Only the latest rounds run a card's HTML (heavy status bars, input templates);

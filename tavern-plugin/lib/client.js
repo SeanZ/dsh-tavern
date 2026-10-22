@@ -14540,6 +14540,7 @@ function bindTavernFontZoom(node, win) {
 			function TavernPlannedRow(props) {
 				const turn = String(props.turn);
 				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				React.useEffect(function () { return tavernChatPresence.mount(props.sessionId); }, [props.sessionId]);
 				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
 			}
 			// Only the latest rounds run a card's HTML (heavy status bars, input templates);
@@ -20593,6 +20594,34 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 		function tavernPlanOf(view) {
 			return view && view.transcriptTurns ? { turns: view.transcriptTurns, from: view.transcriptFrom } : null;
 		}
+		// The dock's row projections only have work while the chat view shows. The host
+		// renders one Conversation view at a time and gives dock entries no selection, so
+		// Tavern's own chat rows count themselves per session: none mounted means another
+		// view (or an empty chat) is showing and the projections stay off.
+		function createTavernChatPresence() {
+			const counts = new Map(), listeners = new Set();
+			function notify() { listeners.forEach(function (listener) { listener(); }); }
+			return {
+				mount: function (sessionId) {
+					const id = String(sessionId || ""), count = counts.get(id) || 0;
+					counts.set(id, count + 1);
+					if (count === 0) notify();
+					return function () {
+						const next = (counts.get(id) || 1) - 1;
+						if (next > 0) { counts.set(id, next); return; }
+						counts.delete(id);
+						notify();
+					};
+				},
+				shown: function (sessionId) { return counts.has(String(sessionId || "")); },
+				subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; }
+			};
+		}
+		const tavernChatPresence = createTavernChatPresence();
+		function useTavernChatShown(sessionId) {
+			const read = React.useCallback(function () { return tavernChatPresence.shown(sessionId); }, [sessionId]);
+			return React.useSyncExternalStore(tavernChatPresence.subscribe, read, read);
+		}
 		function createTurnHistoryProjection(options) {
 			options = options || {};
 			const root = options.root || function () { return document; };
@@ -22958,6 +22987,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
 			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
@@ -22975,7 +23005,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				tavernCoordination.invalidate(props.sessionId);
 			}
 			React.useEffect(function () {
-				const root = marker.current && marker.current.closest("[data-conversation-scroll]");
+				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
 				const controls = createTurnErrorControls(root, {
@@ -23017,7 +23047,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
 				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); };
-			}, [props.sessionId, revision]);
+			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
 		// Share in-flight reads across effect restarts and duplicate mounts.
@@ -23066,7 +23096,9 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
+			const chatShown = useTavernChatShown(props.sessionId);
 			React.useEffect(function () {
+				if (!chatShown) return;
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
@@ -23089,7 +23121,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				});
 				observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-chat-flow-kind", "data-chat-turn", "data-turn-tail"] });
 				return function () { observer.disconnect(); if (frame !== null) window.cancelAnimationFrame(frame); };
-			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom]);
+			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom, chatShown]);
 			return null;
 		}
         const { CandidateQuestion, CandidateGuidePanel, RegenPanel } = createPlayInteractionPanels({

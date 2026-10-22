@@ -110,3 +110,29 @@ test('手机布局只留最近 1 轮活 iframe，桌面保持 3 轮', () => {
   assert.ok(find(desktop(9), frame), '桌面上倒数第二轮仍渲染')
   assert.equal(find(desktop(6), frame), null)
 })
+
+test('会话级行投影只在聊天行挂载时观察 DOM，其他视图下不建 MutationObserver', () => {
+  const observers = []
+  class MutationObserver { constructor(callback) { this.callback = callback; observers.push(this) } observe() {} disconnect() { this.disconnected = true } }
+  const host = { MutationObserver, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, localStorage: { getItem: () => null, removeItem() {} }, addEventListener() {}, removeEventListener() {} }
+  let descriptor
+  const effects = { ...React, useEffect: run => { run() } }
+  const context = { window: { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout, clearTimeout, ...host }, console }
+  vm.runInNewContext(source, context)
+  const client = descriptor.factory(name => name === 'react' ? effects : {})
+  // The projection observes document.body; the bundle itself loads without a page.
+  context.document = { body: {}, querySelectorAll: () => [] }
+  const docks = {}
+  const ctx = { sessions: { subagentAddress: () => null }, get: () => null, effect(run) { try { run() } catch (_) {} } }
+  const slots = { inject: (_name, run) => run(), register(options, component) { docks[options.id || options.key] = component; return () => {} } }
+  client.createPlayControlsFeatureModule().register({ ctx, slots })
+  const projection = docks['dsh-tavern-question']({ sessionId: 's5' }).props.children.find(child => String(child.props.key).startsWith('history:'))
+  const dockProps = { sessionId: 's5', useSession: select => select({ running: false }), useChat: select => select({ legacy: { nodes: [] } }) }
+  projection.type(dockProps)
+  assert.equal(observers.length, 0, '没有聊天行（故事视图或其他视图）时不观察')
+  client.createTavernAssistantRendererFeatureModule().register({ ctx, slots })
+  const gate = docks.user({ sessionId: 's5', node: { kind: 'user', data: { time: 1, content: [] }, location: at(1) } })
+  gate.type(gate.props)
+  projection.type(dockProps)
+  assert.equal(observers.length, 1, '聊天行挂载后恢复观察')
+})

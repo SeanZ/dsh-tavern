@@ -162,6 +162,34 @@
 		function tavernPlanOf(view) {
 			return view && view.transcriptTurns ? { turns: view.transcriptTurns, from: view.transcriptFrom } : null;
 		}
+		// The dock's row projections only have work while the chat view shows. The host
+		// renders one Conversation view at a time and gives dock entries no selection, so
+		// Tavern's own chat rows count themselves per session: none mounted means another
+		// view (or an empty chat) is showing and the projections stay off.
+		function createTavernChatPresence() {
+			const counts = new Map(), listeners = new Set();
+			function notify() { listeners.forEach(function (listener) { listener(); }); }
+			return {
+				mount: function (sessionId) {
+					const id = String(sessionId || ""), count = counts.get(id) || 0;
+					counts.set(id, count + 1);
+					if (count === 0) notify();
+					return function () {
+						const next = (counts.get(id) || 1) - 1;
+						if (next > 0) { counts.set(id, next); return; }
+						counts.delete(id);
+						notify();
+					};
+				},
+				shown: function (sessionId) { return counts.has(String(sessionId || "")); },
+				subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; }
+			};
+		}
+		const tavernChatPresence = createTavernChatPresence();
+		function useTavernChatShown(sessionId) {
+			const read = React.useCallback(function () { return tavernChatPresence.shown(sessionId); }, [sessionId]);
+			return React.useSyncExternalStore(tavernChatPresence.subscribe, read, read);
+		}
 		function createTurnHistoryProjection(options) {
 			options = options || {};
 			const root = options.root || function () { return document; };
