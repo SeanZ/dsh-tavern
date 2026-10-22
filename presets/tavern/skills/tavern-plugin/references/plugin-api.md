@@ -168,7 +168,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
 | `render` | 楼层渲染运行时，见下节 |
 
-`attempt` 是已加载事件窗口内的最新生成尝试，字段为 `{ turn, seq, phase, inputs, accepted, error }`，没有尝试时为 `null`。`phase` 在输入模板准备时为 `preparing`，模型步骤开始后为 `generating`，结束后为原生 `turn/end.reason.kind`；`error` 为结束事件的错误消息。`inputs` 从原生队列保留已提交文字，在 `user/message` 写入后由正式输入替换，避免重复。`accepted` 表示已有正式用户消息；未接纳输入的早期失败不会生成楼层，也不能用 `retryFailed` 回放。此时界面可显示错误并将已知文字恢复到输入框，不自动重发。窗口缺少早期队列事件时，`inputs` 可能为空。
+`attempt` 是已加载事件窗口内的最新生成尝试，字段为 `{ turn, seq, phase, inputs, accepted, error }`，没有尝试时为 `null`。`phase` 在输入模板准备时为 `preparing`，模型步骤开始后为 `generating`，结束后为原生 `turn/end.reason.kind`；`error` 为结束事件的错误消息。`inputs` 只取宿主为本轮认领的那条排队输入（`turn/start` 之后的认领 splice），仍在排队的后续输入不计入；在 `user/message` 写入后由正式输入替换，避免重复。`accepted` 表示已有正式用户消息；未接纳输入的早期失败不会生成楼层，也不能用 `retryFailed` 回放。此时界面可显示错误并将已知文字恢复到输入框，不自动重发。窗口没看到本轮那条输入的入队事件时，`inputs` 为空，不会错拿别的排队输入。
 
 稳定性：方法名、参数与返回字段只加不改；不兼容的改动提高 `apiVersion`。
 
