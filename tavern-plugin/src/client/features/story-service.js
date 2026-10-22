@@ -165,6 +165,21 @@ function createTavernStoryService(options) {
 				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: result && result.mvu, view: result && result.view };
 			} finally { afterChange(sessionId); }
 		},
+		/**
+		 * Start a new game from this floor's current reply (any settled floor, the opening
+		 * included); later floors stay behind. Same flow as the chat's fork button (the sidebar
+		 * forks the native session, binds the save, names and opens the new game), through the
+		 * floor RPCs. Resolves once the new game is open: { sessionId, chatId, turn, replySeq }.
+		 */
+		forkAt: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "forkAt");
+			const turn = tavernStoryTurnArgument(storyTurn, "forkAt");
+			const rounds = foldNow(sessionId);
+			const attempting = rounds.attempt && (rounds.attempt.phase === "preparing" || rounds.attempt.phase === "generating");
+			if (rounds.open || attempting) throw new Error("正在生成，请完成或停止后再创建分支");
+			if (!rounds.floors.some(function (floor) { return floor.story === turn; })) throw new Error("第 " + turn + " 轮不是当前已加载的楼层");
+			return tavernConversationForkRequests.request({ sessionId: sessionId, turn: turn, floor: true });
+		},
 		/** 打断指定原生回合，并重新投递队尾那条排队输入，让它接着成为下一轮。 */
 		interruptQueued: function (sessionId, turn) {
 			return rpc("interruptStoryQueue", { turn: tavernStoryTurnArgument(turn, "interruptQueued") }, tavernStorySessionArgument(sessionId, "interruptQueued"));

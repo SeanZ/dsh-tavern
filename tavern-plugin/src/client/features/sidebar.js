@@ -776,15 +776,19 @@
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}
-			async function forkConversation(item, currentTitle, turn) {
+			// floor: the story view's 「创建分支」 (tavernStory.forkAt) forks at that floor's current
+			// reply through the floor RPCs, gets the result back and reports its own errors.
+			async function forkConversation(item, currentTitle, turn, floor) {
 				setMenuSession(null);
 				setBusy(true); setError("");
 				let targetSessionId = "";
 				let forkCreated = false;
 				try {
-					const plan = await call("prepareConversationFork", { chatId: item.chatId, sessionId: item.sessionId, turn: Number(turn) || 0 });
+					const plan = floor
+						? await call("prepareFloorFork", { sessionId: item.sessionId, turn: Number(turn) || 0 })
+						: await call("prepareConversationFork", { chatId: item.chatId, sessionId: item.sessionId, turn: Number(turn) || 0 });
 					targetSessionId = await props.conversationHost.forkSession(item.sessionId, plan.atSeq);
-					await call("forkChat", {
+					const bound = await call(floor ? "forkFloor" : "forkChat", {
 						chatId: item.chatId,
 						sessionId: item.sessionId,
 						targetSessionId: targetSessionId,
@@ -797,11 +801,13 @@
 					const pending = { sessionId: targetSessionId, targetMode: item.mode };
 					setPendingOpen(pending);
 					await finishPendingOpen(pending);
+					if (floor) return { sessionId: targetSessionId, chatId: bound.fork.chatId, turn: bound.turn, replySeq: bound.replySeq };
 				} catch (err) {
 					if (targetSessionId && !forkCreated) {
 						try { await props.archiveSession(targetSessionId); }
 						catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) console.warn("dsh-tavern: 清理分叉目标 Session 失败", archiveError); }
 					}
+					if (floor) throw err;
 					setError("分叉对话失败：" + String(err && err.message || err));
 				} finally { setBusy(false); }
 			}
@@ -812,7 +818,7 @@
 					if (!item) throw new Error("找不到当前游玩存档");
 					const summary = summaries[item.sessionId];
 					const title = item.title || (summary && summary.displayTitle ? summary.displayTitle : item.cardName + "的新对话");
-					return forkConversation(item, title, request.turn);
+					return forkConversation(item, title, request.turn, request.floor === true);
 				});
 			}, [history, summaries, busy]);
 			const h = React.createElement;

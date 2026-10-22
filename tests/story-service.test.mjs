@@ -191,3 +191,32 @@ test('subscribeRounds 透传未写入 user/message 的准备和失败状态，�
   assert.equal(seen.at(-1).floors.length, 0)
   stop()
 })
+
+test('forkAt 前置校验后交给侧栏分叉流程（floor 版 RPC），成功时返回新局；生成中或不在窗口的楼层不发请求', async () => {
+  const { client, calls } = loadClient()
+  const window = eventWindow(story(3))
+  const service = serviceOf(client, { s1: window })
+  const requests = []
+  const unbind = client.tavernConversationForkRequests.bind(request => { requests.push(request); return { sessionId: 'fork-1', chatId: 'chat-f', turn: request.turn, replySeq: 7 } })
+  assert.deepEqual(plain(await service.forkAt('s1', 2)), { sessionId: 'fork-1', chatId: 'chat-f', turn: 2, replySeq: 7 })
+  assert.deepEqual(plain(requests), [{ sessionId: 's1', turn: 2, floor: true }])
+  await assert.rejects(service.forkAt('s1', 9), /不是当前已加载的楼层/)
+  window.append({ type: 'event', event: { type: 'turn/start', seq: 99, time: 1, data: { turn: 4 } } })
+  await assert.rejects(service.forkAt('s1', 2), /正在生成/)
+  await assert.rejects(service.forkAt('s1', 0), /正整数/)
+  assert.equal(requests.length, 1)
+  assert.deepEqual(calls.filter(call => /[Ff]ork/.test(call.method)), [], 'forkAt 自己不发分叉请求，交给侧栏')
+  // 侧栏的失败原样传给调用方。
+  unbind()
+  client.tavernConversationForkRequests.bind(() => { throw new Error('源对话已变化，请重新选择分叉楼层') })
+  const settled = eventWindow(story(3))
+  await assert.rejects(serviceOf(client, { s2: settled }).forkAt('s2', 3), /源对话已变化/)
+})
+
+test('侧栏 floor 分叉走 prepareFloorFork → 宿主 fork → forkFloor，失败时抛给调用方', async () => {
+  const sidebar = await readFile(new URL('../tavern-plugin/src/client/features/sidebar.js', import.meta.url), 'utf8')
+  assert.match(sidebar, /floor\n\t+\? await call\("prepareFloorFork", \{ sessionId: item\.sessionId, turn: Number\(turn\) \|\| 0 \}\)/)
+  assert.match(sidebar, /await call\(floor \? "forkFloor" : "forkChat", \{/)
+  assert.match(sidebar, /if \(floor\) throw err;/)
+  assert.match(sidebar, /forkConversation\(item, title, request\.turn, request\.floor === true\)/)
+})

@@ -159,6 +159,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层或生成尝试变化时回调 `{ floors, abandoned, open, attempt, interrupted, hasMore, from }`，返回取消函数。流式块不回调；加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
 | `listResults(sessionId, storyTurn)` | 这一层模型每次生成的原文 `{ seq, turn, text, current }`（旧到新；投影、重写正文、编辑不另算；`current` 为当前显示的那次，切换过时按切换目标），没有该层时为 `null` |
 | `switchResult(sessionId, storyTurn, replySeq)` | 只用于最新楼层、前台空闲时：改为显示 `listResults` 里 `seq` 为 `replySeq` 的那次生成（服务端 `switchFloorResult`）。返回 `{ switched, turn, replySeq, mvu, view }`；`mvu` 为 `'stale'` 时变量仍对应切换前的正文，需要重新结算 |
+| `forkAt(sessionId, storyTurn)` | 以这一层**当前显示的正文**为起点新开一局（任意已落定楼层，含开场），之后的楼层、输入与变量变化都不带过去；分叉点包含该层已落定的重新生成、结果切换与编辑。走与聊天行分叉按钮相同的流程（侧栏原生分叉、绑定存档、命名「… · 分支」并打开新局），服务端为 `prepareFloorFork` / `forkFloor`。生成中（窗口里有未结束的回合或尝试）或该层不在已加载窗口时不发请求；运行中、重新生成中、后台结算中由服务端拒绝。新局打开后 resolve `{ sessionId, chatId, turn, replySeq }`，失败时 reject 原因。新局带走该层及之前的楼层快照；MVU 变量是该层结束时（之后切换过结果则为切换时）的存档变量 |
 | `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
 | `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
 | `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |

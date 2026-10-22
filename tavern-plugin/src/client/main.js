@@ -1194,6 +1194,7 @@ window.__ModuleLoader__.load({
 		exports.liveTavernView = liveTavernView;
 		exports.tavernStoryViewMode = tavernStoryViewMode;
 		exports.createTavernStoryService = createTavernStoryService;
+		exports.tavernConversationForkRequests = tavernConversationForkRequests;
 		exports.createTavernStoryRender = createTavernStoryRender;
 		exports.playControlsFeature = playControlsFeature;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
