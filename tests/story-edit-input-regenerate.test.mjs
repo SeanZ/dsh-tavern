@@ -78,8 +78,8 @@ test('改已完成回合的输入后重新生成：请求里玩家输入是新�
   assert.ok(!texts(h.session.deriveMessages()).some(text => text.includes('推门')), '之后的请求也看不到旧输入')
 })
 
-// 切换历史结果留下的「变量未重算」标记（message.variablesStale）只属于那份正文。
-test('变量未重算标记：重新生成落定后清除，编辑正文后清除', async () => {
+// 重生成会替换该轮；手动编辑不重算变量，不能提前消除提示。
+test('变量未重算标记：重新生成落定后清除，编辑正文后保留', async () => {
   const regen = harness()
   regen.mark()
   await regen.history.regenerate(regen.chat.id, '', regen.session.id)
@@ -88,8 +88,9 @@ test('变量未重算标记：重新生成落定后清除，编辑正文后清�
 
   const edit = harness()
   edit.mark()
+  const stale = structuredClone(edit.chat.messages.at(-1).variablesStale)
   const read = await edit.editor.read(edit.session.id)
   await edit.editor.save(edit.session.id, { token: read.token, texts: ['改过的正文'] })
   assert.match(JSON.stringify(edit.chat.messages.at(-1)), /改过的正文/)
-  assert.equal(Object.hasOwn(edit.chat.messages.at(-1), 'variablesStale'), false)
+  assert.deepEqual(edit.chat.messages.at(-1).variablesStale, stale)
 })

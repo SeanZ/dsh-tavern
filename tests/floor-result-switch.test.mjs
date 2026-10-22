@@ -92,7 +92,7 @@ test('切换到历史结果：存档正文、模型上下文与故事楼层都�
   assert.equal(foldStoryRounds(sessionEvents(f.session)).floors.length, 3)
 })
 
-test('官方 MVU 卡切换后存档标记变量未重算（视图 staleVariables），编辑正文清除；非 MVU 卡不标', async () => {
+test('官方 MVU 卡切换后存档标记变量未重算，编辑正文仍保留；非 MVU 卡不标', async () => {
   const f = fixture('switch-mvu-stale', { mvu: { enabled: true, owner: 'official' } })
   assert.equal(staleVariablesOf(f.chat()), null)
   await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: f.seqs.first })
@@ -107,10 +107,9 @@ test('官方 MVU 卡切换后存档标记变量未重算（视图 staleVariables
   assert.deepEqual(staleVariablesOf(f.chat()), { turn: 3, replySeq: f.seqs.first })
   await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: f.seqs.second })
   assert.deepEqual(staleVariablesOf(f.chat()), { turn: 3, replySeq: f.seqs.second })
-  // 编辑正文（同一 body.edit 意图）清除标记。
+  // 编辑只修改正文，不会重算变量，不能消除已经存在的未重算标记。
   const edited = createStoryTimeline().apply({ chat: f.chat(), intent: { kind: 'body.edit', turn: 3, patch: { text: '改过的正文' } } }).chat
-  assert.equal(staleVariablesOf(edited), null)
-  assert.equal(Object.hasOwn(edited.messages.at(-1), 'variablesStale'), false)
+  assert.deepEqual(staleVariablesOf(edited), { turn: 3, replySeq: f.seqs.second })
 
   for (const mvu of [undefined, { enabled: true, owner: 'legacy' }, { enabled: false }]) {
     const plain = fixture('switch-plain-' + JSON.stringify(mvu), { mvu })

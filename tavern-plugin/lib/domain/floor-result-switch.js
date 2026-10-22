@@ -16,7 +16,8 @@ import { replyProse } from './reply-prose.js'
  * The floor's MVU variables are not replayed: like a body edit, the switch keeps the
  * variables the previous body settled and reports `mvu: 'stale'`. For an official MVU card
  * the save also marks the floor (`variablesStale`, read as the view's `staleVariables`)
- * until a settlement, regeneration, edit or rollback of it.
+ * until a settlement, regeneration or rollback of it.
+ * 手动编辑正文不重算变量，仍保留未重算标记。
  */
 export function createFloorResultSwitch({ chats, sessions, timeline, activity, project, present, sessionPatch, id = randomUUID }) {
   const pending = new Set()
