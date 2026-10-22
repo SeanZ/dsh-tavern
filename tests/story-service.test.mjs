@@ -168,7 +168,7 @@ test('listResults 列出模型每次生成的原文，current 跟随结果切换
   client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
   const result = await service.switchResult('s1', 2, 11)
   assert.deepEqual(calls.find(call => call.method === 'switchFloorResult').args, { turn: 2, replySeq: 11, sessionId: 's1' })
-  assert.deepEqual(plain(result), { switched: true, turn: 2, replySeq: 11, mvu: 'stale', view: { mode: 'story' } }, 'mvu 原样返回')
+  assert.deepEqual(plain(result), { switched: true, turn: 2, replySeq: 11, mvu: 'stale', resettle: false, view: { mode: 'story' } }, 'mvu 原样返回；非 MVU 卡没有可重算的变量')
   await assert.rejects(service.switchResult('s1', 1, 3), /最新楼层/)
   await assert.rejects(service.switchResult('s1', 2, 'x'), /replySeq/)
   assert.equal(calls.filter(call => call.method === 'switchFloorResult').length, 1, '前置校验失败不发请求')
@@ -328,4 +328,27 @@ test('editInput 改最新楼层的玩家输入：按该层输入的原生轮与 
   await assert.rejects(service.editInput('s1', 1, '旧层'), /最新楼层/)
   await assert.rejects(service.editInput('s1', 2, '  '), /非空/)
   assert.equal(calls.filter(call => call.method === 'saveBodyEdit').length, 1)
+})
+
+test('resettle 只对最新楼层转调 retrySettlement；MVU 卡切换结果后 resettle 为真', async () => {
+  const { client, calls } = loadClient({
+    switchFloorResult: { switched: true, turn: 2, replySeq: 3, mvu: 'stale', view: { mode: 'story' } },
+    retrySettlement: { view: { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true, activity: { phase: 'pending', busy: false } } }
+  })
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  const view = { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true, tavernMvuRuntime: { owner: 'official' } }
+  client.liveTavernView.setView('s1', view)
+  assert.equal((await service.switchResult('s1', 2, 3)).resettle, true)
+  client.liveTavernView.setView('s1', view)
+  const result = await service.resettle('s1', 2)
+  assert.deepEqual(calls.find(call => call.method === 'retrySettlement').args, { turn: 2, sessionId: 's1' })
+  assert.equal(result.view.activity.phase, 'pending')
+  await assert.rejects(service.resettle('s1', 1), /最新楼层/)
+  client.liveTavernView.setView('s1', view)
+  await assert.rejects(service.resettle('s1', 1), /最新楼层/)
+  assert.equal(calls.filter(call => call.method === 'retrySettlement').length, 1, '非最新层不发请求')
+  const failing = loadClient({ retrySettlement: { error: '当前最新正文没有失败的后台结算' } })
+  const other = serviceOf(failing.client, { s1: eventWindow(story(2)) })
+  failing.client.liveTavernView.setView('s1', view)
+  await assert.rejects(other.resettle('s1', 2), /没有失败的后台结算/, '服务端拒绝原样传出')
 })

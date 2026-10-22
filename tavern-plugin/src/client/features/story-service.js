@@ -202,11 +202,14 @@ function createTavernStoryService(options) {
 			const turn = tavernStoryTurnArgument(storyTurn, "switchResult");
 			const seq = Number(replySeq);
 			if (!Number.isSafeInteger(seq) || seq < 0) throw new TypeError("switchResult 需要 listResults 给出的 replySeq");
-			await latestFloor(sessionId, turn, "切换历史结果");
+			const before = await latestFloor(sessionId, turn, "切换历史结果");
 			try {
 				const result = await rpc("switchFloorResult", { turn: turn, replySeq: seq }, sessionId);
 				clearPanels();
-				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: result && result.mvu, view: result && result.view };
+				const mvu = result && result.mvu;
+				// Only an MVU card's variables can be settled again for the shown reply (resettle).
+				const officialMvu = Boolean(before.tavernMvuRuntime && before.tavernMvuRuntime.owner === "official");
+				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: mvu, resettle: mvu === "stale" && officialMvu, view: result && result.view };
 			} finally { afterChange(sessionId); }
 		},
 		/**
@@ -321,6 +324,21 @@ function createTavernStoryService(options) {
 				if (!edit || edit.role !== "user") throw new Error("读取这条输入失败");
 				const result = await rpc("saveBodyEdit", { token: edit.token, role: "user", index: edit.index, turn: edit.turn, seq: edit.seq, texts: [text] }, sessionId);
 				clearPanels();
+				return { view: result && result.view };
+			} finally { afterChange(sessionId); }
+		},
+		/**
+		 * Settle the latest floor again for the reply it now shows (retrySettlement), e.g. after
+		 * switchResult reported mvu 'stale'. Latest floor only; the server decides whether this
+		 * card has a settlement to redo. Resolves once the settlement is queued: { view }.
+		 */
+		resettle: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "resettle");
+			const turn = tavernStoryTurnArgument(storyTurn, "resettle");
+			await latestFloor(sessionId, turn, "重新结算");
+			try {
+				const result = await rpc("retrySettlement", { turn: turn }, sessionId);
+				if (result && result.view) liveTavernView.setView(sessionId, result.view);
 				return { view: result && result.view };
 			} finally { afterChange(sessionId); }
 		},
