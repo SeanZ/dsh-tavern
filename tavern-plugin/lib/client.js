@@ -23276,10 +23276,447 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				function (props) { return React.createElement(React.Fragment, null, React.createElement(RegenPanel, props), React.createElement(BodyEditPanel, props)); }
 			)), "dsh-tavern: regen body panel");
 		}
-		return Object.freeze({ register: register });
+		// Fork contract C5: the story service (features/story-service.js) reuses these flows.
+		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, replayFailedTurn: submitFailedTurnReplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();
+// The story as it stands in the save, folded from the session log alone: the player's
+// inputs and the settled replies the model still sees, one floor per round, in order.
+// The host keeps every event forever; rollbacks, regenerations and failed-turn cleanups
+// are surface replacements over older ranges. Folding the surface the way the host does
+// (append to the tail, a replacement takes the place of the range it shadows) leaves
+// exactly the current story, so no save floors and no row plan are needed.
+//
+// Same rules as the row plan (transcript-row-plan.js): a reply's story round is its
+// `source.tavernStoryTurn` when a replacement wrote it, else its own native turn; a
+// player input is a `user/message` whose source kind is 'user'.
+//
+// Pure and self-contained: the browser bundle embeds it with `@include-domain`, so it
+// imports nothing and touches no Node or DOM API.
+
+const STORY_SETTLED_ENDS = ['completed', 'max-tokens']
+
+function storyRoundsText(content) {
+  return (Array.isArray(content) ? content : []).filter(block => block && block.type === 'text').map(block => String(block.text || '')).join('')
+}
+function storyRoundsRange(op) {
+  return { start: op.startSeq ?? op.start, end: op.endSeq ?? op.end }
+}
+const storyRoundsIsReplace = event => Boolean(event && event.surfaceOp && typeof event.surfaceOp === 'object' && event.surfaceOp.op === 'replace')
+const storyRoundsIsSurface = event => Boolean(event && (event.surfaceOp === 'append' || storyRoundsIsReplace(event)))
+const storyRoundsIsPlayerInput = event => event && event.type === 'user/message' && event.data && event.data.source && event.data.source.kind === 'user'
+// A regeneration attempt's input: its reply becomes the round's only through the replacement.
+const storyRoundsIsRegeneration = event => {
+  const source = event && event.type === 'user/message' && event.data && event.data.source
+  return Boolean(source) && (source.kind === 'plugin:dsh-tavern-regen' || source.kind === 'plugin' && source.plugin === 'dsh-tavern-regen')
+}
+const storyRoundsIsModelReply = event => event && event.type === 'assistant/message' && event.data && event.data.message && event.data.message.source && event.data.message.source.kind === 'model'
+
+/**
+ * One game's rounds, fed its log in order (each event once; a page of later events at a
+ * time is fine). `result()` returns
+ *   { floors, abandoned, open }
+ * floors:    [{ story, inputs: [{ seq, turn, text }], reply: { seq, turn, id, text },
+ *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs
+ * abandoned: [{ seq, turn, text, reason }] player inputs that are no longer story;
+ *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
+ *            or 'rolled-back' / 'replaced'
+ * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
+ * An interrupted, failed or empty reply never makes a floor.
+ */
+function createStoryRoundsFold() {
+  const events = new Map()
+  let nodes = []
+  const turnOf = new Map() // player input seq -> native turn
+  const ended = new Map() // native turn -> turn/end reason kind
+  const replacedBy = new Map() // seq -> the replacement that shadowed it
+  const attempts = new Set() // native turns a regeneration input opened
+  let queuedAttempt = false
+  let queued = [], running = null, last = -1, cached = null
+
+  function shadow(event) {
+    const { start, end } = storyRoundsRange(event.surfaceOp)
+    let first = nodes.indexOf(start), final = nodes.indexOf(end)
+    let removed
+    if (first >= 0 && final >= first) removed = nodes.slice(first, final + 1)
+    else {
+      // A window that starts later than the range: drop what it holds of it.
+      const sources = Array.isArray(event.sourceEventSeqs) ? new Set(event.sourceEventSeqs) : null
+      removed = nodes.filter(seq => sources ? sources.has(seq) : seq >= start && seq <= end)
+      first = removed.length ? nodes.indexOf(removed[0]) : (nodes.length && start < nodes[0] ? 0 : nodes.length)
+    }
+    const gone = new Set(removed)
+    nodes = nodes.slice(0, first).filter(seq => !gone.has(seq)).concat([event.seq], nodes.slice(first).filter(seq => !gone.has(seq)))
+    for (const seq of removed) {
+      replacedBy.set(seq, event.seq)
+      // An edited input stands for the one it replaced, in that turn.
+      if (storyRoundsIsPlayerInput(event) && turnOf.has(seq) && !turnOf.has(event.seq)) turnOf.set(event.seq, turnOf.get(seq))
+    }
+    for (const seq of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) if (!replacedBy.has(seq)) replacedBy.set(seq, event.seq)
+  }
+
+  /** Fold events in log order; events already folded are skipped. */
+  function addEvents(list) {
+    for (const event of Array.isArray(list) ? list : []) {
+      const seq = Number(event && event.seq)
+      if (!Number.isSafeInteger(seq) || seq <= last) continue
+      last = seq
+      events.set(seq, event)
+      cached = null
+      if (event.type === 'turn/start') {
+        // A turn that never ended before the next began was cut off (the server stopped).
+        if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
+        running = Number(event.data && event.data.turn)
+        // A message queued before its turn starts (the inbox splices it in) belongs to it.
+        for (const input of queued) turnOf.set(input, running)
+        if (queuedAttempt) attempts.add(running)
+        queued = []; queuedAttempt = false
+        continue
+      }
+      if (event.type === 'turn/end') {
+        ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
+        running = null
+        continue
+      }
+      if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
+        if (running === null) queued.push(seq)
+        else turnOf.set(seq, running)
+      }
+      if (storyRoundsIsRegeneration(event) && event.surfaceOp === 'append') {
+        if (running === null) queuedAttempt = true
+        else attempts.add(running)
+      }
+      if (!storyRoundsIsSurface(event)) continue
+      if (storyRoundsIsReplace(event)) shadow(event)
+      else nodes.push(seq)
+    }
+  }
+
+  function textOf(event) {
+    return event.type === 'user/message' ? storyRoundsText(event.data && event.data.content) : storyRoundsText(event.data && event.data.message && event.data.message.content)
+  }
+  function storyOf(event) {
+    const story = Number(event.data && event.data.message && event.data.message.source && event.data.message.source.tavernStoryTurn)
+    return Number.isSafeInteger(story) && story > 0 ? story : Number(event.data && event.data.turn)
+  }
+  // Every reply the round has had: the replacement chain behind the current one.
+  function historyOf(current) {
+    const seen = new Set(), found = []
+    const visit = seq => {
+      if (seen.has(seq)) return
+      seen.add(seq)
+      const event = events.get(seq)
+      if (!event || event.type !== 'assistant/message') return
+      if (storyRoundsIsModelReply(event) && textOf(event) !== '') found.push(event)
+      if (storyRoundsIsReplace(event)) for (const source of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) visit(source)
+    }
+    visit(current.seq)
+    const text = textOf(current)
+    // A replacement that copies a reply it shadows is that reply, not another result.
+    const originals = found.filter(event => !storyRoundsIsReplace(event) || !found.some(other => other !== event && !storyRoundsIsReplace(other) && textOf(other) === textOf(event)))
+    const currentSeq = (originals.findLast(event => textOf(event) === text) || current).seq
+    return originals.sort((a, b) => a.seq - b.seq).map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
+  }
+  function failedEnd(turn) {
+    const kind = ended.get(turn)
+    return kind !== undefined && !STORY_SETTLED_ENDS.includes(kind) ? kind : ''
+  }
+  function abandonReason(seq, visible) {
+    const failed = failedEnd(turnOf.get(seq))
+    if (failed) return failed
+    for (let next = replacedBy.get(seq), steps = 0; next !== undefined && steps < 1000; next = replacedBy.get(next), steps++) {
+      const event = events.get(next)
+      const content = event && (event.type === 'user/message' ? event.data && event.data.content : event.data && event.data.message && event.data.message.content)
+      // An empty replacement is a tombstone (rollback, cleanup); a non-empty one an edit or repair.
+      if (Array.isArray(content) && content.length === 0) return 'rolled-back'
+      if (visible.has(next)) return ''
+    }
+    return visible.has(seq) ? '' : 'replaced'
+  }
+
+  function result() {
+    if (cached) return cached
+    const floors = [], abandoned = []
+    let inputs = [], open = null
+    const opened = () => (open = open || { turn: running, inputs: [], reply: null })
+    for (const seq of nodes) {
+      const event = events.get(seq)
+      if (storyRoundsIsPlayerInput(event)) {
+        const input = { seq, turn: turnOf.has(seq) ? turnOf.get(seq) : null, text: textOf(event) }
+        // Queued for the next turn, or part of the one running now.
+        if (input.turn === null && !storyRoundsIsReplace(event) || input.turn !== null && input.turn === running) opened().inputs.push(input)
+        else if (input.turn === null || ended.has(input.turn) && !failedEnd(input.turn)) inputs.push(input)
+        continue
+      }
+      if (!storyRoundsIsModelReply(event)) continue
+      const text = textOf(event)
+      if (text === '') continue
+      const turn = Number(event.data.turn)
+      if (turn === running) { opened().reply = { seq, turn, text }; if (attempts.has(turn)) open.regenerating = true; continue }
+      if (!storyRoundsIsReplace(event) && attempts.has(turn)) continue
+      // An append reply is story once its turn completed; a replacement is Tavern's own settled write.
+      if (!storyRoundsIsReplace(event) && !(ended.has(turn) && !failedEnd(turn))) continue
+      const story = storyOf(event)
+      const reply = { seq, turn, id: String(event.data.message.id || ''), text }
+      const previous = floors[floors.length - 1]
+      // A later step of the same round (after a tool call) is that round's reply.
+      if (!inputs.length && previous && previous.story === story) { previous.reply = reply; previous.history = historyOf(event); continue }
+      floors.push({ story, inputs, reply, history: historyOf(event) })
+      inputs = []
+    }
+    const visible = new Set(nodes)
+    for (const [seq, turn] of turnOf) {
+      const event = events.get(seq)
+      if (storyRoundsIsReplace(event) || event.data.source.repair) continue
+      const reason = abandonReason(seq, visible)
+      if (reason) abandoned.push({ seq, turn, text: textOf(event), reason })
+    }
+    abandoned.sort((a, b) => a.seq - b.seq)
+    cached = { floors, abandoned, open }
+    return cached
+  }
+
+  return { addEvents, result, get folded() { return last } }
+}
+
+/** The rounds of a whole log (or a page of it) at once. */
+function foldStoryRounds(events) {
+  const fold = createStoryRoundsFold()
+  fold.addEvents(events)
+  return fold.result()
+}
+
+// Fork contract C5 (docs/plugin-api.md「故事视图契约」): the browser service `tavernStory`
+// a story-view plugin injects. Floor actions call the same RPCs and client flows as the dock
+// controls (play-controls.js); this file adds no story rules of its own.
+const TAVERN_STORY_FAILED_ENDS = ["error", "aborted", "interrupted"];
+// One `rollbackTurn` removes one round (or first clears a failed tail); a jump of more
+// floors than this is refused rather than looped through.
+const TAVERN_STORY_MAX_ROLLBACK_STEPS = 100;
+
+function tavernStoryTurnArgument(value, label) {
+	const turn = Number(value);
+	if (!Number.isSafeInteger(turn) || turn < 1) throw new TypeError(label + " 需要正整数楼层轮次");
+	return turn;
+}
+function tavernStorySessionArgument(value, label) {
+	if (typeof value !== "string" || value === "") throw new TypeError(label + " 需要 sessionId");
+	return value;
+}
+function tavernStoryEvents(entries) {
+	const events = [];
+	for (const entry of entries || []) if (entry && entry.type === "event" && entry.event) events.push(entry.event);
+	return events;
+}
+// The player input a failed or stopped round dropped, while it is still the latest thing
+// the player did: no later floor, no newer input, nothing running.
+function tavernStoryInterruptedInput(rounds) {
+	if (!rounds || rounds.open) return null;
+	const input = rounds.abandoned[rounds.abandoned.length - 1];
+	if (!input || !TAVERN_STORY_FAILED_ENDS.includes(input.reason)) return null;
+	const last = rounds.floors[rounds.floors.length - 1];
+	if (last && Math.max(last.reply.seq, ...last.inputs.map(item => item.seq)) > input.seq) return null;
+	return Object.freeze({ seq: input.seq, turn: input.turn, text: input.text, reason: input.reason });
+}
+
+function createTavernStoryService(options) {
+	const sessions = options.sessions;
+	const actions = options.actions;
+	const flow = actions.interactions;
+	function eventSourceOf(sessionId) {
+		const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
+		if (!binding || !binding.eventSource) throw new Error("这一局没有在当前页面打开");
+		return binding.eventSource;
+	}
+	function foldNow(sessionId) {
+		const rounds = foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries));
+		return Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds) }));
+	}
+	// The Tavern view of the game (the dock reads the same one), loaded once if nothing holds it yet.
+	function viewOf(sessionId) {
+		const state = liveTavernView.getSnapshot(sessionId);
+		if (state.view) return Promise.resolve(state.view);
+		return new Promise(function (resolve, reject) {
+			let settled = false, stop = null;
+			function check(next) {
+				if (settled || !(next.view || next.phase === "error")) return;
+				settled = true;
+				if (stop) stop();
+				if (next.view) resolve(next.view); else reject(new Error(next.error || "读取本局状态失败"));
+			}
+			stop = liveTavernView.subscribe(sessionId, check);
+			if (settled) stop();
+		});
+	}
+	function afterChange(sessionId) {
+		notifyTavernDataChanged(["sessions"], "story-service");
+		liveTavernView.invalidate(sessionId);
+		tavernCoordination.invalidate(sessionId);
+	}
+	function clearPanels() {
+		flow.candidates.set(null); flow.regeneration.set(null); flow.guide.set(null);
+	}
+	// Same steps as the dock's 「回退本轮」 (TavernRollbackAction).
+	async function rollbackOnce(sessionId, expectedTurn) {
+		try {
+			const result = await rpc("rollbackTurn", { expectedTurn: expectedTurn }, sessionId) || {};
+			actions.historyProjection.rolledBack(sessionId, result.view);
+			clearPanels();
+			return result;
+		} finally { afterChange(sessionId); }
+	}
+	// regenBody always rewrites the latest floor: check it is the one asked for, on the live
+	// event window (current) and on the Tavern view (whether this floor may be regenerated).
+	async function latestFloor(sessionId, storyTurn, label) {
+		const rounds = foldNow(sessionId), latest = rounds.floors[rounds.floors.length - 1];
+		if (rounds.open) throw new Error("正在生成，请完成或停止后再" + label);
+		if (!latest || latest.story !== storyTurn) throw new Error(label + "只能用于最新楼层（当前第 " + (latest ? latest.story : 0) + " 轮）");
+		const view = await viewOf(sessionId);
+		if (!isPlayMode(view.mode) || view.canRegenerate !== true) throw new Error("这一层不能" + label);
+		return view;
+	}
+	// The dock's body regeneration flow, so guidance memory and the in-flight guard are shared.
+	async function regenerateBody(sessionId, guidance, extra) {
+		const panel = flow.regeneration.set({ sessionId: sessionId, phase: "input", guidance: "", text: "", error: "", tail: null });
+		flow.candidates.set(null);
+		await flow.regenerateBody(panel, guidance, extra || {});
+		const after = flow.regeneration.getSnapshot();
+		if (after && after.sessionId === sessionId && (after === panel || after.phase === "error")) {
+			flow.regeneration.set(null);
+			throw new Error(after === panel ? "正文正在重新生成，请等待完成" : after.error);
+		}
+		afterChange(sessionId);
+		return { view: liveTavernView.getSnapshot(sessionId).view };
+	}
+
+	const service = {
+		apiVersion: 1,
+		/** Whether Tavern leaves the chat rows to the host (contract C4). */
+		storyViewMode: function () { return tavernStoryViewMode.enabled(); },
+		setStoryViewMode: function (value) { return tavernStoryViewMode.set(value); },
+		subscribeStoryViewMode: function (listener) {
+			if (typeof listener !== "function") throw new TypeError("subscribeStoryViewMode 需要 listener 函数");
+			return tavernStoryViewMode.subscribe(function () { listener(tavernStoryViewMode.enabled()); });
+		},
+		/**
+		 * Floors folded from this page's event window (C1), now and after every change.
+		 * listener({ floors, abandoned, open, interrupted, hasMore, from }); returns unsubscribe.
+		 */
+		subscribeRounds: function (sessionId, listener) {
+			tavernStorySessionArgument(sessionId, "subscribeRounds");
+			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
+			const source = eventSourceOf(sessionId);
+			let fold = null, revision = -1, published = null, hasMore = null, stopped = false;
+			function publish() {
+				if (stopped) return;
+				const snapshot = source.getSnapshot();
+				if (snapshot.revision === revision) return;
+				// Live appends extend the fold; a prepend, rebaseline or settlement folds the window again.
+				if (fold && snapshot.change && snapshot.change.kind === "append" && snapshot.revision === revision + 1) fold.addEvents(tavernStoryEvents(snapshot.change.entries));
+				else { fold = createStoryRoundsFold(); fold.addEvents(tavernStoryEvents(snapshot.entries)); }
+				revision = snapshot.revision;
+				const rounds = fold.result();
+				// Streaming chunks are transient entries: they change no floor, so no call.
+				if (rounds === published && snapshot.hasMore === hasMore) return;
+				published = rounds; hasMore = snapshot.hasMore;
+				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
+				listener(Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds), hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+			}
+			const unsubscribe = source.subscribe(publish);
+			publish();
+			return function () { stopped = true; unsubscribe(); };
+		},
+		/** Every reply the floor has had, oldest first; `current` marks the one shown. */
+		listResults: function (sessionId, storyTurn) {
+			const turn = tavernStoryTurnArgument(storyTurn, "listResults");
+			const floor = foldNow(tavernStorySessionArgument(sessionId, "listResults")).floors.find(function (item) { return item.story === turn; });
+			return floor ? floor.history : null;
+		},
+		/** Not available yet: Tavern has no RPC that brings back an earlier reply. */
+		switchResult: function () {
+			const error = new Error("当前版本不支持切换历史结果");
+			error.code = "unsupported";
+			return Promise.reject(error);
+		},
+		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
+		rollbackTo: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "rollbackTo");
+			const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
+			let view = await viewOf(sessionId);
+			if (turn > (Number(view.rollbackTargetTurn) || 0)) throw new Error("第 " + turn + " 轮不是现有楼层");
+			const rolledBack = [];
+			let clearedInput = null;
+			for (let step = 0; ; step++) {
+				const clearing = view.canClearIncompleteReply === true;
+				const target = Number(view.rollbackTargetTurn) || 0;
+				if (!clearing && target < turn) break;
+				if (step >= TAVERN_STORY_MAX_ROLLBACK_STEPS) throw new Error("一次最多回退 " + TAVERN_STORY_MAX_ROLLBACK_STEPS + " 层");
+				// A failed tail is cleared first (its input comes back); the next call removes a floor.
+				const result = await rollbackOnce(sessionId, clearing ? null : target);
+				const next = result.view || {};
+				if (clearing) { if (typeof next.clearedInput === "string") clearedInput = next.clearedInput; }
+				else rolledBack.push(target);
+				if (!clearing && (Number(next.rollbackTargetTurn) || 0) >= target && next.canClearIncompleteReply !== true) throw new Error("第 " + target + " 轮回退后仍是最新楼层");
+				if (clearing && next.canClearIncompleteReply === true) throw new Error("未能清除失败的回合");
+				view = next;
+				if (next.rollbackWarning) tavernErrorHub.report("回退提示", new Error(next.rollbackWarning));
+			}
+			return { view: view, rolledBack: rolledBack, clearedInput: clearedInput };
+		},
+		/** Resample the latest floor without guidance (the dock's 重新生成正文 with an empty box). */
+		regenerate: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "regenerate");
+			await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerate"), "重新生成");
+			return regenerateBody(sessionId, "");
+		},
+		/** Rewrite the latest floor with guidance; it becomes the game's remembered guidance. */
+		regenerateWithGuidance: async function (sessionId, storyTurn, guidance, extra) {
+			tavernStorySessionArgument(sessionId, "regenerateWithGuidance");
+			if (typeof guidance !== "string" || guidance.trim() === "") throw new TypeError("regenerateWithGuidance 需要非空 guidance");
+			await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerateWithGuidance"), "按要求改写");
+			return regenerateBody(sessionId, guidance, extra && extra.restyle === true ? { restyle: true, styleGuidance: String(extra.styleGuidance || "") } : {});
+		},
+		/** The guidance last used for this game (offered again when rewriting once more). */
+		guidance: function (sessionId) { return flow.guidance(tavernStorySessionArgument(sessionId, "guidance")); },
+		/** Replay a failed or stopped latest round with its original input. */
+		retryFailed: async function (sessionId) {
+			tavernStorySessionArgument(sessionId, "retryFailed");
+			const result = await actions.replayFailedTurn(sessionId);
+			return { view: result && result.view };
+		},
+		/** The input a failed or stopped round dropped, while the player has not moved on; or null. */
+		readInterruptedInput: function (sessionId) {
+			return foldNow(tavernStorySessionArgument(sessionId, "readInterruptedInput")).interrupted;
+		},
+		/** Store a floor's static HTML (contract C3); `floor` is a floor from subscribeRounds. */
+		writeFloorSnapshot: async function (sessionId, floor, snapshot) {
+			tavernStorySessionArgument(sessionId, "writeFloorSnapshot");
+			const turn = tavernStoryTurnArgument(floor && floor.story, "writeFloorSnapshot");
+			if (!floor.reply || !Number.isSafeInteger(Number(floor.reply.seq))) throw new TypeError("writeFloorSnapshot 需要带 reply.seq 的楼层");
+			if (!snapshot || typeof snapshot.html !== "string") throw new TypeError("writeFloorSnapshot 需要 html 字符串");
+			return rpc("saveFloorSnapshot", { turn: turn, reply: String(floor.reply.seq), html: snapshot.html, truncated: snapshot.truncated === true }, sessionId);
+		},
+		/** Stored snapshots of these floors, by story turn; one taken of another reply is left out. */
+		readFloorSnapshots: async function (sessionId, floors) {
+			tavernStorySessionArgument(sessionId, "readFloorSnapshots");
+			const wanted = (Array.isArray(floors) ? floors : []).filter(function (floor) { return floor && floor.reply && Number.isSafeInteger(Number(floor.story)) && floor.story > 0; });
+			if (!wanted.length) return {};
+			const result = await rpc("getFloorSnapshots", { turns: wanted.map(function (floor) { return floor.story; }) }, sessionId);
+			const stored = result && result.snapshots || {}, snapshots = {};
+			for (const floor of wanted) {
+				const snapshot = stored[floor.story];
+				if (snapshot && snapshot.reply === String(floor.reply.seq)) snapshots[floor.story] = snapshot;
+			}
+			return snapshots;
+		},
+		readFloorSnapshot: async function (sessionId, floor) {
+			const snapshots = await service.readFloorSnapshots(sessionId, [floor]);
+			return floor && snapshots[floor.story] || null;
+		}
+	};
+	return service;
+}
 
         // Offline estimate for comparing sections, not a tokenizer or a bill: a CJK character
         // is about 1.5 tokens, a Latin word piece of 4 letters or 3 digits about 1.
@@ -23477,6 +23914,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
 			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
+			// Fork contract C5/C7: the story-view plugin's service (docs/plugin-api.md「故事视图契约」).
+			if (typeof ctx.provide === "function") ctx.provide("tavernStory", createTavernStoryService({ sessions: ctx.sessions, actions: playControlsFeature.storyActions }));
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
@@ -23759,6 +24198,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 		exports.latestTavernUserTurn = latestTavernUserTurn;
 		exports.liveTavernView = liveTavernView;
 		exports.tavernStoryViewMode = tavernStoryViewMode;
+		exports.createTavernStoryService = createTavernStoryService;
+		exports.playControlsFeature = playControlsFeature;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;

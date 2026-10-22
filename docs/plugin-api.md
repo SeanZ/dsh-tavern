@@ -150,6 +150,24 @@ Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【�
 - 设置是全局的：开启后卡片工作台会话的聊天行也是宿主原生（没有 HTML 草图预览）。
 - 稳定性：键名、默认值与「开启即不注册上述三类条目」只加不改。
 
+### 浏览器服务 `tavernStory`：楼层与楼层操作（C5）
+
+Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`），版本字段 `apiVersion: 1`。楼层操作转调与输入框 dock 相同的请求和流程（`rollbackTurn`、`regenBody`、`replayTurn`、楼层快照 RPC），不另立规则。`sessionId` 即 `gameId`；楼层（floor）是 `subscribeRounds` 给出的对象，`story` 是楼层轮次。
+
+| 方法 | 说明 |
+|---|---|
+| `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层变化时回调 `{ floors, abandoned, open, interrupted, hasMore, from }`，返回取消函数。流式块不回调；加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
+| `listResults(sessionId, storyTurn)` | 这一层有过的全部回复（旧到新，`current` 标当前），没有该层时为 `null` |
+| `switchResult(...)` | 暂不支持，返回 `code: 'unsupported'` 的失败 |
+| `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
+| `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
+| `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
+| `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`） |
+| `writeFloorSnapshot(sessionId, floor, { html, truncated? })` / `readFloorSnapshots(sessionId, floors)` / `readFloorSnapshot(sessionId, floor)` | 楼层静态快照存取；以 `floor.reply.seq` 作为来源，读回时丢弃来源不符的旧快照 |
+| `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
+
+稳定性：方法名、参数与返回字段只加不改；不兼容的改动提高 `apiVersion`。
+
 ## 暂时没有的
 
 下面这些目前还没有接口，不代表不能开放。有实际需要时请提[插件接口需求](https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml)，写清要做的插件和卡在哪一步，能开放的会按需补上。

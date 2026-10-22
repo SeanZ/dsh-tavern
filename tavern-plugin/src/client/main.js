@@ -877,6 +877,7 @@ window.__ModuleLoader__.load({
 // @include-domain play-interaction-flow.js
 // @include features/play-interaction-panels.js
 // @include features/play-controls.js
+// @include features/story-service.js
 
 // @include features/request-context.js
 
@@ -906,6 +907,8 @@ window.__ModuleLoader__.load({
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
 			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
+			// Fork contract C5/C7: the story-view plugin's service (docs/plugin-api.md「故事视图契约」).
+			if (typeof ctx.provide === "function") ctx.provide("tavernStory", createTavernStoryService({ sessions: ctx.sessions, actions: playControlsFeature.storyActions }));
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
@@ -1188,6 +1191,8 @@ window.__ModuleLoader__.load({
 		exports.latestTavernUserTurn = latestTavernUserTurn;
 		exports.liveTavernView = liveTavernView;
 		exports.tavernStoryViewMode = tavernStoryViewMode;
+		exports.createTavernStoryService = createTavernStoryService;
+		exports.playControlsFeature = playControlsFeature;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;
