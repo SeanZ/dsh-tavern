@@ -162,6 +162,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
 | `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
 | `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
+| `interruptQueued(sessionId, turn)` | 故事视图模式下，打断指定的**原生回合**并继续已有排队输入。`turn` 是 `open.turn` 的正整数；只有对应回合仍运行且队列非空才执行，返回 `{ interrupted: boolean }`。保留消息 ID、附件和 FIFO 顺序；过期回合、空闲或非故事局返回 `false`。当前宿主 `cancel({ keepInbox: true })` 只暂停队列，不能直接代替此契约 |
 | `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`） |
 | `writeFloorSnapshot(sessionId, floor, { html, truncated? })` / `readFloorSnapshots(sessionId, floors)` / `readFloorSnapshot(sessionId, floor)` | 楼层静态快照存取；以 `floor.reply.seq` 作为来源，读回时丢弃来源不符的旧快照 |
 | `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |

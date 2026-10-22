@@ -54,6 +54,15 @@ function serviceOf(client, windows) {
   return client.createTavernStoryService({ sessions: { binding: id => windows[id] ? { eventSource: windows[id].source } : undefined }, actions: client.playControlsFeature.storyActions })
 }
 
+test('interruptQueued 转调原生回合限定的契约，拒绝无效参数', async () => {
+  const { client, calls } = loadClient({ interruptStoryQueue: {interrupted:true} })
+  const service = serviceOf(client, {})
+  assert.equal((await service.interruptQueued('s1', 4)).interrupted, true)
+  assert.deepEqual(calls[0], {method:'interruptStoryQueue',args:{turn:4,sessionId:'s1'}})
+  assert.throws(() => service.interruptQueued('s1', 0), /正整数/)
+  assert.throws(() => service.interruptQueued('', 4), /sessionId/)
+})
+
 test('subscribeRounds 用事件窗口折叠楼层：追加增量、流式块不回调、加载更早历史重新折叠', () => {
   const { client } = loadClient()
   const window = eventWindow(story(3).slice(4))

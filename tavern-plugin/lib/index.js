@@ -135,6 +135,7 @@ import { createTavernPluginApi } from './plugin-api.js'
 import { createSceneWorldbooks } from './domain/scene-worldbook.js'
 import { createSessionStablePrefixStorage, ensureSessionStablePrefix, readSessionStablePrefix } from './domain/session-stable-prefix.js'
 import { waitForWritableSession } from './domain/agent-readiness.js'
+import { interruptStoryQueue } from './domain/interrupt-story-queue.js'
 import { createCardDeletion } from './domain/card-deletion.js'
 import { createCardOrganization } from './domain/card-organization.js'
 import { countGamesByCard, orderCardsForLibrary } from './domain/card-list-order.js'
@@ -4704,6 +4705,11 @@ export async function apply(ctx) {
         const view = await bodyEditor.save(args && args.sessionId, args)
         notifyPluginTimeline(args && args.sessionId, 'edit', { settled: true })
         return { view }
+      }
+      case 'interruptStoryQueue': {
+        const mode = await turnOrchestrator.modeFor(args?.sessionId)
+        if (!(await readTavernSettings()).storyViewMode || (mode !== 'story' && mode !== 'script')) return { interrupted: false }
+        return interruptStoryQueue(agentRegistry.get(args?.sessionId), args?.turn)
       }
       case 'switchFloorResult': {
         const result = await floorResultSwitch.switchResult(args || {})

@@ -166,6 +166,9 @@ function createTavernStoryService(options) {
 			} finally { afterChange(sessionId); }
 		},
 		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
+		interruptQueued: function (sessionId, turn) {
+			return rpc("interruptStoryQueue", { turn: tavernStoryTurnArgument(turn, "interruptQueued") }, tavernStorySessionArgument(sessionId, "interruptQueued"));
+		},
 		rollbackTo: async function (sessionId, storyTurn) {
 			tavernStorySessionArgument(sessionId, "rollbackTo");
 			const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
