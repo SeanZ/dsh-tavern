@@ -197,6 +197,7 @@ import { createPhoneChat } from './domain/phone-chat.js'
 import { createPresetLibrary } from './domain/preset-library.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
 import { clearFailedTurnSurface, rollbackAvailability, reshadowRolledBackRounds, interruptedSurfaceTurns } from './domain/rollback-surface.js'
+import { createInterruptedRoundTombstone } from './domain/interrupted-round-tombstone.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
 import { readHistoryLayoutFile } from './domain/history-tool-call.js'
 import { createTavernRetryLimiter } from './domain/tavern-retry-limiter.js'
@@ -3800,6 +3801,10 @@ export async function apply(ctx) {
     now: Date.now,
     shellToolName: process.platform === 'win32' ? 'pwsh' : 'bash'
   })
+  // Story view mode (fork contract): a failed or stopped turn leaves the model's surface when it ends.
+  const tombstoneInterruptedRound = createInterruptedRoundTombstone({ enabled: async () => (await readTavernSettings()).storyViewMode,
+    sessionFor: sessionId => sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session,
+    latestChat: sessionId => chatHeaderWithLatestFloors(sessionId, 3), flush: session => sessionStore.flush(session) })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     prepareOpeningWorldBook: prepareNextWorldBookContext,
@@ -3857,9 +3862,10 @@ export async function apply(ctx) {
       // Keep the failed turn (input and output) on the surface until the player
       // retries, withdraws or sends a new message. That keeps the input available
       // for an in-place edit; the next action clears the whole failed turn first.
+      // Story view mode clears it now (the edit then uses the Chat overlay).
       const mode = await turnOrchestrator.modeFor(input.sessionId)
       if (mode !== 'story' && mode !== 'script') return 0
-      return 0
+      return await tombstoneInterruptedRound(input)
     },
     logger: console
   })
