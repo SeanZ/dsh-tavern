@@ -89,11 +89,24 @@ export function createFloorSnapshots({ store, chatIdFor, now = Date.now }) {
     return { snapshots }
   }
 
+  /** A forked game starts with the source's snapshots of the floors it keeps (turn ≤ maxTurn). */
+  async function copyChat(fromChatId, toChatId, maxTurn) {
+    return serialize(toChatId, async () => {
+      let copied = 0
+      for (const turn of await storedTurns(fromChatId)) {
+        if (turn > maxTurn) continue
+        const record = await readOne(fromChatId, turn)
+        if (record) { await store.writeJson(pathOf(toChatId, turn), record); copied++ }
+      }
+      return copied
+    })
+  }
+
   async function removeChat(chatId) {
     return serialize(chatId, async () => {
       for (const turn of await storedTurns(chatId)) await store.remove(pathOf(chatId, turn))
     })
   }
 
-  return Object.freeze({ save, read, removeChat })
+  return Object.freeze({ save, read, copyChat, removeChat })
 }

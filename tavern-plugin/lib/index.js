@@ -201,6 +201,7 @@ import { clearFailedTurnSurface, rollbackAvailability, reshadowRolledBackRounds,
 import { createInterruptedRoundTombstone } from './domain/interrupted-round-tombstone.js'
 import { createFloorSnapshots } from './domain/floor-snapshots.js'
 import { createFloorResultSwitch } from './domain/floor-result-switch.js'
+import { createFloorFork } from './domain/floor-fork.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
 import { readHistoryLayoutFile } from './domain/history-tool-call.js'
 import { createTavernRetryLimiter } from './domain/tavern-retry-limiter.js'
@@ -3958,6 +3959,10 @@ export async function apply(ctx) {
   const floorResultSwitch = createFloorResultSwitch({ chats: { forSession: hookChatForSession, update: updateChat },
     sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
     timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch })
+  // Story view: fork at one floor's current reply, through the conversation fork above.
+  const floorFork = createFloorFork({ sessions: { get: id => sessionStore.get(id) || agentRegistry.get(id)?.session },
+    prepare: (sessionId, turn) => prepareConversationFork('', sessionId, turn), snapshots: floorSnapshots,
+    bind: input => forkChat('', input.sessionId, input.targetSessionId, input.turn, input.sourceRevision, input.atSeq) })
 
   // ---------- HTTP RPC（客户端同源 fetch） ----------
   async function dispatch(method, args) {
@@ -4417,6 +4422,8 @@ export async function apply(ctx) {
         return { turn: plan.turn, atSeq: plan.atSeq, sourceRevision: plan.source._storageRevision }
       }
       case 'forkChat': return { fork: await forkChat(args?.chatId, args?.sessionId, args?.targetSessionId, args?.turn, args?.sourceRevision, args?.atSeq) }
+      case 'prepareFloorFork': return await floorFork.prepare(args || {})
+      case 'forkFloor': return await floorFork.fork(args || {})
       case 'browseScript': return await scriptNavigation.browse(args?.sessionId, args?.position)
       case 'setScriptChunkSize': return await scriptNavigation.setChunkSize(args?.sessionId, args || {})
       case 'pointScript': return await scriptNavigation.point(args?.sessionId, args || {})
