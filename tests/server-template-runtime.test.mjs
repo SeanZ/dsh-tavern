@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, cp, mkdir, symlink, writeFile, rm, realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createServerTemplateRuntime } from '../tavern-plugin/lib/domain/server-template-runtime.js'
 
 function fixture(t, options = {}) {
@@ -13,7 +17,7 @@ function fixture(t, options = {}) {
     })
     return snapshots.get(id)
   }
-  const runtime = createServerTemplateRuntime({ ...options, store: { readJson: async path => journals.get(path), writeJson: async (path, value) => journals.set(path, structuredClone(value)) }, rpc: async (method, args) => {
+  const runtime = (options.createRuntime || createServerTemplateRuntime)({ ...options, store: { readJson: async path => journals.get(path), writeJson: async (path, value) => journals.set(path, structuredClone(value)) }, rpc: async (method, args) => {
     calls.push({method,args:structuredClone(args)})
     await options.beforeRpc?.(method,args)
     const current = state(args.sessionId)
@@ -74,4 +78,25 @@ test('display worker failures preserve bounded redacted stderr without replay or
   assert.equal(journal.transient, true)
   assert.equal(journal.phase, 'interrupted')
   assert.equal((await runtime.inspect('s')).task.workerDiagnostic.exitCode, 42)
+})
+
+// 真实分离安装：新目录中的包链接到旧依赖目录，不能只允许 realpath。
+test('独立插件使用符号链接依赖时可执行输入模板，且不能读取旁边的配置数据', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tavern-template-install-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const modules = join(root, 'plugins/node_modules')
+  const plugin = join(modules, 'fixture/tavern-plugin')
+  await mkdir(plugin, { recursive: true })
+  await cp(new URL('../tavern-plugin/lib', import.meta.url), join(plugin, 'lib'), { recursive: true })
+  await writeFile(join(modules, 'fixture/package.json'), JSON.stringify({ type: 'module' }))
+  await symlink(await realpath(new URL('../node_modules/jsdom', import.meta.url)), join(modules, 'jsdom'), 'dir')
+  const secret = join(root, 'plugins/profile-secret.txt')
+  await writeFile(secret, 'fixture-private-value')
+  const { createServerTemplateRuntime: createRuntime } = await import(pathToFileURL(join(plugin, 'lib/domain/server-template-runtime.js')))
+  const { engine } = fixture(t, { createRuntime })
+  assert.equal((await engine.renderInput('输入 <%= 2 + 3 %>')).message.mes, '输入 5')
+  const denied = await engine.render('<% structuredClone.constructor("return process")().getBuiltinModule("fs").readFileSync(' + JSON.stringify(secret) + ',"utf8") %>')
+  assert.equal(denied.ok, false)
+  assert.match(denied.error, /Access to this API has been restricted|access denied/i)
+  assert.doesNotMatch(denied.error, /fixture-private-value/)
 })

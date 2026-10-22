@@ -2,7 +2,8 @@ import {serveTemplateHistoryPipe} from './template-history-pipe.js'
 import { fork } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { redactMvuLoadError } from './mvu-diagnostics.js'
 
@@ -54,12 +55,16 @@ export function createServerTemplateRuntime({ rpc, store, timeoutMs = 120000, id
     if (disposed || generation !== generations.get(sessionId)) throw new Error('提示词模板任务已取消')
     // Do not inherit API keys, NODE_OPTIONS or arbitrary launch flags. File access
     // is limited to executable dependencies and plugin code, never profile data.
-    const modules = dirname(dirname(require.resolve('jsdom/package.json')))
+    // 分离插件与宿主安装时，ESM 会先读取依赖符号链接的逻辑路径，再读取真实路径。
+    // 两者均只开放依赖目录，不开放其父目录中的配置和会话数据。
+    const modules = new Set([dirname(dirname(require.resolve('jsdom/package.json')))])
+    const logicalModules = require.resolve.paths('jsdom').find(root => existsSync(join(root, 'jsdom/package.json')))
+    if (logicalModules) modules.add(logicalModules)
     const plugin = fileURLToPath(new URL('../../', import.meta.url))
     // Node 24 removed the experimental alias; older hosts still need it.
     const permissionFlag = process.allowedNodeEnvironmentFlags.has('--permission') ? '--permission' : '--experimental-permission'
     const child = fork(worker, [], { env: { NODE_ENV: 'production', ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
-      execArgv: [permissionFlag, '--allow-fs-read=' + plugin, '--allow-fs-read=' + modules, '--max-old-space-size=' + heapMb],
+      execArgv: [permissionFlag, '--allow-fs-read=' + plugin, ...[...modules].map(root => '--allow-fs-read=' + root), '--max-old-space-size=' + heapMb],
       stdio: ['ignore', 'ignore', 'pipe', 'ipc', 'pipe'], serialization: 'advanced', windowsHide: true })
     const record = { child, sessionId, pending: new Map(), busy: true, ready: false, closed: false, stderr: '', usedAt: Date.now(), writes: Promise.resolve() }
     sessions.set(sessionId, record)
