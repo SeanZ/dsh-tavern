@@ -23334,6 +23334,14 @@ function createStoryRoundsFold() {
   const attempts = new Set() // native turns a regeneration input opened
   let queuedAttempt = false
   let queued = [], running = null, last = -1, cached = null
+  // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
+  // sit in the middle of a turn whose turn/start came before the window.
+  let known = false
+  function adopt(turn) {
+    for (const input of queued) turnOf.set(input, turn)
+    if (queuedAttempt) attempts.add(turn)
+    queued = []; queuedAttempt = false
+  }
 
   function shadow(event) {
     const { start, end } = storyRoundsRange(event.surfaceOp)
@@ -23368,16 +23376,24 @@ function createStoryRoundsFold() {
         // A turn that never ended before the next began was cut off (the server stopped).
         if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
         running = Number(event.data && event.data.turn)
+        known = true
         // A message queued before its turn starts (the inbox splices it in) belongs to it.
-        for (const input of queued) turnOf.set(input, running)
-        if (queuedAttempt) attempts.add(running)
-        queued = []; queuedAttempt = false
+        adopt(running)
         continue
       }
       if (event.type === 'turn/end') {
+        // The window began inside this turn: what came before its end belongs to it.
+        if (!known) adopt(Number(event.data && event.data.turn))
+        known = true
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
         running = null
         continue
+      }
+      if (!known && (event.type === 'step/start' || event.type === 'step/end' || event.type === 'assistant/message' && event.surfaceOp === 'append') && Number.isSafeInteger(Number(event.data && event.data.turn)) && Number(event.data.turn) > 0) {
+        // A step of a turn whose start is outside the window: that turn is running.
+        running = Number(event.data.turn)
+        known = true
+        adopt(running)
       }
       if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
         if (running === null) queued.push(seq)
