@@ -229,12 +229,19 @@ function createTavernStoryService(options) {
 		interruptQueued: function (sessionId, turn) {
 			return rpc("interruptStoryQueue", { turn: tavernStoryTurnArgument(turn, "interruptQueued") }, tavernStorySessionArgument(sessionId, "interruptQueued"));
 		},
-		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
+		/**
+		 * Remove this floor and every later one (latest first), clearing a failed tail on the way.
+		 * `input` is the removed floor's own player input ({ text }), for the composer; null
+		 * when the floor is outside the loaded window or has none (the opening).
+		 */
 		rollbackTo: async function (sessionId, storyTurn) {
 			tavernStorySessionArgument(sessionId, "rollbackTo");
 			const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
 			let view = await viewOf(sessionId);
 			if (turn > (Number(view.rollbackTargetTurn) || 0)) throw new Error("第 " + turn + " 轮不是现有楼层");
+			const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
+			const floor = binding && binding.eventSource ? foldNow(sessionId).floors.find(function (item) { return item.story === turn; }) : null;
+			const input = floor && floor.inputs.length ? { text: floor.inputs.map(function (item) { return item.text; }).join("\n") } : null;
 			const rolledBack = [];
 			let clearedInput = null;
 			for (let step = 0; ; step++) {
@@ -252,7 +259,7 @@ function createTavernStoryService(options) {
 				view = next;
 				if (next.rollbackWarning) tavernErrorHub.report("回退提示", new Error(next.rollbackWarning));
 			}
-			return { view: view, rolledBack: rolledBack, clearedInput: clearedInput };
+			return { view: view, rolledBack: rolledBack, clearedInput: clearedInput, input: input };
 		},
 		/** Resample the latest floor without guidance (the dock's 重新生成正文 with an empty box). */
 		regenerate: async function (sessionId, storyTurn) {

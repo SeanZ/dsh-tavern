@@ -101,9 +101,10 @@ test('rollbackTo 先结清失败尾部再逐层回退到目标楼层', async () 
     { view: { mode: 'story', rollbackTargetTurn: 2 } },
     { view: { mode: 'story', rollbackTargetTurn: 1 } }
   ] })
-  const service = serviceOf(client, {})
+  const service = serviceOf(client, { s1: eventWindow(story(3)) })
   client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 3, canClearIncompleteReply: true })
   const result = await service.rollbackTo('s1', 2)
+  assert.deepEqual(plain(result.input), { text: '输入2' }, '被撤回首层的原输入，供放回输入框')
   assert.deepEqual(calls.filter(call => call.method === 'rollbackTurn').map(call => call.args), [
     { expectedTurn: null, sessionId: 's1' }, { expectedTurn: 3, sessionId: 's1' }, { expectedTurn: 2, sessionId: 's1' }])
   assert.deepEqual([...result.rolledBack], [3, 2])
