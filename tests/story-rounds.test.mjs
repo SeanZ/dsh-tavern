@@ -250,3 +250,31 @@ test('重新生成的尝试轮标 regenerating：失败归楼层操作，不当�
     { type: 'turn/start', seq: 6, data: { turn: 4 } }, { type: 'agent/inbox/spliced', seq: 7, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } }])
   assert.equal(fold.result().attempt.regenerating, undefined, '玩家的下一轮不沿用标记')
 })
+
+test('被下一轮认领的玩家输入取代的打断回合标 superseded；主动停止后无人接上仍是 interrupted/aborted', () => {
+  const splice = (seq, data) => ({ type: 'agent/inbox/spliced', seq, data: { target: 'next-turn', inserted: [], ...data } })
+  const running = [
+    { type: 'turn/start', seq: 1, data: { turn: 4 } }, splice(2, { start: 0, inserted: [player('a', '推开门')] }), splice(3, { start: 0, removedCount: 1 }),
+    { type: 'user/message', seq: 4, surfaceOp: 'append', data: player('a', '推开门') },
+    { type: 'step/start', seq: 5, data: { turn: 4, step: 1 } },
+    // 运行中排队「再看看」，自动打断：撤下队尾再投递（canceled 不算认领），本轮 aborted。
+    splice(6, { start: 0, inserted: [player('b', '再看看')] }), splice(7, { start: 0, removedCount: 1, outcome: 'canceled' }),
+    splice(8, { start: 0, inserted: [player('b', '再看看')] }),
+    { type: 'turn/end', seq: 9, data: { turn: 4, reason: { kind: 'aborted' } } }]
+  const stopped = foldStoryRounds(running)
+  assert.deepEqual(stopped.abandoned.map(item => [item.text, item.reason]), [['推开门', 'aborted']], '下一轮还没认领时仍是普通打断')
+  // 下一轮认领「再看看」后在输入模板阶段早期失败：上一轮的打断已被取代。
+  const next = foldStoryRounds([...running, { type: 'turn/start', seq: 10, data: { turn: 5 } }, splice(11, { start: 0, removedCount: 1 }),
+    { type: 'turn/end', seq: 12, data: { turn: 5, reason: { kind: 'error', error: { message: '模板失败' } } } }])
+  assert.deepEqual(next.abandoned.map(item => [item.text, item.reason]), [['推开门', 'superseded']])
+  assert.deepEqual([next.attempt.turn, next.attempt.phase, next.attempt.inputs.map(input => input.text)], [5, 'error', ['再看看']])
+  // 失败回合（error）被接上不算取代：宿主出错后暂停队列，失败需要报告。
+  const failed = foldStoryRounds([...running.slice(0, -1), { type: 'turn/end', seq: 9, data: { turn: 4, reason: { kind: 'error' } } },
+    { type: 'turn/start', seq: 10, data: { turn: 5 } }, splice(11, { start: 0, removedCount: 1 })])
+  assert.deepEqual(failed.abandoned.map(item => item.reason), ['error'])
+  // 重新生成的合成输入不是玩家输入，不取代。
+  const regen = { id: 'regen', role: 'user', content: [{ type: 'text', text: '重生成' }], source: { kind: 'plugin:dsh-tavern-regen' } }
+  const regenerated = foldStoryRounds([...running.slice(0, 5), { type: 'turn/end', seq: 9, data: { turn: 4, reason: { kind: 'aborted' } } },
+    splice(10, { start: 0, inserted: [regen] }), { type: 'turn/start', seq: 11, data: { turn: 5 } }, splice(12, { start: 0, removedCount: 1 })])
+  assert.deepEqual(regenerated.abandoned.map(item => item.reason), ['aborted'])
+})

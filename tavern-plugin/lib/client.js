@@ -23342,7 +23342,9 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *              history lists the model's own generations (raw text), reply is the current node
  * abandoned: [{ seq, turn, text, reason }] player inputs that are no longer story;
  *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
- *            or 'rolled-back' / 'replaced'
+ *            or 'rolled-back' / 'replaced'; an aborted or interrupted turn the next turn
+ *            replaced by claiming a player input (the story queue's auto interrupt, or
+ *            the player sending again) is 'superseded': the player has moved on
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
  * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层；
  *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空；
@@ -23356,6 +23358,8 @@ function createStoryRoundsFold() {
   const ended = new Map() // native turn -> turn/end reason kind
   const replacedBy = new Map() // seq -> the replacement that shadowed it
   const attempts = new Set() // native turns a regeneration input opened
+  const superseded = new Set() // stopped native turns a later turn's claimed player input replaced
+  let lastEnded = null // { turn, kind } of the latest turn/end
   let queuedAttempt = false
   // 窗口内可见的 next-turn 队列：总是真实队列的前缀，窗口外入队的条目以 null 占位。
   let nextInputs = [], attempt = null, claiming = false
@@ -23411,6 +23415,7 @@ function createStoryRoundsFold() {
         if (claiming && data.removedCount > 0 && data.outcome !== 'canceled') {
           claiming = false
           attempt = { ...attempt, inputs: removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })) }
+          if (attempt.inputs.length && lastEnded && lastEnded.turn < attempt.turn && ['aborted', 'interrupted'].includes(lastEnded.kind)) superseded.add(lastEnded.turn)
           if (removed.some(input => input && input.regenerating)) attempt.regenerating = true
         }
       }
@@ -23433,6 +23438,7 @@ function createStoryRoundsFold() {
         if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
         attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
+        lastEnded = { turn: Number(event.data && event.data.turn), kind: String(event.data?.reason?.kind || '') }
         running = null
         continue
       }
@@ -23501,7 +23507,7 @@ function createStoryRoundsFold() {
   }
   function abandonReason(seq, visible) {
     const failed = failedEnd(turnOf.get(seq))
-    if (failed) return failed
+    if (failed) return superseded.has(turnOf.get(seq)) ? 'superseded' : failed
     for (let next = replacedBy.get(seq), steps = 0; next !== undefined && steps < 1000; next = replacedBy.get(next), steps++) {
       const event = events.get(next)
       const content = event && (event.type === 'user/message' ? event.data && event.data.content : event.data && event.data.message && event.data.message.content)

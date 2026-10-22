@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { interruptStoryQueue } from '../tavern-plugin/lib/domain/interrupt-story-queue.js'
+import { foldStoryRounds } from '../tavern-plugin/lib/domain/story-rounds.js'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -121,5 +122,10 @@ test('真实宿主取消后继续消费原队列且只消费一次', { skip: !pr
     ['active', 'next-1', 'next-2']
   )
   assert.equal(events.find((e) => e.type === 'turn/end').data.reason.kind, 'aborted')
+  // 被自动打断的那一轮在故事折叠里是 superseded，不再报告为「上一轮已中断」。
+  assert.deepEqual(
+    foldStoryRounds(events).abandoned.map((item) => [item.text, item.reason]),
+    [['active', 'superseded']]
+  )
   assert.equal(agent.inbox.nextTurn.length, 0)
 })

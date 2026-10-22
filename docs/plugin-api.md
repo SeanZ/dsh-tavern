@@ -167,7 +167,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `resettle(sessionId, storyTurn)` | 只用于最新楼层（前置校验同 `regenerate`）：按这一层当前显示的正文重新做后台结算（服务端 `retrySettlement`，与状态页签「重试后台结算」同一请求）。MVU 卡从该层结算前的变量快照重算变量；非 MVU 卡只有结算失败时才可重试，否则服务端拒绝并说明原因。结算排队后 resolve `{ view }`，之后 `settling` 为真直到结算完成 |
 | `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
 | `interruptQueued(sessionId, turn)` | 故事视图模式下，打断指定的**原生回合**并继续已有排队输入。`turn` 是 `open.turn` 的正整数；只有对应回合仍运行且队列非空才执行，返回 `{ interrupted: boolean }`。保留消息 ID、附件和 FIFO 顺序；过期回合、空闲或非故事局返回 `false`。当前宿主 `cancel({ keepInbox: true })` 只暂停队列，不能直接代替此契约 |
-| `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`） |
+| `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`）。`abandoned` 里 `reason: 'superseded'` 的回合（被打断后下一轮已认领玩家输入，如 `interruptQueued` 的自动打断）不算，下一轮早期失败时由 `attempt` 报告那一条 |
 | `writeFloorSnapshot(sessionId, floor, { html, truncated? })` / `readFloorSnapshots(sessionId, floors)` / `readFloorSnapshot(sessionId, floor)` | 楼层静态快照存取；以 `floor.reply.seq` 作为来源，读回时丢弃来源不符的旧快照 |
 | `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
 | `render` | 楼层渲染运行时，见下节 |

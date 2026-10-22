@@ -352,3 +352,22 @@ test('resettle 只对最新楼层转调 retrySettlement；MVU 卡切换结果后
   failing.client.liveTavernView.setView('s1', view)
   await assert.rejects(other.resettle('s1', 2), /没有失败的后台结算/, '服务端拒绝原样传出')
 })
+
+test('自动打断后下一条早期失败：interrupted 不再报告被打断的那一轮，attempt 给出失败的那条', () => {
+  const { client } = loadClient()
+  const splice = (seq, data) => ({ type: 'agent/inbox/spliced', seq, data: { target: 'next-turn', inserted: [], ...data } })
+  const user = text => ({ id: text, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const events = [...story(1), { type: 'turn/start', seq: 5, data: { turn: 2 } },
+    { type: 'user/message', seq: 6, surfaceOp: 'append', data: user('第一句') },
+    splice(7, { start: 0, inserted: [user('甲')] }), splice(8, { start: 0, removedCount: 1, outcome: 'canceled' }), splice(9, { start: 0, inserted: [user('甲')] }),
+    { type: 'turn/end', seq: 10, data: { turn: 2, reason: { kind: 'aborted' } } },
+    { type: 'turn/start', seq: 11, data: { turn: 3 } }, splice(12, { start: 0, removedCount: 1 }),
+    { type: 'turn/end', seq: 13, data: { turn: 3, reason: { kind: 'error', error: { message: '模板失败' } } } }]
+  const service = serviceOf(client, { s1: eventWindow(events) })
+  const seen = []
+  service.subscribeRounds('s1', rounds => seen.push(rounds))()
+  assert.equal(seen[0].abandoned.at(-1).reason, 'superseded')
+  assert.equal(seen[0].interrupted, null)
+  assert.equal(service.readInterruptedInput('s1'), null)
+  assert.deepEqual([seen[0].attempt.phase, seen[0].attempt.inputs[0].text], ['error', '甲'])
+})
