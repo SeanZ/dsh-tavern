@@ -14534,6 +14534,14 @@ function bindTavernFontZoom(node, win) {
 		}
 
 		function createTavernAssistantRendererFeatureModule() {
+			// The row plan hides rolled-back and superseded turns, but the host keeps their
+			// nodes mounted forever. Decide before the row's own hooks run, so a hidden row
+			// only watches its plan entry, not the view, the chat or its frames.
+			function TavernPlannedRow(props) {
+				const turn = String(props.turn);
+				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
+			}
 			function TavernUserNodeView(props) {
 				const data = props.node.data;
 				const location = props.node.location;
@@ -14844,9 +14852,6 @@ function bindTavernFontZoom(node, win) {
 					t: props.t
 				});
 				const distantHeight = useTavernDistantFloor(historyNode, settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
-				// A reply the row plan does not draw (an old body being regenerated, a repair
-				// copy): its row is hidden; render nothing into it either. After all hooks.
-				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
 				const mvuReceiptNode = settled && ownsTurn ? React.createElement(TavernTurnMvuReceipt, { sessionId: props.sessionId, turn: storyTurn }) : null;
@@ -14962,7 +14967,11 @@ function bindTavernFontZoom(node, win) {
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
 						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
-						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
+						// A reply the row plan does not draw (an old body being regenerated, a repair copy).
+						const data = props.node.data;
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
+							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				input.ctx.effect(function () {
@@ -14970,7 +14979,10 @@ function bindTavernFontZoom(node, win) {
 						name: "conversation.chat.node",
 						key: "user",
 						priority: -1
-					}, TavernUserNodeView); });
+					}, function (props) {
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "user", revision: String(props.node.data.time || "") },
+							React.createElement(TavernUserNodeView, props));
+					}); });
 				}, "dsh-tavern: raw user message renderer");
 				input.ctx.effect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
@@ -23640,6 +23652,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         exports.tavernModelRefusalNotice = tavernModelRefusalNotice;
         exports.renderTavernProjection = renderTavernProjection;
 		exports.latestTavernUserTurn = latestTavernUserTurn;
+		exports.liveTavernView = liveTavernView;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;
