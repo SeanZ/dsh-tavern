@@ -10,9 +10,9 @@ const React = {
   useMemo: fn => fn(), useCallback: fn => fn, useRef: value => ({ current: value }), useEffect() {}, useLayoutEffect() {},
   useState: value => [typeof value === 'function' ? value() : value, () => {}], useSyncExternalStore: (_subscribe, read) => read()
 }
-function loadClient() {
+function loadClient(host = {}) {
   let descriptor
-  vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout, clearTimeout }, console })
+  vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout, clearTimeout, ...host }, console })
   return descriptor.factory(name => name === 'react' ? React : {})
 }
 function chatRows(client) {
@@ -76,8 +76,7 @@ test('同一份节点列表和行计划只扫描一次最后可见输入', () =>
   assert.equal(client.latestTavernUserTurn({ legacy: { nodes } }, { turns: {}, from: null }), 5, '行计划变化后重新判断')
 })
 
-test('用户输入模板与助手 HTML 同一渲染窗口：窗口外只显示文字和「渲染此轮」', () => {
-  const client = loadClient()
+function templateRows(client) {
   const replyProjections = Array.from({ length: 10 }, (_, index) => ({ turn: index + 1, version: 2, parts: [] }))
   client.liveTavernView.setView('s3', { mode: 'story', transcriptTurns: null, replyProjections, inputTemplateDisplays: { 6: '<b>旧模板</b>', 9: '<b>新模板</b>' } })
   const rows = chatRows(client)
@@ -89,12 +88,25 @@ test('用户输入模板与助手 HTML 同一渲染窗口：窗口外只显示�
     })
     return gate.props.children.type(gate.props.children.props)
   }
-  const frame = node => node.props?.partIndex === 'user-template'
-  const button = node => node.type === 'button' && node.props.children === '渲染此轮'
+  return render
+}
+const frame = node => node.props?.partIndex === 'user-template'
+const button = node => node.type === 'button' && node.props.children === '渲染此轮'
+
+test('用户输入模板与助手 HTML 同一渲染窗口：窗口外只显示文字和「渲染此轮」', () => {
+  const render = templateRows(loadClient())
   const old = render(6)
   assert.equal(find(old, frame), null, '窗口外的模板不建 iframe')
   assert.ok(find(old, button))
   const recent = render(9)
   assert.ok(find(recent, frame), '窗口内的模板照常渲染')
   assert.equal(find(recent, button), null)
+})
+
+test('手机布局只留最近 1 轮活 iframe，桌面保持 3 轮', () => {
+  const phone = templateRows(loadClient({ matchMedia: query => ({ matches: query === '(max-width: 1023px)' }) }))
+  assert.equal(find(phone(9), frame), null, '手机上倒数第二轮已收起')
+  const desktop = templateRows(loadClient({ matchMedia: () => ({ matches: false }) }))
+  assert.ok(find(desktop(9), frame), '桌面上倒数第二轮仍渲染')
+  assert.equal(find(desktop(6), frame), null)
 })

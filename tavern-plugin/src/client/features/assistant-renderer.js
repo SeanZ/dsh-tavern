@@ -330,7 +330,8 @@
 			// Only the latest rounds run a card's HTML (heavy status bars, input templates);
 			// earlier ones show text and a 「渲染此轮」 button. Watching the latest round lets a
 			// floor drop its frames as soon as it leaves the window, not on its next render.
-			const TAVERN_LIVE_HTML_ROUNDS = 3;
+			// A phone layout keeps one live round, wider layouts three.
+			const TAVERN_LIVE_HTML_ROUNDS = narrowLayout() ? 1 : 3;
 			function useTavernHtmlDeferred(sessionId, storyTurn) {
 				const subscribe = React.useCallback(function (notify) { return liveTavernView.subscribe(sessionId, notify, [["$projectionLatestTurn"]]); }, [sessionId]);
 				const read = React.useCallback(function () {
@@ -415,7 +416,7 @@
 				const deferTemplate = Boolean(templateDisplay) && outsideHtmlWindow && !renderTemplate;
 				return React.createElement("div", { className: "dsh-tavern-user-row" },
 					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay && !deferTemplate ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text),
-						deferTemplate ? React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近 3 轮渲染卡片界面，更早的轮次只显示文字；点击后渲染本轮", onClick: function () { setRenderTemplate(true); } }, "渲染此轮") : null, extras) : null),
+						deferTemplate ? React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: function () { setRenderTemplate(true); } }, "渲染此轮") : null, extras) : null),
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null,
 						canEdit ? React.createElement(DshUi.Tooltip, { label: "编辑这条输入", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-edit", "aria-label": "编辑这条输入", disabled: editBusy, onClick: edit }, React.createElement(DshUi.IconEditOutlineRegular, null))) : null,
 						canFork ? React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork }, React.createElement(DshUi.IconBranchOutlineRegular, null))) : null,
