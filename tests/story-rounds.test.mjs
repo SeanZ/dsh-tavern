@@ -187,11 +187,11 @@ test('可经 @include-domain 嵌入浏览器脚本：无 import、无 Node 依�
 test('输入模板早期失败：保留原生 inbox 输入和错误，不伪造正文楼层', () => {
   const fold = createStoryRoundsFold()
   const inbox = { type: 'agent/inbox/spliced', seq: 1, data: { target: 'next-turn', start: 0, inserted: [player('early', '推开门')] } }
-  fold.addEvents([inbox, { type: 'turn/start', seq: 2, data: { turn: 1 } }])
+  fold.addEvents([inbox, { type: 'turn/start', seq: 2, data: { turn: 1 } },
+    { type: 'agent/inbox/spliced', seq: 3, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } }])
   assert.equal(fold.result().attempt.phase, 'preparing')
   assert.equal(fold.result().attempt.inputs[0].text, '推开门')
-  fold.addEvents([{ type: 'agent/inbox/spliced', seq: 3, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
-    { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }])
+  fold.addEvents([{ type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }])
   assert.equal(fold.result().attempt.error, '模板初始化失败')
   assert.equal(fold.result().attempt.accepted, false)
   assert.equal(fold.result().floors.length, 0)
@@ -207,4 +207,31 @@ test('接纳后的输入不与 inbox 重复，成功后清除失败状态', () =
   assert.equal(rounds.attempt.phase, 'completed')
   assert.equal(rounds.attempt.accepted, true)
   assert.deepEqual(rounds.attempt.inputs.map(input => input.text), ['继续'])
+})
+
+test('两条排队：本轮只取宿主认领的那一条，早期失败回填不含仍在排队的下一条', () => {
+  const fold = createStoryRoundsFold()
+  const splice = (seq, data) => ({ type: 'agent/inbox/spliced', seq, data: { target: 'next-turn', inserted: [], ...data } })
+  fold.addEvents([splice(1, { start: 0, inserted: [player('a', '推开门')] }), splice(2, { start: 1, inserted: [player('b', '再看看')] }),
+    { type: 'turn/start', seq: 3, data: { turn: 1 } }, splice(4, { start: 0, removedCount: 1 })])
+  assert.deepEqual(fold.result().attempt.inputs.map(input => input.text), ['推开门'])
+  assert.equal(fold.result().attempt.phase, 'preparing')
+  fold.addEvents([{ type: 'turn/end', seq: 5, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }])
+  assert.deepEqual(fold.result().attempt.inputs.map(input => input.text), ['推开门'])
+  assert.equal(fold.result().attempt.accepted, false)
+  // 下一轮认领的是剩下的那条；打断把队尾撤下再投递（canceled）不算认领。
+  fold.addEvents([{ type: 'turn/start', seq: 6, data: { turn: 2 } }, splice(7, { start: 0, removedCount: 1, outcome: 'canceled' }),
+    splice(8, { start: 0, inserted: [player('b', '再看看')] }), splice(9, { start: 0, removedCount: 1 })])
+  assert.deepEqual(fold.result().attempt.inputs.map(input => input.text), ['再看看'])
+})
+
+test('窗口从中途开始：看不到入队的条目按占位处理，认领不会错拿后来入队的输入', () => {
+  const fold = createStoryRoundsFold()
+  const splice = (seq, data) => ({ type: 'agent/inbox/spliced', seq, data: { target: 'next-turn', inserted: [], ...data } })
+  // 真实队列已有窗口外的一条，窗口内只看到排在它后面的 B。
+  fold.addEvents([splice(20, { start: 1, inserted: [player('b', '再看看')] }), { type: 'turn/start', seq: 21, data: { turn: 4 } }, splice(22, { start: 0, removedCount: 1 })])
+  assert.deepEqual(fold.result().attempt.inputs, [], '本轮那条在窗口外，宁可为空也不拿 B')
+  fold.addEvents([{ type: 'turn/end', seq: 23, data: { turn: 4, reason: { kind: 'error' } } },
+    { type: 'turn/start', seq: 24, data: { turn: 5 } }, splice(25, { start: 0, removedCount: 1 })])
+  assert.deepEqual(fold.result().attempt.inputs.map(input => input.text), ['再看看'])
 })

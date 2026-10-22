@@ -179,7 +179,9 @@ test('subscribeRounds 透传未写入 user/message 的准备和失败状态，�
   const events = [
     { type: 'agent/inbox/spliced', seq: 1, data: { target: 'next-turn', start: 0, inserted: [{ id: 'early', source: { kind: 'user' }, content: [{ type: 'text', text: '原输入' }] }] } },
     { type: 'turn/start', seq: 2, data: { turn: 1 } },
-    { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }
+    // 宿主在 turn/start 之后立即认领本轮那一条。
+    { type: 'agent/inbox/spliced', seq: 3, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
+    { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }
   ]
   for (const event of events) window.append({ type: 'event', event })
   assert.equal(seen.at(-2).attempt.phase, 'preparing')

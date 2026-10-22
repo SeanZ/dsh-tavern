@@ -23340,7 +23340,8 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
  *            or 'rolled-back' / 'replaced'
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
- * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层。
+ * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层；
+ *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空。
  * An interrupted, failed or empty reply never makes a floor.
  */
 function createStoryRoundsFold() {
@@ -23351,7 +23352,8 @@ function createStoryRoundsFold() {
   const replacedBy = new Map() // seq -> the replacement that shadowed it
   const attempts = new Set() // native turns a regeneration input opened
   let queuedAttempt = false
-  let nextInputs = [], attempt = null
+  // 窗口内可见的 next-turn 队列：总是真实队列的前缀，窗口外入队的条目以 null 占位。
+  let nextInputs = [], attempt = null, claiming = false
   let queued = [], running = null, last = -1, cached = null
   // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
   // sit in the middle of a turn whose turn/start came before the window.
@@ -23397,13 +23399,21 @@ function createStoryRoundsFold() {
         const inserted = (data.inserted || []).map(message => ({
           seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user'
         }))
-        nextInputs.splice(data.start, data.removedCount ?? 0, ...inserted)
+        // 下标相对真实队列；窗口没见过的前面条目补占位，已知条目才不会错位。
+        while (nextInputs.length < data.start) nextInputs.push(null)
+        const removed = nextInputs.splice(data.start, data.removedCount ?? 0, ...inserted)
+        // 宿主在 turn/start 之后立即认领本轮那一条（不带 canceled）；取消、撤下不算认领。
+        if (claiming && data.removedCount > 0 && data.outcome !== 'canceled') {
+          claiming = false
+          attempt = { ...attempt, inputs: removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })) }
+        }
       }
       if (event.type === 'turn/start') {
         // A turn that never ended before the next began was cut off (the server stopped).
         if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
         running = Number(event.data && event.data.turn)
-        attempt = { turn: running, seq, phase: 'preparing', inputs: nextInputs.filter(input => input.player).map(({ seq, text }) => ({ seq, turn: running, text })), accepted: false, error: '' }
+        attempt = { turn: running, seq, phase: 'preparing', inputs: [], accepted: false, error: '' }
+        claiming = true
         known = true
         // A message queued before its turn starts (the inbox splices it in) belongs to it.
         adopt(running)
@@ -23413,6 +23423,7 @@ function createStoryRoundsFold() {
         // The window began inside this turn: what came before its end belongs to it.
         if (!known) adopt(Number(event.data && event.data.turn))
         known = true
+        claiming = false
         if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
         attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
@@ -23425,7 +23436,7 @@ function createStoryRoundsFold() {
         known = true
         adopt(running)
       }
-      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) attempt = { ...attempt, phase: 'generating' }
+      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) { attempt = { ...attempt, phase: 'generating' }; claiming = false }
       if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
         if (attempt && running === attempt.turn) {
           const input = { seq, turn: running, text: textOf(event) }
