@@ -23859,6 +23859,28 @@ function createTavernStoryService(options) {
 				} finally { afterChange(sessionId); }
 			}
 		},
+		/**
+		 * Change the player input of the latest floor (getBodyEdit / saveBodyEdit with role
+		 * 'user': a replacement on the model surface and the save's text). The reply stays;
+		 * call regenerate afterwards for a reply to the new input — it reads the saved text.
+		 */
+		editInput: async function (sessionId, storyTurn, text) {
+			tavernStorySessionArgument(sessionId, "editInput");
+			const turn = tavernStoryTurnArgument(storyTurn, "editInput");
+			if (typeof text !== "string" || text.trim() === "") throw new TypeError("editInput 需要非空输入文字");
+			await latestFloor(sessionId, turn, "修改输入");
+			const floor = foldNow(sessionId).floors.find(function (item) { return item.story === turn; });
+			const input = floor && floor.inputs[floor.inputs.length - 1];
+			if (!input) throw new Error("这一层没有玩家输入");
+			try {
+				const read = await rpc("getBodyEdit", { role: "user", turn: input.turn, seq: input.seq }, sessionId);
+				const edit = read && read.edit;
+				if (!edit || edit.role !== "user") throw new Error("读取这条输入失败");
+				const result = await rpc("saveBodyEdit", { token: edit.token, role: "user", index: edit.index, turn: edit.turn, seq: edit.seq, texts: [text] }, sessionId);
+				clearPanels();
+				return { view: result && result.view };
+			} finally { afterChange(sessionId); }
+		},
 		/** The guidance last used for this game (offered again when rewriting once more). */
 		guidance: function (sessionId) { return flow.guidance(tavernStorySessionArgument(sessionId, "guidance")); },
 		/** Replay a failed or stopped latest round with its original input. */

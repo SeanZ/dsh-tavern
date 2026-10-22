@@ -309,3 +309,22 @@ test('editReply 只编辑最新楼层：get 转调 getBodyEdit，save 带令牌�
   other.client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
   await assert.rejects(stale.editReply.get('s1', 2), /已变化/)
 })
+
+test('editInput 改最新楼层的玩家输入：按该层输入的原生轮与 seq 读令牌再保存；之后 regenerate 照常', async () => {
+  const { client, calls } = loadClient({
+    getBodyEdit: { edit: { token: 'u1', role: 'user', index: 3, turn: 2, seq: 6, parts: [{ kind: 'text', text: '输入2' }] } },
+    saveBodyEdit: { view: { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true } },
+    regenBody: { view: { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true } }
+  })
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
+  await service.editInput('s1', 2, '改过的输入')
+  await service.regenerate('s1', 2)
+  assert.deepEqual(calls.filter(call => ['getBodyEdit', 'saveBodyEdit', 'regenBody'].includes(call.method)), [
+    { method: 'getBodyEdit', args: { role: 'user', turn: 2, seq: 6, sessionId: 's1' } },
+    { method: 'saveBodyEdit', args: { token: 'u1', role: 'user', index: 3, turn: 2, seq: 6, texts: ['改过的输入'], sessionId: 's1' } },
+    { method: 'regenBody', args: { guidance: '', sessionId: 's1' } }])
+  await assert.rejects(service.editInput('s1', 1, '旧层'), /最新楼层/)
+  await assert.rejects(service.editInput('s1', 2, '  '), /非空/)
+  assert.equal(calls.filter(call => call.method === 'saveBodyEdit').length, 1)
+})

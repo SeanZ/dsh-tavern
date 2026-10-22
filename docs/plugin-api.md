@@ -163,6 +163,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
 | `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
 | `editReply.get(sessionId, storyTurn)` / `editReply.save(sessionId, storyTurn, { token, texts })` | 只用于最新楼层、前台空闲且不在结算时：编辑这一层的正文文字（与 dock「编辑正文」同一流程，服务端 `getBodyEdit` / `saveBodyEdit`）。`get` 返回 `{ token, turn, parts }`，`parts` 为 `{ kind: 'text', text }` 或只标类型的 `{ kind: 'html' \| 'marker' }`；`save` 的 `texts` 按顺序对应每个文本片段（HTML 原样保留，不能新增 HTML），返回 `{ view }`。之后模型看到改后的正文；变量不重新结算。正文或会话在两步之间变化时服务端拒绝（「请重新打开编辑」） |
+| `editInput(sessionId, storyTurn, text)` | 只用于最新楼层（前置校验同 `regenerate`）：把这一层的玩家输入改成 `text`（服务端 `getBodyEdit` / `saveBodyEdit` 的 `role: 'user'`：消息面 replace 原输入、存档文字同步）。回复不变；要按新输入重写回复，随后调用 `regenerate`，它的合成输入取改后的存档文字，旧输入不再进入请求。返回 `{ view }` |
 | `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
 | `interruptQueued(sessionId, turn)` | 故事视图模式下，打断指定的**原生回合**并继续已有排队输入。`turn` 是 `open.turn` 的正整数；只有对应回合仍运行且队列非空才执行，返回 `{ interrupted: boolean }`。保留消息 ID、附件和 FIFO 顺序；过期回合、空闲或非故事局返回 `false`。当前宿主 `cancel({ keepInbox: true })` 只暂停队列，不能直接代替此契约 |
 | `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`） |
