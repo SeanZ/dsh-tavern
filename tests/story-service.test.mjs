@@ -140,10 +140,23 @@ test('retryFailed 重放失败回合；快照按楼层来源写入、读回时�
   assert.equal(await service.readFloorSnapshot('s1', floor), null)
 })
 
-test('listResults 列出楼层历史结果；switchResult 明确报不支持', async () => {
-  const { client } = loadClient()
-  const service = serviceOf(client, { s1: eventWindow(story(2)) })
-  assert.deepEqual(plain(service.listResults('s1', 2).map(item => [item.text, item.current])), [['正文2', true]])
+test('listResults 列出模型每次生成的原文，current 跟随结果切换；switchResult 转调 switchFloorResult', async t => {
+  const regenerated = [...story(2),
+    { type: 'turn/start', seq: 9, time: 1, data: { turn: 3 } },
+    { type: 'user/message', seq: 10, time: 1, surfaceOp: 'append', data: { source: { kind: 'plugin:dsh-tavern-regen' }, content: [{ type: 'text', text: '重写' }] } },
+    { type: 'assistant/message', seq: 11, time: 1, surfaceOp: 'append', data: { turn: 3, message: { id: 'r3', source: { kind: 'model' }, content: [{ type: 'text', text: '重写正文2' }] } } },
+    { type: 'turn/end', seq: 12, time: 1, data: { turn: 3, reason: { kind: 'completed' } } },
+    { type: 'assistant/message', seq: 13, time: 1, surfaceOp: { op: 'replace', startSeq: 7, endSeq: 11 }, sourceEventSeqs: [7, 11],
+      data: { turn: 3, message: { id: 'x', source: { kind: 'model', tavernStoryTurn: 2, tavernResultSeq: 7 }, content: [{ type: 'text', text: '正文2' }] } } }]
+  const { client, calls } = loadClient({ switchFloorResult: { switched: true, turn: 2, replySeq: 11, mvu: 'stale', view: { mode: 'story' } } })
+  const service = serviceOf(client, { s1: eventWindow(regenerated) })
+  assert.deepEqual(plain(service.listResults('s1', 2).map(item => [item.seq, item.text, item.current])), [[7, '正文2', true], [11, '重写正文2', false]], '切换后 current 指向 tavernResultSeq 那次生成')
   assert.equal(service.listResults('s1', 9), null)
-  await assert.rejects(service.switchResult('s1', 2, 1), error => error.code === 'unsupported')
+  client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
+  const result = await service.switchResult('s1', 2, 11)
+  assert.deepEqual(calls.find(call => call.method === 'switchFloorResult').args, { turn: 2, replySeq: 11, sessionId: 's1' })
+  assert.deepEqual(plain(result), { switched: true, turn: 2, replySeq: 11, mvu: 'stale', view: { mode: 'story' } }, 'mvu 原样返回')
+  await assert.rejects(service.switchResult('s1', 1, 3), /最新楼层/)
+  await assert.rejects(service.switchResult('s1', 2, 'x'), /replySeq/)
+  assert.equal(calls.filter(call => call.method === 'switchFloorResult').length, 1, '前置校验失败不发请求')
 })

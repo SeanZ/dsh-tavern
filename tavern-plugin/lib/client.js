@@ -23660,11 +23660,22 @@ function createTavernStoryService(options) {
 			const floor = foldNow(tavernStorySessionArgument(sessionId, "listResults")).floors.find(function (item) { return item.story === turn; });
 			return floor ? floor.history : null;
 		},
-		/** Not available yet: Tavern has no RPC that brings back an earlier reply. */
-		switchResult: function () {
-			const error = new Error("当前版本不支持切换历史结果");
-			error.code = "unsupported";
-			return Promise.reject(error);
+		/**
+		 * Show an earlier generation of the latest floor again (`replySeq` from listResults).
+		 * Returns { switched, turn, replySeq, mvu: 'stale' | 'unchanged', view }; 'stale' means
+		 * the variables still follow the reply shown before and want a settlement retry.
+		 */
+		switchResult: async function (sessionId, storyTurn, replySeq) {
+			tavernStorySessionArgument(sessionId, "switchResult");
+			const turn = tavernStoryTurnArgument(storyTurn, "switchResult");
+			const seq = Number(replySeq);
+			if (!Number.isSafeInteger(seq) || seq < 0) throw new TypeError("switchResult 需要 listResults 给出的 replySeq");
+			await latestFloor(sessionId, turn, "切换历史结果");
+			try {
+				const result = await rpc("switchFloorResult", { turn: turn, replySeq: seq }, sessionId);
+				clearPanels();
+				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: result && result.mvu, view: result && result.view };
+			} finally { afterChange(sessionId); }
 		},
 		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
 		rollbackTo: async function (sessionId, storyTurn) {
