@@ -165,10 +165,11 @@ function createTavernStoryService(options) {
 				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: result && result.mvu, view: result && result.view };
 			} finally { afterChange(sessionId); }
 		},
-		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
+		/** 打断指定原生回合，并重新投递队尾那条排队输入，让它接着成为下一轮。 */
 		interruptQueued: function (sessionId, turn) {
 			return rpc("interruptStoryQueue", { turn: tavernStoryTurnArgument(turn, "interruptQueued") }, tavernStorySessionArgument(sessionId, "interruptQueued"));
 		},
+		/** Remove this floor and every later one (latest first), clearing a failed tail on the way. */
 		rollbackTo: async function (sessionId, storyTurn) {
 			tavernStorySessionArgument(sessionId, "rollbackTo");
 			const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
