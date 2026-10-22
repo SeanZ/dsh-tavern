@@ -920,12 +920,14 @@
 			const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 			const live = useLiveTavernView(ownerSessionId, String(running) + ":" + String(latestMessageId || ""));
 			const imageTurn = Number(live.view && live.view.latestAssistantTurn) || 0;
+			// 故事视图模式下候选项（生成候选项、下一步行动、带意见重新生成）整组撤下，其余按钮照常。
+			const storyView = useTavernStoryViewMode();
 			const h = React.createElement;
 			if (!sessionMode) return null;
 			if (address) return isPlayMode(sessionMode) ? h("div", { className: "dsh-tavern-dock-actions" },
 				h(TavernStopBackgroundAction, { sessionId: ownerSessionId })) : null;
 			return h("div", { className: "dsh-tavern-dock-actions" },
-				isPlayMode(sessionMode) && latestMessageId ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
+				isPlayMode(sessionMode) && latestMessageId && !storyView ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
 				isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null,
 				isPlayMode(sessionMode) ? React.createElement(TavernMoreActions, props) : React.createElement(TavernCompactionAction, props),
                 live.view && live.view.contextCompaction && live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running" ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, "正在压缩前后台上下文…")
@@ -1164,18 +1166,19 @@
 					executeCompact: function (sessionId) { return ctx.remote.commands.execute(sessionId, "/compact", []); }
 				})); }
 			)), "dsh-tavern: candidate dock actions");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			// 故事视图模式下不注册候选项面板（「下一步行动」与「重新生成候选项」）；条目里的失败轮投影只服务 Tavern 聊天行。
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-question", order: -120, label: "下一步行动" },
 				function (props) { return React.createElement(React.Fragment, null,
 					React.createElement(SupersededTurnErrors, Object.assign({}, props, { key: props.sessionId })),
 					React.createElement(TurnHistoryProjection, Object.assign({}, props, { key: "history:" + props.sessionId })),
 					React.createElement(CandidateQuestion, Object.assign({}, props, { sessions: ctx.sessions }))
 				); }
-			)), "dsh-tavern: candidate question panel");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			))), "dsh-tavern: candidate question panel");
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-guide", order: -115, label: "重新生成候选项" },
 				function (props) { return React.createElement(CandidateGuidePanel, props); }
-			)), "dsh-tavern: candidate guide panel");
+			))), "dsh-tavern: candidate guide panel");
 			// 故事视图模式下不注册：重新生成与改写走楼层操作（C5 只共用 interactions 状态，不依赖此面板挂载），
 			// 编辑正文与失败轮编辑由楼层操作和状态条承担。
 			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(

@@ -72,8 +72,8 @@ test('set 写入全局设置并立即切换', async () => {
   await assert.rejects(client.tavernStoryViewMode.set('yes'), /布尔值/)
 })
 
-// 输入框 dock 的「重新生成正文」面板（RegenPanel 与编辑正文面板）只在 Tavern 画聊天行时注册；
-// 候选项相关条目两个视图共用。
+// 输入框 dock 的「重新生成正文」面板（RegenPanel 与编辑正文面板）与候选项面板（下一步行动、重新生成候选项）
+// 只在 Tavern 画聊天行时注册；候选项操作条保留（更多菜单、停止后台、压缩、插件按钮），只撤下候选项按钮。
 function registerDock(client) {
   const live = new Map()
   const ctx = { sessions: {}, get: () => null, betterSidebar: { registerTab: () => () => {} }, effect(run) { try { return run() } catch (_) {} } }
@@ -81,23 +81,33 @@ function registerDock(client) {
   client.playControlsFeature.register({ ctx, slots })
   return id => live.get('conversation.input.dock:' + id) || 0
 }
-const sharedDock = ['dsh-tavern-candidate-actions', 'dsh-tavern-question', 'dsh-tavern-candidate-guide']
+const sharedDock = ['dsh-tavern-candidate-actions']
+const chatDock = ['dsh-tavern-question', 'dsh-tavern-candidate-guide', 'dsh-tavern-regen']
 
-test('故事视图模式关闭时 dock 照常注册重新生成正文面板', () => {
+test('故事视图模式关闭时 dock 照常注册重新生成正文与候选项面板', () => {
   const count = registerDock(loadClient().client)
-  for (const id of [...sharedDock, 'dsh-tavern-regen']) assert.equal(count(id), 1, id)
+  for (const id of [...sharedDock, ...chatDock]) assert.equal(count(id), 1, id)
 })
 
-test('故事视图模式开启时不注册重新生成正文面板，候选项条目保留；开关变化即时生效', async () => {
+test('故事视图模式开启时不注册重新生成正文与候选项面板，操作条保留；开关变化即时生效', async () => {
   const { client, listeners } = loadClient({ cached: '1', settings: { storyViewMode: true } })
   const count = registerDock(client)
-  assert.equal(count('dsh-tavern-regen'), 0)
+  for (const id of chatDock) assert.equal(count(id), 0, id)
   for (const id of sharedDock) assert.equal(count(id), 1, id)
   const stop = client.tavernStoryViewMode.start()
   await tick()
   listeners.get('storage')({ key: 'dsh-tavern:story-view-mode', newValue: '0' })
-  assert.equal(count('dsh-tavern-regen'), 1, '关闭后重新注册')
+  for (const id of chatDock) assert.equal(count(id), 1, '关闭后重新注册 ' + id)
   listeners.get('storage')({ key: 'dsh-tavern:story-view-mode', newValue: '1' })
-  assert.equal(count('dsh-tavern-regen'), 0, '再开启后撤下')
+  for (const id of chatDock) assert.equal(count(id), 0, '再开启后撤下 ' + id)
   stop()
+})
+
+test('候选项操作条在故事视图模式下不放「生成候选项」按钮，其余按钮源码路径不变', async () => {
+  const source = await readFile(new URL('../tavern-plugin/src/client/features/play-controls.js', import.meta.url), 'utf8')
+  const body = source.slice(source.indexOf('function CandidateDockActions('), source.indexOf('function observeTurnErrorProjection('))
+  assert.match(body, /const storyView = useTavernStoryViewMode\(\);/)
+  assert.match(body, /latestMessageId && !storyView \? React\.createElement\(CandidateAction,/)
+  assert.match(body, /React\.createElement\(TavernPluginComposerActions,/)
+  assert.match(body, /React\.createElement\(TavernMoreActions, props\)/)
 })
