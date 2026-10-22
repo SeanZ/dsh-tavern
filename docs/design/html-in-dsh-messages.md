@@ -60,3 +60,14 @@ iframe 只消费 `displayText` 的临时投影。DSH Session 保存的是 `sessi
 - 不把 iframe 产物送入模型上下文。
 
 HTML 注释仍按标准浏览器行为不可见。若卡片希望把注释中的数据展示出来，应由自己的显示正则或前端代码明确完成，而不是由 Host 擅自把注释转成可见文本。
+
+## 楼层快照（故事视图）
+
+故事视图只保留最近几层活 iframe；楼层离开活跃窗口时，客户端把脚本执行后的渲染结果去掉脚本与事件属性、样式作用域化后存成静态 HTML，之后向上滚动或冷打开会话直接显示它，不跑脚本。服务端只负责存取（`lib/domain/floor-snapshots.js`）：
+
+- 写入：RPC `saveFloorSnapshot({ sessionId, turn, reply, html, truncated? })`。`turn` 为故事轮；`reply` 是拍摄时这一层正文的来源标识（故事视图用 `story-rounds` 楼层的 `reply.seq`），`html` 不超过 512 KB 字符，超出由客户端截断并置 `truncated: true`。同一来源与内容再次写入不改文件（`saved: false`）；来源变了（重新生成、切换历史结果）覆盖旧快照。返回 `{ saved, snapshot: { turn, reply, truncated, capturedAt } }`。
+- 读取：RPC `getFloorSnapshots({ sessionId, turns? })` → `{ snapshots: { [turn]: { turn, reply, html, truncated, capturedAt } } }`。故事视图冷打开时与会话视图并行读取；`reply` 与当前楼层不一致的快照是过期的，忽略即可。
+- 存放：与 display-runtime 诊断同理，快照是可重建的显示缓存，存在 Profile 数据目录 `floor-snapshots/<chatId>/<turn>.json`（`version: 1`），不进版本化存档：写快照不增加存档修订、不与正文写入冲突、不触发视图刷新，也不随导出的存档走。每局只留最近 200 层，删除游戏时一并清除。没有该目录的游戏（此前的全部存档）读出空表，无需迁移；未知版本或损坏的文件被忽略。
+- 服务端不解析、不执行快照内容；显示时仍由客户端按楼层容器净化与作用域化。
+
+稳定性：两个 RPC 的参数与返回字段只加不改，供 fork 的故事视图插件依赖。测试见 `tests/floor-snapshots.test.mjs`（临时目录上的真实 Profile 存储）。

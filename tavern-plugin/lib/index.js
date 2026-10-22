@@ -198,6 +198,7 @@ import { createPresetLibrary } from './domain/preset-library.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
 import { clearFailedTurnSurface, rollbackAvailability, reshadowRolledBackRounds, interruptedSurfaceTurns } from './domain/rollback-surface.js'
 import { createInterruptedRoundTombstone } from './domain/interrupted-round-tombstone.js'
+import { createFloorSnapshots } from './domain/floor-snapshots.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
 import { readHistoryLayoutFile } from './domain/history-tool-call.js'
 import { createTavernRetryLimiter } from './domain/tavern-retry-limiter.js'
@@ -361,6 +362,7 @@ export async function apply(ctx) {
   const stablePrefixStorage = createSessionStablePrefixStorage(dataRoot + '/session-prefixes')
   const profileData = createProfileDataStore({ dataRoot })
   const displayRuntimeStore = createDisplayRuntimeStore({ store: profileData })
+  const floorSnapshots = createFloorSnapshots({ store: profileData, chatIdFor: async sessionId => (await readSessionMap())[sessionId] })
   const gameFootprint = createGameFootprint({ dataRoot })
   const deletedSessionIds = new Set()
   try { const removed = await gameFootprint.processDeferredDeletions(); if (removed) console.log('dsh-tavern: 已清理已删除游戏的原生会话', removed) }
@@ -1459,6 +1461,7 @@ export async function apply(ctx) {
     await pluginMedia.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件媒体记录清理失败', chatId))
     await pluginData.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件数据清理失败', chatId))
     await displayRuntimeStore.remove(chatId).catch(() => {})
+    await floorSnapshots.removeChat(chatId).catch(() => {})
     await sceneWorldbookArchive.forgetChat(chatId).catch(() => {})
     pluginApi.gameRemoved(footprint?.foregroundSessionId || chat?.sessionId)
     if (footprint) {
@@ -4265,6 +4268,9 @@ export async function apply(ctx) {
       case 'setConversationBackgroundConfig': return conversationBackgroundSettings.save(args)
       case 'getBackgroundModelReasoning': return { reasoning: await readBackgroundModelReasoning(llm, args) }
       case 'getDisplayPreferences': { const settings = await readTavernSettings(); return { hideContextAndReasoning: settings.hideContextAndReasoning, headerItems: settings.headerItems } }
+      // Story floor snapshots (fork contract): a display cache beside the save.
+      case 'saveFloorSnapshot': return await floorSnapshots.save(args || {})
+      case 'getFloorSnapshots': return await floorSnapshots.read(args || {})
       case 'getCandidatePreferences': return { candidateDismissMode: (await readTavernSettings()).candidateDismissMode }
       case 'getTavernSettings': return { settings: await readTavernSettings(), modelCatalog: await tavernModelCatalog() }
       case 'pluginMediaForTurn': return await pluginMediaForTurn(args && args.sessionId, args && args.turn)
