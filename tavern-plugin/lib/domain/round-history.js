@@ -1043,35 +1043,35 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       const saved = chat.rollbackUndo
       const before = bounded ? bounded.header : saved.before || await readChatRevision(chat.id, saved.beforeRevision)
       if (!before || before.id !== chat.id) throw new Error('找不到回退前的恢复点')
-      const targets = [{ session, saved: saved.foreground }]
-      for (const checkpoint of saved.background) {
-        let worker = sessions.get(checkpoint.sessionId)
-        let background = worker?.session || sessions.getSession?.(checkpoint.sessionId)
-        if (!background && sessions.resume) {
-          const handle = await sessions.resume(checkpoint.sessionId)
-          handles.push(handle); worker = handle.agent; background = worker?.session
-        }
-        if (!background || worker?.phase?.kind === 'running' || !unchangedSinceRollback(background, checkpoint.afterCount, checkpoint.formatVersion || 3)) throw new Error('后台上下文已有变化，不能撤销回退')
-        targets.push({ session: background, saved: checkpoint })
-      }
       // The foreground context comes back from the save if its saved nodes cannot be restored.
       let repairForeground = false
       try { preflightSurfaceRestore(session, saved.foreground.nodes, saved.foreground.formatVersion || 3) }
-      catch (error) { if (typeof repairNative !== 'function') throw error; repairForeground = true; targets.shift() }
-      for (const target of targets) if (target.session !== session) preflightSurfaceRestore(target.session, target.saved.nodes, target.saved.formatVersion || 3)
-      for (const target of targets) {
-        changed.push({ session: target.session, nodes: [...target.session.surface.nodes] })
-        restoreSurface(target.session, target.saved.nodes, target.saved.formatVersion || 3)
-        if (sessions.flush) await sessions.flush(target.session)
+      catch (error) { if (typeof repairNative !== 'function') throw error; repairForeground = true }
+      // 后台会话与其任务、退休释放串行：每个都在自己的编辑期内检查、恢复并保存。
+      const restoredBackground = []
+      for (const checkpoint of saved.background) {
+        await withBackgroundSession(sessions, checkpoint.sessionId, chat.sessionId, async (background, worker) => {
+          if (worker?.phase?.kind === 'running' || !unchangedSinceRollback(background, checkpoint.afterCount, checkpoint.formatVersion || 3)) throw new Error('后台上下文已有变化，不能撤销回退')
+          preflightSurfaceRestore(background, checkpoint.nodes, checkpoint.formatVersion || 3)
+          changed.push({ sessionId: checkpoint.sessionId, nodes: [...background.surface.nodes] })
+          restoreSurface(background, checkpoint.nodes, checkpoint.formatVersion || 3)
+          if (sessions.flush) await sessions.flush(background)
+          restoredBackground.push({ sessionId: checkpoint.sessionId, boundary: background.surface.nodes.at(-1) ?? -1 })
+        })
+      }
+      if (!repairForeground) {
+        changed.push({ session, nodes: [...session.surface.nodes] })
+        restoreSurface(session, saved.foreground.nodes, saved.foreground.formatVersion || 3)
+        if (sessions.flush) await sessions.flush(session)
       }
       const undo = current => {
         const result = storyTimeline.apply({ chat: current, intent: { kind: 'replacement.abort', restoreChat: before } }).chat
         delete result.rollbackUndo
         result.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
         for (const participant of Object.values(result.timeline.participants)) {
-          const target = targets.find(item => item.saved.sessionId === participant.sessionId)
+          const target = restoredBackground.find(item => item.sessionId === participant.sessionId)
           if (target) Object.assign(participant, { status: 'current', syncedRevision: result.timeline.revision,
-            boundary: target.session.surface.nodes.at(-1) ?? -1, formatVersion: 4, rewindTo: null })
+            boundary: target.boundary, formatVersion: 4, rewindTo: null })
         }
         return result
       }
@@ -1103,8 +1103,12 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       if (committed) throw new Error('已撤销回退，但界面刷新失败：' + str(error?.message || error), { cause: error })
       // A rejected Chat write must not leave the model on the restored branch.
       for (const target of changed.reverse()) {
-        restoreSurface(target.session, target.nodes)
-        if (sessions.flush) await sessions.flush(target.session)
+        const revert = async background => {
+          restoreSurface(background, target.nodes)
+          if (sessions.flush) await sessions.flush(background)
+        }
+        if (target.session) await revert(target.session)
+        else await withBackgroundSession(sessions, target.sessionId, chat.sessionId, revert)
       }
       throw error
     } finally {

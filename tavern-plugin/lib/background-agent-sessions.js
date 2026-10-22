@@ -86,6 +86,8 @@ export function createBackgroundAgentSessions(options, task) {
   const now = typeof options.now === 'function' ? options.now : Date.now
   const idleMs = Number.isSafeInteger(options.residentIdleMs) && options.residentIdleMs > 0 ? options.residentIdleMs : 5 * 60 * 1000
   const maxResidents = Number.isSafeInteger(options.maxResidentSessions) && options.maxResidentSessions > 0 ? options.maxResidentSessions : 8
+  // 前台历史编辑最多等这么久排到父会话队列；后台忙就放弃，留给下次任务重试。
+  const editWaitMs = Number.isSafeInteger(options.editWaitMs) && options.editWaitMs > 0 ? options.editWaitMs : 3000
   const releasing = new Map()
   let reapTimer, reaping, stopped = false
 
@@ -348,9 +350,19 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   // 历史编辑和任务、空闲回收共用父会话队列；退休句柄释放完成后才能借用或恢复。
+  // 排队有时限：前台不能被无关的长后台任务挂住，超时后这次编辑作废，不再动该会话。
   function withSession(sessionId, parentSessionId, work) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
-    return enqueue(str(parentSessionId), async () => {
+    let expired = false, timer
+    const waited = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true
+        reject(Object.assign(new Error('后台任务仍在运行，稍后重试'), { code: 'BACKGROUND_BUSY' }))
+      }, editWaitMs)
+    })
+    const edited = enqueue(str(parentSessionId), async () => {
+      if (expired) return
+      clearTimeout(timer)
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       if (releasing.has(sessionId)) await releasing.get(sessionId)
       const resident = residentHandles.get(sessionId)
@@ -364,6 +376,7 @@ export function createBackgroundAgentSessions(options, task) {
         if (resident) resident.lastUsedAt = now()
       }
     })
+    return Promise.race([edited, waited])
   }
 
   function owns(sessionId) {

@@ -88,6 +88,24 @@ test('历史编辑与空闲回收串行；编辑失败不释放仍由管理器�
   assert.equal(h.calls.some(call => call[0] === 'dispose'), false)
 })
 
+test('后台任务长时间运行时，历史编辑在限定时间内明确报忙，超时的编辑之后也不再执行', async t => {
+  let release, entered = false
+  const gate = new Promise(resolve => { release = resolve })
+  const h = harness(t, { options: { editWaitMs: 50 }, work: input => input.text === 'long' ? gate : undefined })
+  const id = await h.run()
+  const long = h.run('parent-a', 'long')
+  t.after(() => release())
+  const started = Date.now()
+  await assert.rejects(h.runner.withSession(id, 'parent-a', async () => { entered = true }), error => error.code === 'BACKGROUND_BUSY' && /后台任务仍在运行/.test(error.message))
+  assert.ok(Date.now() - started < 1000, '不能等后台任务跑完')
+  release()
+  await long
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(entered, false, '超时作废的编辑不能在任务结束后补做')
+  // 排在空闲队列上的编辑照常进入。
+  assert.equal(await h.runner.withSession(id, 'parent-a', async () => 'edited'), 'edited')
+})
+
 test('本局开了联网搜索：任务自己写明不联网时仍不联网（文风联想、世界书预筛）', async t => {
   const seen = []
   const h = harness(t, { options: { resolveWebSearch: async () => true }, work: async (input, state) => { seen.push([input.task, state.input.webSearchEnabled]) } })
