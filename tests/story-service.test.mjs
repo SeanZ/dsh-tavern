@@ -288,3 +288,24 @@ test('subscribeRounds 的 settling 跟随 Tavern 视图的后台结算状态；�
   assert.equal(seen.at(-1).floors.length, 2)
   stop()
 })
+
+test('editReply 只编辑最新楼层：get 转调 getBodyEdit，save 带令牌与各文本片段转调 saveBodyEdit', async () => {
+  const parts = [{ kind: 'text', text: '正文2' }, { kind: 'html' }]
+  const { client, calls } = loadClient({ getBodyEdit: { edit: { token: 't1', turn: 2, parts } }, saveBodyEdit: { view: { mode: 'story', rollbackTargetTurn: 2 } } })
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
+  const edit = await service.editReply.get('s1', 2)
+  assert.deepEqual(plain(edit), { token: 't1', turn: 2, parts })
+  const saved = await service.editReply.save('s1', 2, { token: edit.token, texts: ['改过的正文'] })
+  assert.deepEqual(calls.find(call => call.method === 'saveBodyEdit').args, { token: 't1', turn: 2, texts: ['改过的正文'], sessionId: 's1' })
+  assert.deepEqual(plain(saved), { view: { mode: 'story', rollbackTargetTurn: 2 } })
+  await assert.rejects(service.editReply.get('s1', 1), /最新楼层/)
+  await assert.rejects(service.editReply.save('s1', 2, { token: 't1', texts: [1] }), /texts/)
+  await assert.rejects(service.editReply.save('s1', 1, { token: 't1', texts: ['x'] }), /最新楼层/)
+  assert.equal(calls.filter(call => call.method === 'saveBodyEdit').length, 1, '前置校验失败不发请求')
+  // 服务端最新正文已不是这一层（例如另一页刚撤回）时不给令牌。
+  const other = loadClient({ getBodyEdit: { edit: { token: 't2', turn: 1, parts } } })
+  const stale = serviceOf(other.client, { s1: eventWindow(story(2)) })
+  other.client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true })
+  await assert.rejects(stale.editReply.get('s1', 2), /已变化/)
+})

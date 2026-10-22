@@ -267,6 +267,34 @@ function createTavernStoryService(options) {
 			await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerateWithGuidance"), "按要求改写");
 			return regenerateBody(sessionId, guidance, extra && extra.restyle === true ? { restyle: true, styleGuidance: String(extra.styleGuidance || "") } : {});
 		},
+		/**
+		 * Edit the latest floor's prose (the dock's 编辑正文 panel: getBodyEdit / saveBodyEdit).
+		 * get → { token, turn, parts: [{ kind: 'text', text } | { kind: 'html' | 'marker' }] };
+		 * save(sessionId, storyTurn, { token, texts }) with one string per text part, HTML kept.
+		 * The model sees the edited text from the next round on; variables are not settled again.
+		 */
+		editReply: {
+			get: async function (sessionId, storyTurn) {
+				tavernStorySessionArgument(sessionId, "editReply.get");
+				const turn = tavernStoryTurnArgument(storyTurn, "editReply.get");
+				await latestFloor(sessionId, turn, "编辑正文");
+				const result = await rpc("getBodyEdit", {}, sessionId);
+				const edit = result && result.edit;
+				if (!edit || Number(edit.turn) !== turn) throw new Error("最新正文已变化，请刷新后再编辑");
+				return { token: edit.token, turn: turn, parts: edit.parts };
+			},
+			save: async function (sessionId, storyTurn, edit) {
+				tavernStorySessionArgument(sessionId, "editReply.save");
+				const turn = tavernStoryTurnArgument(storyTurn, "editReply.save");
+				if (!edit || typeof edit.token !== "string" || !Array.isArray(edit.texts) || edit.texts.some(function (text) { return typeof text !== "string"; })) throw new TypeError("editReply.save 需要 get 给出的 token 与 texts 字符串数组");
+				await latestFloor(sessionId, turn, "编辑正文");
+				try {
+					const result = await rpc("saveBodyEdit", { token: edit.token, turn: turn, texts: edit.texts }, sessionId);
+					clearPanels();
+					return { view: result && result.view };
+				} finally { afterChange(sessionId); }
+			}
+		},
 		/** The guidance last used for this game (offered again when rewriting once more). */
 		guidance: function (sessionId) { return flow.guidance(tavernStorySessionArgument(sessionId, "guidance")); },
 		/** Replay a failed or stopped latest round with its original input. */
