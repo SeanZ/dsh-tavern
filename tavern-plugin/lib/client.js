@@ -23323,10 +23323,8 @@ const storyRoundsIsReplace = event => Boolean(event && event.surfaceOp && typeof
 const storyRoundsIsSurface = event => Boolean(event && (event.surfaceOp === 'append' || storyRoundsIsReplace(event)))
 const storyRoundsIsPlayerInput = event => event && event.type === 'user/message' && event.data && event.data.source && event.data.source.kind === 'user'
 // A regeneration attempt's input: its reply becomes the round's only through the replacement.
-const storyRoundsIsRegeneration = event => {
-  const source = event && event.type === 'user/message' && event.data && event.data.source
-  return Boolean(source) && (source.kind === 'plugin:dsh-tavern-regen' || source.kind === 'plugin' && source.plugin === 'dsh-tavern-regen')
-}
+const storyRoundsIsRegenerationSource = source => Boolean(source) && (source.kind === 'plugin:dsh-tavern-regen' || source.kind === 'plugin' && source.plugin === 'dsh-tavern-regen')
+const storyRoundsIsRegeneration = event => Boolean(event && event.type === 'user/message' && storyRoundsIsRegenerationSource(event.data && event.data.source))
 const storyRoundsIsModelReply = event => event && event.type === 'assistant/message' && event.data && event.data.message && event.data.message.source && event.data.message.source.kind === 'model'
 
 /**
@@ -23341,7 +23339,8 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *            or 'rolled-back' / 'replaced'
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
  * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层；
- *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空。
+ *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空；
+ *          重新生成的尝试轮带 regenerating: true（它的失败归楼层操作，不是玩家自己的回合）。
  * An interrupted, failed or empty reply never makes a floor.
  */
 function createStoryRoundsFold() {
@@ -23397,7 +23396,7 @@ function createStoryRoundsFold() {
       if (event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn') {
         const data = event.data
         const inserted = (data.inserted || []).map(message => ({
-          seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user'
+          seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user', regenerating: storyRoundsIsRegenerationSource(message.source)
         }))
         // 下标相对真实队列；窗口没见过的前面条目补占位，已知条目才不会错位。
         while (nextInputs.length < data.start) nextInputs.push(null)
@@ -23406,6 +23405,7 @@ function createStoryRoundsFold() {
         if (claiming && data.removedCount > 0 && data.outcome !== 'canceled') {
           claiming = false
           attempt = { ...attempt, inputs: removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })) }
+          if (removed.some(input => input && input.regenerating)) attempt.regenerating = true
         }
       }
       if (event.type === 'turn/start') {
@@ -23448,6 +23448,7 @@ function createStoryRoundsFold() {
       if (storyRoundsIsRegeneration(event) && event.surfaceOp === 'append') {
         if (running === null) queuedAttempt = true
         else attempts.add(running)
+        if (attempt && running === attempt.turn && !attempt.regenerating) attempt = { ...attempt, regenerating: true }
       }
       if (!storyRoundsIsSurface(event)) continue
       if (storyRoundsIsReplace(event)) shadow(event)

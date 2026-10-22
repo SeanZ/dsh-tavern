@@ -235,3 +235,18 @@ test('窗口从中途开始：看不到入队的条目按占位处理，认领�
     { type: 'turn/start', seq: 24, data: { turn: 5 } }, splice(25, { start: 0, removedCount: 1 })])
   assert.deepEqual(fold.result().attempt.inputs.map(input => input.text), ['再看看'])
 })
+
+test('重新生成的尝试轮标 regenerating：失败归楼层操作，不当作玩家自己的回合', () => {
+  const fold = createStoryRoundsFold()
+  const regen = { id: 'regen', role: 'user', content: [{ type: 'text', text: '按要求改写' }], source: { kind: 'plugin:dsh-tavern-regen', regenerationId: 'op' } }
+  fold.addEvents([{ type: 'agent/inbox/spliced', seq: 1, data: { target: 'next-turn', start: 0, inserted: [regen] } },
+    { type: 'turn/start', seq: 2, data: { turn: 3 } }, { type: 'agent/inbox/spliced', seq: 3, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
+    { type: 'turn/end', seq: 4, data: { turn: 3, reason: { kind: 'error', error: { message: '503' } } } }])
+  const { attempt } = fold.result()
+  assert.equal(attempt.regenerating, true)
+  assert.deepEqual(attempt.inputs, [], '改写的合成输入不是玩家输入')
+  assert.equal(attempt.phase, 'error')
+  fold.addEvents([{ type: 'agent/inbox/spliced', seq: 5, data: { target: 'next-turn', start: 0, inserted: [player('p', '继续')] } },
+    { type: 'turn/start', seq: 6, data: { turn: 4 } }, { type: 'agent/inbox/spliced', seq: 7, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } }])
+  assert.equal(fold.result().attempt.regenerating, undefined, '玩家的下一轮不沿用标记')
+})
