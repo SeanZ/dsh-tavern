@@ -137,6 +137,52 @@ export function apply(ctx) {
 
 Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【酒馆状态】」这类提示；带 `parentSession` 的子 Agent 会话一律不加，插件 Agent 收到的只有插件自己给的内容。
 
+## 故事视图契约（本 fork）
+
+本 fork（`trunkbase`）为独立的故事视图插件（`dsh-tavern-new-ui`）提供的契约，上游没有。服务端部分（楼层折叠 `lib/domain/story-rounds.js`、中断墓碑、楼层快照 RPC）见 `docs/design/transcript-row-plan.md`、`last-round-replacement.md`、`html-in-dsh-messages.md` 末尾小节。
+
+### 故事视图模式：关闭 Tavern 的聊天行渲染（C4）
+
+全局设置 `storyViewMode`（默认关闭）开启后，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮，也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、输入框 dock、侧栏页签照常。关闭时与上游完全一致。
+
+- 读改：`getTavernSettings` / `updateTavernSettings({ patch: { storyViewMode } })`。变更立即生效，不用刷新；其他标签页经本地缓存同步。
+- 本机缓存上次读到的值，开启状态下打开页面不会先挂上 Tavern 行再撤下。
+- 设置是全局的：开启后卡片工作台会话的聊天行也是宿主原生（没有 HTML 草图预览）。
+- 稳定性：键名、默认值与「开启即不注册上述三类条目」只加不改。
+
+### 浏览器服务 `tavernStory`：楼层与楼层操作（C5）
+
+Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`），版本字段 `apiVersion: 1`。楼层操作转调与输入框 dock 相同的请求和流程（`rollbackTurn`、`regenBody`、`replayTurn`、楼层快照 RPC），不另立规则。`sessionId` 即 `gameId`；楼层（floor）是 `subscribeRounds` 给出的对象，`story` 是楼层轮次。
+
+| 方法 | 说明 |
+|---|---|
+| `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层变化时回调 `{ floors, abandoned, open, interrupted, hasMore, from }`，返回取消函数。流式块不回调；加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
+| `listResults(sessionId, storyTurn)` | 这一层模型每次生成的原文 `{ seq, turn, text, current }`（旧到新；投影、重写正文、编辑不另算；`current` 为当前显示的那次，切换过时按切换目标），没有该层时为 `null` |
+| `switchResult(sessionId, storyTurn, replySeq)` | 只用于最新楼层、前台空闲时：改为显示 `listResults` 里 `seq` 为 `replySeq` 的那次生成（服务端 `switchFloorResult`）。返回 `{ switched, turn, replySeq, mvu, view }`；`mvu` 为 `'stale'` 时变量仍对应切换前的正文，需要重新结算 |
+| `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput }` |
+| `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
+| `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
+| `interruptQueued(sessionId, turn)` | 故事视图模式下，打断指定的**原生回合**并继续已有排队输入。`turn` 是 `open.turn` 的正整数；只有对应回合仍运行且队列非空才执行，返回 `{ interrupted: boolean }`。保留消息 ID、附件和 FIFO 顺序；过期回合、空闲或非故事局返回 `false`。当前宿主 `cancel({ keepInbox: true })` 只暂停队列，不能直接代替此契约 |
+| `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`） |
+| `writeFloorSnapshot(sessionId, floor, { html, truncated? })` / `readFloorSnapshots(sessionId, floors)` / `readFloorSnapshot(sessionId, floor)` | 楼层静态快照存取；以 `floor.reply.seq` 作为来源，读回时丢弃来源不符的旧快照 |
+| `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
+| `render` | 楼层渲染运行时，见下节 |
+
+稳定性：方法名、参数与返回字段只加不改；不兼容的改动提高 `apiVersion`。
+
+### 楼层渲染：`tavernStory.render`（C7）
+
+`tavernStory.render` 按 Tavern 聊天行的方式画一层故事正文，供故事视图插件使用。宿主是 React，这里直接导出 React 组件。
+
+- `projectFloor(sessionId, storyTurn)` → `{ storyTurn, mode, projection, parts, hasScript, helperContext, frameSizing, trustedCardMode, latestTurn, waitingForHistory }`：该层正则/美化后的投影（与聊天行相同的 `replyProjections`）、Helper 上下文与运行策略。`waitingForHistory` 为真时该层在 Tavern 历史窗口外，用 `loadOlderProjections(sessionId)` 往前扩一页。
+- `readInputTemplate(sessionId, inputTurn)` → 玩家输入的显示模板 HTML 或 `null`（`inputTurn` 是输入所在的原生轮次，即楼层 `inputs[].turn`；改过的输入不再用模板）。用 `StaticHtml` 显示。
+- `FloorBody` 组件，props `{ sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?, revision?, containerRef? }`。`live` 时与聊天行一样用 Tavern 的消息 frame 运行卡片 HTML；否则显示 `snapshotHtml`，没有快照时显示文字和去掉脚本的 HTML。静态 HTML 按白名单重建（常见排版、列表、表格、标题、链接、details、style、惰性的 button/input/progress 等元素与 class/style/title/src/href/data-*/aria-* 等属性；src/href 只允许 http(s)、相对路径与 data:image；未知元素只留文字与允许的子节点；svg、math、script、iframe、form 等整段移除；样式里的 @import、expression、behavior、-moz-binding 和脚本或非图片 url 剥掉），放在 shadow root 里，`html`/`body`/`:root` 样式改为作用于楼层。`revision` 建议传 `floor.reply.seq`。
+- **frame 归属**：Tavern 的消息 frame 在 React 卸载后仍会停放保留（同一局离开前不销毁），以免卡片状态丢失。`FloorBody` 在 `live` 变为假或卸载时释放自己 `owner`（默认每个组件实例一个）名下的 frame，活 frame 数因此等于同时 live 的楼层数。要让同一层在重挂载后接回原 frame，可传固定的 `owner` 对象，并在不再需要时卸载或置 `live: false`。frame 按（会话、楼层、片段序号）复用；Tavern 聊天行也画同一层时（未开启故事视图模式）两者会共用同一个 frame，所以只在故事视图模式下使用。
+- `captureFloorSnapshot(element, budget?)` → `{ html, truncated, frames, missed }`：`element` 为 `FloorBody` 的容器（`containerRef`）或单个 iframe。每个 frame 经已有的带预算 DOM 快照通道读取（同源 frame 直接读，沙箱 frame 走 frame 内报告脚本的消息），其余片段读页面 DOM；结果净化同上，超出预算时 `truncated` 为真并带截断标记；读不到的 frame 计入 `missed`（canvas、WebGL 等只能拿到 DOM 结构）。沙箱 frame 的读取也会像诊断快照一样写一份显示运行时记录。
+- `StaticHtml`（`{ html }`）、`sanitizeHtml(html)`：同一套净化与 shadow root 显示。
+
+稳定性：同 `tavernStory`。
+
 ## 暂时没有的
 
 下面这些目前还没有接口，不代表不能开放。有实际需要时请提[插件接口需求](https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml)，写清要做的插件和卡在哪一步，能开放的会按需补上。
