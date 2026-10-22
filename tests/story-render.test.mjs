@@ -47,7 +47,7 @@ test('FloorBody 非 live：快照或无脚本 HTML 放进 shadow root，不建 i
   const body = win.document.querySelector('[data-tavern-floor="2"]')
   assert.equal(body.querySelector('.markdown').textContent, '正文')
   const shadow = body.querySelector('.dsh-tavern-floor-static').shadowRoot
-  assert.equal(shadow.innerHTML, '<div class="card">卡</div><button>继续</button>')
+  assert.equal(shadow.innerHTML, '<div class="card">卡</div><button disabled="" type="button">继续</button>', '按钮只作惰性显示')
   assert.equal(win.document.querySelectorAll('iframe').length, 0)
   await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', storyTurn: 2, snapshotHtml: '<p onmouseover="x()">快照</p><script>1</script>' })))
   assert.equal(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.innerHTML, '<p>快照</p>')
@@ -82,4 +82,23 @@ test('captureFloorSnapshot 读 frame 与正文 DOM，去脚本与事件属性，
   const small = await render.captureFloorSnapshot(container, { bytes: 20 })
   assert.equal(small.truncated, true)
   await assert.rejects(render.captureFloorSnapshot(null), /楼层容器/)
+})
+
+test('白名单净化：svg/math/form 整段移除，未知标签解包，样式里的外链与脚本钩子剥掉，卡片结构保留', t => {
+  const { render } = setup(t)
+  const removed = render.sanitizeHtml('<svg><foreignObject><img src=x onerror=alert(1)></foreignObject><a href="javascript:x">s</a></svg>'
+    + '<math><mtext><img src=x onerror=alert(1)></mtext></math><form action="/api/x"><input name=a>提交</form><noscript><p title="</noscript><img src=x onerror=alert(1)>"></p></noscript>')
+  // The noscript title trick closes early on parse; what leaks out is rebuilt from the whitelist, handler-free.
+  assert.doesNotMatch(removed, /onerror|svg|math|foreignobject|mtext|form|input|javascript|提交/i, 'svg、math、form、noscript 整段移除')
+  assert.equal(render.sanitizeHtml('<custom-card data-x="1"><marquee>滚动<b>粗</b></marquee>尾</custom-card>'), '滚动<b>粗</b>尾', '未知元素解包，只留文字与允许的子节点')
+  const cleaned = render.sanitizeHtml('<div onpointerenter="x()" style="background:url(javascript:alert(1));behavior:url(x.htc);color:red" formaction="/x">'
+    + '<a href="vbscript:x" onclick="y()">链</a><a href="//evil.example/x">协议相对</a><img src="file:///etc/passwd"></div>'
+    + '<style>@import url("https://evil.example/x.css");.a{background:url(data:text/html,x);-moz-binding:url(x);width:expression(alert(1))}body .b{color:red}</style>')
+  assert.doesNotMatch(cleaned, /on[a-z]+=|javascript|vbscript|formaction|evil\.example|file:|data:text|behavior|binding|@import|expression/)
+  assert.match(cleaned, /color:red/)
+  assert.match(cleaned, /:host \.b\{color:red\}/)
+  const card = '<div class="status-card" style="color: #fff; background: linear-gradient(#000, #333)" data-role="hp" aria-label="状态">'
+    + '<img src="data:image/png;base64,AAAA" alt="头像" width="32"><details open=""><summary>属性</summary><table><tbody><tr><td colspan="2">HP</td></tr></tbody></table></details>'
+    + '<progress value="3" max="10"></progress><input type="checkbox" checked="" disabled=""></div>'
+  assert.equal(render.sanitizeHtml(card), card, '常见卡片结构原样保留')
 })

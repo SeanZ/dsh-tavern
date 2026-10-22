@@ -7,24 +7,70 @@ const TAVERN_FLOOR_SNAPSHOT_LIMIT = 512 * 1024;
 const TAVERN_FLOOR_FRAME_TIMEOUT_MS = 1500;
 const tavernFloorScriptPattern = /<(?:script|iframe|object|embed)\b/i;
 
-// Static HTML that can sit in the host page: no scripts, frames, handlers or script URLs;
-// links open elsewhere; html/body/:root rules apply to the floor (the shadow host).
+// Static HTML that can sit in the host page, which shares DSH's origin and RPC: card HTML
+// comes from third-party presets and cards, so only a whitelist survives (as in
+// inline-fragment.js). Allowed elements are rebuilt one by one with allowed attributes;
+// an unknown element gives way to its text and allowed children; dangerous or foreign-
+// namespace subtrees (svg, math) go entirely. Controls stay inert, links open elsewhere,
+// and html/body/:root rules apply to the floor (the shadow host).
+const TAVERN_FLOOR_TAGS = new Set(["div", "span", "p", "img", "br", "hr", "b", "strong", "i", "em", "u", "s", "small", "sub", "sup", "mark", "del", "ins", "q", "cite", "abbr", "time", "blockquote", "pre", "code", "kbd",
+	"ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "h1", "h2", "h3", "h4", "h5", "h6", "a",
+	"details", "summary", "section", "article", "aside", "header", "footer", "nav", "main", "figure", "figcaption", "center", "style", "button", "input", "label", "progress", "meter"]);
+const TAVERN_FLOOR_DROPPED = new Set(["svg", "math", "script", "iframe", "frame", "frameset", "object", "embed", "applet", "template", "form", "link", "meta", "base", "noscript", "portal", "textarea", "select"]);
+const TAVERN_FLOOR_ATTRIBUTES = new Set(["class", "id", "style", "title", "alt", "src", "href", "width", "height", "colspan", "rowspan", "span", "open", "disabled", "checked", "value", "type", "role", "lang", "dir", "align", "min", "max", "low", "high", "optimum", "datetime", "start", "reversed", "for"]);
+const TAVERN_FLOOR_INPUT_TYPES = new Set(["text", "checkbox", "radio", "range", "number", "button"]);
+function tavernFloorUrl(value, image) {
+	const url = String(value || "").replace(/[\u0000- \u007f]/g, "");
+	if (/^https?:/i.test(url)) return true;
+	if (image && /^data:image\//i.test(url)) return true;
+	// Relative: no scheme at all (and not protocol-relative).
+	return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[\\/]{2}/.test(url);
+}
+// CSS that cannot load or run anything: no imports, legacy script hooks or script/non-image URLs.
+function cleanTavernFloorCss(css) {
+	return String(css || "").replace(/<\/?style/gi, "")
+		.replace(/@import\b[^;]*;?/gi, "")
+		.replace(/expression\s*\(/gi, "(")
+		.replace(/(?:behavior|-moz-binding)\s*:[^;}]*;?/gi, "")
+		.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, function (match, _quote, value) {
+			const url = value.trim();
+			return /\\/.test(url) || /^(?:javascript|vbscript):/i.test(url) || /^data:/i.test(url) && !/^data:image\//i.test(url) ? "none" : match;
+		});
+}
 function sanitizeTavernFloorHtml(html, doc) {
 	const template = doc.createElement("template");
 	template.innerHTML = String(html || "");
-	for (const node of Array.from(template.content.querySelectorAll("script, iframe, frame, frameset, object, embed, applet, base, meta, noscript, template, portal"))) node.remove();
-	for (const node of Array.from(template.content.querySelectorAll("link"))) if (!/^\s*stylesheet\s*$/i.test(node.getAttribute("rel") || "")) node.remove();
-	for (const node of Array.from(template.content.querySelectorAll("*"))) {
-		for (const attr of Array.from(node.attributes)) {
-			const name = attr.name.toLowerCase();
-			const value = attr.value.replace(/[\u0000- ]/g, "");
-			if (name.startsWith("on") || name === "srcdoc" || name === "formaction" || name === "action" || name === "is" || name === "autofocus") node.removeAttribute(attr.name);
-			else if (["href", "src", "xlink:href", "poster", "background"].includes(name) && (/^(?:javascript|vbscript):/i.test(value) || /^data:/i.test(value) && !/^data:image\//i.test(value))) node.removeAttribute(attr.name);
+	const output = doc.createElement("template");
+	function copy(source, target) {
+		for (const node of Array.from(source.childNodes)) {
+			if (node.nodeType === 3) { target.appendChild(doc.createTextNode(node.data)); continue; }
+			// The truncation marker of a bounded snapshot is the only comment kept.
+			if (node.nodeType === 8) { if (node.data === " 已截断 ") target.appendChild(doc.createComment(node.data)); continue; }
+			if (node.nodeType !== 1) continue;
+			const tag = node.localName;
+			if (node.namespaceURI !== "http://www.w3.org/1999/xhtml" || TAVERN_FLOOR_DROPPED.has(tag)) continue;
+			if (!TAVERN_FLOOR_TAGS.has(tag)) { copy(node, target); continue; }
+			const element = doc.createElement(tag);
+			if (tag === "style") {
+				element.textContent = cleanTavernFloorCss(node.textContent).replace(/(^|[{},]\s*)(?:html|body|:root)(?=[\s,{.:#\[>~+]|$)/g, "$1:host");
+				target.appendChild(element);
+				continue;
+			}
+			for (const attr of Array.from(node.attributes)) {
+				const name = attr.name.toLowerCase();
+				if (!(TAVERN_FLOOR_ATTRIBUTES.has(name) || /^(?:data|aria)-[a-z0-9_.-]+$/.test(name))) continue;
+				if ((name === "src" || name === "href") && !tavernFloorUrl(attr.value, name === "src" && tag === "img")) continue;
+				if (name === "type" && tag === "input" && !TAVERN_FLOOR_INPUT_TYPES.has(attr.value.toLowerCase())) continue;
+				element.setAttribute(name, name === "style" ? cleanTavernFloorCss(attr.value) : attr.value);
+			}
+			if (tag === "a" && element.hasAttribute("href")) { element.setAttribute("target", "_blank"); element.setAttribute("rel", "noopener noreferrer"); }
+			if (tag === "button" || tag === "input") { element.setAttribute("disabled", ""); if (tag === "button") element.setAttribute("type", "button"); }
+			copy(node, element);
+			target.appendChild(element);
 		}
-		if (node.tagName === "A" && node.hasAttribute("href")) { node.setAttribute("target", "_blank"); node.setAttribute("rel", "noopener noreferrer"); }
-		if (node.tagName === "STYLE") node.textContent = node.textContent.replace(/(^|[{},]\s*)(?:html|body|:root)(?=[\s,{.:#\[>~+]|$)/g, "$1:host");
 	}
-	return template.innerHTML;
+	copy(template.content, output.content);
+	return output.innerHTML;
 }
 
 function TavernFloorStaticHtml(props) {
