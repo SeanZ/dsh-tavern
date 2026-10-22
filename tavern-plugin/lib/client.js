@@ -23586,6 +23586,22 @@ function tavernStoryEvents(entries) {
 	for (const entry of entries || []) if (entry && entry.type === "event" && entry.event) events.push(entry.event);
 	return events;
 }
+// 流式正文预览最多每 100 ms 回调一次；楼层或尝试变化时立即回调。
+const TAVERN_STORY_LIVE_TEXT_MS = 100;
+// 运行中回合的流式正文：宿主事件窗口里的临时条目 `assistant/live-chunk`（text-delta），按尝试拼接。
+// 一次尝试落定时宿主用 settle-assistant 撤掉它的临时条目，所以窗口里只剩还在生成的那次。
+function tavernStoryLiveChunk(live, entry) {
+	const data = entry && entry.type === "transient" && entry.event && entry.event.data;
+	if (!data || !data.chunk || data.chunk.type !== "text-delta") return live;
+	const text = String(data.chunk.text || "");
+	if (live && live.attemptId === data.attemptId && live.turn === data.turn) return { attemptId: live.attemptId, turn: live.turn, text: live.text + text };
+	return { attemptId: data.attemptId, turn: data.turn, text: text };
+}
+function tavernStoryLiveOf(entries) {
+	let live = null;
+	for (const entry of entries || []) live = tavernStoryLiveChunk(live, entry);
+	return live;
+}
 // The player input a failed or stopped round dropped, while it is still the latest thing
 // the player did: no later floor, no newer input, nothing running.
 function tavernStoryInterruptedInput(rounds) {
@@ -23681,30 +23697,43 @@ function createTavernStoryService(options) {
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
 		 * listener({ floors, abandoned, open, attempt, interrupted, hasMore, from }); returns unsubscribe.
+		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled).
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");
 			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
 			const source = eventSourceOf(sessionId);
-			let fold = null, revision = -1, published = null, hasMore = null, stopped = false;
+			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null;
+			function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
+			function emit() {
+				if (timer !== null) { window.clearTimeout(timer); timer = null; }
+				if (stopped) return;
+				const snapshot = source.getSnapshot(), rounds = fold.result();
+				published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
+				const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
+				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
+				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+			}
 			function publish() {
 				if (stopped) return;
 				const snapshot = source.getSnapshot();
 				if (snapshot.revision === revision) return;
 				// Live appends extend the fold; a prepend, rebaseline or settlement folds the window again.
-				if (fold && snapshot.change && snapshot.change.kind === "append" && snapshot.revision === revision + 1) fold.addEvents(tavernStoryEvents(snapshot.change.entries));
-				else { fold = createStoryRoundsFold(); fold.addEvents(tavernStoryEvents(snapshot.entries)); }
+				if (fold && snapshot.change && snapshot.change.kind === "append" && snapshot.revision === revision + 1) {
+					fold.addEvents(tavernStoryEvents(snapshot.change.entries));
+					for (const entry of snapshot.change.entries) live = tavernStoryLiveChunk(live, entry);
+				} else {
+					fold = createStoryRoundsFold(); fold.addEvents(tavernStoryEvents(snapshot.entries));
+					live = tavernStoryLiveOf(snapshot.entries);
+				}
 				revision = snapshot.revision;
-				const rounds = fold.result();
-				// Streaming chunks are transient entries: they change no floor, so no call.
-				if (rounds === published && snapshot.hasMore === hasMore) return;
-				published = rounds; hasMore = snapshot.hasMore;
-				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
-				listener(Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds), hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+				if (fold.result() !== published || snapshot.hasMore !== hasMore) return emit();
+				// Streaming chunks change no floor: only the preview text, at most every 100 ms.
+				if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
 			}
 			const unsubscribe = source.subscribe(publish);
 			publish();
-			return function () { stopped = true; unsubscribe(); };
+			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); };
 		},
 		/** Every reply the floor has had, oldest first; `current` marks the one shown. */
 		listResults: function (sessionId, storyTurn) {

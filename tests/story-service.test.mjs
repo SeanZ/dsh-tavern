@@ -35,6 +35,8 @@ function eventWindow(events) {
   return {
     source: { getSnapshot: () => snapshot, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) } },
     append(entry) { snapshot = { ...snapshot, entries: [...snapshot.entries, entry], revision: snapshot.revision + 1, change: { kind: 'append', entries: [entry] } }; listeners.forEach(fn => fn()) },
+    // 宿主 settleAssistant：撤掉这次尝试的临时条目，插入落定的正文事件。
+    settle(attemptId, event) { const entries = snapshot.entries.filter(entry => entry.type !== 'transient' || entry.event.data.attemptId !== attemptId).concat(event ? [{ type: 'event', event }] : []); snapshot = { ...snapshot, entries, revision: snapshot.revision + 1, change: { kind: 'settle-assistant', attemptId, ...(event ? { entry: { type: 'event', event } } : {}) } }; listeners.forEach(fn => fn()) },
     prepend(events, hasMore) { const entries = events.map(event => ({ type: 'event', event })); snapshot = { entries: [...entries, ...snapshot.entries], hasMore, revision: snapshot.revision + 1, change: { kind: 'prepend', entries } }; listeners.forEach(fn => fn()) }
   }
 }
@@ -219,4 +221,46 @@ test('侧栏 floor 分叉走 prepareFloorFork → 宿主 fork → forkFloor，�
   assert.match(sidebar, /await call\(floor \? "forkFloor" : "forkChat", \{/)
   assert.match(sidebar, /if \(floor\) throw err;/)
   assert.match(sidebar, /forkConversation\(item, title, request\.turn, request\.floor === true\)/)
+})
+
+test('subscribeRounds 的 open.liveText 拼接运行中回合的流式正文，节流回调，落定后换成楼层', async () => {
+  const { client } = loadClient()
+  const events = [...story(2), { type: 'turn/start', seq: 9, time: 1, data: { turn: 3 } },
+    { type: 'user/message', seq: 10, time: 1, surfaceOp: 'append', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '输入3' }] } }]
+  const window = eventWindow(events)
+  const service = serviceOf(client, { s1: window })
+  const seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  assert.equal(seen[0].open.liveText, '', '还没有流式块')
+  const chunk = (seq, text, turn = 3, attemptId = 'a1') => ({ type: 'transient', event: { type: 'assistant/live-chunk', seq, time: 1, data: { attemptId, turn, step: 1, chunk: { type: 'text-delta', index: 0, text } } } })
+  window.append(chunk(10.1, '雨'))
+  window.append({ type: 'transient', event: { type: 'assistant/live-chunk', seq: 10.2, time: 1, data: { attemptId: 'a1', turn: 3, step: 1, chunk: { type: 'reasoning-delta', index: 0, text: '思考' } } } })
+  window.append(chunk(10.3, '夜里'))
+  assert.equal(seen.length, 1, '流式块在节流窗口内不立即回调')
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(seen.length, 2, '一个节流窗口只回调一次')
+  assert.equal(seen[1].open.liveText, '雨夜里', '只拼正文，不含思考')
+  assert.equal(seen[1].floors, seen[0].floors, '流式块不重新折叠楼层')
+  // 同一回合换了一次尝试（重试）：宿主先撤掉失败尝试的临时条目，只显示新尝试的文字。
+  window.settle('a1')
+  window.append(chunk(10.4, '重来', 3, 'a2'))
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(seen.at(-1).open.liveText, '重来')
+  const reply = { type: 'assistant/message', seq: 11, time: 1, surfaceOp: 'append', data: { turn: 3, message: { id: 'r3', source: { kind: 'model' }, content: [{ type: 'text', text: '重来了' }] } } }
+  const count = seen.length
+  window.settle('a2', reply)
+  assert.equal(seen.length, count + 1, '落定立即回调')
+  assert.equal(seen.at(-1).open.liveText, '', '落定后临时条目撤掉')
+  assert.equal(seen.at(-1).open.reply.text, '重来了')
+  window.append({ type: 'event', event: { type: 'turn/end', seq: 12, time: 1, data: { turn: 3, reason: { kind: 'completed' } } } })
+  assert.equal(seen.at(-1).open, null)
+  assert.deepEqual(plain(seen.at(-1).floors.map(floor => floor.reply.text)), ['正文1', '正文2', '重来了'])
+  // 停止订阅后，已排的节流回调不再触发。
+  window.append({ type: 'event', event: { type: 'turn/start', seq: 13, time: 1, data: { turn: 4 } } })
+  window.append({ type: 'event', event: { type: 'user/message', seq: 14, time: 1, surfaceOp: 'append', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '输入4' }] } } })
+  window.append(chunk(14.1, '晚', 4, 'a3'))
+  const before = seen.length
+  stop()
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(seen.length, before)
 })
