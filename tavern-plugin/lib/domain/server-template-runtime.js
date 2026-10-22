@@ -3,7 +3,7 @@ import { fork } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { redactMvuLoadError } from './mvu-diagnostics.js'
 
@@ -59,7 +59,7 @@ export function createServerTemplateRuntime({ rpc, store, timeoutMs = 120000, id
     // 两者均只开放依赖目录，不开放其父目录中的配置和会话数据。
     const modules = new Set([dirname(dirname(require.resolve('jsdom/package.json')))])
     const logicalModules = require.resolve.paths('jsdom').find(root => existsSync(join(root, 'jsdom/package.json')))
-    if (logicalModules) modules.add(logicalModules)
+    if (logicalModules) { modules.add(logicalModules); modules.add(realpathSync(logicalModules)) }
     const plugin = fileURLToPath(new URL('../../', import.meta.url))
     // Node 24 removed the experimental alias; older hosts still need it.
     const permissionFlag = process.allowedNodeEnvironmentFlags.has('--permission') ? '--permission' : '--experimental-permission'

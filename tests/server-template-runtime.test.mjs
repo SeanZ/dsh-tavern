@@ -81,14 +81,17 @@ test('display worker failures preserve bounded redacted stderr without replay or
 })
 
 // 真实分离安装：新目录中的包链接到旧依赖目录，不能只允许 realpath。
-test('独立插件使用符号链接依赖时可执行输入模板，且不能读取旁边的配置数据', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tavern-template-install-'))
+for (const linkedDirectory of [false, true]) test('独立插件依赖可执行且不能读取旁边配置：' + (linkedDirectory ? '链接整个 node_modules' : '链接 jsdom 包'), async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tavern-template-install-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   const modules = join(root, 'plugins/node_modules')
-  const plugin = join(modules, 'fixture/tavern-plugin')
+  const packageRoot = linkedDirectory ? join(root, 'separate-package') : join(modules, 'fixture')
+  const plugin = join(packageRoot, 'tavern-plugin')
   await mkdir(plugin, { recursive: true })
   await cp(new URL('../tavern-plugin/lib', import.meta.url), join(plugin, 'lib'), { recursive: true })
-  await writeFile(join(modules, 'fixture/package.json'), JSON.stringify({ type: 'module' }))
+  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ type: 'module' }))
+  await mkdir(modules, { recursive: true })
+  if (linkedDirectory) await symlink(modules, join(packageRoot, 'node_modules'), 'dir')
   await symlink(await realpath(new URL('../node_modules/jsdom', import.meta.url)), join(modules, 'jsdom'), 'dir')
   const secret = join(root, 'plugins/profile-secret.txt')
   await writeFile(secret, 'fixture-private-value')
