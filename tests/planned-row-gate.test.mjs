@@ -75,3 +75,26 @@ test('同一份节点列表和行计划只扫描一次最后可见输入', () =>
   assert.equal(reads, first, '其余用户行直接复用结果')
   assert.equal(client.latestTavernUserTurn({ legacy: { nodes } }, { turns: {}, from: null }), 5, '行计划变化后重新判断')
 })
+
+test('用户输入模板与助手 HTML 同一渲染窗口：窗口外只显示文字和「渲染此轮」', () => {
+  const client = loadClient()
+  const replyProjections = Array.from({ length: 10 }, (_, index) => ({ turn: index + 1, version: 2, parts: [] }))
+  client.liveTavernView.setView('s3', { mode: 'story', transcriptTurns: null, replyProjections, inputTemplateDisplays: { 6: '<b>旧模板</b>', 9: '<b>新模板</b>' } })
+  const rows = chatRows(client)
+  const render = turn => {
+    const gate = rows.user({
+      sessionId: 's3', node: { kind: 'user', data: { time: turn, content: [{ type: 'text', text: '输入' + turn }] }, location: at(turn) },
+      useChat: select => select({ legacy: { nodes: [] } }), useTurnData: () => undefined,
+      useSession: select => select({ running: false }), renderMessageImages: () => null
+    })
+    return gate.props.children.type(gate.props.children.props)
+  }
+  const frame = node => node.props?.partIndex === 'user-template'
+  const button = node => node.type === 'button' && node.props.children === '渲染此轮'
+  const old = render(6)
+  assert.equal(find(old, frame), null, '窗口外的模板不建 iframe')
+  assert.ok(find(old, button))
+  const recent = render(9)
+  assert.ok(find(recent, frame), '窗口内的模板照常渲染')
+  assert.equal(find(recent, button), null)
+})
