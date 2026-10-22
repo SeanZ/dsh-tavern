@@ -143,7 +143,7 @@ Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【�
 
 ### 故事视图模式：关闭 Tavern 的聊天行渲染（C4）
 
-全局设置 `storyViewMode`（默认关闭）开启后，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮，也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、输入框 dock、侧栏页签照常。关闭时与上游完全一致。
+全局设置 `storyViewMode`（默认关闭）开启后，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮，也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、侧栏页签照常。输入框 dock 只保留两个视图共用的部分（生成候选项、下一步行动、带意见重新生成候选项、插件按钮、「更多」里的停止后台、撤销撤回与压缩）；与故事视图楼层操作、输入框状态条重复的入口不再显示：「重新生成正文」按钮与面板（`dsh-tavern-regen` 不注册）、失败轮「重新生成本轮」「撤回这条输入」、编辑正文面板，以及「更多」里的编辑正文、回退本轮、恢复全部错误提示。关闭时与上游完全一致。
 
 - 读改：`getTavernSettings` / `updateTavernSettings({ patch: { storyViewMode } })`。变更立即生效，不用刷新；其他标签页经本地缓存同步。
 - 本机缓存上次读到的值，开启状态下打开页面不会先挂上 Tavern 行再撤下。

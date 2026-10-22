@@ -56,3 +56,8 @@ function whileTavernDrawsChat(register) {
 		return function () { stop(); if (dispose) dispose(); dispose = null; };
 	};
 }
+// 故事视图模式下由楼层操作与输入框状态条承担的 dock 入口（重新生成正文、重放与撤回失败轮、
+// 编辑正文、回退本轮等）随开关即时隐藏；关闭时与上游一致。
+function useTavernStoryViewMode() {
+	return React.useSyncExternalStore(tavernStoryViewMode.subscribe, tavernStoryViewMode.enabled, tavernStoryViewMode.enabled);
+}

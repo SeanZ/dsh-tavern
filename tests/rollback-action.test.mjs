@@ -8,7 +8,7 @@ const component = source.slice(source.indexOf('function CandidateAction('), sour
 // The replay submit path sits above CandidateAction; slice it with its only helper.
 
 function harness() {
-  let running = true, activity = { phase: 'idle', busy: false, role: '' }, regen = null, fail = false, warning = '', canRollback = true, undoTurn = null
+  let storyView = false, running = true, activity = { phase: 'idle', busy: false, role: '' }, regen = null, fail = false, warning = '', canRollback = true, undoTurn = null
   const states = [], calls = [], extraView = {}
   let cursor = 0
   const context = {
@@ -22,7 +22,7 @@ function harness() {
       }
     },
     useCandidatePanel: () => null, useRegenPanel: () => regen,
-    useTavernSessionMode: () => 'story', latestTavernAssistantMessageId: () => 'reply',
+    useTavernSessionMode: () => 'story', useTavernStoryViewMode: () => storyView, latestTavernAssistantMessageId: () => 'reply',
     useLiveTavernView: () => ({ view: { canRollback, undoRollbackTurn: undoTurn, ...extraView } }),
     useTavernCoordination: () => ({ view: { activity } }),
     describeTavernActivity: value => value, isPlayMode: () => true,
@@ -44,6 +44,7 @@ function harness() {
     undoTurn(value) { undoTurn = value },
     undo() { cursor = 0; return actions.TavernUndoRollbackAction({ sessionId: 'session', useSession: select => select({ running }) }) },
     playerRound(value) { canRollback = value },
+    storyView(value) { storyView = value },
     running(value) { running = value },
     background(value) { activity = value ? { phase: 'running', busy: true, role: 'settlement' } : { phase: 'idle', busy: false, role: '' } },
     activity(value) { activity = value },
@@ -95,4 +96,32 @@ test('实际回退组件在前台、后台和重生成期间禁用，完成后�
   assert.ok(h.calls.includes('project'))
   assert.ok(!h.calls.includes('confirm'), '点击回退直接执行，不弹确认框')
   assert.equal(h.button().props.disabled, false)
+})
+
+// 故事视图模式（C4 开关）下，重新生成、失败轮重放与撤回、编辑正文、回退本轮由楼层操作和输入框状态条承担。
+const labels = buttons => buttons.map(button => button.children[0])
+function menuItems(more) {
+  const menu = more.children[1]
+  return menu.children.filter(Boolean).map(item => typeof item.type === 'function' ? item.type.name : item.children[0])
+}
+
+test('故事视图模式开启时 dock 只留生成候选项，关闭时照旧显示重新生成与撤回', () => {
+  const h = harness()
+  h.running(false)
+  h.view({ canReplayFailedTurn: false })
+  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成正文'])
+  h.storyView(true)
+  assert.deepEqual(labels(h.buttons()), ['生成候选项'])
+  h.view({ canReplayFailedTurn: true })
+  assert.deepEqual(labels(h.buttons()), ['生成候选项'], '失败轮重放与撤回归输入框状态条')
+  h.storyView(false)
+  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成本轮', '撤回这条输入'])
+})
+
+test('故事视图模式开启时「更多」不含编辑正文、回退本轮与恢复错误提示，其余照旧', () => {
+  const h = harness()
+  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', '恢复全部错误提示', 'TavernCompactionAction']
+  assert.deepEqual(menuItems(h.more()), all)
+  h.storyView(true)
+  assert.deepEqual(menuItems(h.more()), ['TavernStopBackgroundAction', 'TavernUndoRollbackAction', 'TavernCompactionAction'])
 })

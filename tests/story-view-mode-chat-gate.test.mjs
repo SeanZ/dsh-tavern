@@ -71,3 +71,33 @@ test('set 写入全局设置并立即切换', async () => {
   assert.equal(count('conversation.chat.node:assistant-step'), 0)
   await assert.rejects(client.tavernStoryViewMode.set('yes'), /布尔值/)
 })
+
+// 输入框 dock 的「重新生成正文」面板（RegenPanel 与编辑正文面板）只在 Tavern 画聊天行时注册；
+// 候选项相关条目两个视图共用。
+function registerDock(client) {
+  const live = new Map()
+  const ctx = { sessions: {}, get: () => null, betterSidebar: { registerTab: () => () => {} }, effect(run) { try { return run() } catch (_) {} } }
+  const slots = { inject: (_name, run) => run(), register(options) { const id = options.name + ':' + options.id; live.set(id, (live.get(id) || 0) + 1); return () => live.set(id, live.get(id) - 1) } }
+  client.playControlsFeature.register({ ctx, slots })
+  return id => live.get('conversation.input.dock:' + id) || 0
+}
+const sharedDock = ['dsh-tavern-candidate-actions', 'dsh-tavern-question', 'dsh-tavern-candidate-guide']
+
+test('故事视图模式关闭时 dock 照常注册重新生成正文面板', () => {
+  const count = registerDock(loadClient().client)
+  for (const id of [...sharedDock, 'dsh-tavern-regen']) assert.equal(count(id), 1, id)
+})
+
+test('故事视图模式开启时不注册重新生成正文面板，候选项条目保留；开关变化即时生效', async () => {
+  const { client, listeners } = loadClient({ cached: '1', settings: { storyViewMode: true } })
+  const count = registerDock(client)
+  assert.equal(count('dsh-tavern-regen'), 0)
+  for (const id of sharedDock) assert.equal(count(id), 1, id)
+  const stop = client.tavernStoryViewMode.start()
+  await tick()
+  listeners.get('storage')({ key: 'dsh-tavern:story-view-mode', newValue: '0' })
+  assert.equal(count('dsh-tavern-regen'), 1, '关闭后重新注册')
+  listeners.get('storage')({ key: 'dsh-tavern:story-view-mode', newValue: '1' })
+  assert.equal(count('dsh-tavern-regen'), 0, '再开启后撤下')
+  stop()
+})
