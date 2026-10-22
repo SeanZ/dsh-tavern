@@ -105,6 +105,8 @@ function createTavernStoryService(options) {
 
 	const service = {
 		apiVersion: 1,
+		/** Floor rendering runtime (contract C7, features/story-render.js). */
+		render: options.render || null,
 		/** Whether Tavern leaves the chat rows to the host (contract C4). */
 		storyViewMode: function () { return tavernStoryViewMode.enabled(); },
 		setStoryViewMode: function (value) { return tavernStoryViewMode.set(value); },
