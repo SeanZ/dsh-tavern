@@ -309,12 +309,16 @@ export function createBackgroundAgentSessions(options, task) {
         residentHandles.delete(traceSessionId)
         if (residentSessionByParent.get(key)===traceSessionId) residentSessionByParent.delete(key)
         requestContexts.delete(traceSessionId); requestSessions.delete(traceSessionId)
-        void Promise.resolve().then(async () => {
+        const release = Promise.resolve().then(async () => {
           try { await options.flushSession?.(handle.agent.session) }
           finally { await handle.dispose() }
           // Released: listings now leave it out, so the page may reload its session list.
           if (persistent) options.onRetired?.(traceSessionId, str(input.sessionId))
-        }).catch(error => console.warn('dsh-tavern: 退休后台会话释放失败', traceSessionId, error))
+        })
+        releasing.set(traceSessionId, release)
+        void release.catch(error => console.warn('dsh-tavern: 退休后台会话释放失败', traceSessionId, error)).finally(() => {
+          if (releasing.get(traceSessionId) === release) releasing.delete(traceSessionId)
+        })
       } else if (!persistent) {
         requestContexts.delete(traceSessionId)
         requestSessions.delete(traceSessionId)
@@ -340,6 +344,25 @@ export function createBackgroundAgentSessions(options, task) {
     return enqueue(str(input.sessionId), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
+    })
+  }
+
+  // 历史编辑和任务、空闲回收共用父会话队列；退休句柄释放完成后才能借用或恢复。
+  function withSession(sessionId, parentSessionId, work) {
+    if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
+    return enqueue(str(parentSessionId), async () => {
+      if (stopped) throw new Error('后台 Agent 管理器已关闭')
+      if (releasing.has(sessionId)) await releasing.get(sessionId)
+      const resident = residentHandles.get(sessionId)
+      let agent = resident?.handle.agent || agents.get(sessionId)
+      let handle
+      try {
+        if (!agent) { handle = await agents.resume({ resumeSessionId: sessionId }); agent = handle.agent }
+        return await work(agent.session, agent)
+      } finally {
+        if (handle) await handle.dispose()
+        if (resident) resident.lastUsedAt = now()
+      }
     })
   }
 
@@ -435,5 +458,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, run, owns, requestContext, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, run, withSession, owns, requestContext, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

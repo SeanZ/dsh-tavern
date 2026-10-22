@@ -3,6 +3,7 @@ import { assertRescueHistoryEditable } from './chat-history-rescue.js'
 import { replaceSessionSurface } from './session-surface-mutations.js'
 import { canUndoRollback, restoreSurface, preflightSurfaceRestore, unchangedSinceRollback } from './surface-restoration.js'
 import { rewindBackgroundSurface } from './background-surface.js'
+import { withBackgroundSession } from './background-session-edit.js'
 import { releaseOpeningTurn, sessionEvents, withSurfaceEditTurn } from './session-events.js'
 import { randomUUID } from 'node:crypto'
 import { createRegenerationRecovery, projectedReplacingTurns } from './regeneration-recovery.js'
@@ -979,40 +980,28 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     // boundary so the next task can safely retry if this best-effort step fails.
     for (const participant of Object.values(storyTimeline.inspect({ chat }).participants || {})) {
       if (participant.status !== 'needs-rewind' || !participant.sessionId) continue
-      let restoredHandle
       try {
-        let worker = sessions.get(participant.sessionId)
-        let background = worker?.session || sessions.getSession?.(participant.sessionId)
-        if (!background && typeof sessions.resume === 'function') {
-          restoredHandle = await sessions.resume(participant.sessionId)
-          worker = restoredHandle.agent
-          background = worker?.session
-        }
-        if (!background) throw new Error('后台会话尚未加载，将在下次后台任务启动时重试')
-        if (worker?.phase?.kind === 'running') {
-          worker.cancel({ kind: 'parent' })
-        }
-        if (typeof worker?.whenIdle === 'function') {
-          let timeout
-          try {
-            await Promise.race([worker.whenIdle(), new Promise((_, reject) => {
-              timeout = setTimeout(() => reject(new Error('后台尚未停止，将在下次任务启动时重试')), 3000)
-            })])
-          } finally { clearTimeout(timeout) }
-        }
-        if (typeof sessions.flush !== 'function') throw new Error('当前宿主未提供后台会话保存接口')
-        const checkpoint = { formatVersion: 4, sessionId: participant.sessionId, nodes: [...background.surface.nodes] }
-        rewindBackgroundSurface(background, participant.rewindTo, worker, participant.formatVersion || 3)
-        checkpoint.afterCount = sessionEvents(background).length
-        undo.background.push(checkpoint)
-        await sessions.flush(background)
+        await withBackgroundSession(sessions, participant.sessionId, session.id, async (background, worker) => {
+          if (worker?.phase?.kind === 'running') {
+            worker.cancel({ kind: 'parent' })
+          }
+          if (typeof worker?.whenIdle === 'function') {
+            let timeout
+            try {
+              await Promise.race([worker.whenIdle(), new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error('后台尚未停止，将在下次任务启动时重试')), 3000)
+              })])
+            } finally { clearTimeout(timeout) }
+          }
+          if (typeof sessions.flush !== 'function') throw new Error('当前宿主未提供后台会话保存接口')
+          const checkpoint = { formatVersion: 4, sessionId: participant.sessionId, nodes: [...background.surface.nodes] }
+          rewindBackgroundSurface(background, participant.rewindTo, worker, participant.formatVersion || 3)
+          checkpoint.afterCount = sessionEvents(background).length
+          undo.background.push(checkpoint)
+          await sessions.flush(background)
+        })
       } catch (error) {
         rollbackWarning = [rollbackWarning, '正文已回退，后台上下文回退未完成：' + str(error?.message || error)].filter(Boolean).join('；')
-      } finally {
-        if (restoredHandle) {
-          try { await restoredHandle.dispose() }
-          catch (error) { rollbackWarning = [rollbackWarning, '后台回退临时会话释放失败：' + str(error?.message || error)].filter(Boolean).join('；') }
-        }
       }
     }
     // Notify scripts only after both authoritative story and native surface have committed.

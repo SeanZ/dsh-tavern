@@ -52,6 +52,42 @@ test('failed persistence retains instance and backs off before retry', async t =
   assert.equal(h.runner.owns(id), false); assert.equal(attempts, 2)
 })
 
+test('历史编辑等待退休句柄完成释放，再恢复同一会话并释放临时句柄', async t => {
+  let release, entered = false
+  const gate = new Promise(resolve => { release = resolve })
+  const h = harness(t, { work: async (_input, state) => { state.abandoned = true }, flush: () => gate })
+  t.after(() => release())
+  const id = await h.run()
+  const edit = h.runner.withSession(id, 'parent-a', async session => {
+    entered = true
+    assert.equal(session.id, id)
+    assert.equal(session.events.filter(e => e.type === 'system/message').length, 1)
+    return 'edited'
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(entered, false, '不能借用还在释放中的 Agent')
+  release()
+  assert.equal(await edit, 'edited')
+  assert.deepEqual(h.calls.slice(-3), [['dispose', id], ['resume', id], ['dispose', id]])
+})
+
+test('历史编辑与空闲回收串行；编辑失败不释放仍由管理器拥有的句柄', async t => {
+  const h = harness(t)
+  const id = await h.run()
+  let release, entered
+  const gate = new Promise(resolve => { release = resolve })
+  const ready = new Promise(resolve => { entered = resolve })
+  const edit = h.runner.withSession(id, 'parent-a', async () => { entered(); await gate; throw new Error('edit failed') })
+  const rejected = assert.rejects(edit, /edit failed/)
+  await ready
+  h.tick(1000)
+  await h.runner.reapIdle()
+  assert.equal(h.runner.owns(id), true)
+  release(); await rejected
+  assert.equal(h.runner.owns(id), true)
+  assert.equal(h.calls.some(call => call[0] === 'dispose'), false)
+})
+
 test('本局开了联网搜索：任务自己写明不联网时仍不联网（文风联想、世界书预筛）', async t => {
   const seen = []
   const h = harness(t, { options: { resolveWebSearch: async () => true }, work: async (input, state) => { seen.push([input.task, state.input.webSearchEnabled]) } })

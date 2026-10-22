@@ -3925,6 +3925,7 @@ export async function apply(ctx) {
       } },
     sessions: { get: function (sessionId) { return ctx.get('agents')?.get(sessionId) },
       getSession: sessionId => sessionStore.get(sessionId),
+      withBackground: (sessionId, parentId, work) => backgroundAgentRunner.withSession(sessionId, parentId, work),
       resume: sessionId => agentRegistry.resume({ resumeSessionId: sessionId }),
       flush: session => sessionStore.flush(session) },
     scripts: { read: readScript, continuity: scriptContinuity,
