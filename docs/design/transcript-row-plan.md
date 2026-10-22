@@ -136,7 +136,7 @@ planTranscriptRows({ chat, events, nodes }) → {
 - 按宿主的方式折叠模型消息面（追加到尾部；replace 取代它遮住的那段），再沿消息面顺序配对：玩家输入（`user/message`，source kind 为 `user`，含编辑后的替换与修复副本）＋该轮已结算（`completed`/`max-tokens`）的模型正文为一层；正文的故事轮取 `source.tavernStoryTurn`，没有时取原生轮号，与行计划同一规则。
 - 不成楼层：frame 上下文等插件消息、空正文、运行中的回合（放进 `open`）、失败/中止/中断回合（含从未写 `turn/end` 就被下一轮接上的回合）、重新生成尝试轮自己的正文（投影落定后经 replace 成为原楼层的正文）。
 - `abandoned` 列出不再是故事的玩家输入及原因：失败轮的结束原因，或 `rolled-back`（被空墓碑遮住）、`replaced`。
-- 每层的 `history` 沿当前正文的替换来源（`sourceEventSeqs`）列出这一轮有过的全部正文，复制自来源的投影副本不重复列；`current` 标出当前那份，供「切换历史结果」。
+- 每层的 `history` 沿当前正文的替换来源（`sourceEventSeqs`）列出这一轮模型自己的每次生成（追加正文，原始文本）；替换（结算投影、重新生成落定、编辑、结果切换）只是某次生成的呈现，不另列。`current` 标出当前替换代表的那次生成：替换带 `tavernResultSeq` 时取它，否则取它覆盖的最新一次生成。`reply` 仍是当前节点（文本可能是正则处理后的模型上下文文本）。
 - 只读事件、不改调用方：服务端与浏览器共用。文件不 import 任何模块、不用 Node/DOM API，可直接 `// @include-domain story-rounds.js` 嵌入客户端；导出 `createStoryRoundsFold()`（按序增量喂入，重复事件跳过）与 `foldStoryRounds(events)`。
 
 稳定性：输出字段（`floors[].story/inputs/reply/history`、`abandoned[].reason`、`open`）只加不改，供 fork 的故事视图插件依赖；现有行计划与其调用方不受影响。窗口不从日志开头起时，跨窗口的 replace 按 `sourceEventSeqs` 尽量还原，窗口内楼层可信、窗口第一轮之前不保证。窗口起点落在回合中间（`turn/start` 在窗口外）时，此前的输入按该轮随后的 `step/*`、追加正文的 `data.turn` 或 `turn/end` 归属；都没有时 `turn` 为 `null`，只进 `open`，不列入 `abandoned`。测试见 `tests/story-rounds.test.mjs`（含 #311 夹具）。

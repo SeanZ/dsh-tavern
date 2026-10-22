@@ -23318,7 +23318,8 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  * time is fine). `result()` returns
  *   { floors, abandoned, open }
  * floors:    [{ story, inputs: [{ seq, turn, text }], reply: { seq, turn, id, text },
- *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs
+ *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs;
+ *              history lists the model's own generations (raw text), reply is the current node
  * abandoned: [{ seq, turn, text, reason }] player inputs that are no longer story;
  *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
  *            or 'rolled-back' / 'replaced'
@@ -23416,23 +23417,31 @@ function createStoryRoundsFold() {
     const story = Number(event.data && event.data.message && event.data.message.source && event.data.message.source.tavernStoryTurn)
     return Number.isSafeInteger(story) && story > 0 ? story : Number(event.data && event.data.turn)
   }
-  // Every reply the round has had: the replacement chain behind the current one.
+  // Every reply the round has had: the model's own generations (append replies) behind the
+  // current node's replacement chain. Replacements (reply projections, regeneration
+  // bodies, edits) are renderings of a generation, not results of their own: each stands
+  // for the one it names (`tavernResultSeq`, written by a result switch) or else the
+  // latest generation it covers.
   function historyOf(current) {
-    const seen = new Set(), found = []
-    const visit = seq => {
-      if (seen.has(seq)) return
-      seen.add(seq)
-      const event = events.get(seq)
-      if (!event || event.type !== 'assistant/message') return
-      if (storyRoundsIsModelReply(event) && textOf(event) !== '') found.push(event)
-      if (storyRoundsIsReplace(event)) for (const source of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) visit(source)
+    const reachable = seq => {
+      const seen = new Set(), found = []
+      const visit = at => {
+        if (seen.has(at)) return
+        seen.add(at)
+        const event = events.get(at)
+        if (!event || event.type !== 'assistant/message') return
+        if (!storyRoundsIsReplace(event)) { if (storyRoundsIsModelReply(event) && textOf(event) !== '') found.push(event); return }
+        for (const source of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) visit(source)
+      }
+      visit(seq)
+      return found.sort((a, b) => a.seq - b.seq)
     }
-    visit(current.seq)
-    const text = textOf(current)
-    // A replacement that copies a reply it shadows is that reply, not another result.
-    const originals = found.filter(event => !storyRoundsIsReplace(event) || !found.some(other => other !== event && !storyRoundsIsReplace(other) && textOf(other) === textOf(event)))
-    const currentSeq = (originals.findLast(event => textOf(event) === text) || current).seq
-    return originals.sort((a, b) => a.seq - b.seq).map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
+    const found = reachable(current.seq)
+    if (!found.length) return [{ seq: current.seq, turn: Number(current.data.turn), text: textOf(current), current: true }]
+    const named = Number(current.data.message.source.tavernResultSeq)
+    const currentSeq = !storyRoundsIsReplace(current) ? current.seq
+      : found.some(event => event.seq === named) ? named : found[found.length - 1].seq
+    return found.map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
   }
   function failedEnd(turn) {
     const kind = ended.get(turn)

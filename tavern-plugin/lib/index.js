@@ -199,6 +199,7 @@ import { createForegroundOrchestrationStrategies } from './domain/foreground-orc
 import { clearFailedTurnSurface, rollbackAvailability, reshadowRolledBackRounds, interruptedSurfaceTurns } from './domain/rollback-surface.js'
 import { createInterruptedRoundTombstone } from './domain/interrupted-round-tombstone.js'
 import { createFloorSnapshots } from './domain/floor-snapshots.js'
+import { createFloorResultSwitch } from './domain/floor-result-switch.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
 import { readHistoryLayoutFile } from './domain/history-tool-call.js'
 import { createTavernRetryLimiter } from './domain/tavern-retry-limiter.js'
@@ -3935,21 +3936,26 @@ export async function apply(ctx) {
     repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '回退或重新生成时找不到原生位置'),
   })
 
+  async function bodyEditorProject(text, chat) {
+    const extensions = await readCardExtensions(chat.cardPath, chat)
+    return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
+      regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts), placement: 2, isEdit: false, depth: 0 })
+  }
   const bodyEditor = createBodyEditor({
     chats: { forSession: hookChatForSession, update: updateChat, patch: patchChat },
     sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
     timeline: storyTimeline,
     activity: chat => backgroundTasks.activity(chat),
     cancelPreparation: chatId => worldbookPrefilter.cancel(chatId),
-    project: async (text, chat) => {
-      const extensions = await readCardExtensions(chat.cardPath, chat)
-      return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
-        regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts), placement: 2, isEdit: false, depth: 0 })
-    },
+    project: bodyEditorProject,
     present: presentStory,
     sessionPatch,
     repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '编辑正文时找不到原生位置'),
   })
+  // Story view (fork contract): put another of the latest floor's generations back, like an edit.
+  const floorResultSwitch = createFloorResultSwitch({ chats: { forSession: hookChatForSession, update: updateChat },
+    sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
+    timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch })
 
   // ---------- HTTP RPC（客户端同源 fetch） ----------
   async function dispatch(method, args) {
@@ -4698,6 +4704,11 @@ export async function apply(ctx) {
         const view = await bodyEditor.save(args && args.sessionId, args)
         notifyPluginTimeline(args && args.sessionId, 'edit', { settled: true })
         return { view }
+      }
+      case 'switchFloorResult': {
+        const result = await floorResultSwitch.switchResult(args || {})
+        if (result.switched) notifyPluginTimeline(args.sessionId, 'edit', { settled: true })
+        return result
       }
       case 'retryStyleReference': return { styleReference: await retryStyleReference(args?.sessionId, { target: 'next', guidance: args?.guidance }) }
       case 'regenBody': {

@@ -11,3 +11,15 @@
 - 编辑后的正文强制提供展示投影，避免 DSH 历史展示仍渲染旧文本；重生成新正文时清除旧编辑同步标记。
 
 验证：`body-editor.test.mjs` 覆盖分段保真、冲突、状态保留及写入恢复；`body-editor-native.test.mjs` 覆盖存档恢复后的真实 Agent 请求；`fixtures/body-editor-browser-smoke.mjs` 使用正式前端组件与原生 Session 提供独立浏览器验证页面。
+
+## 切换历史结果（故事视图）
+
+RPC `switchFloorResult({ sessionId, turn, replySeq })` 把最新一层换回这一轮的另一次生成（`lib/domain/floor-result-switch.js`）。`replySeq` 取 `story-rounds` 楼层 `history[].seq`。不调用模型：
+
+1. 与重新生成相同的前提：游玩/剧本模式、前台空闲、无重新生成或结算在途、`turn` 必须是存档最后一层（与 `body.edit` 时间线意图「只能编辑最后一轮正文」一致；更早楼层之后已有剧情和结算依赖它，不放宽）。
+2. 存档按编辑正文的路径写入：选中生成的原始文本作为 `sourceText`，重新做正则投影（不重放宏），经时间线 `body.edit` 意图更新正文、清候选、让常驻后台参与者回绕。
+3. 模型消息面追加一条 replace，覆盖当前正文节点，来源 `{ kind: 'model', provider: 'dsh-tavern', model: 'result-switch', tavernStoryTurn, tavernResultSeq }`；日志只追加。先写存档后写消息面；两次写入之间崩溃时，存档与消息面正文不一致，依靠原生修复按存档文本重写尾部（未单独做崩溃测试，也不像编辑正文那样留 `bodyEdit` 同步标记）。
+4. 选中的就是当前结果时不写任何东西（`switched: false`）；切回原结果是又一次切换。
+5. MVU：与编辑正文相同，不重放变量结算，本层变量仍是此前正文结算的结果，返回 `mvu: 'stale'`（未切换时为 `'unchanged'`）。需要一致的变量时，用重新生成或手动结算。
+
+返回 `{ switched, turn, replySeq, mvu, view }`，`view` 为会话视图。稳定性：参数与返回字段只加不改。测试见 `tests/floor-result-switch.test.mjs`。
