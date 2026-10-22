@@ -169,3 +169,23 @@ test('listResults 列出模型每次生成的原文，current 跟随结果切换
   await assert.rejects(service.switchResult('s1', 2, 'x'), /replySeq/)
   assert.equal(calls.filter(call => call.method === 'switchFloorResult').length, 1, '前置校验失败不发请求')
 })
+
+test('subscribeRounds 透传未写入 user/message 的准备和失败状态，不创建楼层', () => {
+  const { client } = loadClient()
+  const window = eventWindow([])
+  const seen = []
+  const service = serviceOf(client, { s1: window })
+  const stop = service.subscribeRounds('s1', value => seen.push(value))
+  const events = [
+    { type: 'agent/inbox/spliced', seq: 1, data: { target: 'next-turn', start: 0, inserted: [{ id: 'early', source: { kind: 'user' }, content: [{ type: 'text', text: '原输入' }] }] } },
+    { type: 'turn/start', seq: 2, data: { turn: 1 } },
+    { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }
+  ]
+  for (const event of events) window.append({ type: 'event', event })
+  assert.equal(seen.at(-2).attempt.phase, 'preparing')
+  assert.equal(seen.at(-1).attempt.error, '模板初始化失败')
+  assert.equal(seen.at(-1).attempt.inputs[0].text, '原输入')
+  assert.equal(seen.at(-1).interrupted, null, '不冒充可回放的原生输入')
+  assert.equal(seen.at(-1).floors.length, 0)
+  stop()
+})

@@ -79,12 +79,16 @@ function TavernFloorStaticHtml(props) {
 		const root = ref.current;
 		if (!root) return;
 		const shadow = root.shadowRoot || root.attachShadow({ mode: "open" });
-		shadow.innerHTML = sanitizeTavernFloorHtml(props.html, root.ownerDocument);
+		const content = root.ownerDocument.createElement("div");
+		content.className = "dsh-tavern-floor-content";
+		content.innerHTML = sanitizeTavernFloorHtml(props.html, root.ownerDocument);
+		shadow.replaceChildren(content);
+		const colors = installTavernTextColors(content, {}, findTavernQuoteRanges);
 		// The page keeps its place: a snapshot's form never submits, its controls stay inert.
 		const stop = function (event) { event.preventDefault(); };
 		shadow.addEventListener("submit", stop, true);
 		const unbind = bindTavernFontZoom(root, root.ownerDocument.defaultView);
-		return function () { shadow.removeEventListener("submit", stop, true); unbind(); shadow.innerHTML = ""; };
+		return function () { shadow.removeEventListener("submit", stop, true); colors.dispose(); unbind(); shadow.innerHTML = ""; };
 	}, [props.html]);
 	return React.createElement("div", { ref: ref, className: "mes_text dsh-tavern-floor-static" });
 }
@@ -149,7 +153,7 @@ function createTavernStoryRender(options) {
 
 	/**
 	 * One floor's body. props: { sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?,
-	 * revision?, containerRef? }. Live runs the card HTML in message frames; otherwise
+	 * revision?, containerRef?, fallbackText? }. Live runs the card HTML in message frames; otherwise
 	 * snapshotHtml, or the projection with script-free static HTML.
 	 */
 	function FloorBody(props) {
@@ -172,7 +176,8 @@ function createTavernStoryRender(options) {
 		if (!live && typeof props.snapshotHtml === "string") body = h(TavernFloorStaticHtml, { html: props.snapshotHtml });
 		else {
 			const floor = floorOf(state.view, storyTurn);
-			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…") : null;
+			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
+				: typeof props.fallbackText === "string" ? h(TavernColoredMarkdown, { text: props.fallbackText, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels }) : null;
 			else if (live) body = renderTavernProjection(floor.projection, { sessionId: sessionId, turn: storyTurn, codeLabels: codeLabels,
 				helperContext: floor.helperContext, helperContextReader: function () { return liveTavernView.getSnapshot(sessionId).view?.tavernHelper; },
 				frameSizing: floor.frameSizing, trustedCardMode: floor.trustedCardMode, eagerFrame: props.eager === true, frameOwner: owner, executeSlash: executeSlash });

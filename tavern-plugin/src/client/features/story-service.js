@@ -116,7 +116,7 @@ function createTavernStoryService(options) {
 		},
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
-		 * listener({ floors, abandoned, open, interrupted, hasMore, from }); returns unsubscribe.
+		 * listener({ floors, abandoned, open, attempt, interrupted, hasMore, from }); returns unsubscribe.
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");

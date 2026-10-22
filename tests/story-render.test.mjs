@@ -47,10 +47,10 @@ test('FloorBody 非 live：快照或无脚本 HTML 放进 shadow root，不建 i
   const body = win.document.querySelector('[data-tavern-floor="2"]')
   assert.equal(body.querySelector('.markdown').textContent, '正文')
   const shadow = body.querySelector('.dsh-tavern-floor-static').shadowRoot
-  assert.equal(shadow.innerHTML, '<div class="card">卡</div><button disabled="" type="button">继续</button>', '按钮只作惰性显示')
+  assert.equal(shadow.querySelector('.dsh-tavern-floor-content').innerHTML, '<div class="card">卡</div><button disabled="" type="button">继续</button>', '按钮只作惰性显示')
   assert.equal(win.document.querySelectorAll('iframe').length, 0)
   await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', storyTurn: 2, snapshotHtml: '<p onmouseover="x()">快照</p><script>1</script>' })))
-  assert.equal(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.innerHTML, '<p>快照</p>')
+  assert.equal(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.querySelector('.dsh-tavern-floor-content').innerHTML, '<p>快照</p>')
   const projected = await render.projectFloor('s1', 2)
   assert.equal(projected.hasScript, true)
   assert.equal(projected.parts.length, 2)
@@ -101,4 +101,16 @@ test('白名单净化：svg/math/form 整段移除，未知标签解包，样式
     + '<img src="data:image/png;base64,AAAA" alt="头像" width="32"><details open=""><summary>属性</summary><table><tbody><tr><td colspan="2">HP</td></tr></tbody></table></details>'
     + '<progress value="3" max="10"></progress><input type="checkbox" checked="" disabled=""></div>'
   assert.equal(render.sanitizeHtml(card), card, '常见卡片结构原样保留')
+})
+
+// 无美化投影的普通楼层也必须使用配色 Markdown，历史等待和快照仍优先。
+test('FloorBody 原文兜底保留 Markdown 与配色容器，快照不被原文覆盖', async t => {
+  const { win, client, render, root } = setup(t)
+  client.liveTavernView.setView('plain', view([]))
+  const props = { sessionId: 'plain', storyTurn: 4, fallbackText: '“普通对白”与 *动作*' }
+  await act(async () => root.render(React.createElement(render.FloorBody, props)))
+  assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown .markdown').textContent, props.fallbackText)
+  await act(async () => root.render(React.createElement(render.FloorBody, { ...props, snapshotHtml: '<p>快照</p>' })))
+  assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown'), null)
+  assert.match(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.textContent, /快照/)
 })

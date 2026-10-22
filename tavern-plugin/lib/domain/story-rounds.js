@@ -33,7 +33,7 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
 /**
  * One game's rounds, fed its log in order (each event once; a page of later events at a
  * time is fine). `result()` returns
- *   { floors, abandoned, open }
+ *   { floors, abandoned, open, attempt }
  * floors:    [{ story, inputs: [{ seq, turn, text }], reply: { seq, turn, id, text },
  *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs;
  *              history lists the model's own generations (raw text), reply is the current node
@@ -41,6 +41,7 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
  *            or 'rolled-back' / 'replaced'
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
+ * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层。
  * An interrupted, failed or empty reply never makes a floor.
  */
 function createStoryRoundsFold() {
@@ -51,6 +52,7 @@ function createStoryRoundsFold() {
   const replacedBy = new Map() // seq -> the replacement that shadowed it
   const attempts = new Set() // native turns a regeneration input opened
   let queuedAttempt = false
+  let nextInputs = [], attempt = null
   let queued = [], running = null, last = -1, cached = null
   // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
   // sit in the middle of a turn whose turn/start came before the window.
@@ -90,10 +92,19 @@ function createStoryRoundsFold() {
       last = seq
       events.set(seq, event)
       cached = null
+      // 输入模板在 user/message 之前运行；从原生 inbox 保存本次尝试，失败也不能丢掉反馈。
+      if (event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn') {
+        const data = event.data
+        const inserted = (data.inserted || []).map(message => ({
+          seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user'
+        }))
+        nextInputs.splice(data.start, data.removedCount ?? 0, ...inserted)
+      }
       if (event.type === 'turn/start') {
         // A turn that never ended before the next began was cut off (the server stopped).
         if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
         running = Number(event.data && event.data.turn)
+        attempt = { turn: running, seq, phase: 'preparing', inputs: nextInputs.filter(input => input.player).map(({ seq, text }) => ({ seq, turn: running, text })), accepted: false, error: '' }
         known = true
         // A message queued before its turn starts (the inbox splices it in) belongs to it.
         adopt(running)
@@ -103,6 +114,8 @@ function createStoryRoundsFold() {
         // The window began inside this turn: what came before its end belongs to it.
         if (!known) adopt(Number(event.data && event.data.turn))
         known = true
+        if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
+        attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
         running = null
         continue
@@ -113,7 +126,12 @@ function createStoryRoundsFold() {
         known = true
         adopt(running)
       }
+      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) attempt = { ...attempt, phase: 'generating' }
       if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
+        if (attempt && running === attempt.turn) {
+          const input = { seq, turn: running, text: textOf(event) }
+          attempt = { ...attempt, accepted: true, inputs: attempt.accepted ? [...attempt.inputs, input] : [input] }
+        }
         if (running === null) queued.push(seq)
         else turnOf.set(seq, running)
       }
@@ -215,7 +233,7 @@ function createStoryRoundsFold() {
       if (reason) abandoned.push({ seq, turn, text: textOf(event), reason })
     }
     abandoned.sort((a, b) => a.seq - b.seq)
-    cached = { floors, abandoned, open }
+    cached = { floors, abandoned, open, attempt }
     return cached
   }
 

@@ -183,3 +183,28 @@ test('可经 @include-domain 嵌入浏览器脚本：无 import、无 Node 依�
   new vm.Script(embedded + '\n;globalThis.result = JSON.stringify(foldStoryRounds(events))').runInContext(context)
   assert.deepEqual(JSON.parse(context.result), foldStoryRounds(events))
 })
+
+test('输入模板早期失败：保留原生 inbox 输入和错误，不伪造正文楼层', () => {
+  const fold = createStoryRoundsFold()
+  const inbox = { type: 'agent/inbox/spliced', seq: 1, data: { target: 'next-turn', start: 0, inserted: [player('early', '推开门')] } }
+  fold.addEvents([inbox, { type: 'turn/start', seq: 2, data: { turn: 1 } }])
+  assert.equal(fold.result().attempt.phase, 'preparing')
+  assert.equal(fold.result().attempt.inputs[0].text, '推开门')
+  fold.addEvents([{ type: 'agent/inbox/spliced', seq: 3, data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
+    { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'error', error: { message: '模板初始化失败' } } } }])
+  assert.equal(fold.result().attempt.error, '模板初始化失败')
+  assert.equal(fold.result().attempt.accepted, false)
+  assert.equal(fold.result().floors.length, 0)
+  assert.equal(fold.result().open, null)
+  fold.addEvents([{ type: 'turn/start', seq: 5, data: { turn: 2 } }])
+  assert.deepEqual(fold.result().attempt.inputs, [], '新尝试不复用旧 inbox')
+  assert.equal(fold.result().attempt.error, '')
+})
+
+test('接纳后的输入不与 inbox 重复，成功后清除失败状态', () => {
+  const session = game('story-attempt-accepted')
+  const rounds = foldStoryRounds(sessionEvents(session))
+  assert.equal(rounds.attempt.phase, 'completed')
+  assert.equal(rounds.attempt.accepted, true)
+  assert.deepEqual(rounds.attempt.inputs.map(input => input.text), ['继续'])
+})

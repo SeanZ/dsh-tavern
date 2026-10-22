@@ -50,6 +50,10 @@ function installTavernTextColors(root, options, findQuotes) {
         }).join('\n');
     }
     if (shared.users === 1 || options.colors) setColors(options.colors);
+    // 静态楼层位于 Shadow DOM，文档中的 ::highlight 样式不会跨越样式边界。
+    const scope = typeof root.getRootNode === 'function' ? root.getRootNode() : null;
+    const scopedStyle = scope && scope.host ? style.cloneNode(true) : null;
+    if (scopedStyle) scope.appendChild(scopedStyle);
     // This instance's ranges, so a refresh or dispose removes only its own.
     const owned = [];
     function clearOwned() {
@@ -168,6 +172,7 @@ function installTavernTextColors(root, options, findQuotes) {
             if (viewport) viewport.disconnect();
             doc.removeEventListener('visibilitychange', resume);
             clearOwned();
+            if (scopedStyle) scopedStyle.remove();
             shared.themed.delete(schedule);
             if (--shared.users) return;
             shared.theme.disconnect();

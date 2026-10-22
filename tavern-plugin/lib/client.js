@@ -5728,6 +5728,10 @@ function tavernModelRefusalNotice(text) {
 		        }).join('\n');
 		    }
 		    if (shared.users === 1 || options.colors) setColors(options.colors);
+		    // 静态楼层位于 Shadow DOM，文档中的 ::highlight 样式不会跨越样式边界。
+		    const scope = typeof root.getRootNode === 'function' ? root.getRootNode() : null;
+		    const scopedStyle = scope && scope.host ? style.cloneNode(true) : null;
+		    if (scopedStyle) scope.appendChild(scopedStyle);
 		    // This instance's ranges, so a refresh or dispose removes only its own.
 		    const owned = [];
 		    function clearOwned() {
@@ -5846,6 +5850,7 @@ function tavernModelRefusalNotice(text) {
 		            if (viewport) viewport.disconnect();
 		            doc.removeEventListener('visibilitychange', resume);
 		            clearOwned();
+		            if (scopedStyle) scopedStyle.remove();
 		            shared.themed.delete(schedule);
 		            if (--shared.users) return;
 		            shared.theme.disconnect();
@@ -23316,7 +23321,7 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
 /**
  * One game's rounds, fed its log in order (each event once; a page of later events at a
  * time is fine). `result()` returns
- *   { floors, abandoned, open }
+ *   { floors, abandoned, open, attempt }
  * floors:    [{ story, inputs: [{ seq, turn, text }], reply: { seq, turn, id, text },
  *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs;
  *              history lists the model's own generations (raw text), reply is the current node
@@ -23324,6 +23329,7 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
  *            or 'rolled-back' / 'replaced'
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
+ * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层。
  * An interrupted, failed or empty reply never makes a floor.
  */
 function createStoryRoundsFold() {
@@ -23334,6 +23340,7 @@ function createStoryRoundsFold() {
   const replacedBy = new Map() // seq -> the replacement that shadowed it
   const attempts = new Set() // native turns a regeneration input opened
   let queuedAttempt = false
+  let nextInputs = [], attempt = null
   let queued = [], running = null, last = -1, cached = null
   // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
   // sit in the middle of a turn whose turn/start came before the window.
@@ -23373,10 +23380,19 @@ function createStoryRoundsFold() {
       last = seq
       events.set(seq, event)
       cached = null
+      // 输入模板在 user/message 之前运行；从原生 inbox 保存本次尝试，失败也不能丢掉反馈。
+      if (event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn') {
+        const data = event.data
+        const inserted = (data.inserted || []).map(message => ({
+          seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user'
+        }))
+        nextInputs.splice(data.start, data.removedCount ?? 0, ...inserted)
+      }
       if (event.type === 'turn/start') {
         // A turn that never ended before the next began was cut off (the server stopped).
         if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
         running = Number(event.data && event.data.turn)
+        attempt = { turn: running, seq, phase: 'preparing', inputs: nextInputs.filter(input => input.player).map(({ seq, text }) => ({ seq, turn: running, text })), accepted: false, error: '' }
         known = true
         // A message queued before its turn starts (the inbox splices it in) belongs to it.
         adopt(running)
@@ -23386,6 +23402,8 @@ function createStoryRoundsFold() {
         // The window began inside this turn: what came before its end belongs to it.
         if (!known) adopt(Number(event.data && event.data.turn))
         known = true
+        if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
+        attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
         running = null
         continue
@@ -23396,7 +23414,12 @@ function createStoryRoundsFold() {
         known = true
         adopt(running)
       }
+      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) attempt = { ...attempt, phase: 'generating' }
       if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
+        if (attempt && running === attempt.turn) {
+          const input = { seq, turn: running, text: textOf(event) }
+          attempt = { ...attempt, accepted: true, inputs: attempt.accepted ? [...attempt.inputs, input] : [input] }
+        }
         if (running === null) queued.push(seq)
         else turnOf.set(seq, running)
       }
@@ -23498,7 +23521,7 @@ function createStoryRoundsFold() {
       if (reason) abandoned.push({ seq, turn, text: textOf(event), reason })
     }
     abandoned.sort((a, b) => a.seq - b.seq)
-    cached = { floors, abandoned, open }
+    cached = { floors, abandoned, open, attempt }
     return cached
   }
 
@@ -23628,7 +23651,7 @@ function createTavernStoryService(options) {
 		},
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
-		 * listener({ floors, abandoned, open, interrupted, hasMore, from }); returns unsubscribe.
+		 * listener({ floors, abandoned, open, attempt, interrupted, hasMore, from }); returns unsubscribe.
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");
@@ -23839,12 +23862,16 @@ function TavernFloorStaticHtml(props) {
 		const root = ref.current;
 		if (!root) return;
 		const shadow = root.shadowRoot || root.attachShadow({ mode: "open" });
-		shadow.innerHTML = sanitizeTavernFloorHtml(props.html, root.ownerDocument);
+		const content = root.ownerDocument.createElement("div");
+		content.className = "dsh-tavern-floor-content";
+		content.innerHTML = sanitizeTavernFloorHtml(props.html, root.ownerDocument);
+		shadow.replaceChildren(content);
+		const colors = installTavernTextColors(content, {}, findTavernQuoteRanges);
 		// The page keeps its place: a snapshot's form never submits, its controls stay inert.
 		const stop = function (event) { event.preventDefault(); };
 		shadow.addEventListener("submit", stop, true);
 		const unbind = bindTavernFontZoom(root, root.ownerDocument.defaultView);
-		return function () { shadow.removeEventListener("submit", stop, true); unbind(); shadow.innerHTML = ""; };
+		return function () { shadow.removeEventListener("submit", stop, true); colors.dispose(); unbind(); shadow.innerHTML = ""; };
 	}, [props.html]);
 	return React.createElement("div", { ref: ref, className: "mes_text dsh-tavern-floor-static" });
 }
@@ -23909,7 +23936,7 @@ function createTavernStoryRender(options) {
 
 	/**
 	 * One floor's body. props: { sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?,
-	 * revision?, containerRef? }. Live runs the card HTML in message frames; otherwise
+	 * revision?, containerRef?, fallbackText? }. Live runs the card HTML in message frames; otherwise
 	 * snapshotHtml, or the projection with script-free static HTML.
 	 */
 	function FloorBody(props) {
@@ -23932,7 +23959,8 @@ function createTavernStoryRender(options) {
 		if (!live && typeof props.snapshotHtml === "string") body = h(TavernFloorStaticHtml, { html: props.snapshotHtml });
 		else {
 			const floor = floorOf(state.view, storyTurn);
-			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…") : null;
+			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
+				: typeof props.fallbackText === "string" ? h(TavernColoredMarkdown, { text: props.fallbackText, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels }) : null;
 			else if (live) body = renderTavernProjection(floor.projection, { sessionId: sessionId, turn: storyTurn, codeLabels: codeLabels,
 				helperContext: floor.helperContext, helperContextReader: function () { return liveTavernView.getSnapshot(sessionId).view?.tavernHelper; },
 				frameSizing: floor.frameSizing, trustedCardMode: floor.trustedCardMode, eagerFrame: props.eager === true, frameOwner: owner, executeSlash: executeSlash });
