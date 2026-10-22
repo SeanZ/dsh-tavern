@@ -9,7 +9,8 @@ const React = { createElement: (type, props) => ({ type, props }), Fragment: 'Fr
 function loadClient(replies = {}) {
   let descriptor
   const calls = []
-  const window = { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout, clearTimeout, dispatchEvent() {}, addEventListener() {}, removeEventListener() {} }
+  // 视图缓存在退订后保留 10 分钟：测试里的计时器不拖住进程。
+  const window = { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout: (fn, ms) => setTimeout(fn, ms).unref(), clearTimeout, dispatchEvent() {}, addEventListener() {}, removeEventListener() {} }
   const fetch = async (url, request) => {
     const method = url.split('/').pop()
     const { _performance, _traceId, ...args } = JSON.parse(request.body)
@@ -20,7 +21,7 @@ function loadClient(replies = {}) {
     const result = body === undefined ? { ok: false, error: 'not in test' } : body.error ? { ok: false, error: body.error } : { ok: true, ...body }
     return { ok: true, status: 200, text: async () => JSON.stringify(result) }
   }
-  const context = { window, fetch, performance, console, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail } } }
+  const context = { window, fetch, performance, console, AbortController, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail } } }
   vm.runInNewContext(source, context)
   const client = descriptor.factory(name => name === 'react' ? React : {})
   // The history projection reads the page; the bundle itself loads without one.
@@ -263,4 +264,27 @@ test('subscribeRounds 的 open.liveText 拼接运行中回合的流式正文，�
   stop()
   await new Promise(resolve => setTimeout(resolve, 150))
   assert.equal(seen.length, before)
+})
+
+test('subscribeRounds 的 settling 跟随 Tavern 视图的后台结算状态；结算中楼层操作前置拒绝', async () => {
+  const { client, calls } = loadClient()
+  const window = eventWindow(story(2))
+  const service = serviceOf(client, { s1: window })
+  const seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  assert.equal(seen.at(-1).settling, false)
+  const view = { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true }
+  client.liveTavernView.setView('s1', { ...view, activity: { phase: 'pending', busy: false } })
+  assert.equal(seen.at(-1).settling, true, 'pending 也算结算中')
+  const count = seen.length
+  client.liveTavernView.setView('s1', { ...view, activity: { phase: 'running', busy: true } })
+  assert.equal(seen.length, count, '仍在结算，不重复回调')
+  await assert.rejects(service.regenerate('s1', 2), /正在结算/)
+  await assert.rejects(service.switchResult('s1', 2, 3), /正在结算/)
+  await assert.rejects(service.forkAt('s1', 2), /正在结算/)
+  assert.deepEqual(calls.filter(call => ['regenBody', 'switchFloorResult'].includes(call.method)), [])
+  client.liveTavernView.setView('s1', { ...view, activity: { phase: 'idle', busy: false } })
+  assert.equal(seen.at(-1).settling, false)
+  assert.equal(seen.at(-1).floors.length, 2)
+  stop()
 })

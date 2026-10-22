@@ -23602,6 +23602,12 @@ function tavernStoryLiveOf(entries) {
 	for (const entry of entries || []) live = tavernStoryLiveChunk(live, entry);
 	return live;
 }
+// 最新楼层的后台结算（变量、姿态等）仍在等待或运行：与 Tavern 视图 activity 同一判定（readActivity）。
+function tavernStorySettling(view) {
+	const activity = view && view.activity;
+	return Boolean(activity) && (activity.busy === true || activity.phase === "pending");
+}
+const TAVERN_STORY_SETTLING_ERROR = "正在结算，稍候再试";
 // The player input a failed or stopped round dropped, while it is still the latest thing
 // the player did: no later floor, no newer input, nothing running.
 function tavernStoryInterruptedInput(rounds) {
@@ -23666,6 +23672,7 @@ function createTavernStoryService(options) {
 		if (rounds.open) throw new Error("正在生成，请完成或停止后再" + label);
 		if (!latest || latest.story !== storyTurn) throw new Error(label + "只能用于最新楼层（当前第 " + (latest ? latest.story : 0) + " 轮）");
 		const view = await viewOf(sessionId);
+		if (tavernStorySettling(view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
 		if (!isPlayMode(view.mode) || view.canRegenerate !== true) throw new Error("这一层不能" + label);
 		return view;
 	}
@@ -23696,14 +23703,15 @@ function createTavernStoryService(options) {
 		},
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
-		 * listener({ floors, abandoned, open, attempt, interrupted, hasMore, from }); returns unsubscribe.
-		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled).
+		 * listener({ floors, abandoned, open, attempt, interrupted, settling, hasMore, from }); returns unsubscribe.
+		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled);
+		 * `settling` is true while the latest floor's background settlement is pending or running.
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");
 			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
 			const source = eventSourceOf(sessionId);
-			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null;
+			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false;
 			function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
 			function emit() {
 				if (timer !== null) { window.clearTimeout(timer); timer = null; }
@@ -23712,7 +23720,7 @@ function createTavernStoryService(options) {
 				published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
 				const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
-				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 			}
 			function publish() {
 				if (stopped) return;
@@ -23731,9 +23739,16 @@ function createTavernStoryService(options) {
 				// Streaming chunks change no floor: only the preview text, at most every 100 ms.
 				if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
 			}
+			// Settlement state lives in the Tavern view, not in the event window.
+			const stopView = liveTavernView.subscribe(sessionId, function (state) {
+				const next = tavernStorySettling(state && state.view);
+				if (next === settling) return;
+				settling = next;
+				if (fold) emit();
+			}, [["activity"]]);
 			const unsubscribe = source.subscribe(publish);
 			publish();
-			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); };
+			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };
 		},
 		/** Every reply the floor has had, oldest first; `current` marks the one shown. */
 		listResults: function (sessionId, storyTurn) {
@@ -23770,6 +23785,7 @@ function createTavernStoryService(options) {
 			const rounds = foldNow(sessionId);
 			const attempting = rounds.attempt && (rounds.attempt.phase === "preparing" || rounds.attempt.phase === "generating");
 			if (rounds.open || attempting) throw new Error("正在生成，请完成或停止后再创建分支");
+			if (tavernStorySettling(liveTavernView.getSnapshot(sessionId).view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
 			if (!rounds.floors.some(function (floor) { return floor.story === turn; })) throw new Error("第 " + turn + " 轮不是当前已加载的楼层");
 			return tavernConversationForkRequests.request({ sessionId: sessionId, turn: turn, floor: true });
 		},
