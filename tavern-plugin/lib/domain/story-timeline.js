@@ -518,6 +518,7 @@ export function createStoryTimeline(options = {}) {
       Object.assign(chat.messages[index], intent.patch)
       delete chat.messages[index].displayRuntime
       delete chat.messages[index].sessionText // retired copy of text (reply-prose.js)
+      delete chat.messages[index].variablesStale // a result switch sets it again after this intent
       chat.timeline.revision++
       // Editing keeps the same committed round, but its next settlement must
       // bind to the edited revision. Old in-flight work still fails basedOn.

@@ -9,6 +9,7 @@ import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.
 import { projectReplyLayers } from '../tavern-plugin/lib/domain/reply-presentation.js'
 import { createFloorResultSwitch } from '../tavern-plugin/lib/domain/floor-result-switch.js'
 import { foldStoryRounds } from '../tavern-plugin/lib/domain/story-rounds.js'
+import { staleVariablesOf, projectChatSessionState, createSessionStateView } from '../tavern-plugin/lib/domain/chat-session-state.js'
 
 const MODEL = { kind: 'model', provider: 'test', model: 'test' }
 const reply = (id, turn, text, source = MODEL) => ({ turn, step: 1, message: { id, role: 'assistant', content: [{ type: 'text', text }], source } })
@@ -38,14 +39,14 @@ function regenerate(session, story, attemptTurn, text) {
 const floorRow = (turn, text) => ({ role: 'assistant', turn, text, sourceText: text, projectionText: text, displayText: text, swipeId: 0, swipes: [text] })
 
 // A game whose latest round was regenerated twice; the save holds the newest body.
-function fixture(name, { agentPhase = 'idle', settleStatus = 'done' } = {}) {
+function fixture(name, { agentPhase = 'idle', settleStatus = 'done', mvu } = {}) {
   const session = Session.create(name)
   playTurn(session, 1, null, '开场白')
   playTurn(session, 2, '你好', '第二轮正文')
   const original = playTurn(session, 3, '继续', '第三轮正文')
   const first = regenerate(session, 3, 4, '重写一')
   const second = regenerate(session, 3, 6, '重写二')
-  let chat = createStoryTimeline().apply({ chat: { id: 'chat-' + name, sessionId: session.id, mode: 'story', settleStatus,
+  let chat = createStoryTimeline().apply({ chat: { id: 'chat-' + name, sessionId: session.id, mode: 'story', settleStatus, ...(mvu ? { mvu } : {}),
     messages: [{ ...floorRow(1, '开场白'), greeting: true }, { role: 'user', text: '你好' }, floorRow(2, '第二轮正文'), { role: 'user', text: '继续' }, floorRow(3, '重写二')] }, intent: { kind: 'ensure' } }).chat
   let flushes = 0
   const agent = { session, phase: { kind: agentPhase } }
@@ -89,6 +90,33 @@ test('切换到历史结果：存档正文、模型上下文与故事楼层都�
   assert.equal(f.chat().messages.at(-1).sourceText, '重写二')
   assert.doesNotMatch(JSON.stringify(f.session.deriveMessages()), /第三轮正文/)
   assert.equal(foldStoryRounds(sessionEvents(f.session)).floors.length, 3)
+})
+
+test('官方 MVU 卡切换后存档标记变量未重算（视图 staleVariables），编辑正文清除；非 MVU 卡不标', async () => {
+  const f = fixture('switch-mvu-stale', { mvu: { enabled: true, owner: 'official' } })
+  assert.equal(staleVariablesOf(f.chat()), null)
+  await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: f.seqs.first })
+  assert.deepEqual(f.chat().messages.at(-1).variablesStale, { replySeq: f.seqs.first })
+  assert.deepEqual(staleVariablesOf(f.chat()), { turn: 3, replySeq: f.seqs.first })
+  // 缓存命中的视图字段读的是投影后的存档，也带着标记。
+  const projected = projectChatSessionState(f.chat())
+  const volatile = createSessionStateView({ activity: () => ({ busy: false, phase: 'idle' }), evidence: () => ({}) }).volatile(projected, { busy: false, phase: 'idle' })
+  assert.deepEqual(volatile.staleVariables, { turn: 3, replySeq: f.seqs.first })
+  // 切到当前结果不写；再切到另一份仍标记为那一份。
+  await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: f.seqs.first })
+  assert.deepEqual(staleVariablesOf(f.chat()), { turn: 3, replySeq: f.seqs.first })
+  await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: f.seqs.second })
+  assert.deepEqual(staleVariablesOf(f.chat()), { turn: 3, replySeq: f.seqs.second })
+  // 编辑正文（同一 body.edit 意图）清除标记。
+  const edited = createStoryTimeline().apply({ chat: f.chat(), intent: { kind: 'body.edit', turn: 3, patch: { text: '改过的正文' } } }).chat
+  assert.equal(staleVariablesOf(edited), null)
+  assert.equal(Object.hasOwn(edited.messages.at(-1), 'variablesStale'), false)
+
+  for (const mvu of [undefined, { enabled: true, owner: 'legacy' }, { enabled: false }]) {
+    const plain = fixture('switch-plain-' + JSON.stringify(mvu), { mvu })
+    assert.equal((await plain.switcher.switchResult({ sessionId: plain.session.id, turn: 3, replySeq: plain.seqs.first })).mvu, 'stale')
+    assert.equal(staleVariablesOf(plain.chat()), null)
+  }
 })
 
 test('只允许最新一层、前台空闲、历史里有的结果', async () => {

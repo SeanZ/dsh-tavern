@@ -139,15 +139,17 @@ function createTavernStoryService(options) {
 		},
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
-		 * listener({ floors, abandoned, open, attempt, interrupted, settling, hasMore, from }); returns unsubscribe.
+		 * listener({ floors, abandoned, open, attempt, interrupted, settling, staleVariables, hasMore, from }); returns unsubscribe.
 		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled);
-		 * `settling` is true while the latest floor's background settlement is pending or running.
+		 * `settling` is true while the latest floor's background settlement is pending or running;
+		 * `staleVariables` is { turn, replySeq } while an MVU card's latest floor shows a switched
+		 * result its variables were not settled for (saved; cleared once resettle succeeds), else null.
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");
 			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
 			const source = eventSourceOf(sessionId);
-			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false;
+			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false, staleVariables = null;
 			function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
 			function emit() {
 				if (timer !== null) { window.clearTimeout(timer); timer = null; }
@@ -156,7 +158,7 @@ function createTavernStoryService(options) {
 				published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
 				const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
-				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 			}
 			function publish() {
 				if (stopped) return;
@@ -175,13 +177,15 @@ function createTavernStoryService(options) {
 				// Streaming chunks change no floor: only the preview text, at most every 100 ms.
 				if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
 			}
-			// Settlement state lives in the Tavern view, not in the event window.
+			// Settlement state and the stale-variables mark live in the Tavern view, not in the event window.
 			const stopView = liveTavernView.subscribe(sessionId, function (state) {
-				const next = tavernStorySettling(state && state.view);
-				if (next === settling) return;
-				settling = next;
+				const view = state && state.view;
+				const next = tavernStorySettling(view);
+				const stale = view && view.staleVariables ? Object.freeze({ turn: view.staleVariables.turn, replySeq: view.staleVariables.replySeq }) : null;
+				if (next === settling && JSON.stringify(stale) === JSON.stringify(staleVariables)) return;
+				settling = next; staleVariables = stale;
 				if (fold) emit();
-			}, [["activity"]]);
+			}, [["activity"], ["staleVariables"]]);
 			const unsubscribe = source.subscribe(publish);
 			publish();
 			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };

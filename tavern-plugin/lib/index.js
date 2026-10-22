@@ -3260,6 +3260,8 @@ export async function apply(ctx) {
                   events: receipt.status === 'stale' ? [] : ['MESSAGE_RECEIVED'],
                   receipt
                 }
+                // The variables now follow the reply this floor shows (floor-result-switch.js).
+                if (['updated', 'unchanged', 'partial'].includes(receipt.status)) delete target.variablesStale
               }
             }
             draft.settleStatus = 'done'

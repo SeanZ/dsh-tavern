@@ -58,8 +58,22 @@ export function projectSessionMessage(message) {
     role: message.role, turn: message.turn, greeting: message.greeting,
     ...(message.importSource ? {importSource:{operationId:message.importSource.operationId}} : {}),
     ...(message.mvu ? {mvu:{receipt:message.mvu.receipt,diagnostics:message.mvu.diagnostics,
-      pending:message.mvu.pending,modified:message.mvu.modified}} : {})
+      pending:message.mvu.pending,modified:message.mvu.modified}} : {}),
+    ...(message.variablesStale ? {variablesStale:message.variablesStale} : {})
   }
+}
+
+// The latest floor's MVU variables still follow the reply it showed before a result
+// switch (floor-result-switch.js); cleared by a settlement, regeneration or edit of it.
+export function staleVariablesOf(chat) {
+  const messages = Array.isArray(chat && chat.messages) ? chat.messages : []
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (!message || message.role !== 'assistant') continue
+    const stale = message.variablesStale
+    return stale && typeof stale === 'object' ? { turn: Number(message.turn), replySeq: Number(stale.replySeq) } : null
+  }
+  return null
 }
 
 export function settlementTurn(chat) {
@@ -246,7 +260,8 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       updatedAt: chat.updatedAt || 0,
       // Compaction writes only this header field; cached views must not keep a stale notice.
       contextCompaction: chat.contextCompaction || null,
-      mvuReceipts: mvuReceiptsOf(chat, changes)
+      mvuReceipts: mvuReceiptsOf(chat, changes),
+      staleVariables: staleVariablesOf(chat)
     }
   }
 

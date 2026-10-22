@@ -56,7 +56,7 @@ function harness() {
   const editor = createBodyEditor({ chats, sessions, timeline, activity: () => ({ busy: false }), project: async () => ({}), present: async value => value })
   const history = createRoundHistory({ chats, sessions, timeline, scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: { cursor: 0 } }) }, dispatchEvent: async () => {} },
     queueSettlement: async () => {}, present: async value => structuredClone(value) })
-  return { session, editor, history, requests, get chat() { return chat } }
+  return { session, editor, history, requests, get chat() { return chat }, mark() { chat.messages.at(-1).variablesStale = { replySeq: 3 } } }
 }
 
 test('改已完成回合的输入后重新生成：请求里玩家输入是新文字，旧文字不在消息面，楼层随之更新', async () => {
@@ -76,4 +76,20 @@ test('改已完成回合的输入后重新生成：请求里玩家输入是新�
   const after = foldStoryRounds(sessionEvents(h.session))
   assert.deepEqual(after.floors.map(item => [item.story, item.inputs.map(input => input.text), item.reply.text]), [[2, ['敲门'], '新正文3']])
   assert.ok(!texts(h.session.deriveMessages()).some(text => text.includes('推门')), '之后的请求也看不到旧输入')
+})
+
+// 切换历史结果留下的「变量未重算」标记（message.variablesStale）只属于那份正文。
+test('变量未重算标记：重新生成落定后清除，编辑正文后清除', async () => {
+  const regen = harness()
+  regen.mark()
+  await regen.history.regenerate(regen.chat.id, '', regen.session.id)
+  assert.equal(regen.chat.messages.at(-1).text, '新正文3')
+  assert.equal(Object.hasOwn(regen.chat.messages.at(-1), 'variablesStale'), false)
+
+  const edit = harness()
+  edit.mark()
+  const read = await edit.editor.read(edit.session.id)
+  await edit.editor.save(edit.session.id, { token: read.token, texts: ['改过的正文'] })
+  assert.match(JSON.stringify(edit.chat.messages.at(-1)), /改过的正文/)
+  assert.equal(Object.hasOwn(edit.chat.messages.at(-1), 'variablesStale'), false)
 })

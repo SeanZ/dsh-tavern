@@ -290,6 +290,23 @@ test('subscribeRounds 的 settling 跟随 Tavern 视图的后台结算状态；�
   stop()
 })
 
+test('subscribeRounds 的 staleVariables 跟随 Tavern 视图的变量未重算标记', () => {
+  const { client } = loadClient()
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  const seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  assert.equal(seen.at(-1).staleVariables, null)
+  const view = { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true, activity: { phase: 'idle', busy: false } }
+  client.liveTavernView.setView('s1', { ...view, staleVariables: { turn: 2, replySeq: 5 } })
+  assert.equal(JSON.stringify(seen.at(-1).staleVariables), '{"turn":2,"replySeq":5}')
+  const count = seen.length
+  client.liveTavernView.setView('s1', { ...view, staleVariables: { turn: 2, replySeq: 5 }, posture: '换了姿态' })
+  assert.equal(seen.length, count, '标记没变，不重复回调')
+  client.liveTavernView.setView('s1', { ...view, staleVariables: null })
+  assert.equal(seen.at(-1).staleVariables, null)
+  stop()
+})
+
 test('editReply 只编辑最新楼层：get 转调 getBodyEdit，save 带令牌与各文本片段转调 saveBodyEdit', async () => {
   const parts = [{ kind: 'text', text: '正文2' }, { kind: 'html' }]
   const { client, calls } = loadClient({ getBodyEdit: { edit: { token: 't1', turn: 2, parts } }, saveBodyEdit: { view: { mode: 'story', rollbackTargetTurn: 2 } } })

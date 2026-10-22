@@ -47,6 +47,7 @@ test('(6) 开场楼层可分叉', realHost, () => passed('6 开场楼层可分�
 test('(8) 原会话零改动：事件、存档历史与快照目录', realHost, () => passed('8 原会话零改动'))
 test('(9) 楼层快照按楼层复制到新局', realHost, () => passed('9 快照按楼层复制'))
 test('(10) forkTurnsByMessageId 在切换后仍指向正确故事轮（新流程不依赖它）', realHost, () => passed('10 forkTurnsByMessageId 切换后仍指向故事轮'))
+test('(11) MVU 卡切换结果后存档标记变量未重算，分叉新局带着标记', realHost, () => passed('11 MVU 变量未重算标记随存档与分叉保留'))
 test('新局再折叠楼层与 history[].current 正确，下一轮请求里是选中版本', realHost, () => passed('C1 新局折叠与下一轮请求是选中版本'))
 
 test('入口：RPC 分发表两条，经原分叉流程绑定', async () => {

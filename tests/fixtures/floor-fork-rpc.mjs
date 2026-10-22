@@ -359,5 +359,26 @@ try {
   await assert.rejects(host.rpc('prepareFloorFork', { sessionId: E.sessionId, turn: 2 }), /状态结算/)
   await assert.rejects(host.rpc('prepareFloorFork', { sessionId: E.sessionId, turn: 1 }), /状态结算/)
   passed('5c 后台结算中拒绝')
+
+  // ===== 局 F：官方 MVU 卡，最新楼层切回原结果（真实 C8；本夹具宿主未装会话补丁，切换 RPC 被拒，同 1b
+  // 在导入前切换）：存档标记变量未重算，getSession 视图给出 staleVariables，分叉新局带着 =====
+  const f = createGame('game-f')
+  f.chat.mvu = { enabled: true, owner: 'official' }
+  f.opening('F开场', 0)
+  const originalF = f.play(2, '领奖', 'F原始正文', 10)
+  f.regenerate(2, 3, 'F改写正文', 30)
+  await f.switchTo(2, originalF)
+  assert.deepEqual(f.chat.messages.at(-1).variablesStale, { replySeq: originalF })
+  f.save()
+  const F = await importGame(f)
+  const staleOf = async sessionId => (await host.rpc('getSession', { sessionId })).view.staleVariables
+  assert.deepEqual(await staleOf(F.sessionId), { turn: 2, replySeq: originalF })
+  assert.deepEqual((await exported(F.sessionId)).chat.messages.at(-1).variablesStale, { replySeq: originalF })
+  const atF = await forkAt(F.sessionId, 2)
+  assert.deepEqual((await exported(atF.fork.sessionId)).chat.messages.at(-1).variablesStale, { replySeq: originalF })
+  assert.deepEqual(await staleOf(atF.fork.sessionId), { turn: 2, replySeq: originalF })
+  // 非 MVU 局切换后（局 B）视图没有标记。
+  assert.equal(await staleOf(B.sessionId), null)
+  passed('11 MVU 变量未重算标记随存档与分叉保留')
   console.log('floor fork rpc passed')
 } finally { await host.dispose() }
