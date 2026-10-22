@@ -357,8 +357,10 @@
 				const latestUserTurn = props.useChat(React.useCallback(function (snapshot) {
 					return latestTavernUserTurn(snapshot, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null);
 				}, [transcriptTurns, transcriptFrom]));
-				const selectAssistantId = React.useCallback(function (snapshot) { return tavernAssistantMessageIdForTurn(snapshot, turn); }, [turn]);
-				const assistantMessageId = props.useChat(selectAssistantId);
+				// A user message belongs to the round its own native turn closes; that
+				// closing reply carries the fork target (only completed turns can fork).
+				const tail = props.useTurnData("turn-tail");
+				const assistantMessageId = tail && tail.closing && tail.closing.finalNode ? tail.closing.finalNode.messageId : null;
 				const forkState = useScopedLiveTavernView(props.sessionId, "user-fork:" + String(assistantMessageId || ""), [["mode"], ["forkTurnsByMessageId", String(assistantMessageId || "")]]);
 				const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 				const [forking, setForking] = React.useState(false);

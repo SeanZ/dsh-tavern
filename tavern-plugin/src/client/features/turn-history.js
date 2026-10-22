@@ -69,28 +69,23 @@
 		// assistant/step node does. Rolled back, failed and regenerated turns stay in
 		// the host's node list forever (only their rows are hidden), so the row plan
 		// decides which input is really the visible tail.
+		// Every mounted user row asks this of the same immutable node list on each Chat
+		// snapshot: answer once per list and plan, not once per row.
+		const latestUserTurnByNodes = new WeakMap();
 		function latestTavernUserTurn(snapshot, plan) {
 			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			let turn = 0;
+			const cached = latestUserTurnByNodes.get(nodes);
+			const turns = plan ? plan.turns : null, from = plan ? plan.from : null;
+			if (cached && cached.turns === turns && cached.from === from) return cached.turn;
+			let turn = 0, latest = 0;
 			for (let index = nodes.length - 1; index >= 0; index -= 1) {
 				const node = nodes[index];
 				turn = nodeTurn(node) || turn;
 				if (node.kind !== "user") continue;
-				if (tavernPlanShowsRow(plan, turn, "user")) return turn;
+				if (tavernPlanShowsRow(plan, turn, "user")) { latest = turn; break; }
 			}
-			return 0;
-		}
-		// A user message belongs to the round drawn by the assistant of the same
-		// native turn; its closing message carries the fork target.
-		function tavernAssistantMessageIdForTurn(snapshot, turn) {
-			const expected = Number(turn) || 0;
-			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			for (let index = nodes.length - 1; index >= 0; index -= 1) {
-				const node = nodes[index];
-				if (node.kind !== "assistant" || !node.messageId) continue;
-				if (nodeTurn(node) === expected) return node.messageId;
-			}
-			return null;
+			latestUserTurnByNodes.set(nodes, { turns: turns, from: from, turn: latest });
+			return latest;
 		}
 
 		// @include turn-error-controls.js
