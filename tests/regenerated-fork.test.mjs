@@ -194,3 +194,27 @@ test('原生编辑轮失败、未结束或有模型调用时拒绝历史分叉',
     assert.throws(() => conversationForkBoundary({ events }, chat, 3), /后续上下文|边界/)
   }
 })
+
+test('投影编辑轮之间的后台目录、标题等宿主元数据不阻止分叉；排队输入仍阻止', () => {
+  const { session, chat } = nativeRepairGame()
+  regenerate(session, chat, chat.messages.at(-1).nativeAnchor.reply, 4, '重生成正文')
+  const base = structuredClone(sessionEvents(session))
+  const editStart = base.findIndex((event) => event.type === 'turn/start' && event.data.turn === 5)
+  const withEvent = (type, data) => {
+    const events = structuredClone(base)
+    events.splice(editStart, 0, { seq: -1, type, data })
+    events.forEach((event, seq) => {
+      event.seq = seq
+    })
+    return { events }
+  }
+  for (const [type, data] of [
+    ['subagent/catalog', { version: 0, childId: 'background-1', childCreatedAt: 1, mode: 'continuable', label: '酒馆后台 Agent' }],
+    ['session/title', { title: '标题', messageSeqs: [], source: { kind: 'user' } }],
+    ['session/title-llm-request', { titleProvider: 'session-title-first-prompt-llm', messageSeqs: [] }],
+  ]) {
+    const native = withEvent(type, data)
+    assert.equal(conversationForkBoundary(native, chat, 3), native.events.at(-1).seq, type)
+  }
+  assert.throws(() => conversationForkBoundary(withEvent('agent/inbox/spliced', { start: 0, removedCount: 0, inserted: [] }), chat, 3), /后续上下文/)
+})

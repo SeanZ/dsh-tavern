@@ -4,6 +4,9 @@ import { sessionEvents } from './session-events.js'
 import { assertConversationForkable } from './conversation-fork.js'
 
 const turnOf = message => Number(message?.turn || (message?.greeting ? 1 : 0))
+// Host bookkeeping that settles between edit turns (the background Agent a settlement
+// registers, the session title): neither model context nor queued input.
+const FORK_METADATA_EVENTS = new Set(['subagent/catalog', 'subagent/descriptor', 'session/title', 'session/title-llm-request'])
 const lastAssistant = chat => (chat.messages || []).findLast(message => message?.role === 'assistant')
 
 // Checkpoints are bounded in each Chat, but their beforeRevision links retain
@@ -60,7 +63,7 @@ export function conversationForkBoundary(session, state, turn) {
     const administrative = extension && extension.every(event => {
       if (event.type === 'turn/end') return event.data?.reason?.kind === 'completed'
       if (['turn/start', 'step/start', 'step/end'].includes(event.type)) return true
-      if (event.type === 'dsh-tavern/required-session-patch-v1') return true
+      if (event.type === 'dsh-tavern/required-session-patch-v1' || FORK_METADATA_EVENTS.has(event.type)) return true
       return event.type === 'assistant/message' && Number(event.data?.message?.source?.tavernStoryTurn) === turn &&
         (event.surfaceOp?.op === 'replace' || event.surfaceOp === 'append')
     })

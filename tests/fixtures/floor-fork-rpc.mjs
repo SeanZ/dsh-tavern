@@ -53,6 +53,10 @@ function createGame(name) {
     appendSessionEvent(session, 'turn/end', { turn, reason: { kind: 'completed' } })
     g.chat.messages.push({ role: 'user', text: input }, floor(turn, text, gold))
     g.chat.variables = { 金币: gold }
+    if (!sessionEvents(session).some(event => event.type === 'session/title')) {
+      appendSessionEvent(session, 'session/title', { title: text, messageSeqs: [], source: { kind: 'provider', provider: 'session-title-first-prompt-llm' } })
+    }
+    g.background()
     return seq
   }
   // 重新生成落定：尝试轮 + 投影编辑轮（rollback-surface 同一套），存档正文与变量换成新结果。
@@ -71,9 +75,14 @@ function createGame(name) {
     applyRegenerationProjection(session, regenerationProjection(plan, reply('tavern-regen:' + attempt, story, text, { ...MODEL, tavernStoryTurn: story }), 'op-' + attempt))
     Object.assign(g.chat.messages.at(-1), floor(story, text, gold, g.chat.messages.at(-1).greeting ? { greeting: true } : {}))
     g.chat.regeneratedDshTurns = { ...g.chat.regeneratedDshTurns, [story]: attempt }
+    // 落定后的结算会登记一个后台 Agent（真实宿主在编辑轮之间写 subagent/catalog）。
+    g.background()
     g.chat.variables = { 金币: gold }
     return seq
   }
+  let backgrounds = 0
+  g.background = () => appendSessionEvent(session, 'subagent/catalog', { version: 0, childId: 'background-' + name + '-' + ++backgrounds,
+    childCreatedAt: backgrounds, mode: 'continuable', label: '酒馆后台 Agent' })
   // 切换历史结果：真实 C8（存档 body.edit + 原生 replace 编辑轮）。
   g.switchTo = async (story, replySeq) => {
     const agent = { session, phase: { kind: 'idle' } }
