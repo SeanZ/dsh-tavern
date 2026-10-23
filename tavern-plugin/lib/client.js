@@ -23589,6 +23589,8 @@ const TAVERN_STORY_FAILED_ENDS = ["error", "aborted", "interrupted"];
 // One `rollbackTurn` removes one round (or first clears a failed tail); a jump of more
 // floors than this is refused rather than looped through.
 const TAVERN_STORY_MAX_ROLLBACK_STEPS = 100;
+// 重新结算的指导意见上限，与旧聊天行「重新结算变量」对话框相同。
+const TAVERN_STORY_GUIDANCE_MAX = 4000;
 
 function tavernStoryTurnArgument(value, label) {
 	const turn = Number(value);
@@ -23626,6 +23628,97 @@ function tavernStorySettling(view) {
 	return Boolean(activity) && (activity.busy === true || activity.phase === "pending");
 }
 const TAVERN_STORY_SETTLING_ERROR = "正在结算，稍候再试";
+// 最新楼层的后台结算状态（视图 settleStatus / settlementTurn / settleError）；视图未读到时为 null。
+function tavernStorySettlement(view) {
+	if (!view) return null;
+	const status = tavernStorySettling(view) || view.settleStatus === "running" ? "running" : view.settleStatus === "error" ? "error" : "idle";
+	const turn = Number(view.settlementTurn);
+	return Object.freeze({
+		status: status,
+		turn: Number.isSafeInteger(turn) && turn > 0 ? turn : null,
+		error: status === "error" ? tavernStoryClip(view.settleError || "后台结算失败，请重试。", TAVERN_STORY_RECEIPT_LIMITS.text) : null
+	});
+}
+// 每楼 MVU 回执只做展示投影（同旧聊天行 TavernMvuReceipt）：过滤镜像路径，字段白名单，长度截断。
+// 上限写在 docs/plugin-api.md「故事视图契约」。
+const TAVERN_STORY_RECEIPT_LIMITS = Object.freeze({ value: 120, path: 200, operation: 20, text: 500, items: 50, diagnostics: 3 });
+const TAVERN_STORY_RECEIPT_STATUSES = ["pending", "updated", "partial", "error", "stale", "interrupted", "unchanged"];
+// MVU display/delta 镜像与 schema 维护留在回执里供诊断，不是玩家关心的变化。
+const TAVERN_STORY_RECEIPT_MIRROR = /^\/(?:delta_data|display_data|schema)(?:\/|$)/;
+function tavernStoryClip(value, limit) {
+	const text = String(value);
+	return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+}
+// before/after 只给展示字符串：短值原样；过长的对象、数组给摘要，其余截断。
+function tavernStoryReceiptValue(value) {
+	const limit = TAVERN_STORY_RECEIPT_LIMITS.value;
+	if (value === undefined) return "（不存在）";
+	let parsed = value;
+	if (typeof value === "string") {
+		if (value.length <= limit) return value;
+		if (!/^\s*[[{]/.test(value)) return tavernStoryClip(value, limit);
+		try { parsed = JSON.parse(value); } catch (_error) { return tavernStoryClip(value, limit); }
+	} else if (value === null || typeof value !== "object") return tavernStoryClip(String(value), limit);
+	else {
+		const json = JSON.stringify(value);
+		if (json.length <= limit) return json;
+	}
+	if (Array.isArray(parsed)) return "[" + parsed.length + " 项]";
+	if (parsed === null || typeof parsed !== "object") return tavernStoryClip(String(value), limit);
+	const keys = Object.keys(parsed);
+	return tavernStoryClip("{" + keys.slice(0, 5).join(", ") + (keys.length > 5 ? ", …" : "") + "}（" + keys.length + " 项）", limit);
+}
+function tavernStoryReceiptChange(change) {
+	return Object.freeze({
+		path: tavernStoryClip(change && change.path || "/", TAVERN_STORY_RECEIPT_LIMITS.path),
+		operation: tavernStoryClip(change && change.operation || "", TAVERN_STORY_RECEIPT_LIMITS.operation),
+		before: tavernStoryReceiptValue(change && change.before),
+		after: tavernStoryReceiptValue(change && change.after)
+	});
+}
+function tavernStoryReceiptChanges(list) {
+	return (Array.isArray(list) ? list : []).filter(function (change) { return !TAVERN_STORY_RECEIPT_MIRROR.test(String(change && change.path || "")); });
+}
+const tavernStoryReceiptCache = new WeakMap();
+function tavernStoryReceipt(receipt) {
+	if (!receipt || typeof receipt !== "object") return null;
+	const known = tavernStoryReceiptCache.get(receipt);
+	if (known) return known;
+	const limits = TAVERN_STORY_RECEIPT_LIMITS;
+	const status = TAVERN_STORY_RECEIPT_STATUSES.includes(receipt.status) ? receipt.status : "unchanged";
+	const changes = tavernStoryReceiptChanges(receipt.changes), sideEffects = tavernStoryReceiptChanges(receipt.sideEffects);
+	const failures = Array.isArray(receipt.failures) ? receipt.failures : [];
+	const diagnostics = (status === "error" || status === "partial") && Array.isArray(receipt.runtimeDiagnostics)
+		? receipt.runtimeDiagnostics.filter(function (item) { return item && item.message && ["warn", "error"].includes(item.level); }).slice(-limits.diagnostics)
+			.map(function (item) { return tavernStoryClip(item.message, limits.text); })
+		: [];
+	const projected = Object.freeze({
+		status: status,
+		changes: Object.freeze(changes.slice(0, limits.items).map(tavernStoryReceiptChange)),
+		sideEffects: Object.freeze(sideEffects.slice(0, limits.items).map(tavernStoryReceiptChange)),
+		failures: Object.freeze(failures.slice(0, limits.items).map(function (failure) {
+			return Object.freeze({
+				path: tavernStoryClip(failure && (failure.path || failure.command) || "", limits.path),
+				operation: tavernStoryClip(failure && failure.operation || "", limits.operation),
+				message: tavernStoryClip(failure && failure.message || "未知错误", limits.text)
+			});
+		})),
+		summary: tavernStoryClip(receipt.summary || "", limits.text),
+		diagnostics: Object.freeze(diagnostics),
+		counts: Object.freeze({ changes: changes.length, sideEffects: sideEffects.length, failures: failures.length })
+	});
+	tavernStoryReceiptCache.set(receipt, projected);
+	return projected;
+}
+// 本窗口各楼层的回执，按故事轮号（= floor.story，也是视图 mvuReceipts 的 turn）。
+function tavernStoryReceipts(view, floors) {
+	const receipts = {};
+	if (view) for (const floor of floors) {
+		const receipt = tavernStoryReceipt(tavernMvuReceiptForTurn(view, floor.story));
+		if (receipt) receipts[floor.story] = receipt;
+	}
+	return Object.freeze(receipts);
+}
 // The player input a failed or stopped round dropped, while it is still the latest thing
 // the player did: no later floor, no newer input, nothing running.
 function tavernStoryInterruptedInput(rounds) {
@@ -23721,17 +23814,21 @@ function createTavernStoryService(options) {
 		},
 		/**
 		 * Floors folded from this page's event window (C1), now and after every change.
-		 * listener({ floors, abandoned, open, attempt, interrupted, settling, staleVariables, hasMore, from }); returns unsubscribe.
+		 * listener({ floors, abandoned, open, attempt, interrupted, settling, staleVariables, receipts, settlement, hasMore, from }); returns unsubscribe.
 		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled);
 		 * `settling` is true while the latest floor's background settlement is pending or running;
 		 * `staleVariables` is { turn, replySeq } while an MVU card's latest floor shows a switched
 		 * result its variables were not settled for (saved; cleared once resettle succeeds), else null.
+		 * `receipts` maps a loaded floor's story turn to its MVU receipt (display projection of the
+		 * view's mvuReceipts); `settlement` is { status: 'running' | 'error' | 'idle', turn, error }
+		 * of the latest floor's background settlement, null until the Tavern view is read.
 		 */
 		subscribeRounds: function (sessionId, listener) {
 			tavernStorySessionArgument(sessionId, "subscribeRounds");
 			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
 			const source = eventSourceOf(sessionId);
 			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false, staleVariables = null;
+			let view = null, settlement = null;
 			function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
 			function emit() {
 				if (timer !== null) { window.clearTimeout(timer); timer = null; }
@@ -23740,7 +23837,8 @@ function createTavernStoryService(options) {
 				published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
 				const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
-				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
+					receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 			}
 			function publish() {
 				if (stopped) return;
@@ -23759,15 +23857,23 @@ function createTavernStoryService(options) {
 				// Streaming chunks change no floor: only the preview text, at most every 100 ms.
 				if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
 			}
-			// Settlement state and the stale-variables mark live in the Tavern view, not in the event window.
+			// Settlement state, receipts and the stale-variables mark live in the Tavern view, not in the event window.
+			function readView(state) {
+				const next = state && state.view || null;
+				const nextSettling = tavernStorySettling(next);
+				const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
+				const nextSettlement = tavernStorySettlement(next);
+				const changed = nextSettling !== settling || JSON.stringify(stale) !== JSON.stringify(staleVariables)
+					|| JSON.stringify(nextSettlement) !== JSON.stringify(settlement) || (next && next.mvuReceipts) !== (view && view.mvuReceipts);
+				view = next;
+				if (!changed) return false;
+				settling = nextSettling; staleVariables = stale; settlement = nextSettlement;
+				return true;
+			}
+			readView(liveTavernView.getSnapshot(sessionId));
 			const stopView = liveTavernView.subscribe(sessionId, function (state) {
-				const view = state && state.view;
-				const next = tavernStorySettling(view);
-				const stale = view && view.staleVariables ? Object.freeze({ turn: view.staleVariables.turn, replySeq: view.staleVariables.replySeq }) : null;
-				if (next === settling && JSON.stringify(stale) === JSON.stringify(staleVariables)) return;
-				settling = next; staleVariables = stale;
-				if (fold) emit();
-			}, [["activity"], ["staleVariables"]]);
+				if (readView(state) && fold) emit();
+			}, [["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
 			const unsubscribe = source.subscribe(publish);
 			publish();
 			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };
@@ -23916,14 +24022,19 @@ function createTavernStoryService(options) {
 		/**
 		 * Settle the latest floor again for the reply it now shows (retrySettlement), e.g. after
 		 * switchResult reported mvu 'stale'. Latest floor only; the server decides whether this
-		 * card has a settlement to redo. Resolves once the settlement is queued: { view }.
+		 * card has a settlement to redo. `options.guidance` (optional, ≤ 4000 characters) applies to
+		 * this settlement only; omitted, the server reuses the last guidance. Resolves once the
+		 * settlement is queued: { view }.
 		 */
-		resettle: async function (sessionId, storyTurn) {
+		resettle: async function (sessionId, storyTurn, options) {
 			tavernStorySessionArgument(sessionId, "resettle");
 			const turn = tavernStoryTurnArgument(storyTurn, "resettle");
+			const guidance = options === undefined || options === null ? undefined : options.guidance;
+			if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("resettle 的第三个参数需要 { guidance? }");
+			if (guidance !== undefined && (typeof guidance !== "string" || guidance.length > TAVERN_STORY_GUIDANCE_MAX)) throw new TypeError("resettle 的 guidance 需要不超过 " + TAVERN_STORY_GUIDANCE_MAX + " 字的字符串");
 			await latestFloor(sessionId, turn, "重新结算");
 			try {
-				const result = await rpc("retrySettlement", { turn: turn }, sessionId);
+				const result = await rpc("retrySettlement", guidance === undefined ? { turn: turn } : { turn: turn, guidance: guidance }, sessionId);
 				if (result && result.view) liveTavernView.setView(sessionId, result.view);
 				return { view: result && result.view };
 			} finally { afterChange(sessionId); }

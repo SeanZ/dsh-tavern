@@ -388,3 +388,101 @@ test('自动打断后下一条早期失败：interrupted 不再报告被打断�
   assert.equal(service.readInterruptedInput('s1'), null)
   assert.deepEqual([seen[0].attempt.phase, seen[0].attempt.inputs[0].text], ['error', '甲'])
 })
+
+test('subscribeRounds 的 receipts 投影每楼 MVU 回执：过滤镜像路径、白名单字段、截断与摘要；回执变化才回调', () => {
+  const { client } = loadClient()
+  const service = serviceOf(client, { s1: eventWindow(story(3).slice(4)) })
+  const seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  assert.deepEqual(plain(seen.at(-1).receipts), {}, '视图未读到时为空')
+  const long = '长'.repeat(300)
+  const bigObject = JSON.stringify(Object.fromEntries(Array.from({ length: 8 }, (_, i) => ['键' + i, '值'.repeat(20)])))
+  const bigArray = JSON.stringify(Array.from({ length: 40 }, (_, i) => '物品' + i))
+  const receipt = {
+    version: 1, status: 'partial', summary: '原因', diagnosticId: 'd1', secret: '不该出现',
+    changes: [
+      { operation: 'set', path: '/stat_data/金币', before: '30', after: '50', extra: 'x' },
+      { operation: 'set', path: '/stat_data/日记', before: long, after: '短' },
+      { operation: 'set', path: '/stat_data/背包', before: bigArray, after: '["剑"]' },
+      { operation: 'insert', path: '/stat_data/状态', before: undefined, after: bigObject }
+    ],
+    sideEffects: [
+      { operation: 'set', path: '/display_data/金币', before: '30', after: '50' },
+      { operation: 'set', path: '/delta_data', before: '{}', after: '{"a":1}' },
+      { operation: 'set', path: '/schema/x', before: '1', after: '2' },
+      { operation: 'set', path: '/stat_data/联动', before: 1, after: { a: 1 } }
+    ],
+    failures: [{ operation: 'delta', path: '/好感', message: '未观察到对应变量变化' }, { command: '_.set(x)', message: '' }],
+    runtimeDiagnostics: [{ level: 'info', message: '忽略' }, { level: 'warn', message: '警告1' }, { level: 'error', message: '错误2' }]
+  }
+  const view = { mode: 'story', rollbackTargetTurn: 3, settleStatus: 'done', settlementTurn: 3, activity: { phase: 'idle', busy: false } }
+  client.liveTavernView.setView('s1', { ...view, mvuReceipts: [{ turn: 1, receipt: { status: 'updated', changes: [] } }, { turn: 3, receipt }, { turn: 2, receipt: { status: '奇怪', changes: [] } }] })
+  const receipts = seen.at(-1).receipts
+  assert.deepEqual(Object.keys(receipts), ['2', '3'], '只给窗口内的楼层（第 1 轮不在窗口）')
+  assert.equal(receipts[2].status, 'unchanged', '未知状态按 unchanged')
+  const got = plain(receipts[3])
+  assert.equal(got.status, 'partial')
+  assert.equal(got.summary, '原因')
+  assert.equal(got.secret, undefined)
+  assert.equal(got.diagnosticId, undefined)
+  assert.deepEqual(got.changes[0], { path: '/stat_data/金币', operation: 'set', before: '30', after: '50' })
+  assert.equal(got.changes[1].before.length, 120, '长文本截断到 120 字')
+  assert.ok(got.changes[1].before.endsWith('…'))
+  assert.equal(got.changes[2].before, '[40 项]', '过长数组给项数')
+  assert.equal(got.changes[2].after, '["剑"]', '短值原样')
+  assert.equal(got.changes[3].before, '（不存在）')
+  assert.equal(got.changes[3].after, '{键0, 键1, 键2, 键3, 键4, …}（8 项）', '过长对象给键摘要')
+  assert.deepEqual(got.sideEffects, [{ path: '/stat_data/联动', operation: 'set', before: '1', after: '{"a":1}' }], '镜像路径不进 sideEffects')
+  assert.deepEqual(got.failures, [{ path: '/好感', operation: 'delta', message: '未观察到对应变量变化' }, { path: '_.set(x)', operation: '', message: '未知错误' }])
+  assert.deepEqual(got.diagnostics, ['警告1', '错误2'])
+  assert.deepEqual(got.counts, { changes: 4, sideEffects: 1, failures: 2 })
+  const count = seen.length
+  client.liveTavernView.setView('s1', { ...view, mvuReceipts: client.liveTavernView.getSnapshot('s1').view.mvuReceipts, posture: '无关字段' })
+  assert.equal(seen.length, count, '回执与结算没变不回调')
+  client.liveTavernView.setView('s1', { ...view, mvuReceipts: [{ turn: 3, receipt: { status: 'updated', changes: Array.from({ length: 80 }, (_, i) => ({ operation: 'set', path: '/p' + i, before: '0', after: '1' })) } }] })
+  assert.equal(seen.length, count + 1)
+  assert.equal(seen.at(-1).receipts[3].changes.length, 50, '每组最多 50 条')
+  assert.equal(seen.at(-1).receipts[3].counts.changes, 80, 'counts 给过滤后的总数')
+  assert.equal(seen.at(-1).receipts[2], undefined)
+  stop()
+})
+
+test('subscribeRounds 的 settlement 投影视图 settleStatus / settlementTurn / settleError', () => {
+  const { client } = loadClient()
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  const seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  assert.equal(seen.at(-1).settlement, null, '视图未读到时为 null')
+  const view = { mode: 'story', rollbackTargetTurn: 2, settlementTurn: 2, activity: { phase: 'idle', busy: false } }
+  client.liveTavernView.setView('s1', { ...view, settleStatus: 'done', settleError: '旧错误' })
+  assert.deepEqual(plain(seen.at(-1).settlement), { status: 'idle', turn: 2, error: null })
+  client.liveTavernView.setView('s1', { ...view, settleStatus: 'done', activity: { phase: 'pending', busy: false } })
+  assert.deepEqual(plain(seen.at(-1).settlement), { status: 'running', turn: 2, error: null }, '等待中也算运行')
+  client.liveTavernView.setView('s1', { ...view, settleStatus: 'running', activity: { phase: 'running', busy: true } })
+  assert.equal(seen.at(-1).settlement.status, 'running')
+  client.liveTavernView.setView('s1', { ...view, settleStatus: 'error', settleError: '后台结算已中断，请重试结算。', activity: { phase: 'failed', busy: false } })
+  assert.deepEqual(plain(seen.at(-1).settlement), { status: 'error', turn: 2, error: '后台结算已中断，请重试结算。' })
+  client.liveTavernView.setView('s1', { ...view, settleStatus: 'error', settleError: null, settlementTurn: 0, activity: { phase: 'failed', busy: false } })
+  assert.deepEqual(plain(seen.at(-1).settlement), { status: 'error', turn: null, error: '后台结算失败，请重试。' })
+  stop()
+})
+
+test('resettle 的 guidance 透传到 retrySettlement；省略时不带（服务端沿用上次指导），无效参数不发请求', async () => {
+  const { client, calls } = loadClient({ retrySettlement: () => ({ view: { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true } }) })
+  const service = serviceOf(client, { s1: eventWindow(story(2)) })
+  const view = { mode: 'story', rollbackTargetTurn: 2, canRegenerate: true }
+  client.liveTavernView.setView('s1', view)
+  await service.resettle('s1', 2, { guidance: '这轮还没交付物品' })
+  client.liveTavernView.setView('s1', view)
+  await service.resettle('s1', 2, { guidance: '' })
+  client.liveTavernView.setView('s1', view)
+  await service.resettle('s1', 2, {})
+  client.liveTavernView.setView('s1', view)
+  await service.resettle('s1', 2)
+  assert.deepEqual(calls.filter(call => call.method === 'retrySettlement').map(call => call.args), [
+    { turn: 2, guidance: '这轮还没交付物品', sessionId: 's1' }, { turn: 2, guidance: '', sessionId: 's1' }, { turn: 2, sessionId: 's1' }, { turn: 2, sessionId: 's1' }])
+  await assert.rejects(service.resettle('s1', 2, { guidance: 3 }), /guidance/)
+  await assert.rejects(service.resettle('s1', 2, { guidance: 'x'.repeat(4001) }), /guidance/)
+  await assert.rejects(service.resettle('s1', 2, 'text'), /guidance/)
+  assert.equal(calls.filter(call => call.method === 'retrySettlement').length, 4)
+})
