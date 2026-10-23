@@ -521,3 +521,35 @@ test('管线护栏：一轮的阶段顺序是前置任务、主结算、后置�
   assert.deepEqual(seen, ['before', 'parallel', 'settle', 'after', 'settled'])
   jobs.dispose()
 })
+
+// 切换历史结果留下的「变量未重算」标记：重新结算排队和失败时保留，成功提交后才清除。
+for (const outcome of ['成功', '失败']) test(`变量未重算标记：重新结算${outcome}`, async () => {
+  const run = await harness({ beginRunning: false })
+  run.sandbox.mvuSettlement.settleVariables = async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } })
+  await run.sandbox.queueSettlement('chat')
+  await run.store.updateChat('chat', chat => { chat.messages[1].variablesStale = { replySeq: 7 }; chat.messages[1].mvuBaseline = { swipeId: 0, variables: { stat_data: { hp: 10 } } }; return chat })
+  const staleOf = chat => createSessionStateView({ activity: c => run.tasks.activity(c), evidence: () => ({}) }).volatile(projectChatSessionState(chat), run.tasks.activity(chat)).staleVariables
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  run.sandbox.mvuSettlement.settleVariables = async () => {
+    await gate
+    if (outcome === '失败') throw new Error('模型没有提交变量')
+    return { receipt: { version: 1, status: 'updated', changes: [] } }
+  }
+  run.sandbox.queueSettlement = () => Promise.resolve()
+  await run.sandbox.retrySettlement('session', 2)
+  assert.equal(run.get().messages[1].mvu.pending, true)
+  assert.deepEqual(staleOf(run.get()), { turn: 2, replySeq: 7 }, '结算中标记仍在')
+  const job = run.sandbox.runSettlement('chat')
+  release()
+  await job
+  const after = run.get()
+  if (outcome === '成功') {
+    assert.equal(after.messages[1].mvu.receipt.status, 'updated')
+    assert.equal(Object.hasOwn(after.messages[1], 'variablesStale'), false)
+    assert.equal(staleOf(after), null)
+  } else {
+    assert.equal(after.messages[1].mvu.receipt.status, 'error')
+    assert.deepEqual(staleOf(after), { turn: 2, replySeq: 7 }, '失败保留提示与入口')
+  }
+})

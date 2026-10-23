@@ -1,3 +1,4 @@
+import { staleVariablesOf } from '../story/state.js'
 import { worldBookDisplayName } from './worldbook-resource.js'
 import { planTranscriptWindow, savedReplyTurns } from './transcript-row-plan.js'
 import { createInputFieldsProjection } from './input-fields-projection.js'
@@ -161,6 +162,7 @@ export function createSessionViewProjection({
       // tavernStatusView duplicated tavernStatusViews[0] in every read; clients use the list.
       tavernStatusViews: replyDisplay.statusViews || [],
       mvuReceipts: mvuReceiptsOf(chat),
+      staleVariables: staleVariablesOf(chat),
       tavernHelper: helperContext ? { ...helperContext, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost: sessionOpeningDescriptor(chat, card), worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: activePresetSnapshot?.regexScripts || [], character: cardExtensions.characterRegexScripts || [] } } : null,
       tavernMvuRuntime: chat.mvu && chat.mvu.enabled === true ? {
         owner: chat.mvu.owner === 'official' ? 'official' : 'legacy',

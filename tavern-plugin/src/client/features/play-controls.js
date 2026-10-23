@@ -556,6 +556,7 @@
 			const [replayBusy, setReplayBusy] = React.useState(false);
 			const [withdrawBusy, setWithdrawBusy] = React.useState(false);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const storyView = useTavernStoryViewMode(props.sessionId);
 			const projectedTaskRef = React.useRef("");
 			React.useEffect(function () {
 				if (!taskForMessage) return;
@@ -641,8 +642,9 @@
 						generate(false);
 					}
 				} }, settlementActive ? "后台结算中…" : (activity.busy ? activity.label : ((busy || taskBusy) ? "生成中…" : (hasReadyPanel ? "重新生成候选项" : "生成候选项")))),
-				(canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
-				canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null
+				// 故事视图里重新生成走楼层操作，失败轮重试与编辑走输入框状态条。
+				!storyView && (canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
+				!storyView && canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null
 			);
 		}
 
@@ -862,6 +864,8 @@
 			const [placement, setPlacement] = React.useState(null);
 			const root = React.useRef(null);
 			const trigger = React.useRef(null);
+			// 故事视图里编辑与回退归楼层操作，失败轮已打墓碑，不再需要恢复错误提示。
+			const storyView = useTavernStoryViewMode(props.sessionId);
             // Removing cleared notices is a one-way quiet; this puts them back after
             // the player changed their mind (or hid the tail the hard way).
             async function restoreErrorNotices() {
@@ -900,10 +904,10 @@
 				React.createElement("button", { ref: trigger, type: "button", className: "dsh-tavern-choice-trigger", "aria-haspopup": "menu", "aria-expanded": open, onClick: function () { setOpen(function (value) { return !value; }); } }, "更多 ▾"),
 				React.createElement("div", { className: "dsh-tavern-more-menu", role: "menu", hidden: !open, style: placement || undefined, onClick: function (event) { if (event.target && event.target.closest && event.target.closest("button:not(:disabled)")) setOpen(false); } },
                     React.createElement(TavernStopBackgroundAction, Object.assign({}, props, { inMenu: true })),
-					React.createElement(TavernEditBodyAction, props),
-					React.createElement(TavernRollbackAction, props),
+					storyView ? null : React.createElement(TavernEditBodyAction, props),
+					storyView ? null : React.createElement(TavernRollbackAction, props),
                     React.createElement(TavernUndoRollbackAction, props),
-                    React.createElement("button", { type: "button", role: "menuitem", disabled: restoring, title: "把已移除或已隐藏的失败提示显示回来，正文和历史不受影响", onClick: restoreErrorNotices }, "恢复全部错误提示"),
+                    storyView ? null : React.createElement("button", { type: "button", role: "menuitem", disabled: restoring, title: "把已移除或已隐藏的失败提示显示回来，正文和历史不受影响", onClick: restoreErrorNotices }, "恢复全部错误提示"),
 					React.createElement(TavernCompactionAction, Object.assign({}, props, { inMenu: true })))
 			);
 		}
@@ -916,12 +920,14 @@
 			const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 			const live = useLiveTavernView(ownerSessionId, String(running) + ":" + String(latestMessageId || ""));
 			const imageTurn = Number(live.view && live.view.latestAssistantTurn) || 0;
+			// 故事视图模式下候选项（生成候选项、下一步行动、带意见重新生成）整组撤下，其余按钮照常。
+			const storyView = useTavernStoryViewMode(props.sessionId);
 			const h = React.createElement;
 			if (!sessionMode) return null;
 			if (address) return isPlayMode(sessionMode) ? h("div", { className: "dsh-tavern-dock-actions" },
 				h(TavernStopBackgroundAction, { sessionId: ownerSessionId })) : null;
 			return h("div", { className: "dsh-tavern-dock-actions" },
-				isPlayMode(sessionMode) && latestMessageId ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
+				isPlayMode(sessionMode) && latestMessageId && !storyView ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
 				isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null,
 				isPlayMode(sessionMode) ? React.createElement(TavernMoreActions, props) : React.createElement(TavernCompactionAction, props),
                 live.view && live.view.contextCompaction && live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running" ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, "正在压缩前后台上下文…")
@@ -1160,24 +1166,28 @@
 					executeCompact: function (sessionId) { return ctx.remote.commands.execute(sessionId, "/compact", []); }
 				})); }
 			)), "dsh-tavern: candidate dock actions");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			// 故事视图模式下不注册候选项面板（「下一步行动」与「重新生成候选项」）；条目里的失败轮投影只服务 Tavern 聊天行。
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-question", order: -120, label: "下一步行动" },
 				function (props) { return React.createElement(React.Fragment, null,
 					React.createElement(SupersededTurnErrors, Object.assign({}, props, { key: props.sessionId })),
 					React.createElement(TurnHistoryProjection, Object.assign({}, props, { key: "history:" + props.sessionId })),
 					React.createElement(CandidateQuestion, Object.assign({}, props, { sessions: ctx.sessions }))
 				); }
-			)), "dsh-tavern: candidate question panel");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			)), ctx.sessions), "dsh-tavern: candidate question panel");
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-guide", order: -115, label: "重新生成候选项" },
 				function (props) { return React.createElement(CandidateGuidePanel, props); }
-			)), "dsh-tavern: candidate guide panel");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			)), ctx.sessions), "dsh-tavern: candidate guide panel");
+			// 故事视图模式下不注册：重新生成与改写走楼层操作（C5 只共用 interactions 状态，不依赖此面板挂载），
+			// 编辑正文与失败轮编辑由楼层操作和状态条承担。
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-regen", order: -110, label: "重新生成正文" },
 				function (props) { return React.createElement(React.Fragment, null, React.createElement(RegenPanel, props), React.createElement(BodyEditPanel, props)); }
-			)), "dsh-tavern: regen body panel");
+			)), ctx.sessions), "dsh-tavern: regen body panel");
 		}
-		return Object.freeze({ register: register });
+		// Fork contract C5: the story service (features/story-service.js) reuses these flows.
+		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, replayFailedTurn: submitFailedTurnReplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();

@@ -518,6 +518,7 @@ export function createStoryTimeline(options = {}) {
       Object.assign(chat.messages[index], intent.patch)
       delete chat.messages[index].displayRuntime
       delete chat.messages[index].sessionText // retired copy of text (reply-prose.js)
+      // 编辑正文不重算变量；已有的未重算标记须保留，直到结算成功或该轮被替换。
       chat.timeline.revision++
       // Editing keeps the same committed round, but its next settlement must
       // bind to the edited revision. Old in-flight work still fails basedOn.

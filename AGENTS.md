@@ -12,23 +12,25 @@
 
 ## 分支
 
-- `main`：当前版本，适配 DSH 0.2.1。日常开发在这里。
-- `stable`：稳定版，适配 DSH 0.1.5，只修严重问题（先在 main 修好，再 cherry-pick 到 stable）。两条分支的安装脚本与应用内更新各自跟随自己的分支，不要互相合并。
+- `main`：只用于同步上游，保持 fork sync 可用；不提交或推送自有修复。
+- `trunkbase`：本 fork 的修复维护与制品来源分支，日常修改和推送都在这里。
+- `stable`：上游旧宿主兼容线，不作为本 fork 当前实例的维护入口。
 
-GitHub Actions 会频繁向 `origin/main`（以及 `origin/stable`）推送 `chore: publish runtime manifest [skip ci]`（只改 `dsh-tavern-runtime.json`），导致本地推送被拒。推送流程：
+推送自有修复时：
 
-1. `git fetch origin`
-2. `git log --oneline HEAD..origin/main`，确认远程只多了 manifest 提交；有其他提交先告知用户
-3. `git rebase origin/main`
-4. `git push origin main`
+1. 确认当前分支为 `trunkbase`，相关检查已通过。
+2. `git fetch origin`，检查 `origin/trunkbase` 是否有新增提交；有变动先审阅，不强推覆盖。
+3. `git push origin trunkbase`，回读远端提交号。不得把当前修复推送到 `main`。
 
-推送 `stable` 时同样操作，把 `main` 换成 `stable`。
+同步上游时先更新 `main`，再在 `trunkbase` 审阅并整合变化，复核自有修复是否已被上游覆盖。不要重新盲目移植整包旧补丁。
+
+Tavern 插件包可以本地构建；CI 是可选的自动检查/发布设施。当前工作流暂停，未经用户要求不重新启用。制品交付记录固定源码提交及 SHA-256，不复制开发机的 `node_modules` 到目标机器。
 
 ### CDN 缓存
 
 安装入口从 jsDelivr 的 `@main` / `@stable` 读取 `install.ps1` / `install.sh` / `dsh-tavern-runtime.json`（最长缓存 12 小时），代码文件却按清单里的提交号下载；旧安装脚本配新代码会报“安装文件不完整，缺少……”。
 
-每次推送后，Publish runtime manifest 工作流会在发布新清单后自动刷新这三个文件的缓存，并等到 CDN 返回新清单。工作流出现 “jsDelivr still serves a stale manifest” 警告时，手动刷新：
+以下为上游 `main` / `stable` 安装器的发布行为，不适用于本 fork 的 `trunkbase` 本地打包流程：Publish runtime manifest 工作流会在发布新清单后自动刷新这三个文件的缓存，并等到 CDN 返回新清单。工作流出现 “jsDelivr still serves a stale manifest” 警告时，手动刷新：
 
 ```sh
 b=main  # 或 stable

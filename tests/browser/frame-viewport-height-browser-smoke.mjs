@@ -4,7 +4,7 @@ import vm from 'node:vm'
 import {chromium} from 'playwright'
 let descriptor
 vm.runInNewContext(await readFile('tavern-plugin/lib/client.js','utf8'),{window:{__ModuleLoader__:{load(value){descriptor=value}}},console})
-const client=descriptor.factory(()=>({})),browser=await chromium.launch(),page=await browser.newPage({viewport:{width:390,height:844}})
+const client=descriptor.factory(()=>({})),browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE}),page=await browser.newPage({viewport:{width:390,height:844}})
 await page.route('**/*',route=>route.abort())
 await mkdir("output/frame-size-audit",{recursive:true})
 const results=[]

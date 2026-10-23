@@ -131,6 +131,9 @@ import { createTavernPluginApi } from './plugin-api.js'
 import { createSceneWorldbooks } from './domain/scene-worldbook.js'
 import { createSessionStablePrefixStorage, ensureSessionStablePrefix, readSessionStablePrefix } from './domain/session-stable-prefix.js'
 import { waitForWritableSession } from './domain/agent-readiness.js'
+import { createStoryLifecycle, createStoryService } from './story/service.js'
+import { createFloorSnapshots } from './story/floor-snapshots.js'
+import { createStoryHandlers } from './rpc/story.js'
 import { createCardDeletion } from './domain/card-deletion.js'
 import { createCardOrganization } from './domain/card-organization.js'
 import { countGamesByCard, orderCardsForLibrary } from './domain/card-list-order.js'
@@ -368,6 +371,7 @@ export async function apply(ctx) {
   const stablePrefixStorage = createSessionStablePrefixStorage(dataRoot + '/session-prefixes')
   const profileData = createProfileDataStore({ dataRoot })
   const displayRuntimeStore = createDisplayRuntimeStore({ store: profileData })
+  const floorSnapshots = createFloorSnapshots({ store: profileData, chatIdFor: async sessionId => (await readSessionMap())[sessionId] })
   const gameFootprint = createGameFootprint({ dataRoot })
   const deletedSessionIds = new Set()
   try { const removed = await gameFootprint.processDeferredDeletions(); if (removed) console.log('dsh-tavern: 已清理已删除游戏的原生会话', removed) }
@@ -1261,6 +1265,7 @@ export async function apply(ctx) {
     await pluginMedia.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件媒体记录清理失败', chatId))
     await pluginData.removeChat(chatId).catch(() => console.warn('dsh-tavern: 插件数据清理失败', chatId))
     await displayRuntimeStore.remove(chatId).catch(() => {})
+    await floorSnapshots.removeChat(chatId).catch(() => {})
     await sceneWorldbookArchive.forgetChat(chatId).catch(() => {})
     pluginApi.gameRemoved(footprint?.foregroundSessionId || chat?.sessionId)
     if (footprint) {
@@ -2887,6 +2892,11 @@ export async function apply(ctx) {
     agentRegistry, sessionStore, chatForSession, chatSliceForSession, updateChat, turns: turnOrchestrator
   })
   const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
+  const storyLifecycle = createStoryLifecycle({ settings: readTavernSettings,
+    sessionFor: sessionId => sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session,
+    agentFor: sessionId => agentRegistry.get(sessionId),
+    latestChat: sessionId => chatHeaderWithLatestFloors(sessionId, 3),
+    flush: session => sessionStore.flush(session), modeFor: sessionId => turnOrchestrator.modeFor(sessionId) })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     prepareOpeningWorldBook: prepareNextWorldBookContext,
@@ -2897,6 +2907,7 @@ export async function apply(ctx) {
     prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
     cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
     waitReconcile: storyReconciliation.waitReconcile,
+    rejectStaleTurn: storyLifecycle.rejectStaleTurn,
     syncWorldBook: async function (chat) {
       if (!['story', 'script'].includes(chat.mode || 'story')) return
       try {
@@ -2944,9 +2955,10 @@ export async function apply(ctx) {
       // Keep the failed turn (input and output) on the surface until the player
       // retries, withdraws or sends a new message. That keeps the input available
       // for an in-place edit; the next action clears the whole failed turn first.
+      // 故事视图立即清理失败尾部，后续编辑由存档投影恢复。
       const mode = await turnOrchestrator.modeFor(input.sessionId)
       if (mode !== 'story' && mode !== 'script') return 0
-      return 0
+      return await storyLifecycle.tombstoneInterruptedRound(input)
     },
     logger: console
   })
@@ -3014,21 +3026,29 @@ export async function apply(ctx) {
     repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '回退或重新生成时找不到原生位置'),
   })
 
+  async function bodyEditorProject(text, chat) {
+    const extensions = await readCardExtensions(chat.cardPath, chat)
+    return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
+      regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts), placement: 2, isEdit: false, depth: 0 })
+  }
   const bodyEditor = createBodyEditor({
     chats: { forSession: hookChatForSession, update: updateChat, patch: patchChat },
     sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
     timeline: storyTimeline,
     activity: chat => backgroundTasks.activity(chat),
     cancelPreparation: chatId => worldbookPrefilter.cancel(chatId),
-    project: async (text, chat) => {
-      const extensions = await readCardExtensions(chat.cardPath, chat)
-      return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
-        regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts), placement: 2, isEdit: false, depth: 0 })
-    },
+    project: bodyEditorProject,
     present: presentStory,
     sessionPatch,
     repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '编辑正文时找不到原生位置'),
   })
+  const storyService = createStoryService({
+    snapshots: floorSnapshots, chats: { forSession: hookChatForSession, update: updateChat },
+    sessions: { agent: id => ctx.get('agents')?.get(id),
+      get: id => sessionStore.get(id) || agentRegistry.get(id)?.session, flush: session => sessionStore.flush(session) },
+    timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch,
+    prepareFork: (sessionId, turn) => prepareConversationFork('', sessionId, turn),
+    bindFork: input => forkChat('', input.sessionId, input.targetSessionId, input.turn, input.sourceRevision, input.atSeq) })
 
   // ---------- HTTP RPC（客户端同源 fetch） ----------
   async function dispatch(method, args) {
@@ -3157,7 +3177,8 @@ export async function apply(ctx) {
     createSettingsHandlers(rpcDeps),
     createPluginHandlers(rpcDeps),
     createConversationHandlers(rpcDeps),
-    createPlayHandlers(rpcDeps))
+    createPlayHandlers(rpcDeps),
+    createStoryHandlers({ ...storyService, interruptQueued: storyLifecycle.interruptQueued, notifyTimeline: notifyPluginTimeline }))
 
   async function dispatchMethod(method, args, serverTemplate = false) {
     if (method.startsWith('gameplay.')) return await gameplayApi.call(method.slice(9), args || {})

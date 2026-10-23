@@ -33,6 +33,8 @@ export function createForegroundHandoff(options = {}) {
     }
     // Plugin tasks of the last turn (or one the player started) finish before the next turn.
     if (chat !== undefined) await options.waitBackground?.(chat.id)
+    // After the waits: a settlement the player just asked for may have cleared the mark.
+    if (chat !== undefined) await options.rejectStaleTurn?.(input)
     // An unfinished prefilter is optional: sending cancels it instead of waiting.
     if (chat !== undefined) await options.cancelPrefilter?.(chat.id)
     // A failed turn is cleaned up after the failure, but that may not have happened (no live

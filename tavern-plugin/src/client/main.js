@@ -469,6 +469,7 @@ window.__ModuleLoader__.load({
 				}
 				const accepted = viewRead ? viewRead.accept(result) : result;
 				if (viewRead) rememberHistoryWindow(payload.sessionId, accepted.view);
+				if (payload.sessionId && accepted.view && typeof accepted.view.mode === "string") publishSessionMode(payload.sessionId, accepted.view.mode);
                 if (accepted.contextWindow) return {...accepted,context:expandTavernOpeningWindow(accepted.contextWindow).tavernHelper};
                 return accepted.view && accepted.view.historyWindow ? {...accepted,view:expandTavernOpeningWindow(accepted.view)} : accepted;
 			}).catch(function (error) {
@@ -831,6 +832,7 @@ window.__ModuleLoader__.load({
 
 // @include features/cast-stage.js
 
+// @include modules/story-view-mode.js
 // @include ui/message-frame.js
 
 // @include features/assistant-renderer.js
@@ -879,6 +881,8 @@ window.__ModuleLoader__.load({
 // @include-domain play-interaction-flow.js
 // @include features/play-interaction-panels.js
 // @include features/play-controls.js
+// @include features/story-service.js
+// @include features/story-render.js
 
 // @include features/request-context.js
 
@@ -890,6 +894,7 @@ window.__ModuleLoader__.load({
 			window.__dshTavernLoaded = true;
 			ctx.effect(function () { return tavernTextLayoutFeature.register(ctx); }, "dsh-tavern: text layout in appearance settings");
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
+			ctx.effect(() => tavernStoryViewMode.start(), "dsh-tavern: story view mode setting");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
@@ -907,6 +912,8 @@ window.__ModuleLoader__.load({
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
 			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
+			// Fork contract C5/C7: the story-view plugin's service (docs/plugin-api-ui.md「故事视图契约」).
+			registerTavernStoryContract(ctx);
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
@@ -1188,6 +1195,12 @@ window.__ModuleLoader__.load({
         exports.tavernModelRefusalNotice = tavernModelRefusalNotice;
         exports.renderTavernProjection = renderTavernProjection;
 		exports.latestTavernUserTurn = latestTavernUserTurn;
+		exports.liveTavernView = liveTavernView;
+		exports.tavernStoryViewMode = tavernStoryViewMode;
+		exports.createTavernStoryService = createTavernStoryService;
+		exports.tavernConversationForkRequests = tavernConversationForkRequests;
+		exports.createTavernStoryRender = createTavernStoryRender;
+		exports.playControlsFeature = playControlsFeature;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;

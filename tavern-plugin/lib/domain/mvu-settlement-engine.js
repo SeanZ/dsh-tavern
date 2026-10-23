@@ -161,6 +161,8 @@ export function createMvuSettlementEngine(deps) {
               events: receipt.status === 'stale' ? [] : ['MESSAGE_RECEIVED'],
               receipt
             }
+            // 变量成功重算后，才清除切换历史正文留下的未重算标记。
+            if (['updated', 'unchanged', 'partial'].includes(receipt.status)) delete target.variablesStale
           }
         }
       }

@@ -109,3 +109,32 @@ test('page-root layout changes do not re-read every message; a theme change does
   await page.waitForFunction(() => window.ranges('dsh-tavern-text-quote-dark') === 5)
   assert.equal(await page.evaluate(() => window.walks), 5)
 })
+
+test('静态故事快照在 Shadow DOM 内恢复配色，随主题变化并在卸载时释放', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
+  const { chromium } = await import('playwright')
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage()
+  await page.setContent('<style>body{color:rgb(30,30,30);--dsw-alias-brand-primary:blue}</style><div id="root"></div>')
+  const sources = await Promise.all(['text-colors.js', 'features/story-render.js'].map(file => readFile(new URL('../tavern-plugin/src/client/' + file, import.meta.url), 'utf8')))
+  await page.addScriptTag({ content: `
+    const React = {useRef:()=>({current:document.querySelector('#root')}), useLayoutEffect:fn=>{window.cleanup=fn()}, createElement(){}};
+    function bindTavernFontZoom(){return ()=>{}}
+    ${sources.join('\n')}
+    TavernFloorStaticHtml({html:'<p>“快照对白。”</p><p><em>快照动作</em></p><p style="color:red">“卡片颜色”</p><script>throw Error("不可执行")<\\/script>'});
+    window.ranges = () => [...CSS.highlights.values()].flatMap(h=>[...h].map(r=>r.toString()));
+  ` })
+  await page.waitForFunction(() => ranges().length === 2)
+  assert.deepEqual(await page.evaluate(() => ranges()), ['“快照对白。”', '快照动作'])
+  const colors = () => page.evaluate(() => {
+    const root = document.querySelector('#root').shadowRoot
+    return { styles: root.querySelectorAll('style[data-dsh-tavern-text-colors]').length, scripts: root.querySelectorAll('script').length,
+      color: getComputedStyle(root.querySelector('p'), '::highlight(dsh-tavern-text-quote-light)').color }
+  })
+  assert.deepEqual(await colors(), { styles: 1, scripts: 0, color: 'rgb(0, 0, 255)' })
+  await page.evaluate(() => document.body.style.setProperty('--dsw-alias-brand-primary', 'rgb(0, 128, 0)'))
+  assert.equal((await colors()).color, 'rgb(0, 128, 0)')
+  await page.evaluate(() => cleanup())
+  assert.equal(await page.evaluate(() => CSS.highlights.size), 0)
+  assert.equal(await page.evaluate(() => document.querySelector('#root').shadowRoot.innerHTML), '')
+})

@@ -58,3 +58,15 @@ DSH Agent 的 Session 是只追加轨迹，不采用 SillyTavern 的多 Swipe �
 3. 已提交的上一条 Round 不被回退、不被替换；重放成功后追加一条新 Round。
 4. 清除未完成回复不再使重放失效：可用性只看事件历史里的失败尾部，不看展示状态。
 5. 失败后已经有新回合开始、或重放/重生成/回退进行中时，重放被拒绝；重生成合成输入的失败尾部也不提供重放。
+
+## 故事视图模式：中断即打墓碑
+
+全局设置 `storyViewMode`（`tavern-settings.json`，`presentTavernSettings` 读出，默认 `false`；`updateTavernSettings({ patch: { storyViewMode: true } })` 修改）开启时，失败清理钩子 `cleanupFailedTurn` 不再把失败轮留到下一次操作，而在该轮结束时（`turn/end` 原因为 `error` / `aborted` / `interrupted`，游玩或剧本模式）立即清理（`lib/domain/interrupted-round-tombstone.js`）：
+
+1. 范围复用 `planFailedTurnSurface`：按该轮自己的 seq 区间覆盖玩家输入、本轮 frame 上下文（世界书快照、人物卡系统指令更新、前台 frame）与半截正文，写一个 `dsh-tavern-failed-turn-cleanup` 用户墓碑；不用「打断点之后全部」，墓碑落地前到达的新输入与新回合不受影响。
+2. 只处理玩家自己的回合：重新生成尝试轮由它自己的中止流程清理；存档已经保存了这一轮（finalize 之后才被中止）或它是某轮的重生成座位时不写。
+3. 世界书快照与人物卡系统指令更新的去重读的是模型消息面，墓碑后下一轮会重新下发被废弃回合的快照。
+4. 半截正文永不进存档：存档只在宿主 `agent/turn-stopping`（一步正常结束且未中止）时由 finalize 写入；中止的重新生成恢复原存档。
+5. 既有失败轮流程不变：重试（`replayFailedTurn`）仍从日志取回原输入、清理为无操作；失败轮编辑走 Chat 覆盖层；下一次发送前的 `clearFailedTurns` 无事可做。注意失败尾部在被处理前仍优先于回退：开关开启时，中断后的第一次 `rollbackTurn` 只结清这条失败尾部（返回 `clearedIncompleteTurns` 与 `clearedInput`），再次调用才回退已提交的一轮，与关闭时的语义相同。
+
+关闭时不写任何东西，行为与上游一致。稳定性：设置键名、默认值与「结束即清理」的语义只加不改，供 fork 的故事视图插件依赖。测试见 `tests/interrupted-round-tombstone.test.mjs`（真实宿主 Session、V4 关系校验与 JSONL 写盘冷读）。

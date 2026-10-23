@@ -211,6 +211,10 @@ export function applyTavernSettingsPatch(current, patch) {
     if (input.headerItems === null) delete next.headerItems
     else next.headerItems = headerItems(input.headerItems)
   }
+  if (Object.hasOwn(input, 'storyViewMode')) {
+    if (typeof input.storyViewMode !== 'boolean') throw new Error('故事视图模式设置必须是布尔值')
+    next.storyViewMode = input.storyViewMode
+  }
   if (Object.hasOwn(input, 'castPresentation')) {
     if (typeof input.castPresentation !== 'boolean') throw new Error('对话头像设置必须是布尔值')
     next.castPresentation = input.castPresentation
@@ -291,6 +295,8 @@ export function presentTavernSettings(document, defaults) {
     // them. A save that turned on either of the two former switches keeps it on.
     storyToolCall: object(document).storyToolCall === true || object(document).storyHistoryToolCall === true,
     castPresentation: object(document).castPresentation === true,
+    // Story view (fork contract): off keeps the upstream chat and failed-turn behaviour.
+    storyViewMode: object(document).storyViewMode === true,
     // Only the latest floors run a card's HTML interface; 0 renders every floor.
     autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     // Library edits reach a running game on its next turn; only an explicit

@@ -1,16 +1,20 @@
 		// `loaded` tells "not a Tavern session" apart from "the list has not arrived".
-		const tavernSessionModes = { values: {}, listeners: new Set(), loaded: false };
+		const tavernSessionModes = { values: {}, direct: {}, listeners: new Set(), loaded: false };
 		function publishSessionModes(items) {
 			const next = {};
-			(items || []).forEach(function (item) { next[item.sessionId] = item.mode || "story"; });
-			tavernSessionModes.values = next;
+			(items || []).forEach(function (item) { next[item.sessionId] = typeof item.mode === "string" ? item.mode : ""; });
+			// 明确创建/打开和真实视图已发布的模式优先，迟到的列表不能将它闪回旧值。
+			tavernSessionModes.values = Object.assign(next, tavernSessionModes.direct);
 			tavernSessionModes.loaded = true;
-			tavernSessionModes.listeners.forEach(function (listener) { listener(next); });
+			tavernSessionModes.listeners.forEach(function (listener) { listener(tavernSessionModes.values); });
 		}
 		function publishSessionMode(sessionId, mode) {
+			if (!sessionId || typeof mode !== "string" || mode === "") return;
+			tavernSessionModes.direct[sessionId] = mode;
+			if (tavernSessionModes.values[sessionId] === mode) return;
 			const next = Object.assign({}, tavernSessionModes.values, { [sessionId]: mode });
 			tavernSessionModes.values = next;
-			tavernSessionModes.listeners.forEach(function (listener) { listener(next); });
+			tavernSessionModes.listeners.forEach(function (listener) { listener(tavernSessionModes.values); });
 		}
 		function useTavernSessionMode(sessionId) {
 			const [values, setValues] = React.useState(tavernSessionModes.values);

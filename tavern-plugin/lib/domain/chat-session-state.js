@@ -1,3 +1,4 @@
+import { staleVariablesOf } from '../story/state.js'
 import { createImmutableTurnFields } from './freeze-json.js'
 import { createMvuReceiptIndex } from './mvu-receipt-index.js'
 import { copyJsonTree } from './copy-json-tree.js'
@@ -58,9 +59,11 @@ export function projectSessionMessage(message) {
     role: message.role, turn: message.turn, greeting: message.greeting,
     ...(message.importSource ? {importSource:{operationId:message.importSource.operationId}} : {}),
     ...(message.mvu ? {mvu:{receipt:message.mvu.receipt,diagnostics:message.mvu.diagnostics,
-      pending:message.mvu.pending,modified:message.mvu.modified}} : {})
+      pending:message.mvu.pending,modified:message.mvu.modified}} : {}),
+    ...(message.variablesStale ? {variablesStale:message.variablesStale} : {})
   }
 }
+
 
 export function settlementTurn(chat) {
     const messages = Array.isArray(chat && chat.messages) ? chat.messages : []
@@ -246,7 +249,8 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       updatedAt: chat.updatedAt || 0,
       // Compaction writes only this header field; cached views must not keep a stale notice.
       contextCompaction: chat.contextCompaction || null,
-      mvuReceipts: mvuReceiptsOf(chat, changes)
+      mvuReceipts: mvuReceiptsOf(chat, changes),
+      staleVariables: staleVariablesOf(chat)
     }
   }
 

@@ -100,6 +100,25 @@ test('bounded body edit patches only the last floor and stores the same Chat as 
   assert.equal(results[0].stored.messages.length, 120)
 })
 
+test('已切换结果的正文编辑：分页与完整存档都保留变量未重算状态，冷读一致', async t => {
+  for (const bounded of [true, false]) {
+    const h = await nativeEditor(t, bounded)
+    await h.p.update('chat', chat => {
+      chat.mvu = { enabled: true, owner: 'official' }
+      chat.messages.at(-1).variablesStale = { replySeq: 117 }
+      return chat
+    })
+    const before = await h.p.read('chat')
+    const edit = await h.editor.read(h.session.id)
+    await h.editor.save(h.session.id, { token: edit.token, texts: ['修改选中的正文'] })
+    const after = await h.p.read('chat')
+    assert.equal(after.messages.at(-1).text, '修改选中的正文')
+    assert.deepEqual(after.messages.at(-1).variables, before.messages.at(-1).variables)
+    assert.deepEqual(after.messages.at(-1).variablesStale, { replySeq: 117 })
+    assert.equal(h.session.deriveMessages().at(-1).content[0].text, '修改选中的正文')
+  }
+})
+
 test('插件整段替换正文：HTML 块必须原样保留，只改文字', async () => {
   const block = '```html\n<div class="status">体力 9</div>\n```'
   const h = fixture('雨停了。\n\n' + block)

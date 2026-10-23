@@ -58,6 +58,7 @@ export function replaceLastRound(input = {}) {
     swipes: [source]
   })
   delete replacement.bodyEdit
+  delete replacement.variablesStale
   // The regenerated body replaces the original reply in the native session, so
   // the round keeps the original reply's anchor, never the synthetic turn's.
   if (originalAssistant.nativeAnchor) replacement.nativeAnchor = clone(originalAssistant.nativeAnchor)
