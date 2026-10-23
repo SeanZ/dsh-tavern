@@ -636,6 +636,30 @@ for (const mutation of ['resume', 'turn/start', 'surface']) test(`撤销回退�
   }
 })
 
+test('撤销回退也经后台管理器的编辑期恢复后台会话，不再直接 resume', async () => {
+  const h = harness({ checkpoint: true, journal: true })
+  const bg = harness().session
+  const participant = { role: 'background', lifetime: 'chat', sessionId: 'bg', boundary: 0, status: 'current', branchId: h.chat.timeline.branchId }
+  h.chat.timeline.checkpoints[0].participants = { background: participant }
+  h.chat.timeline.participants.background = participant
+  const worker = { session: bg, phase: { kind: 'idle' }, async whenIdle() {} }
+  const edits = []
+  h.options.sessions = {
+    get: id => id === 'bg' ? undefined : h.agent,
+    resume: async () => { throw new Error('后台会话不能绕过管理器恢复') },
+    withBackground: async (id, parent, work) => { edits.push([id, parent]); return work(bg, worker) },
+    flush: async () => {}
+  }
+  const before = structuredClone(h.chat.messages)
+  const history = h.create()
+  await history.rollback('session', 'chat')
+  await history.undoRollback('session', 'chat')
+  assert.deepEqual(h.chat.messages, before)
+  assert.deepEqual(edits.map(([id]) => id), ['bg', 'bg'], '回退和撤销各取一次编辑期')
+  assert.equal(edits[1][1], h.chat.sessionId)
+  assert.ok(bg.surface.nodes.some(seq => bg.events[seq].data.message?.content?.[0]?.text === '旧正文'))
+})
+
 for (const legacy of [false, true]) test('中断重生成后重建模块恢复原正文与状态：legacy=' + legacy, async () => {
   const h = harness({ checkpoint: true, journal: true })
   const before = structuredClone(h.chat)

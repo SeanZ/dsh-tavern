@@ -150,7 +150,7 @@ test('一轮都对不上也不拒绝：保留前缀和开场，按 Chat 整段�
   delete g.chat.messages.at(-1).nativeAnchor
   const full = repair(g)
   assert.equal(full.plan.status, 'full')
-  assert.deepEqual(nodeTexts(g.session), ['前缀', '开场', '行动2', '正文2'])
+  assert.deepEqual(nodeTexts(g.session), ['前缀', '', '开场', '行动2', '正文2'])
   assert.equal(plan(g).status, 'intact')
 })
 

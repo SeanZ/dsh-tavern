@@ -146,6 +146,27 @@
                 parkingRoots.set(root, container);
             }
             let observer = null;
+            // 正在处理渲染事件的消息；只有恰好一条在途时，新增节点才归属该消息，避免并发时串号。
+            const renderingMessages = new Set();
+            function currentMessage() {
+                return renderingMessages.size === 1 ? renderingMessages.values().next().value : null;
+            }
+            // 空作用域不挂文档观察器：首次登记节点时才开始观察；按消息释放后若已无节点则断开。
+            function ensureObserver() {
+                if (observer || disposed || !host || !host.MutationObserver) return;
+                observer = new host.MutationObserver(function (changes) {
+                    for (const change of changes) for (const node of change.addedNodes) {
+                        if (created.has(node)) remember(node, change.target);
+                    }
+                    park();
+                });
+                for (const root of roots) observer.observe(root, { childList: true });
+            }
+            function releaseObserverIfEmpty() {
+                if (!observer || owned.size || created.size) return;
+                observer.disconnect();
+                observer = null;
+            }
             function parkNode(node, previous) {
                 previous.nextSibling = node.nextSibling;
                 const container = parkingRoots.get(previous.root);
@@ -171,24 +192,55 @@
                 owners.set(node, identity);
                 node.setAttribute?.("data-dsh-tavern-host-artifact", "");
                 owned.set(node, { hidden: node.hidden, disabled: node.disabled, body: root === hostDocument.body,
-                    root: root, nextSibling: node.nextSibling, parked: false });
+                    root: root, nextSibling: node.nextSibling, parked: false, message: currentMessage() });
+                ensureObserver();
             }
             let disposed = false, visible = true;
             const created = new Set();
             function captureCreated() {
                 for (const node of created) if (roots.includes(node.parentNode)) remember(node, node.parentNode);
             }
-            if (host && host.MutationObserver) {
-                observer = new host.MutationObserver(function (changes) {
-                    for (const change of changes) for (const node of change.addedNodes) {
-                        if (created.has(node)) remember(node, change.target);
-                    }
-                    park();
-                });
-                for (const root of roots) observer.observe(root, { childList: true });
+            function releaseArtifacts(message) {
+                const jq = host && host.jQuery;
+                for (const [node, previous] of Array.from(owned)) {
+                    if (previous.message !== message) continue;
+                    if (jq && typeof jq.cleanData === "function" && node.nodeType === 1) jq.cleanData([node].concat(Array.from(node.getElementsByTagName("*"))));
+                    owned.delete(node); owners.delete(node);
+                    for (const tracked of created) if (tracked === node || node.contains?.(tracked)) created.delete(tracked);
+                    node.remove();
+                }
+                releaseObserverIfEmpty();
             }
             return Object.freeze({
-                trackNode: function (node) { created.add(node); return node; },
+                trackNode: function (node) { if (!disposed) { created.add(node); ensureObserver(); } return node; },
+                // 返回结束函数；同一消息可重入，计数归零才结束归属。
+                beginMessage: function (key) {
+                    if (disposed) return function () {};
+                    captureCreated();
+                    let message = Array.from(renderingMessages).find(item => item.key === key && !item.released);
+                    if (!message) { message = { key, count: 0, released: false }; renderingMessages.add(message); }
+                    message.count++;
+                    let ended = false;
+                    return function () {
+                        if (ended) return;
+                        ended = true;
+                        // 观察器回调是微任务；先收下事件期间插入的节点再结束归属。
+                        captureCreated();
+                        if (--message.count === 0) renderingMessages.delete(message);
+                        // 消息可能先卸载、异步事件后结束；迟到的浮层也随原渲染释放。
+                        if (message.released) releaseArtifacts(message);
+                    };
+                },
+                releaseMessage: function (key) {
+                    if (disposed) return;
+                    captureCreated();
+                    const messages = new Set(renderingMessages);
+                    for (const previous of owned.values()) if (previous.message) messages.add(previous.message);
+                    for (const message of messages) if (message.key === key) {
+                        message.released = true;
+                        releaseArtifacts(message);
+                    }
+                },
                 findElementById: function (id) {
                     const node = hostDocument.getElementById(id);
                     if (node && (!ownerOf(node) || ownerOf(node) === identity)) return node;
@@ -293,6 +345,7 @@
                     }
                     owned.clear();
                     created.clear();
+                    renderingMessages.clear();
                 }
             });
         }

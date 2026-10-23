@@ -49,6 +49,46 @@ test('every message shares one stylesheet and four named highlights per document
   assert.deepEqual(await page.evaluate(() => ({ names: CSS.highlights.size, styles: document.querySelectorAll('style[data-dsh-tavern-text-colors]').length })), { names: 0, styles: 0 })
 })
 
+test('offscreen messages and hidden pages pause scanning, keep ranges and refresh on resume', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
+  const { chromium } = await import('playwright')
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage()
+  await page.setContent('<style>body{color:rgb(30,30,30)}</style><p id="near">“近处。”</p><div style="height:6000px"></div><p id="far">“远处。”</p>')
+  await page.addScriptTag({ content: await readFile(new URL('../tavern-plugin/src/client/text-colors.js', import.meta.url), 'utf8') + `
+    window.walks = []; const walker = document.createTreeWalker; document.createTreeWalker = function (root, ...args) { window.walks.push(root.id); return walker.call(this, root, ...args) };
+    window.ranges = () => [...CSS.highlights.values()].flatMap(h=>[...h].map(r=>r.toString())).sort();
+    window.views = { near: installTavernTextColors(near, {}, findTavernQuoteRanges), far: installTavernTextColors(far, {}, findTavernQuoteRanges) };
+    let hidden = false; Object.defineProperty(document, 'visibilityState', { get: () => hidden ? 'hidden' : 'visible' });
+    window.setHidden = value => { hidden = value; document.dispatchEvent(new Event('visibilitychange')) };
+  ` })
+  const settle = () => page.evaluate(() => new Promise(resolve => setTimeout(resolve, 120)))
+  await page.waitForFunction(() => window.ranges().includes('“近处。”'))
+  await settle()
+  // 离屏消息不遍历，也不产生区间；离屏期间的改动只记脏。
+  assert.deepEqual(await page.evaluate(() => ({ walks: window.walks, ranges: window.ranges() })), { walks: ['near'], ranges: ['“近处。”'] })
+  await page.evaluate(() => { far.firstChild.data = '“远处改了。”' })
+  await settle()
+  assert.deepEqual(await page.evaluate(() => window.walks), ['near'])
+  // 滚入视口后刷新；滚出视口的消息保留原区间。
+  await page.evaluate(() => far.scrollIntoView())
+  await page.waitForFunction(() => window.ranges().includes('“远处改了。”'))
+  assert.deepEqual(await page.evaluate(() => window.ranges()), ['“近处。”', '“远处改了。”'])
+  // 页面隐藏：改动和主题变化都不扫描，旧区间保留；恢复可见后刷新一次。
+  await page.evaluate(() => { window.walks = []; window.beforeHiddenRanges = [...CSS.highlights.values()].flatMap(h => [...h]); setHidden(true); far.firstChild.data = '“隐藏时改的。”' })
+  await settle()
+  // DOM Range 会随文本变更自动收缩；保留的是区间对象，不能要求它继续返回旧文本。
+  assert.deepEqual(await page.evaluate(() => ({ walks: window.walks, retained: [...CSS.highlights.values()].flatMap(h => [...h]).every(r => window.beforeHiddenRanges.includes(r)), count: [...CSS.highlights.values()].reduce((n, h) => n + h.size, 0) })), { walks: [], retained: true, count: 2 })
+  await page.evaluate(() => setHidden(false))
+  await page.waitForFunction(() => window.ranges().includes('“隐藏时改的。”'))
+  assert.deepEqual(await page.evaluate(() => window.walks), ['far'])
+  // 释放一个实例只移除它自己的区间，共享的四个 Highlight 仍在。
+  await page.evaluate(() => window.views.far.dispose())
+  assert.deepEqual(await page.evaluate(() => ({ names: CSS.highlights.size, ranges: window.ranges() })), { names: 4, ranges: ['“近处。”'] })
+  await page.evaluate(() => window.views.near.dispose())
+  assert.deepEqual(await page.evaluate(() => ({ names: CSS.highlights.size, styles: document.querySelectorAll('style[data-dsh-tavern-text-colors]').length })), { names: 0, styles: 0 })
+})
+
 test('page-root layout changes do not re-read every message; a theme change does', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
   const browser = await chromium.launch({ headless: true })

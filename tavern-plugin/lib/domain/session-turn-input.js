@@ -63,8 +63,22 @@ export function inputEventForTurn(session, turn) {
   const events = sessionEvents(session)
   const start = turnStartIndex(events, turn)
   if (start < 0) return null
+  // 宿主可能先入队输入，再开启回合；只看上一个生命周期边界之后的队列。
+  // 边界是没有 turn/end 的中断回合时，其后的输入属于那个回合，不是本回合的排队输入。
+  let queued = start
+  while (queued > 0 && !['turn/start', 'turn/end'].includes(events[queued - 1]?.type)) queued--
+  if (queued === 0 || events[queued - 1]?.type === 'turn/end') {
+    let input = null
+    for (let index = queued; index < start; index++) {
+      // 旧日志开头可能没有生命周期标记；已有回复结束了此前输入，不能再当作排队消息。
+      if (events[index]?.type === 'assistant/message') input = null
+      else if (!input && isNewTurnInput(events[index])) input = events[index]
+    }
+    if (input) return input
+  }
   for (let index = start + 1; index < events.length; index++) {
     const event = events[index]
+    if (event?.type === 'turn/start' || event?.type === 'turn/end') break
     if (isNewTurnInput(event)) return event
   }
   return null

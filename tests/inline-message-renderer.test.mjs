@@ -41,8 +41,10 @@ test('消息 iframe 将可信远程资源转入持久缓存，同时保留不透
   assert.match(document, /unhandledrejection/)
   assert.match(document, /XMLHttpRequest/)
   assert.match(document, /window\.fetch/)
-  assert.match(document, /document\.body\.cloneNode\(true\)/)
-  assert.match(document, /script\[data-dsh-tavern-frame\]/)
+  // 默认运行报告不复制 DOM；只有显式快照按预算遍历，且跳过宿主注入的脚本。
+  assert.doesNotMatch(document, /document\.body\.cloneNode\(true\)/)
+  assert.match(document, /dsh-tavern-frame-dom-snapshot/)
+  assert.match(document, /indexOf\("data-dsh-tavern"\) === 0/)
   assert.match(document, /height-token/)
   assert.match(document, /body\{padding:0 1px;overflow-wrap:anywhere;white-space:pre-wrap\}/)
   assert.match(document, /body>\*\{white-space:normal\}/)
@@ -394,6 +396,99 @@ test('右侧持久页面记录被捕获的按钮异常和执行日志，但不�
   assert.equal(runtime.console[0].args[0], '角色数据已写入')
   assert.equal(runtime.console[1].args[1].message, '消息追加失败')
   assert.match(runtime.console[1].args[1].stack, /消息追加失败/)
+})
+
+test('默认消息 frame 运行报告不复制、不序列化 DOM；显式快照按预算遍历后序列化', async () => {
+  const { JSDOM } = await import('jsdom')
+  const dom = new JSDOM('<body></body>')
+  try {
+    const { document } = dom.window
+    document.body.innerHTML = '<script data-dsh-tavern-text-colors>host()</script>' + Array.from({ length: 2500 }, (_, i) => `<p class="row" data-i="${i}">第${i}行 &lt;安全&gt;</p>`).join('')
+    for (const name of ['innerHTML', 'outerHTML']) Object.defineProperty(dom.window.Element.prototype, name, { get() { throw new Error('must not serialize DOM') } })
+    dom.window.Node.prototype.cloneNode = () => { throw new Error('must not clone DOM') }
+    const html = client.buildTavernFrameDocument({ content: '', token: 'diagnostics-dom', helperContext: { messages: [] }, observeMvuView: false, runtimeReporting: true })
+    const script = html.match(/<script data-dsh-tavern-frame>([\s\S]*?)<\/script>/)[1]
+    const pending = [], reports = [], listeners = []
+    const parent = { postMessage(value) { reports.push(value) } }
+    const context = {
+      console: { log() {}, info() {}, warn() {}, error() {} }, parent, document,
+      addEventListener(name, fn) { if (name === 'message') listeners.push(fn) },
+      setTimeout(fn) { pending.push(fn); return pending.length }, clearTimeout() {},
+    }
+    context.window = context
+    vm.createContext(context)
+    vm.runInContext(script, context)
+    vm.runInContext('console.error("卡片报错")', context)
+    for (const fn of pending.splice(0)) fn()
+    assert.equal(reports.at(-1).explicit, false)
+    assert.equal(reports.at(-1).runtime.dom, '')
+    const ask = (source, token) => { for (const fn of listeners) fn({ source, data: { type: 'dsh-tavern-frame-dom-snapshot', token } }) }
+    ask(parent, 'diagnostics-dom')
+    const explicit = reports.at(-1)
+    assert.equal(explicit.explicit, true)
+    assert.match(explicit.runtime.dom, /^<p class="row" data-i="0">第0行 &lt;安全&gt;<\/p>/)
+    assert.match(explicit.runtime.dom, /<!-- 已截断 -->$/)
+    assert.doesNotMatch(explicit.runtime.dom, /host\(\)|data-i="1000"/)
+    assert.equal(explicit.runtime.console[0].args[0], '卡片报错')
+    // 非父页面或其他文档的请求不响应。
+    const count = reports.length
+    ask({}, 'diagnostics-dom'); ask(parent, 'other')
+    assert.equal(reports.length, count)
+  } finally { dom.window.close() }
+})
+
+test('显式 DOM 快照只向前台会话的消息 frame 索取，重建与注销释放等待', async () => {
+  const listeners = new Map(), calls = [], posted = []
+  let tokens = 0
+  const host = {
+    crypto: { randomUUID() { return 'snapshot-' + (++tokens) } },
+    sessionStorage: { getItem() { return null }, setItem() {} }, document: null, setTimeout, clearTimeout,
+    addEventListener(name, handler) { listeners.set(name, handler) }, removeEventListener(name) { listeners.delete(name) },
+    __dshTavernSelectedSessionId: 's1',
+  }
+  const diagnostics = client.createTavernFrameDiagnostics(host)
+  const lifecycle = client.createTavernMessageFrameLifecycle({ sessionId: 's1', content: '<p>卡片</p>', turn: 2, partIndex: 0, eager: true },
+    { window: host, diagnostics, async rpc(method, args, sessionId) { calls.push({ method, args, sessionId }); return { captured: true } } })
+  const frame = { contentWindow: { postMessage(message) { posted.push(message) } } }
+  const doc = lifecycle.snapshot().visibleDocument
+  doc.ref(frame)
+  const stop = lifecycle.start(() => {})
+  assert.equal(diagnostics.size(), 1)
+  const report = (explicit, dom) => listeners.get('message')({ source: frame.contentWindow, data: { type: 'dsh-tavern-frame-runtime', token: doc.token, explicit, runtime: { dom, console: [], network: [], errors: [] } } })
+  // 前台会话：请求 → frame 回传 → 立即写入后结清。
+  const capture = diagnostics.capture('s1')
+  assert.deepEqual({ ...posted.at(-1) }, { type: 'dsh-tavern-frame-dom-snapshot', token: doc.token })
+  report(true, '<p>卡片</p>')
+  assert.equal(await capture, 1)
+  assert.deepEqual([calls.at(-1).method, calls.at(-1).sessionId, calls.at(-1).args.runtime.dom], ['captureDisplayRuntime', 's1', '<p>卡片</p>'])
+  assert.equal(await diagnostics.capture('s2'), 0)
+  // 已排队的报告在切后台后也不能写入。
+  report(false, '')
+  // 切到后台：常规报告不写入，显式请求也不发出。
+  host.__dshTavernSelectedSessionId = 's2'
+  const written = calls.length, sent = posted.length
+  report(false, '')
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  assert.equal(calls.length, written)
+  assert.equal(await diagnostics.capture('s1'), 0)
+  assert.equal(posted.length, sent)
+  // 重建：等待中的请求立即结清为未采集，不等超时。
+  host.__dshTavernSelectedSessionId = 's1'
+  const waiting = diagnostics.capture('s1')
+  doc.ref(null)
+  assert.equal(await waiting, 0)
+  doc.ref(frame)
+  lifecycle.update({ sessionId: 's1', content: '<p>新内容</p>', turn: 2, partIndex: 0, eager: true })
+  const pending = lifecycle.snapshot().pendingDocument
+  const pendingFrame = { contentWindow: { postMessage() {} } }
+  pending.ref(pendingFrame)
+  listeners.get('message')({ source: pendingFrame.contentWindow, data: { type: 'dsh-tavern-frame-runtime', token: pending.token, runtime: { dom: '未切换' } } })
+  report(false, '')
+  assert.equal(await diagnostics.capture('s1'), 0)
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  assert.equal(calls.length, written)
+  stop()
+  assert.equal(diagnostics.size(), 0)
 })
 
 test('standalone /trigger admits a native turn without overwriting the draft or duplicating helper messages', async () => {

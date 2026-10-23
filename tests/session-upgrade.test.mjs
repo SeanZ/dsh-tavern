@@ -10,6 +10,7 @@ import test from 'node:test'
 import { prepareExpandedPatch } from '../tavern-plugin/lib/domain/host-session-patch.js'
 import { encodeCurrentGeneration, encodeMigratedSessionLog, parseSessionLog } from '../tavern-plugin/lib/domain/session-log-codec.js'
 import { migrateSessionDirectory, prepareSessionUpgrade, restoreSessionLog } from '../tavern-plugin/lib/domain/session-upgrade.js'
+import { storyEventTurn, upgradeReferences } from '../tavern-plugin/lib/domain/session-upgrade-references.js'
 import { compactedLegacySession } from './fixtures/compacted-legacy-session.mjs'
 
 // A DSH install with node_modules: TAVERN_DSH_RUNTIME, else the one DSH_BOOT_MODULE lives in.
@@ -455,4 +456,260 @@ test('回合结束后的正文编辑紧跟一次空闲压缩时，编辑并入�
   assert.equal(moved.data.turn, 1)
   assert.equal(artifact.events.find(row => row.type === 'compaction/start').data.turn, null)
   assert.deepEqual(artifact.events.filter(row => row.type === 'turn/start').map(row => row.data.turn), [1, 2])
+})
+
+// 旧版工具提交正文的折叠在 step（或整轮）结束后才结算：先追加 reply-projection 副本，
+// 再用替换盖住调用、回执与副本。两行都在任何 step 之外，v4 无法冷读。
+const projection = (text) => ({
+  id: 'tavern-tool-reply:' + text,
+  role: 'assistant',
+  content: [{ type: 'text', text }],
+  source: { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' },
+})
+// 走工具提交正文的一轮，止于 step/end；at 为首行 seq，调用正文在 at+3，回执在 at+5。
+function submittedTurn(turn, at) {
+  const callId = 'call-' + turn,
+    args = JSON.stringify({ content: '提交正文' + turn })
+  return [
+    { type: 'turn/start', data: { turn } },
+    { type: 'step/start', data: { turn, step: 1 } },
+    { type: 'user/message', data: message('user', '输入' + turn), surfaceOp: 'append' },
+    {
+      type: 'assistant/message',
+      data: {
+        turn,
+        step: 1,
+        stream: [],
+        message: {
+          ...message('assistant', '调用' + turn),
+          content: [{ type: 'tool-call', id: callId, name: 'submit_story', arguments: args }],
+        },
+      },
+      surfaceOp: 'append',
+    },
+    { type: 'tool/call', data: { turn, step: 1, callId, name: 'submit_story', arguments: args } },
+    {
+      type: 'tool/result',
+      data: {
+        turn,
+        step: 1,
+        message: {
+          id: 'receipt-' + turn,
+          role: 'user',
+          source: { kind: 'tool', callId },
+          content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: '已提交' }] }],
+        },
+      },
+      surfaceOp: 'append',
+      sourceEventSeqs: [at + 4],
+    },
+    { type: 'step/end', data: { turn, step: 1 } },
+  ]
+}
+// 旧折叠写下的两行：at 为副本自己的 seq，start 为被折叠回合的首行 seq。
+const folded = (turn, at, start) => [
+  {
+    type: 'assistant/message',
+    data: { turn, step: 1, stream: [], message: projection('提交正文' + turn) },
+    surfaceOp: 'append',
+  },
+  {
+    type: 'assistant/message',
+    data: { turn, step: 1, stream: [], message: projection('提交正文' + turn) },
+    surfaceOp: { op: 'replace', startSeq: start + 3, endSeq: at },
+    sourceEventSeqs: [start + 3, start + 5, at],
+  },
+]
+const closeTurn = (turn) => ({ type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
+const projections = (artifact) =>
+  artifact.events.filter((row) => row.data?.message?.source?.model === 'reply-projection')
+const coordinates = (artifact) => projections(artifact).map((row) => [row.data.turn, row.data.step])
+const turnIds = (artifact) => artifact.events.filter((row) => row.type === 'turn/start').map((row) => row.data.turn)
+const coldTexts = (artifact) =>
+  texts(openSession(restoreSessionLog(parseSessionLog(encodeCurrentGeneration(artifact, catalog)), catalog)))
+
+test('step 结束后的折叠副本与替换并入同一回合的新 step', () => {
+  const old = {
+    header: header('fold-after-step'),
+    events: v3Rows([...submittedTurn(1, 0), ...folded(1, 7, 0), closeTurn(1), ...storyTurn(2)]),
+  }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(coordinates(artifact), [
+    [1, 2],
+    [1, 2],
+  ])
+  assert.deepEqual(
+    artifact.events.filter((row) => row.type === 'step/start' && row.data.turn === 1).map((row) => row.data.step),
+    [1, 2],
+  )
+  assert.deepEqual(turnIds(artifact), [1, 2])
+  assert.ok(
+    projections(artifact).every((row) => row.data.message.source.tavernStoryTurn === undefined),
+    '回合号未变，不需要故事回合标记',
+  )
+  assert.deepEqual(coldTexts(artifact), ['输入1', '提交正文1', '输入2', '正文2'])
+})
+
+test('回合结束后的折叠副本移入下一回合，旧 seq 引用与故事回合保留', () => {
+  const old = {
+    header: header('fold-after-turn'),
+    events: v3Rows([...submittedTurn(1, 0), closeTurn(1), ...folded(1, 8, 0), ...storyTurn(2)]),
+  }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(coordinates(artifact), [
+    [2, 1],
+    [2, 1],
+  ])
+  assert.deepEqual(turnIds(artifact), [1, 2], '不新开回合，原有回合号不变')
+  const references = upgradeReferences(artifact.events)
+  const [shown, replacement] = projections(artifact)
+  assert.equal(artifact.events[references.sequence(8, 3)], shown)
+  assert.equal(artifact.events[references.sequence(9, 3)], replacement)
+  assert.deepEqual(
+    replacement.sourceEventSeqs,
+    [3, 5, 8].map((seq) => references.sequence(seq, 3)),
+  )
+  for (const row of [shown, replacement]) {
+    assert.equal(row.data.message.source.tavernStoryTurn, 1)
+    assert.equal(storyEventTurn(row), 1)
+    assert.equal(references.turn(row), 1)
+  }
+  assert.deepEqual(coldTexts(artifact), ['输入1', '提交正文1', '输入2', '正文2'])
+})
+
+test('日志末尾回合结束后的折叠副本得到一个关闭的管理回合', () => {
+  const old = {
+    header: header('fold-at-eof'),
+    events: v3Rows([...submittedTurn(1, 0), closeTurn(1), ...folded(1, 8, 0)]),
+  }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(coordinates(artifact), [
+    [2, 1],
+    [2, 1],
+  ])
+  assert.deepEqual(
+    artifact.events.filter((row) => row.type === 'turn/end').map((row) => row.data.turn),
+    [1, 2],
+  )
+  assert.ok(projections(artifact).every((row) => storyEventTurn(row) === 1))
+  assert.deepEqual(coldTexts(artifact), ['输入1', '提交正文1'])
+})
+
+test('step 结束后紧跟同一回合的下一 step 时，折叠行借用那个 step，不另开', () => {
+  const old = {
+    header: header('fold-before-next-step'),
+    events: v3Rows([
+      ...submittedTurn(1, 0),
+      ...folded(1, 7, 0),
+      { type: 'step/start', data: { turn: 1, step: 2 } },
+      {
+        type: 'assistant/message',
+        data: { turn: 1, step: 2, stream: [], message: message('assistant', '续写') },
+        surfaceOp: 'append',
+      },
+      { type: 'step/end', data: { turn: 1, step: 2 } },
+      closeTurn(1),
+    ]),
+  }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(coordinates(artifact), [
+    [1, 2],
+    [1, 2],
+  ])
+  assert.deepEqual(
+    artifact.events.filter((row) => row.type === 'step/start').map((row) => row.data.step),
+    [1, 2],
+  )
+  assert.deepEqual(coldTexts(artifact), ['输入1', '提交正文1', '续写'])
+})
+
+test('分支继承段末尾的折叠行留在继承段的原回合里', () => {
+  const old = {
+    header: header('fold-before-seed'),
+    events: v3Rows([
+      ...submittedTurn(1, 0),
+      closeTurn(1),
+      ...folded(1, 8, 0),
+      { type: 'session/end-seed', data: { inherited: true } },
+      ...storyTurn(2),
+    ]),
+  }
+  const { type: _type, ...logicalHeader } = old.header
+  old.header = migration.historicalSessionFormatCatalog.encodeCurrentHeader({ ...logicalHeader, isSeeded: true }, 10)
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.equal(artifact.inheritedEventCount, 10)
+  assert.deepEqual(coordinates(artifact), [
+    [1, 1],
+    [1, 1],
+  ])
+  assert.ok(
+    projections(artifact).every((row) => artifact.events.indexOf(row) < 10),
+    '折叠行仍属于继承段',
+  )
+  assert.deepEqual(turnIds(artifact), [1, 2])
+  assert.deepEqual(coldTexts(artifact), ['输入1', '提交正文1', '输入2', '正文2'])
+})
+
+test('回合结束后的折叠行紧跟空闲压缩时并入上一回合，压缩仍在回合之外', () => {
+  const old = {
+    header: header('fold-before-compaction'),
+    events: v3Rows([
+      ...submittedTurn(1, 0),
+      closeTurn(1),
+      ...folded(1, 8, 0),
+      ...compaction([2, 9], [2, 9], 10),
+      ...storyTurn(2),
+    ]),
+  }
+  const artifact = prepareSessionUpgrade(old, migration).artifact
+  assert.deepEqual(coordinates(artifact), [
+    [1, 1],
+    [1, 1],
+  ])
+  assert.equal(artifact.events.find((row) => row.type === 'compaction/start').data.turn, null)
+  assert.deepEqual(turnIds(artifact), [1, 2])
+  assert.deepEqual(coldTexts(artifact), ['摘要', '输入2', '正文2'])
+})
+
+test('折叠旧档在磁盘上升级一次即可冷读，重复运行不改动新版文件', async (t) => {
+  const directory = await root(t)
+  const source = await save(directory, {
+    header: header('fold-disk'),
+    events: v3Rows([...submittedTurn(1, 0), closeTurn(1), ...folded(1, 8, 0), ...storyTurn(2)]),
+  })
+  const result = await migrateSessionDirectory(directory, migration)
+  assert.equal(result.migrated, 1, JSON.stringify(result.failures))
+  assert.deepEqual(await readFile(source.file), source.bytes)
+  const current = await readFile(source.target)
+  assert.deepEqual(texts(openSession(restoreSessionLog(parseSessionLog(current), catalog))), [
+    '输入1',
+    '提交正文1',
+    '输入2',
+    '正文2',
+  ])
+  const again = await migrateSessionDirectory(directory, migration)
+  assert.equal(again.unchanged, 1)
+  assert.equal(again.migrated, 0)
+  assert.deepEqual(await readFile(source.target), current)
+  assert.equal(
+    (await readdir(source.directory)).some((name) => name.includes('.tmp-')),
+    false,
+  )
+})
+
+test('无法修复的折叠旧档保持旧代，重复运行仍不生成新版文件', async (t) => {
+  const directory = await root(t)
+  const events = v3Rows([...submittedTurn(1, 0), closeTurn(1), ...folded(1, 8, 0)])
+  events[9].sourceEventSeqs = [3, 5, 999]
+  const source = await save(directory, { header: header('fold-broken'), events })
+  for (let run = 0; run < 2; run++) {
+    const result = await migrateSessionDirectory(directory, migration)
+    assert.equal(result.refused, 1, JSON.stringify(result))
+    assert.equal(existsSync(source.target), false)
+    assert.deepEqual(await readFile(source.file), source.bytes)
+    assert.equal(
+      (await readdir(source.directory)).some((name) => name.includes('.tmp-')),
+      false,
+    )
+  }
 })

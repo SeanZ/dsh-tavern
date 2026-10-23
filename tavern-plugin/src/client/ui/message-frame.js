@@ -345,6 +345,11 @@
 		}
 
 		function tavernStoryTurnForDshTurn(view, turn) {
+            // 正文及其操作按钮使用同一行计划；窗口外或旧视图才回退到旧映射。
+            if (view?.transcriptTurns && (view.transcriptFrom == null || Number(turn) >= Number(view.transcriptFrom))) {
+                const row = view.transcriptTurns[String(turn)];
+                return row?.reply === 0 ? 0 : Number(row?.story ?? turn);
+            }
 			const mappings = view && view.regeneratedDshTurns && typeof view.regeneratedDshTurns === "object" ? view.regeneratedDshTurns : {};
 			const lookup = createSessionViewReader.storyTurnLookup;
 			if (lookup?.has(mappings)) return lookup.read(mappings,turn);
@@ -487,7 +492,7 @@
 				// Rounds past the render depth keep their prose; the card's HTML waits for one click.
 				if (typeof options.deferHtml === "function") {
 					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== index) return null;
-					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近 3 轮渲染卡片界面，更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
+					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
 				}
 				// Plugin markers inside card HTML cannot be split out; show them after that part.
 				const pluginHtml = options.plugin && !options.openingPreview ? options.plugin.renderHtmlMarkers(String(part.content !== undefined ? part.content : part.html || "")) : null;

@@ -319,6 +319,27 @@
 		}
 
 		function createTavernAssistantRendererFeatureModule() {
+			// The row plan hides rolled-back and superseded turns, but the host keeps their
+			// nodes mounted forever. Decide before the row's own hooks run, so a hidden row
+			// only watches its plan entry, not the view, the chat or its frames.
+			function TavernPlannedRow(props) {
+				const turn = String(props.turn);
+				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				React.useEffect(function () { return tavernChatPresence.mount(props.sessionId); }, [props.sessionId]);
+				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
+			}
+			// Only the latest rounds run a card's HTML (heavy status bars, input templates);
+			// earlier ones show text and a 「渲染此轮」 button. Watching the latest round lets a
+			// floor drop its frames as soon as it leaves the window, not on its next render.
+			// A phone layout keeps one live round, wider layouts three.
+			const TAVERN_LIVE_HTML_ROUNDS = narrowLayout() ? 1 : 3;
+			function useTavernHtmlDeferred(sessionId, storyTurn) {
+				const subscribe = React.useCallback(function (notify) { return liveTavernView.subscribe(sessionId, notify, [["$projectionLatestTurn"]]); }, [sessionId]);
+				const read = React.useCallback(function () {
+					return storyTurn > 0 && tavernLatestProjectionTurn(liveTavernView.getSnapshot(sessionId).view) - storyTurn >= TAVERN_LIVE_HTML_ROUNDS;
+				}, [sessionId, storyTurn]);
+				return React.useSyncExternalStore(subscribe, read, read);
+			}
 			function TavernUserNodeView(props) {
 				const data = props.node.data;
 				const location = props.node.location;
@@ -331,6 +352,8 @@
 				const editedText = liveState.view?.userInputEdits?.[String(turn)];
 				const text = typeof editedText === "string" ? editedText : tavernUserTextForTurn(liveState.view, turn, data.content);
 				const [copied, setCopied] = React.useState(false);
+				const [renderTemplate, setRenderTemplate] = React.useState(false);
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, tavernStoryTurnForDshTurn(liveTavernView.getSnapshot(props.sessionId).view, turn));
 				const copyTimer = React.useRef(null);
 				React.useEffect(function () { return function () { if (copyTimer.current !== null) window.clearTimeout(copyTimer.current); }; }, []);
 				function copy() {
@@ -349,8 +372,10 @@
 				const latestUserTurn = props.useChat(React.useCallback(function (snapshot) {
 					return latestTavernUserTurn(snapshot, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null);
 				}, [transcriptTurns, transcriptFrom]));
-				const selectAssistantId = React.useCallback(function (snapshot) { return tavernAssistantMessageIdForTurn(snapshot, turn); }, [turn]);
-				const assistantMessageId = props.useChat(selectAssistantId);
+				// A user message belongs to the round its own native turn closes; that
+				// closing reply carries the fork target (only completed turns can fork).
+				const tail = props.useTurnData("turn-tail");
+				const assistantMessageId = tail && tail.closing && tail.closing.finalNode ? tail.closing.finalNode.messageId : null;
 				const forkState = useScopedLiveTavernView(props.sessionId, "user-fork:" + String(assistantMessageId || ""), [["mode"], ["forkTurnsByMessageId", String(assistantMessageId || "")]]);
 				const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 				const [forking, setForking] = React.useState(false);
@@ -389,8 +414,10 @@
 				});
 				const time = Number.isFinite(Number(data.time)) ? new Date(Number(data.time)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 				const templateDisplay = typeof editedText === "string" ? null : liveState.view?.inputTemplateDisplays?.[turn];
+				const deferTemplate = Boolean(templateDisplay) && outsideHtmlWindow && !renderTemplate;
 				return React.createElement("div", { className: "dsh-tavern-user-row" },
-					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text), extras) : null),
+					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay && !deferTemplate ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text),
+						deferTemplate ? React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: function () { setRenderTemplate(true); } }, "渲染此轮") : null, extras) : null),
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null,
 						canEdit ? React.createElement(DshUi.Tooltip, { label: "编辑这条输入", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-edit", "aria-label": "编辑这条输入", disabled: editBusy, onClick: edit }, React.createElement(DshUi.IconEditOutlineRegular, null))) : null,
 						canFork ? React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork }, React.createElement(DshUi.IconBranchOutlineRegular, null))) : null,
@@ -536,7 +563,7 @@
 				const turn = turnRef ? Number(turnRef.turn) : 0;
 				const settled = data.status !== "running";
 				const revision = String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "");
-				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)]]);
+				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)], ["transcriptTurns", String(turn)], ["transcriptFrom"]]);
 				const storyTurn = tavernStoryTurnForDshTurn(mapping.view, turn);
 				const currentView = liveTavernView.getSnapshot(props.sessionId).view;
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));
@@ -549,10 +576,9 @@
 				const ownsTurn = !tail || !tail.closing || !data.finalNode || tail.closing.finalNode.seq === data.finalNode.seq;
 					const projection = settled && ownsTurn ? tavernProjectionForTurn(liveState.view, storyTurn) : null;
 					const latestProjectionTurn = tavernLatestProjectionTurn(liveState.view);
-				// Only the latest 3 rounds run a card's HTML interface (heavy status bars);
-				// earlier ones show text and a 「渲染此轮」 button.
 				const [renderRound, setRenderRound] = React.useState(false);
-				const deferHtml = !renderRound && storyTurn > 0 && latestProjectionTurn - storyTurn >= 3 ? function () { setRenderRound(true); } : null;
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, storyTurn);
+				const deferHtml = !renderRound && outsideHtmlWindow ? function () { setRenderRound(true); } : null;
                 React.useEffect(function () {
                     if(!historyNode.current || !currentView?.historyWindow || !ownsTurn || projection || storyTurn<=0 || storyTurn>=tavernLatestProjectionTurn(currentView))return;
                     let cancelWait = null;
@@ -654,9 +680,6 @@
 					t: props.t
 				});
 				const distantHeight = useTavernDistantFloor(historyNode, settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
-				// A reply the row plan does not draw (an old body being regenerated, a repair
-				// copy): its row is hidden; render nothing into it either. After all hooks.
-				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
 				// A registered presenter may fold this finished reply into one line; only the step
@@ -795,7 +818,11 @@
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
 						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
-						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
+						// A reply the row plan does not draw (an old body being regenerated, a repair copy).
+						const data = props.node.data;
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
+							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				input.ctx.effect(function () {
@@ -803,7 +830,10 @@
 						name: "conversation.chat.node",
 						key: "user",
 						priority: -1
-					}, TavernUserNodeView); });
+					}, function (props) {
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "user", revision: String(props.node.data.time || "") },
+							React.createElement(TavernUserNodeView, props));
+					}); });
 				}, "dsh-tavern: raw user message renderer");
 				input.ctx.effect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({

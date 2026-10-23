@@ -1,3 +1,5 @@
+import { createReplySeatResolver } from './reply-seat.js'
+import { isDeepStrictEqual } from 'node:util'
 import { storyEventTurn } from './session-upgrade-references.js'
 import { isCompactionCheckpoint } from './compaction-checkpoint.js'
 import { inputAttachments } from './player-input-content.js'
@@ -7,7 +9,7 @@ import { restoredSurfaceSeqs } from './surface-restoration.js'
 import { sessionEvents, surfaceReplacementRange } from './session-events.js'
 import { createSurfaceOwnership, planSurfaceRecovery, planSurfaceRange, SurfaceRecoveryError, OWNED } from './surface-recovery.js'
 import { randomUUID } from 'node:crypto'
-import { inputKind, isTurnInput, isNewTurnInput, isNewPlayerInput, isFailedTurnEnd } from './session-turn-input.js'
+import { inputKind, inputEventForTurn, isTurnInput, isNewTurnInput, isNewPlayerInput, isFailedTurnEnd } from './session-turn-input.js'
 import { resolveRoundAnchor } from './round-anchor.js'
 import { isPluginSource, isProducerSource, sourceProducerName } from './message-source.js'
 
@@ -202,26 +204,15 @@ export function supersededRegenerationTurns({ events = [], nodes = [], keepTurns
 export function projectedReplyTurns({ events = [], nodes = [] } = {}) {
   const visible = new Set(nodes.map(Number))
   const bySeq = new Map(events.filter(event => Number.isSafeInteger(event?.seq)).map(event => [event.seq, event]))
+  const resolveSeat = createReplySeatResolver(seq => bySeq.get(seq))
   const turns = new Map()
   for (const event of events) {
     if (event?.type !== 'assistant/message' || event.surfaceOp?.op !== 'replace') continue
     if (visible.size && !visible.has(Number(event.seq))) continue
     const story = Number(event.data?.message?.source?.tavernStoryTurn)
     if (!Number.isSafeInteger(story) || story < 1) continue
-    const range = surfaceReplacementRange(event.surfaceOp)
-    const end = bySeq.get(range.end)
-    const drawn = end?.type === 'assistant/message' && end.surfaceOp === 'append' ? Number(end.data?.turn) : NaN
-    if (Number.isSafeInteger(drawn) && drawn > 0) { turns.set(story, drawn); continue }
-    // Inside the range, the last assistant append with text is the row the
-    // transcript drew for this round (the fold copy of a tool submission, or the
-    // attempt's own reply). Its text is the previous body when applying a
-    // replacement, so the row is located by shape, not by matching the new body.
-    const copy = events.findLast(source => source?.type === 'assistant/message' &&
-      source.surfaceOp === 'append' &&
-      Number(source.seq) >= Number(range.start) && Number(source.seq) <= Number(range.end) &&
-      contentText(source.data?.message) !== '' &&
-      Number(source.data?.turn) > 0 && Number(source.data?.turn) !== story)
-    turns.set(story, copy ? Number(copy.data.turn) : Number(event.data?.turn))
+    const seat = resolveSeat(event)
+    if (seat) turns.set(story, seat.turn)
   }
   return turns
 }
@@ -305,7 +296,11 @@ export function keptPlayerInputTurns(input = {}) {
       queued = []
       continue
     }
-    if (event.type === 'turn/end') { turn = null; continue }
+    if (event.type === 'turn/end') {
+      // 已完成的普通输入不应跨越边界，成为随后无输入尝试的玩家输入。
+      if (event.data?.reason?.kind === 'completed') lastInput = null
+      turn = null; continue
+    }
     if (event.type === 'user/message' && event.surfaceOp === 'append' && event.data?.source?.kind === 'user') {
       if (contentText(event.data) === '') continue
       const item = { seq: Number(event.seq), turn }
@@ -462,10 +457,10 @@ export function replayableFailedTurn(input) {
     startSeq = Math.max(startSeq, Number(event.seq) || 0)
   }
   if (startSeq < 0) return null
-  for (const event of events) {
+  for (const event of [inputEventForTurn({ events }, turn)]) {
     if (!event || event.type !== 'user/message') continue
     const seq = Number(event.seq)
-    if (!Number.isSafeInteger(seq) || seq <= startSeq || seq >= endSeq) continue
+    if (!Number.isSafeInteger(seq) || seq >= endSeq) continue
     // A template edit of an earlier input can land inside this turn; it is not its input.
     if (!isReplayableInputSource(event.data && event.data.source) || !isNewTurnInput(event)) continue
     const userText = contentText(event.data)
@@ -633,13 +628,28 @@ export function regenerationProjection(replacement, data, operationId) {
  */
 export function applyRegenerationProjection(session, projection) {
   const events = sessionEvents(session)
+  const replaceCleanups = () => {
+    for (const cleanup of projection.cleanups || []) replaceSessionSurface(session, 'user/message', cleanup.data, cleanup.range)
+  }
+  const prior = events.findLast(event => event?.type === 'assistant/message' && event.surfaceOp?.op === 'replace' &&
+    event.data?.message?.id === projection.data?.message?.id)
+  // 旧版本为绘制副本扩大过提交范围。相同操作已落盘时按原始意图确认，不再次覆盖已消失的目标。
+  if (prior && surfaceReplacementRange(prior.surfaceOp).start === projection.range.start &&
+      projection.range.sourceEventSeqs.every(seq => prior.sourceEventSeqs?.includes(seq)) &&
+      isDeepStrictEqual(prior.data.message, projection.data.message)) {
+    replaceCleanups()
+    return
+  }
   const blocks = Array.isArray(projection.data?.message?.content) ? projection.data.message.content : []
   const body = blocks.filter(block => block?.type === 'text').map(block => block.text).join('')
   // Judge by the shape the range ends on, never by the message source: a
   // projection inherits the source of the reply it replaces, so a source check
   // silently skips the copy for every ordinary round.
   const endEvent = events.find(event => Number(event?.seq) === Number(projection.range?.end))
-  const needsTranscriptCopy = body !== '' && endEvent?.type === 'assistant/message' && endEvent.surfaceOp !== 'append'
+  const resolveSeat = createReplySeatResolver(seq => eventAt(events, seq))
+  // 单节点恢复已有可绘制座位，无需追加副本跨过独立的失败清理节点。
+  const terminalSeat = projection.range?.start === projection.range?.end && resolveSeat(endEvent)
+  const needsTranscriptCopy = !terminalSeat && body !== '' && endEvent?.type === 'assistant/message' && endEvent.surfaceOp !== 'append'
   // Only a copy written AFTER the range may be reused. A fold copy inside the
   // range is the old turn's row: it stays model-only once that turn is hidden as
   // superseded, so reusing it leaves the round blank. Rewriting it as the
@@ -650,9 +660,6 @@ export function applyRegenerationProjection(session, projection) {
         (event.data?.message?.content || []).some(block => block?.type === 'text' && block.text === body))
     : undefined
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.map(Number) : []
-  const replaceCleanups = () => {
-    for (const cleanup of projection.cleanups || []) replaceSessionSurface(session, 'user/message', cleanup.data, cleanup.range)
-  }
   if (!needsTranscriptCopy) {
     replaceSessionSurface(session, 'assistant/message', projection.data, projection.range)
     replaceCleanups()
@@ -734,7 +741,9 @@ export function planFailedTurnSurface(input) {
   const turn = Math.max(0, Number(input && input.turn) || 0)
   const interval = turnIntervals(events).findLast(interval => interval.turn === turn)
   if (!interval) return null
-  const { start: startSeq, end: endSeq } = interval
+  const inputSeq = inputEventForTurn({ events }, turn)?.seq
+  const startSeq = Number.isSafeInteger(inputSeq) ? Math.min(interval.start, inputSeq - 1) : interval.start
+  const endSeq = interval.end
 
   return planSurfaceRecovery({
     nodes,

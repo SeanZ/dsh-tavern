@@ -3489,6 +3489,27 @@ window.__ModuleLoader__.load({
                 parkingRoots.set(root, container);
             }
             let observer = null;
+            // 正在处理渲染事件的消息；只有恰好一条在途时，新增节点才归属该消息，避免并发时串号。
+            const renderingMessages = new Set();
+            function currentMessage() {
+                return renderingMessages.size === 1 ? renderingMessages.values().next().value : null;
+            }
+            // 空作用域不挂文档观察器：首次登记节点时才开始观察；按消息释放后若已无节点则断开。
+            function ensureObserver() {
+                if (observer || disposed || !host || !host.MutationObserver) return;
+                observer = new host.MutationObserver(function (changes) {
+                    for (const change of changes) for (const node of change.addedNodes) {
+                        if (created.has(node)) remember(node, change.target);
+                    }
+                    park();
+                });
+                for (const root of roots) observer.observe(root, { childList: true });
+            }
+            function releaseObserverIfEmpty() {
+                if (!observer || owned.size || created.size) return;
+                observer.disconnect();
+                observer = null;
+            }
             function parkNode(node, previous) {
                 previous.nextSibling = node.nextSibling;
                 const container = parkingRoots.get(previous.root);
@@ -3514,24 +3535,55 @@ window.__ModuleLoader__.load({
                 owners.set(node, identity);
                 node.setAttribute?.("data-dsh-tavern-host-artifact", "");
                 owned.set(node, { hidden: node.hidden, disabled: node.disabled, body: root === hostDocument.body,
-                    root: root, nextSibling: node.nextSibling, parked: false });
+                    root: root, nextSibling: node.nextSibling, parked: false, message: currentMessage() });
+                ensureObserver();
             }
             let disposed = false, visible = true;
             const created = new Set();
             function captureCreated() {
                 for (const node of created) if (roots.includes(node.parentNode)) remember(node, node.parentNode);
             }
-            if (host && host.MutationObserver) {
-                observer = new host.MutationObserver(function (changes) {
-                    for (const change of changes) for (const node of change.addedNodes) {
-                        if (created.has(node)) remember(node, change.target);
-                    }
-                    park();
-                });
-                for (const root of roots) observer.observe(root, { childList: true });
+            function releaseArtifacts(message) {
+                const jq = host && host.jQuery;
+                for (const [node, previous] of Array.from(owned)) {
+                    if (previous.message !== message) continue;
+                    if (jq && typeof jq.cleanData === "function" && node.nodeType === 1) jq.cleanData([node].concat(Array.from(node.getElementsByTagName("*"))));
+                    owned.delete(node); owners.delete(node);
+                    for (const tracked of created) if (tracked === node || node.contains?.(tracked)) created.delete(tracked);
+                    node.remove();
+                }
+                releaseObserverIfEmpty();
             }
             return Object.freeze({
-                trackNode: function (node) { created.add(node); return node; },
+                trackNode: function (node) { if (!disposed) { created.add(node); ensureObserver(); } return node; },
+                // 返回结束函数；同一消息可重入，计数归零才结束归属。
+                beginMessage: function (key) {
+                    if (disposed) return function () {};
+                    captureCreated();
+                    let message = Array.from(renderingMessages).find(item => item.key === key && !item.released);
+                    if (!message) { message = { key, count: 0, released: false }; renderingMessages.add(message); }
+                    message.count++;
+                    let ended = false;
+                    return function () {
+                        if (ended) return;
+                        ended = true;
+                        // 观察器回调是微任务；先收下事件期间插入的节点再结束归属。
+                        captureCreated();
+                        if (--message.count === 0) renderingMessages.delete(message);
+                        // 消息可能先卸载、异步事件后结束；迟到的浮层也随原渲染释放。
+                        if (message.released) releaseArtifacts(message);
+                    };
+                },
+                releaseMessage: function (key) {
+                    if (disposed) return;
+                    captureCreated();
+                    const messages = new Set(renderingMessages);
+                    for (const previous of owned.values()) if (previous.message) messages.add(previous.message);
+                    for (const message of messages) if (message.key === key) {
+                        message.released = true;
+                        releaseArtifacts(message);
+                    }
+                },
                 findElementById: function (id) {
                     const node = hostDocument.getElementById(id);
                     if (node && (!ownerOf(node) || ownerOf(node) === identity)) return node;
@@ -3636,6 +3688,7 @@ window.__ModuleLoader__.load({
                     }
                     owned.clear();
                     created.clear();
+                    renderingMessages.clear();
                 }
             });
         }
@@ -5662,6 +5715,10 @@ function tavernModelRefusalNotice(text) {
 		        }).join('\n');
 		    }
 		    if (shared.users === 1 || options.colors) setColors(options.colors);
+		    // 静态楼层位于 Shadow DOM，文档中的 ::highlight 样式不会跨越样式边界。
+		    const scope = typeof root.getRootNode === 'function' ? root.getRootNode() : null;
+		    const scopedStyle = scope && scope.host ? style.cloneNode(true) : null;
+		    if (scopedStyle) scope.appendChild(scopedStyle);
 		    // This instance's ranges, so a refresh or dispose removes only its own.
 		    const owned = [];
 		    function clearOwned() {
@@ -5711,6 +5768,8 @@ function tavernModelRefusalNotice(text) {
 		    }
 		    function refresh() {
 		        timer = null;
+		        // 定时器排队期间可能已离屏；此时不清除旧区间，等恢复后再扫。
+		        if (!disposed && enabled && paused()) { dirty = true; return; }
 		        clearOwned();
 		        if (disposed || !enabled) return;
 		        computedColors = new WeakMap(); explicitColors = new WeakMap();
@@ -5737,9 +5796,29 @@ function tavernModelRefusalNotice(text) {
 		        }
 		        flush();
 		    }
-		    function schedule() { if (!disposed && enabled && timer === null) timer = win.setTimeout(refresh, 32); }
+		    // 离屏或页面隐藏时暂停扫描：保留已有区间，只记下“有变化”，恢复可见后再刷新一次。
+		    // 预读边距让即将滚入视口的消息提前着色。
+		    const visibleMargin = '600px 0px';
+		    let onscreen = true, dirty = false;
+		    function paused() { return doc.visibilityState === 'hidden' || !onscreen; }
+		    function schedule() {
+		        if (disposed || !enabled) return;
+		        if (paused()) { dirty = true; return; }
+		        if (timer === null) timer = win.setTimeout(refresh, 32);
+		    }
+		    function resume() {
+		        if (!dirty || paused()) return;
+		        dirty = false;
+		        schedule();
+		    }
 		    const observer = new win.MutationObserver(schedule);
 		    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'color', 'hidden'] });
+		    const viewport = typeof win.IntersectionObserver === 'function' ? new win.IntersectionObserver(function (entries) {
+		        onscreen = entries[entries.length - 1].isIntersecting;
+		        resume();
+		    }, { rootMargin: visibleMargin }) : null;
+		    if (viewport) viewport.observe(root);
+		    doc.addEventListener('visibilitychange', resume);
 		    shared.themed.add(schedule);
 		    // Batch mounts before reading computed styles; each message adds a stylesheet.
 		    schedule();
@@ -5748,14 +5827,17 @@ function tavernModelRefusalNotice(text) {
 		        setEnabled(value) {
 		            enabled = value !== false;
 		            if (timer !== null) win.clearTimeout(timer);
-		            timer = null;
+		            timer = null; dirty = false;
 		            if (enabled) schedule();
 		            else clearOwned();
 		        },
 		        dispose() {
 		            if (disposed) return;
 		            disposed = true; observer.disconnect(); if (timer !== null) win.clearTimeout(timer);
+		            if (viewport) viewport.disconnect();
+		            doc.removeEventListener('visibilitychange', resume);
 		            clearOwned();
+		            if (scopedStyle) scopedStyle.remove();
 		            shared.themed.delete(schedule);
 		            if (--shared.users) return;
 		            shared.theme.disconnect();
@@ -5953,9 +6035,27 @@ function tavernModelRefusalNotice(text) {
 		    };
 		}
 
+		// 一次高度采样内同一节点的样式与几何只读一次；采样结束即丢弃，下次采样重新读取。
+		// 以源码注入 iframe，只能使用自身作用域内的名字。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernLayoutSample() {
+			var styles = new Map(), rects = new Map();
+			return {
+				style: function (node) {
+					if (!styles.has(node)) styles.set(node, getComputedStyle(node));
+					return styles.get(node);
+				},
+				rect: function (node) {
+					if (!rects.has(node)) rects.set(node, node.getBoundingClientRect());
+					return rects.get(node);
+				}
+			};
+		}
+
 		// A viewport-sized card cannot determine its own iframe viewport. Use the host
 		// viewport as a floor for page layouts, while retaining authored local scrollers.
-		function tavernFrameViewportFloor() {
+		function tavernFrameViewportFloor(sample) {
+			if (!sample) sample = { style: function (node) { return getComputedStyle(node); }, rect: function (node) { return node.getBoundingClientRect(); } };
 			var viewport = 600;
 			try { viewport = window.parent.innerHeight || viewport; } catch (_) {}
 			viewport = Math.max(160, Math.min(1200, viewport));
@@ -5972,8 +6072,8 @@ function tavernModelRefusalNotice(text) {
 		                if (!summary || !summary.contains(node)) return false;
 		            }
 		        }
-				var rect = node.getBoundingClientRect();
-				var style = getComputedStyle(node);
+				var rect = sample.rect(node);
+				var style = sample.style(node);
 				return rect.width > window.innerWidth / 2 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
 			}
 			function matchesRules(rules) {
@@ -5991,13 +6091,140 @@ function tavernModelRefusalNotice(text) {
 			}
 			for (var node of document.body.querySelectorAll('*')) {
 				// Check the cheap conditions first; visible() measures layout.
-				var style = getComputedStyle(node);
+				var style = sample.style(node);
 				// Full-page fixed shells have no normal-flow height at all. Floating
 				// buttons or small dialogs must not enlarge the frame.
 				if (!viewportHeight(node.style) && !(style.position === 'fixed' && style.top === '0px' && style.bottom === '0px')) continue;
 				if (visible(node)) return viewport;
 			}
 			return 0;
+		}
+		// 显式快照只访问预算内的节点，再序列化选中的小树。节点、深度及 UTF-8 字节都有硬上限；
+		// 不整树 clone，不读取 innerHTML，也不先展开全部兄弟节点或转义超长文本。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function captureTavernBoundedDom(root, budget) {
+		    function limit(name, fallback) {
+		        var value = Number(budget && budget[name]);
+		        return Number.isFinite(value) && value > 0 ? Math.min(fallback, Math.floor(value)) : fallback;
+		    }
+		    var limits = { nodes: limit("nodes", 2000), depth: limit("depth", 32), bytes: limit("bytes", 100000) };
+		    var nodes = 0,
+		        visited = 0,
+		        bytes = 0,
+		        deepest = 0,
+		        truncated = false;
+		    var voids = /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/;
+		    function escaped(value, available, attribute) {
+		        var out = "",
+		            used = 0,
+		            index = 0;
+		        for (; index < value.length; index += part.length) {
+		            var code = value.codePointAt(index),
+		                part = String.fromCodePoint(code);
+		            var replacement =
+		                part === "&"
+		                    ? "&amp;"
+		                    : part === "<"
+		                      ? "&lt;"
+		                      : part === ">"
+		                        ? "&gt;"
+		                        : attribute && part === '"'
+		                          ? "&quot;"
+		                          : part;
+		            var cost =
+		                replacement === part ? (code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4) : replacement.length;
+		            if (used + cost > available) break;
+		            out += replacement;
+		            used += cost;
+		        }
+		        return { text: out, bytes: used, complete: index === value.length };
+		    }
+		    function own(node) {
+		        if (!/^(?:script|style)$/i.test(node.tagName)) return false;
+		        // 属性遍历也受字节预算约束，避免巨大属性集合绕过工作量限制。
+		        for (var i = 0; i < Math.min(node.attributes.length, limits.bytes); i++) {
+		            if (node.attributes[i].name.indexOf("data-dsh-tavern") === 0) return true;
+		        }
+		        return false;
+		    }
+		    function tagParts(node, available) {
+		        var name = node.tagName.toLowerCase(),
+		            close = voids.test(name) ? "" : "</" + name + ">";
+		        var head = "<" + name;
+		        var boundedName = escaped(name, available, false);
+		        if (!boundedName.complete) return null;
+		        var cost = 2 + boundedName.bytes + (close ? 3 + boundedName.bytes : 0);
+		        if (cost > available) return null;
+		        for (var i = 0; i < node.attributes.length; i++) {
+		            var attr = node.attributes[i],
+		                prefix = " " + attr.name + '="';
+		            var boundedAttribute = escaped(attr.name, available - cost, false);
+		            if (!boundedAttribute.complete) return null;
+		            cost += boundedAttribute.bytes + 4;
+		            if (cost > available) return null;
+		            var value = escaped(attr.value, available - cost, true);
+		            if (!value.complete) return null;
+		            head += prefix + value.text + '"';
+		            cost += value.bytes;
+		        }
+		        return { head: head + ">", close: close, bytes: cost };
+		    }
+		    var kept = { children: [] };
+		    var stack = [{ next: root.firstChild, depth: 1, parent: kept }];
+		    while (stack.length) {
+		        var frame = stack[stack.length - 1],
+		            node = frame.next;
+		        if (!node) {
+		            stack.pop();
+		            continue;
+		        }
+		        if (visited >= limits.nodes || bytes >= limits.bytes) {
+		            truncated = true;
+		            break;
+		        }
+		        visited++;
+		        frame.next = node.nextSibling;
+		        if (node.nodeType !== 1 && node.nodeType !== 3) continue;
+		        if (frame.depth > limits.depth) {
+		            truncated = true;
+		            continue;
+		        }
+		        if (node.nodeType === 1 && own(node)) continue;
+		        var entry;
+		        if (node.nodeType === 3) {
+		            var text = escaped(node.data, limits.bytes - bytes, false);
+		            entry = { text: text.text };
+		            bytes += text.bytes;
+		            if (!text.complete) truncated = true;
+		        } else {
+		            var tag = tagParts(node, limits.bytes - bytes);
+		            if (!tag) {
+		                truncated = true;
+		                break;
+		            }
+		            entry = { head: tag.head, close: tag.close, children: [] };
+		            bytes += tag.bytes;
+		        }
+		        frame.parent.children.push(entry);
+		        nodes++;
+		        deepest = Math.max(deepest, frame.depth);
+		        if (node.nodeType === 1 && entry.close)
+		            stack.push({ next: node.firstChild, depth: frame.depth + 1, parent: entry });
+		        if (node.nodeType === 3 && !text.complete) break;
+		    }
+		    function serialize(entry) {
+		        return entry.text !== undefined
+		            ? entry.text
+		            : entry.head + entry.children.map(serialize).join("") + entry.close;
+		    }
+		    var dom = kept.children.map(serialize).join("");
+		    var marker = "<!-- 已截断 -->",
+		        markerBytes = 18;
+		    if (truncated && bytes + markerBytes <= limits.bytes) {
+		        dom += marker;
+		        bytes += markerBytes;
+		    }
+		    return { dom: dom, truncated: truncated, nodes: nodes, visited: visited, depth: deepest, bytes: bytes };
 		}
         function normalizeFrameSizing(value) {
           if (!value || !['content', 'viewport', 'fixed'].includes(value.mode)) return null
@@ -6419,7 +6646,7 @@ function tavernModelRefusalNotice(text) {
 			const interactiveHelperShim = input && input.helperContext ? '<script data-dsh-tavern-interactive-helper>(function(){var token=' + token + ',nextId=1,pending=Object.create(null);function copy(value){try{return structuredClone(value);}catch(e){return JSON.parse(JSON.stringify(value));}}function call(method,args){return new Promise(function(resolve,reject){var requestId="interactive:"+String(nextId++);pending[requestId]={resolve:resolve,reject:reject};parent.postMessage({type:"dsh-tavern-helper-call",token:token,requestId:requestId,method:method,args:copy(args||{})},"*");});}addEventListener("message",function(event){var data=event&&event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-helper-response")return;var task=pending[data.requestId];if(!task)return;delete pending[data.requestId];if(data.ok)task.resolve(data.result);else task.reject(new Error(String(data.error||"Helper 调用失败")));});function payload(entries){if(!Array.isArray(entries))throw new TypeError("世界书条目必须是数组");return copy(entries).map(function(entry){delete entry.uid;return entry;});}async function fresh(name){var result=await call("getTavernHelperWorldbook",{name:String(name||"")});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}async function replace(name,entries,expectedEntries){var result=await call("replaceTavernHelperWorldbook",{name:String(name||""),entries:copy(entries),expectedEntries:copy(expectedEntries)});return copy(result&&result.worldbook&&result.worldbook.entries||[]);}window.getWorldbook=async function(name){return await fresh(name);};window.updateWorldbookWith=async function(name,updater){if(typeof updater!=="function")throw new TypeError("世界书更新器必须是函数");var current=await fresh(name),draft=copy(current),next=await updater(draft);return await replace(name,next===undefined?draft:next,current);};window.createWorldbookEntries=async function(name,entries){var additions=payload(entries),previous;var worldbook=await window.updateWorldbookWith(name,function(current){previous=new Set(current.map(function(entry){return entry.uid;}));return current.concat(additions);});return{worldbook:worldbook,new_entries:worldbook.filter(function(entry){return!previous.has(entry.uid);})};};window.deleteWorldbookEntries=async function(name,predicate){if(typeof predicate!=="function")throw new TypeError("世界书删除条件必须是函数");var deleted=[];var worldbook=await window.updateWorldbookWith(name,function(current){return current.filter(function(entry){if(!predicate(copy(entry)))return true;deleted.push(copy(entry));return false;});});return{worldbook:worldbook,deleted_entries:deleted};};window.createChatMessages=async function(messages,option){var result=await call("createTavernHelperMessages",{messages:copy(Array.isArray(messages)?messages:[]),option:copy(option&&typeof option==="object"?option:{})});if(result&&result.stale)throw new Error("聊天已变化，消息未创建");};window.triggerSlash=function(line){return call("triggerTavernSlash",{line:window.substitudeMacros(String(line||""))}).then(function(result){return result&&Object.prototype.hasOwnProperty.call(result,"pipe")?result.pipe:result;});};window.TavernHelper=window.TavernHelper||{};["formatAsTavernRegexedString","isCharacterTavernRegexesEnabled","triggerSlash","getMessageId","getIframeName","errorCatched","retrieveDisplayedMessage","waitGlobalInitialized","getCurrentMessageId","getLastMessageId","getChatMessages","setChatMessages","getAllVariables","getCurrentCharacterName","getVariables","deleteVariable","replaceVariables","insertOrAssignVariables","insertVariables","updateVariablesWith","generateRaw","createChatMessages","getWorldbook","getCharWorldbookNames","getWorldbookNames","updateWorldbookWith","createWorldbookEntries","deleteWorldbookEntries"].forEach(function(name){Object.defineProperty(window.TavernHelper,name,{enumerable:true,configurable:true,get:function(){return window[name];},set:function(value){window[name]=value;}});});})();<\/script>' : '';
 			const mvuViewObservationShim = input && input.helperContext && input.observeMvuView !== false ? '<script data-dsh-tavern-mvu-view-observer>(function(){var token=' + token + ',reported=false;function report(){if(reported)return;reported=true;window.__dshTavernMvuViewUsed=true;parent.postMessage({type:"dsh-tavern-mvu-view-used",token:token,mvuViewUsed:true},"*");}var getMvuData=window.Mvu&&window.Mvu.getMvuData;if(typeof getMvuData==="function")window.Mvu.getMvuData=function(){report();return getMvuData.apply(window.Mvu,arguments);};var getVariables=window.getVariables;if(typeof getVariables==="function")window.getVariables=function(){report();return getVariables.apply(window,arguments);};})();<\/script>' : '';
 			// parent.Mvu may throw an Error from another iframe: instanceof alone loses its stack.
-			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var captureDom=' + JSON.stringify(!(input && input.persistent === true)) + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(){timer=0;var dom="";try{if(captureDom&&document.body){var copy=document.body.cloneNode(true);Array.prototype.forEach.call(copy.querySelectorAll("script[data-dsh-tavern-frame],script[data-dsh-tavern-storage],script[data-dsh-tavern-layout]"),function(node){node.remove();});dom=copy.innerHTML;}}catch(e){}if(dom.length>100000)dom=dom.slice(0,100000)+"<!-- 已截断 -->";parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,runtime:{capturedAt:Date.now(),dom:dom,console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
+			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var domAllowed=' + JSON.stringify(!(input && input.persistent === true)) + ',captureDom=' + captureTavernBoundedDom.toString() + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(snapshot){timer=0;parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,explicit:Boolean(snapshot),runtime:{capturedAt:Date.now(),dom:snapshot?snapshot.dom:"",console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}addEventListener("message",function(event){var data=event.data;if(!domAllowed||event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-dom-snapshot")return;var snapshot={dom:""};try{if(document.body)snapshot=captureDom(document.body);}catch(e){}if(timer)clearTimeout(timer);send(snapshot);});function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
 			// Text replacement and paint-only style writes (clocks, counters, animations) skip the
 			// full-document scan: in-flow growth still reaches the ResizeObserver on html/body.
 			// Content that grows by exactly as much as the frame just did is sized by the frame
@@ -6427,7 +6654,7 @@ function tavernModelRefusalNotice(text) {
 			// scroll inside instead of feeding the measurement back forever.
 			// Card scripts can briefly remove the root. Skip that measurement; the next
 			// activation reattaches observers to the current root without a polling watcher.
-			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var bodyRect=body.getBoundingClientRect();var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor());function visit(node,clipTop,clipBottom){var style;try{style=getComputedStyle(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=node.getBoundingClientRect();if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=node.getBoundingClientRect();clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
+			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var createSample=' + createTavernLayoutSample.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var sample=createSample();var bodyRect=sample.rect(body);var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor(sample));function visit(node,clipTop,clipBottom){var style;try{style=sample.style(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=sample.rect(node);if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=sample.rect(node);clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
 			// Animated/polling cards may never become DOM-idle; bound the wait so
 			// their authenticated variable channel can start receiving updates.
 			const readyReporter = '<script data-dsh-tavern-frame-ready>(function(){var token=' + token + ',armed=false,timer=0,deadline=0,reported=false;function report(){if(reported)return;reported=true;clearTimeout(timer);clearTimeout(deadline);observer.disconnect();var finish=function(){parent.postMessage({type:"dsh-tavern-frame-ready",token:token},"*");};if(typeof requestAnimationFrame==="function")requestAnimationFrame(function(){requestAnimationFrame(finish);});else setTimeout(finish,0);}function schedule(){if(!armed||reported)return;if(timer)clearTimeout(timer);timer=setTimeout(report,240);}var observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});addEventListener("load",schedule);Promise.resolve(window.__dshTavernHelperReady).catch(function(){return false;}).then(function(){armed=true;deadline=setTimeout(report,1000);schedule();});})();<\/script>';
@@ -6435,14 +6662,14 @@ function tavernModelRefusalNotice(text) {
             const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source===parent&&data&&data.token===' + token + '&&data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
             if (sizing) {
                 if (sizing.mode !== "content") reporter = "";
-                else reporter = reporter.replace("48,viewportFloor()", "48");
+                else reporter = reporter.replace("48,viewportFloor(sample)", "48");
             }
             const sizingRuntime = '<script data-dsh-tavern-sizing>(' + installTavernFrameSizing.toString() + ')(' + token + ',' + JSON.stringify(sizing) + ');<\/script>';
             const sizingStyle = !sizing ? "" : '<style data-dsh-tavern-sizing>html[data-dsh-tavern-sizing-scroll]{overflow-y:auto!important}html[data-dsh-tavern-sizing-scroll] body{overflow-y:visible!important}' + (sizing.mode === "content" ? '' : 'html:root,html:root body{height:100%!important;min-height:0!important}html:root body{white-space:normal}') + '</style>';
 			// Card module scripts wait for the helper globals (z, YAML) as the script sandbox does;
 			// otherwise a module using them at top level races the async import.
 			const frameHtml = helperShim || preparationRuntime ? String(html).replace(/<script\b[^>]*\btype\s*=\s*["']?module["']?[^>]*>/gi, tag => /\bsrc\s*=/i.test(tag) ? tag : tag + 'await window.__dshTavernHelperReady;') : html;
-			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,").replace('dom=copy.innerHTML;', 'Array.from(copy.querySelectorAll("script[data-dsh-tavern-text-colors],script[data-dsh-tavern-touch]")).forEach(function(node){node.remove();});dom=copy.innerHTML;');
+			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,");
 			return '<!doctype html><html><head><meta charset="utf-8">'
                 + '<script data-dsh-tavern-crypto>(' + installTavernCryptoSubtlePolyfill.toString() + ')(window);<\/script>'
                 + '<script data-dsh-tavern-tilt-guard>(' + installTavernPointerTiltGuard.toString() + ')(window);<\/script>'
@@ -8486,9 +8713,14 @@ function bindTavernFontZoom(node, win) {
                 disposed = true;
                 layerObserver.disconnect();
                 nativeObserver.disconnect();
+                // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。
+                const jq = view.jQuery;
+                if (jq && typeof jq.cleanData === "function") jq.cleanData(Array.from(layer.getElementsByTagName("*")));
                 layer.replaceChildren();
                 layer.hidden = true;
                 native.hidden = false;
+                // 消息销毁或重建：通知脚本运行时释放归属这条消息的宿主浮层。
+                view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-released", { detail: { sessionId: String(options.sessionId), messageId: Number(options.messageId) } }));
             };
         }
         function tavernScriptLayers(document, sessionId, messageId) {
@@ -9089,13 +9321,25 @@ function bindTavernFontZoom(node, win) {
 			}
 			// The host renderer announces a settled message DOM; scripts that decorate
 			// messages (SillyTavern CHARACTER_MESSAGE_RENDERED) apply their edits then.
-			if (typeof hostWindow.addEventListener === "function") hostWindow.addEventListener("dsh-tavern-message-rendered", function (event) {
+			// 处理某条消息渲染事件期间挂到宿主页的浮层归属该消息；消息销毁或重建时只释放它自己的。
+			function onMessageRendered(event) {
 				const detail = event && event.detail || {};
 				for (const record of records.values()) {
 					if (record.sessionId !== String(detail.sessionId || "") || !record.trustedCardMode) continue;
-					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {});
+					const end = record.hostArtifacts ? record.hostArtifacts.beginMessage(String(detail.messageId)) : function () {};
+					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {}).then(end);
 				}
-			});
+			}
+			function onMessageReleased(event) {
+				const detail = event && event.detail || {};
+				for (const record of records.values()) {
+					if (record.sessionId === String(detail.sessionId || "") && record.hostArtifacts) record.hostArtifacts.releaseMessage(String(detail.messageId));
+				}
+			}
+			if (typeof hostWindow.addEventListener === "function") {
+				hostWindow.addEventListener("dsh-tavern-message-rendered", onMessageRendered);
+				hostWindow.addEventListener("dsh-tavern-message-released", onMessageReleased);
+			}
 			async function emit(name, args, context, diagnostics, hostEventId) {
 				let current = clone(Array.isArray(args) ? args : []);
 				for (const record of records.values()) current = await emitToRecord(record, name, current, context, diagnostics, hostEventId);
@@ -9627,7 +9871,14 @@ function bindTavernFontZoom(node, win) {
 				},
                 // An overdue probe means the page itself stalled; the watchdog re-probes before judging.
                 eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && (now() - pending.contactAt < eventTimeoutMs || now() - pending.probeDueAt > pending.probeIntervalMs)); },
-				dispose: function () { hostWindow.removeEventListener("message", receive); clear(); releaseHostStylesheetBridge(); },
+				dispose: function () {
+					hostWindow.removeEventListener("message", receive);
+					if (typeof hostWindow.removeEventListener === "function") {
+						hostWindow.removeEventListener("dsh-tavern-message-rendered", onMessageRendered);
+						hostWindow.removeEventListener("dsh-tavern-message-released", onMessageReleased);
+					}
+					clear(); releaseHostStylesheetBridge();
+				},
 				inspect: function () {
 					const record = records.get("shared");
 					const scripts = record ? Array.from(record.scripts.values()).map(function (script) { return { id: script.id, loaded: script.loaded, subscriptionsReady: script.subscriptionsReady, initializationFailed: script.initializationFailed }; }) : [];
@@ -10490,11 +10741,56 @@ function bindTavernFontZoom(node, win) {
 			});
 		}
 
+		// 人物卡消息 frame 的诊断登记处。诊断只归属当前前台会话：后台保留的 frame 不写运行报告，
+		// 显式 DOM 快照也只向前台会话的 frame 索取。frame 重建或注销时由生命周期释放登记与等待。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		const TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS = 2000;
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernFrameDiagnostics(host) {
+		    const entries = new Set();
+		    function foreground(sessionId) {
+		        const selected = String((host && host.__dshTavernSelectedSessionId) || "");
+		        return Boolean(sessionId) && (!selected || selected === String(sessionId));
+		    }
+		    return Object.freeze({
+		        foreground: foreground,
+		        register: function (entry) {
+		            entries.add(entry);
+		            return function () {
+		                entries.delete(entry);
+		            };
+		        },
+		        // 导出日志前调用：等待前台会话各 frame 的快照写入；单个 frame 超时只算未采集，不阻塞导出。
+		        capture: function (sessionId) {
+		            if (!foreground(sessionId)) return Promise.resolve(0);
+		            const pending = Array.from(entries)
+		                .filter(function (entry) {
+		                    return String(entry.sessionId()) === String(sessionId);
+		                })
+		                .map(function (entry) {
+		                    return Promise.resolve(entry.snapshot()).catch(function () {
+		                        return false;
+		                    });
+		                });
+		            return Promise.all(pending).then(function (results) {
+		                return results.filter(Boolean).length;
+		            });
+		        },
+		        size: function () {
+		            return entries.size;
+		        },
+		    });
+		}
+		const tavernFrameDiagnostics = createTavernFrameDiagnostics(window);
+
 		// Owns document replacement, authenticated frame messages and their cleanup.
 		// React only renders the visible/pending documents and controls lazy activation.
 		function createTavernMessageFrameLifecycle(initial, options) {
 			const hostWindow = options && options.window || window;
 			const invoke = options && options.rpc || rpc;
+			const diagnostics = options && options.diagnostics || tavernFrameDiagnostics;
+			// 显式 DOM 快照的等待者，按文档 token；frame 重建或生命周期结束时一并结清。
+			const snapshotWaiters = new Map();
 			const configuredSlashExecutor = options && options.executeSlash;
 			const invalidate = options && options.invalidate || function (sessionId) { liveTavernView.invalidate(sessionId); };
 			const channels = new Map();
@@ -10567,6 +10863,8 @@ function bindTavernFontZoom(node, win) {
 				const channel = createTavernFrameContextChannel(document);
 				// Stable callback identity preserves the per-document delta baseline.
 				document.ref = function (node) {
+                    const previousFrame = channel.element();
+                    if (document.trustedCardMode && previousFrame && previousFrame !== node) releaseTavernHostJQueryHandlers(hostWindow, previousFrame.contentWindow);
                     const previousSizing = sizingObservers.get(document.token);
                     if (previousSizing) { previousSizing.stop(); sizingObservers.delete(document.token); }
                     const stopVisibility = frameVisibility.get(document.token);
@@ -10615,7 +10913,7 @@ function bindTavernFontZoom(node, win) {
                         document.layout = layout;
                         if (document.sizing.mode !== "content") applySizing(document, channel, layout.height);
                     }));
-                    if (!node) { retireGenerations(document); channels.delete(document.token); }
+                    if (!node) { retireGenerations(document); channels.delete(document.token); settleSnapshot(document.token, false); }
 				};
 				return document;
 			}
@@ -10635,6 +10933,23 @@ function bindTavernFontZoom(node, win) {
 				if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 				runtimeTimer = null;
 				pendingRuntime = null;
+			}
+			function settleSnapshot(token, captured) {
+				const waiter = snapshotWaiters.get(token);
+				if (!waiter) return;
+				snapshotWaiters.delete(token);
+				hostWindow.clearTimeout(waiter.timer);
+				waiter.resolve(captured);
+			}
+			// 只在显式请求时让当前可见 frame 按预算采集 DOM；状态栏页面不采集 DOM。
+			function requestSnapshot() {
+				const token = visible.token, channel = channels.get(token), node = channel && channel.element();
+				if (!listener || visible.key !== desired.key || !diagnostics.foreground(visible.sessionId) || props.persistent || props.runtimeReporting === false || !props.sessionId || !(props.turn > 0) || !node || !node.contentWindow) return Promise.resolve(false);
+				settleSnapshot(token, false);
+				return new Promise(function (resolve) {
+					snapshotWaiters.set(token, { resolve: resolve, timer: hostWindow.setTimeout(function () { settleSnapshot(token, false); }, TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS) });
+					node.contentWindow.postMessage({ type: "dsh-tavern-frame-dom-snapshot", token: token }, "*");
+				});
 			}
 			function sendContext(document, mode) {
 				const channel = document && channels.get(document.token);
@@ -10670,11 +10985,12 @@ function bindTavernFontZoom(node, win) {
 				props = next;
 				if (sessionChanged || props.eager === true) frozenHelperContext = props.helperContext;
 				helperContext = props.eager === true ? props.helperContext : frozenHelperContext;
-				if (desired.key !== documentKey()) desired = createDocument();
+				if (desired.key !== documentKey()) { cancelRuntimeReport(); desired = createDocument(); }
 				if (sessionChanged) {
 					// Never keep an old conversation's page eligible for writes in a new one.
                     for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 					channels.clear();
+					for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 					visible = desired; pending = null;
 					height = (props.openingPreview ? 160 : restoredTavernFrameHeight(visible.heightKey, visible.content));
 					publish();
@@ -10757,15 +11073,22 @@ function bindTavernFontZoom(node, win) {
 						if (current() && result && result.captured === true) invalidate(requestProps.sessionId);
 					}, function () {});
 				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false && props.sessionId && props.turn > 0) {
+					// 后台保留的会话页面不写诊断，诊断只归属当前前台会话。
+					if (sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId)) { settleSnapshot(data.token, false); return; }
 					pendingRuntime = Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
                         availableHeight: sourceDocument.layout?.available, reason: sourceDocument.sizing?.mode === "content" ? "content" : sourceDocument.layout?.reason || "content",
                         mode: sourceDocument.sizing?.mode || "legacy", source: sourceDocument.sizing?.source || "legacy"
                     }) });
-					if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(function () {
+					const flush = function () {
+						if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 						runtimeTimer = null;
 						const runtime = pendingRuntime; pendingRuntime = null;
-						if (current()) invoke("captureDisplayRuntime", { turn: requestProps.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, requestProps.sessionId).catch(function () {});
-					}, 1000);
+						if (!current() || sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId) || !runtime) return Promise.resolve(false);
+						return Promise.resolve(invoke("captureDisplayRuntime", { turn: requestProps.persistent ? requestProps.turn : sourceDocument.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, sourceDocument.sessionId)).then(function () { return true; }, function () { return false; });
+					};
+					// 显式快照立即写入，导出日志时才能读到；常规报告仍合并一秒。
+					if (data.explicit === true) flush().then(function (captured) { settleSnapshot(data.token, captured); });
+					else if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(flush, 1000);
 				} else if ((data.type === "dsh-tavern-opening-worldbook" || data.type === "dsh-tavern-opening-save" || data.type === "dsh-tavern-opening-read") && !props.sessionId && props.openingPreview) {
 					void (async function () {
 					try {
@@ -10903,6 +11226,7 @@ function bindTavernFontZoom(node, win) {
 					const openingArtifacts = props.openingPreview && props.trustedCardMode
 						? createTavernHostArtifactScope({ document: hostWindow.document }) : null;
 					hostWindow.addEventListener("message", receive);
+					const unregisterDiagnostics = diagnostics.register({ sessionId: function () { return props.sessionId; }, snapshot: requestSnapshot });
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
                             const channel = channels.get(visible.token);
@@ -10923,13 +11247,13 @@ function bindTavernFontZoom(node, win) {
 					return function () {
                         touchRelay.stop();
 						releaseComposer();
-						if (openingArtifacts) {
+						if (props.trustedCardMode) {
 							for (const channel of channels.values()) {
 								const frame = channel.element();
 								if (frame) releaseTavernHostJQueryHandlers(hostWindow, frame.contentWindow);
 							}
-							openingArtifacts.dispose();
 						}
+                        if (openingArtifacts) openingArtifacts.dispose();
 						if (unsubscribeTheme) unsubscribeTheme();
                         frameSizeObservers.forEach(function (observer) { observer.disconnect(); });
                         frameSizeObservers.clear();
@@ -10940,6 +11264,8 @@ function bindTavernFontZoom(node, win) {
                         for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 						listener = null; lifetime++;
 						hostWindow.removeEventListener("message", receive);
+						unregisterDiagnostics();
+						for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 						cancelRuntimeReport();
 					};
 				}
@@ -13760,12 +14086,15 @@ function bindTavernFontZoom(node, win) {
                 // A capped seat keeps its own box size while content grows, so watch its children too.
                 if (seat) for (const child of seat.children) observer?.observe(child);
             }
+            // classList.add/remove 状态不变也会重写 class 属性，惊动观察根节点 class 的主题/配色观察器；
+            // toggle 带 force 只在状态变化时写入。
+            function setClass(name, on) { html.classList.toggle(name, on); }
             function sync() {
                 frame = 0;
                 if (disposed) return;
-                html.classList.toggle("dsh-tavern-coarse-play", narrow.matches);
+                setClass("dsh-tavern-coarse-play", narrow.matches);
                 if (!narrow.matches && !touch.matches) {
-                    html.classList.remove("dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll");
+                    for (const name of ["dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll"]) setClass(name, false);
                     restore();
                     return;
                 }
@@ -13777,12 +14106,12 @@ function bindTavernFontZoom(node, win) {
                 if (!(height > 0)) return;
                 setPx("--dsh-vv-top", top);
                 setPx("--dsh-vv-height", height);
-                html.classList.add("dsh-tavern-viewport-pinned");
+                setClass("dsh-tavern-viewport-pinned", true);
                 // 整个外壳使用可视区高度，输入条仍贴外壳底部，避免重复叠加键盘补偿。
                 const headerBottom = header ? header.getBoundingClientRect().bottom - top : 44;
                 setPx("--dsh-header-bottom", headerBottom);
                 // 横屏键盘下优先保留编辑和发送；展开列表改为可关闭的覆盖层。
-                html.classList.toggle("dsh-tavern-short-viewport", height - headerBottom < 280);
+                setClass("dsh-tavern-short-viewport", height - headerBottom < 280);
                 const pin = seat || doc.querySelector("[data-composer-card]");
                 if (pin) {
                     const rectTop = pin.getBoundingClientRect().top;
@@ -13801,7 +14130,7 @@ function bindTavernFontZoom(node, win) {
                 }
                 // Only scroll the seat when its content really exceeds the cap: a scrolling seat clips
                 // every menu that opens upward from the composer (更多, access mode, model picker).
-                html.classList.toggle("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
+                setClass("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
             }
 
             function schedule() {
@@ -14177,6 +14506,11 @@ function bindTavernFontZoom(node, win) {
 		}
 
 		function tavernStoryTurnForDshTurn(view, turn) {
+            // 正文及其操作按钮使用同一行计划；窗口外或旧视图才回退到旧映射。
+            if (view?.transcriptTurns && (view.transcriptFrom == null || Number(turn) >= Number(view.transcriptFrom))) {
+                const row = view.transcriptTurns[String(turn)];
+                return row?.reply === 0 ? 0 : Number(row?.story ?? turn);
+            }
 			const mappings = view && view.regeneratedDshTurns && typeof view.regeneratedDshTurns === "object" ? view.regeneratedDshTurns : {};
 			const lookup = createSessionViewReader.storyTurnLookup;
 			if (lookup?.has(mappings)) return lookup.read(mappings,turn);
@@ -14386,7 +14720,7 @@ function bindTavernFontZoom(node, win) {
 				// Rounds past the render depth keep their prose; the card's HTML waits for one click.
 				if (typeof options.deferHtml === "function") {
 					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== index) return null;
-					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近 3 轮渲染卡片界面，更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
+					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
 				}
 				// Plugin markers inside card HTML cannot be split out; show them after that part.
 				const pluginHtml = options.plugin && !options.openingPreview ? options.plugin.renderHtmlMarkers(String(part.content !== undefined ? part.content : part.html || "")) : null;
@@ -14812,6 +15146,27 @@ function bindTavernFontZoom(node, win) {
 		}
 
 		function createTavernAssistantRendererFeatureModule() {
+			// The row plan hides rolled-back and superseded turns, but the host keeps their
+			// nodes mounted forever. Decide before the row's own hooks run, so a hidden row
+			// only watches its plan entry, not the view, the chat or its frames.
+			function TavernPlannedRow(props) {
+				const turn = String(props.turn);
+				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				React.useEffect(function () { return tavernChatPresence.mount(props.sessionId); }, [props.sessionId]);
+				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
+			}
+			// Only the latest rounds run a card's HTML (heavy status bars, input templates);
+			// earlier ones show text and a 「渲染此轮」 button. Watching the latest round lets a
+			// floor drop its frames as soon as it leaves the window, not on its next render.
+			// A phone layout keeps one live round, wider layouts three.
+			const TAVERN_LIVE_HTML_ROUNDS = narrowLayout() ? 1 : 3;
+			function useTavernHtmlDeferred(sessionId, storyTurn) {
+				const subscribe = React.useCallback(function (notify) { return liveTavernView.subscribe(sessionId, notify, [["$projectionLatestTurn"]]); }, [sessionId]);
+				const read = React.useCallback(function () {
+					return storyTurn > 0 && tavernLatestProjectionTurn(liveTavernView.getSnapshot(sessionId).view) - storyTurn >= TAVERN_LIVE_HTML_ROUNDS;
+				}, [sessionId, storyTurn]);
+				return React.useSyncExternalStore(subscribe, read, read);
+			}
 			function TavernUserNodeView(props) {
 				const data = props.node.data;
 				const location = props.node.location;
@@ -14824,6 +15179,8 @@ function bindTavernFontZoom(node, win) {
 				const editedText = liveState.view?.userInputEdits?.[String(turn)];
 				const text = typeof editedText === "string" ? editedText : tavernUserTextForTurn(liveState.view, turn, data.content);
 				const [copied, setCopied] = React.useState(false);
+				const [renderTemplate, setRenderTemplate] = React.useState(false);
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, tavernStoryTurnForDshTurn(liveTavernView.getSnapshot(props.sessionId).view, turn));
 				const copyTimer = React.useRef(null);
 				React.useEffect(function () { return function () { if (copyTimer.current !== null) window.clearTimeout(copyTimer.current); }; }, []);
 				function copy() {
@@ -14842,8 +15199,10 @@ function bindTavernFontZoom(node, win) {
 				const latestUserTurn = props.useChat(React.useCallback(function (snapshot) {
 					return latestTavernUserTurn(snapshot, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null);
 				}, [transcriptTurns, transcriptFrom]));
-				const selectAssistantId = React.useCallback(function (snapshot) { return tavernAssistantMessageIdForTurn(snapshot, turn); }, [turn]);
-				const assistantMessageId = props.useChat(selectAssistantId);
+				// A user message belongs to the round its own native turn closes; that
+				// closing reply carries the fork target (only completed turns can fork).
+				const tail = props.useTurnData("turn-tail");
+				const assistantMessageId = tail && tail.closing && tail.closing.finalNode ? tail.closing.finalNode.messageId : null;
 				const forkState = useScopedLiveTavernView(props.sessionId, "user-fork:" + String(assistantMessageId || ""), [["mode"], ["forkTurnsByMessageId", String(assistantMessageId || "")]]);
 				const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 				const [forking, setForking] = React.useState(false);
@@ -14882,8 +15241,10 @@ function bindTavernFontZoom(node, win) {
 				});
 				const time = Number.isFinite(Number(data.time)) ? new Date(Number(data.time)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 				const templateDisplay = typeof editedText === "string" ? null : liveState.view?.inputTemplateDisplays?.[turn];
+				const deferTemplate = Boolean(templateDisplay) && outsideHtmlWindow && !renderTemplate;
 				return React.createElement("div", { className: "dsh-tavern-user-row" },
-					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text), extras) : null),
+					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay && !deferTemplate ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text),
+						deferTemplate ? React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: function () { setRenderTemplate(true); } }, "渲染此轮") : null, extras) : null),
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null,
 						canEdit ? React.createElement(DshUi.Tooltip, { label: "编辑这条输入", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-edit", "aria-label": "编辑这条输入", disabled: editBusy, onClick: edit }, React.createElement(DshUi.IconEditOutlineRegular, null))) : null,
 						canFork ? React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork }, React.createElement(DshUi.IconBranchOutlineRegular, null))) : null,
@@ -15029,7 +15390,7 @@ function bindTavernFontZoom(node, win) {
 				const turn = turnRef ? Number(turnRef.turn) : 0;
 				const settled = data.status !== "running";
 				const revision = String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "");
-				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)]]);
+				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)], ["transcriptTurns", String(turn)], ["transcriptFrom"]]);
 				const storyTurn = tavernStoryTurnForDshTurn(mapping.view, turn);
 				const currentView = liveTavernView.getSnapshot(props.sessionId).view;
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));
@@ -15042,10 +15403,9 @@ function bindTavernFontZoom(node, win) {
 				const ownsTurn = !tail || !tail.closing || !data.finalNode || tail.closing.finalNode.seq === data.finalNode.seq;
 					const projection = settled && ownsTurn ? tavernProjectionForTurn(liveState.view, storyTurn) : null;
 					const latestProjectionTurn = tavernLatestProjectionTurn(liveState.view);
-				// Only the latest 3 rounds run a card's HTML interface (heavy status bars);
-				// earlier ones show text and a 「渲染此轮」 button.
 				const [renderRound, setRenderRound] = React.useState(false);
-				const deferHtml = !renderRound && storyTurn > 0 && latestProjectionTurn - storyTurn >= 3 ? function () { setRenderRound(true); } : null;
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, storyTurn);
+				const deferHtml = !renderRound && outsideHtmlWindow ? function () { setRenderRound(true); } : null;
                 React.useEffect(function () {
                     if(!historyNode.current || !currentView?.historyWindow || !ownsTurn || projection || storyTurn<=0 || storyTurn>=tavernLatestProjectionTurn(currentView))return;
                     let cancelWait = null;
@@ -15147,9 +15507,6 @@ function bindTavernFontZoom(node, win) {
 					t: props.t
 				});
 				const distantHeight = useTavernDistantFloor(historyNode, settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
-				// A reply the row plan does not draw (an old body being regenerated, a repair
-				// copy): its row is hidden; render nothing into it either. After all hooks.
-				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
 				// A registered presenter may fold this finished reply into one line; only the step
@@ -15288,7 +15645,11 @@ function bindTavernFontZoom(node, win) {
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
 						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
-						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
+						// A reply the row plan does not draw (an old body being regenerated, a repair copy).
+						const data = props.node.data;
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
+							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				input.ctx.effect(function () {
@@ -15296,7 +15657,10 @@ function bindTavernFontZoom(node, win) {
 						name: "conversation.chat.node",
 						key: "user",
 						priority: -1
-					}, TavernUserNodeView); });
+					}, function (props) {
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "user", revision: String(props.node.data.time || "") },
+							React.createElement(TavernUserNodeView, props));
+					}); });
 				}, "dsh-tavern: raw user message renderer");
 				input.ctx.effect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
@@ -20191,14 +20555,16 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				link.href = "/api/dsh-tavern/card-export?path=" + encodeURIComponent(card.path);
 				document.body.appendChild(link); link.click(); link.remove();
 			}
+			// 引用按钮只认真实可用的回调：制卡会话且注入了回调才显示。
+			const mention = sessionMode === "card" && typeof props.appendMention === "function" ? props.appendMention : null;
 			const h = React.createElement;
 			if (selectedPath) {
 				if (!card) return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" }, h("div", { className: "dsh-tavern-status-head" }, h("button", { className: "dsh-tavern-btn", onClick: clearCard }, "← 返回人物卡库")), loading ? h("div", { className: "dsh-tavern-empty" }, "正在读取人物卡…") : error ? h("div", { className: "dsh-tavern-dock-error" }, error, h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")) : h("div", { className: "dsh-tavern-empty" }, "人物卡读取失败", h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")));
-				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: sessionMode === "card" ? function () { props.appendMention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
+				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: mention ? function () { mention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
 			}
 			const visible = organization.visible;
 			// "@" quotes a card into the card workspace conversation; only there does it mean anything.
-			const mentionButton = sessionMode === "card" ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); props.appendMention(item.path, item.name); } }, "@"); } : null;
+			const mentionButton = mention ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); mention(item.path, item.name); } }, "@"); } : null;
 			return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" },
 				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "人物卡库"), h("div", { className: "dsh-tavern-question-sub" }, cards.length + " 张人物卡"), h("div", { className: "dsh-tavern-library-head-actions" }, h(MobileCardImportButton, { inputRef: importInput, disabled: busy, onImported: async function (imported) { await refreshCards(); await loadCard(imported.path); notifyTavernDataChanged(["cards"], "cards"); } }), h("input", { ref: importInput, type: "file", multiple: true, accept: TAVERN_CARD_FILE_ACCEPT, style: { display: "none" }, onChange: function (event) { const files = Array.from(event.target.files || []); importCardFiles(files); event.target.value = ""; } }))),
 				h("div", { className: "dsh-tavern-question-sub dsh-tavern-card-import-hint", role: "status" }, importStatus || "支持多选 PNG、JSON、CHARX、DSH 人物卡一起导入"),
@@ -20566,8 +20932,12 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				order: 3,
 				single: true,
 				component: function (props) {
+					// 只给制卡会话注入引用回调；其他会话不注入空回调，人物卡库也就不显示引用按钮。
+					const sessionId = props.scope.sessionId;
+					const mode = useTavernSessionMode(sessionId);
 					return React.createElement(CardLibraryTab, Object.assign({}, props, {
-						appendMention: function (path, label) { appendMention(props.scope.sessionId, "card", path, label); },
+						appendMention: mode === "card" && sessionId && typeof appendMention === "function"
+							? function (path, label) { appendMention(sessionId, "card", path, label); } : undefined,
 						archiveSession: function (sessionId) { return ctx.workspaces.archiveSession(sessionId); },
 						openWorldBook: function (source) {
 							openTavernSidebarTab(ctx, { type: "dsh-tavern:worldbooks", meta: { worldBookSource: source } }, { sessionId: props.scope.sessionId });
@@ -20651,28 +21021,23 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 		// assistant/step node does. Rolled back, failed and regenerated turns stay in
 		// the host's node list forever (only their rows are hidden), so the row plan
 		// decides which input is really the visible tail.
+		// Every mounted user row asks this of the same immutable node list on each Chat
+		// snapshot: answer once per list and plan, not once per row.
+		const latestUserTurnByNodes = new WeakMap();
 		function latestTavernUserTurn(snapshot, plan) {
 			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			let turn = 0;
+			const cached = latestUserTurnByNodes.get(nodes);
+			const turns = plan ? plan.turns : null, from = plan ? plan.from : null;
+			if (cached && cached.turns === turns && cached.from === from) return cached.turn;
+			let turn = 0, latest = 0;
 			for (let index = nodes.length - 1; index >= 0; index -= 1) {
 				const node = nodes[index];
 				turn = nodeTurn(node) || turn;
 				if (node.kind !== "user") continue;
-				if (tavernPlanShowsRow(plan, turn, "user")) return turn;
+				if (tavernPlanShowsRow(plan, turn, "user")) { latest = turn; break; }
 			}
-			return 0;
-		}
-		// A user message belongs to the round drawn by the assistant of the same
-		// native turn; its closing message carries the fork target.
-		function tavernAssistantMessageIdForTurn(snapshot, turn) {
-			const expected = Number(turn) || 0;
-			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			for (let index = nodes.length - 1; index >= 0; index -= 1) {
-				const node = nodes[index];
-				if (node.kind !== "assistant" || !node.messageId) continue;
-				if (nodeTurn(node) === expected) return node.messageId;
-			}
-			return null;
+			latestUserTurnByNodes.set(nodes, { turns: turns, from: from, turn: latest });
+			return latest;
 		}
 
 		// Presentation only: keep host-owned error nodes and append-only history intact.
@@ -20978,6 +21343,34 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 		}
 		function tavernPlanOf(view) {
 			return view && view.transcriptTurns ? { turns: view.transcriptTurns, from: view.transcriptFrom } : null;
+		}
+		// The dock's row projections only have work while the chat view shows. The host
+		// renders one Conversation view at a time and gives dock entries no selection, so
+		// Tavern's own chat rows count themselves per session: none mounted means another
+		// view (or an empty chat) is showing and the projections stay off.
+		function createTavernChatPresence() {
+			const counts = new Map(), listeners = new Set();
+			function notify() { listeners.forEach(function (listener) { listener(); }); }
+			return {
+				mount: function (sessionId) {
+					const id = String(sessionId || ""), count = counts.get(id) || 0;
+					counts.set(id, count + 1);
+					if (count === 0) notify();
+					return function () {
+						const next = (counts.get(id) || 1) - 1;
+						if (next > 0) { counts.set(id, next); return; }
+						counts.delete(id);
+						notify();
+					};
+				},
+				shown: function (sessionId) { return counts.has(String(sessionId || "")); },
+				subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; }
+			};
+		}
+		const tavernChatPresence = createTavernChatPresence();
+		function useTavernChatShown(sessionId) {
+			const read = React.useCallback(function () { return tavernChatPresence.shown(sessionId); }, [sessionId]);
+			return React.useSyncExternalStore(tavernChatPresence.subscribe, read, read);
 		}
 		function createTurnHistoryProjection(options) {
 			options = options || {};
@@ -21924,6 +22317,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				async function exportLogs() {
 					setBusy(true);
 					try {
+						// 只有显式导出日志时才让当前会话的卡片按预算采集 DOM；采集失败不影响导出。
+						await tavernFrameDiagnostics.capture(props.sessionId).catch(function () {});
 						const result = await rpc("exportTavernLogs", {}, props.sessionId);
 						const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0); });
 						downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename);
@@ -23400,6 +23795,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
 			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
@@ -23417,7 +23813,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				tavernCoordination.invalidate(props.sessionId);
 			}
 			React.useEffect(function () {
-				const root = marker.current && marker.current.closest("[data-conversation-scroll]");
+				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
 				const controls = createTurnErrorControls(root, {
@@ -23459,7 +23855,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
 				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); };
-			}, [props.sessionId, revision]);
+			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
 		// Share in-flight reads across effect restarts and duplicate mounts.
@@ -23508,7 +23904,9 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
+			const chatShown = useTavernChatShown(props.sessionId);
 			React.useEffect(function () {
+				if (!chatShown) return;
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
@@ -23531,7 +23929,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				});
 				observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-chat-flow-kind", "data-chat-turn", "data-turn-tail"] });
 				return function () { observer.disconnect(); if (frame !== null) window.cancelAnimationFrame(frame); };
-			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom]);
+			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom, chatShown]);
 			return null;
 		}
         const { CandidateQuestion, CandidateGuidePanel, RegenPanel } = createPlayInteractionPanels({
@@ -24017,6 +24415,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 		exports.TavernMessageFrame = TavernMessageFrame;
 		exports.TavernPersistentStatusRuntime = TavernPersistentStatusRuntime;
 		exports.createTavernMessageFrameLifecycle = createTavernMessageFrameLifecycle;
+		exports.createTavernFrameDiagnostics = createTavernFrameDiagnostics;
 		exports.createTavernScriptExecutionModule = createTavernScriptExecutionModule;
 		exports.createTavernScriptSessionOwner = createTavernScriptSessionOwner;
 		exports.createTavernSessionRetention = createTavernSessionRetention;

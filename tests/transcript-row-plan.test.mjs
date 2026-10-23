@@ -27,7 +27,7 @@ test('修复把一轮重写进自己的一步：正文改画在那一轮；多�
   assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: one })), { 1: { input: 1, reply: 0 }, 2: { input: 0, reply: 1, story: 1 } })
   const many = [...round(0, 1, 'a'), ...round(5, 2, 'b'), mark(10, 'turn/start', 3), reply(11, 3, 'a', story(1)), reply(12, 3, 'b', story(2)), mark(13, 'step/end', 3), mark(14, 'turn/end', 3)]
   const plan = planTranscriptRows({ chat: chat([1, 2]), events: many })
-  assert.deepEqual(plain(plan), { 3: { input: 0, reply: 0 } })
+  assert.deepEqual(plain(plan), { 1: { input: 1, reply: 1, fromSave: 1 }, 2: { input: 1, reply: 1, fromSave: 1 }, 3: { input: 0, reply: 0 } })
   assert.equal(planStoryTurn(plan, 2), 2)
 })
 

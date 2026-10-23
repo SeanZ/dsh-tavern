@@ -52,6 +52,8 @@
 				async function exportLogs() {
 					setBusy(true);
 					try {
+						// 只有显式导出日志时才让当前会话的卡片按预算采集 DOM；采集失败不影响导出。
+						await tavernFrameDiagnostics.capture(props.sessionId).catch(function () {});
 						const result = await rpc("exportTavernLogs", {}, props.sessionId);
 						const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0); });
 						downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename);
@@ -966,6 +968,7 @@
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
 			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
@@ -983,7 +986,7 @@
 				tavernCoordination.invalidate(props.sessionId);
 			}
 			React.useEffect(function () {
-				const root = marker.current && marker.current.closest("[data-conversation-scroll]");
+				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
 				const controls = createTurnErrorControls(root, {
@@ -1025,7 +1028,7 @@
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
 				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); };
-			}, [props.sessionId, revision]);
+			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
 		// @include background-suppression.js
@@ -1054,7 +1057,9 @@
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
+			const chatShown = useTavernChatShown(props.sessionId);
 			React.useEffect(function () {
+				if (!chatShown) return;
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
@@ -1077,7 +1082,7 @@
 				});
 				observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-chat-flow-kind", "data-chat-turn", "data-turn-tail"] });
 				return function () { observer.disconnect(); if (frame !== null) window.cancelAnimationFrame(frame); };
-			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom]);
+			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom, chatShown]);
 			return null;
 		}
         const { CandidateQuestion, CandidateGuidePanel, RegenPanel } = createPlayInteractionPanels({

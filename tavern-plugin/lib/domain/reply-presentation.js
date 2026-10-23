@@ -143,6 +143,7 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
   }
   function projectHistory(messages, options = {}, signature = signatureOf(options)) {
     const projections = []
+    const forcedTurns = new Set(options.forcedTurns || [])
     let inferredTurn = 1
     let latestSourceBacked = false
 
@@ -188,7 +189,7 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
         ? projectCached(sourceText, templateDisplay.formattingText, { ...options, regexScripts: [] }, signatureOf({ ...options, regexScripts: [] }))
         : projectCached(sourceText, projectionText, options, signature)
       const sessionText = str(message.text)
-      if (message.bodyEdit || !isNativeMarkdownProjection(projected.displayParts, sessionText) || (Array.isArray(message.swipes) && message.swipes.length > 1)) {
+      if (forcedTurns.has(turn) || message.bodyEdit || !isNativeMarkdownProjection(projected.displayParts, sessionText) || (Array.isArray(message.swipes) && message.swipes.length > 1)) {
         // Copy only emitted projections; callers must never mutate cached parts.
         copies++
         projections.push({

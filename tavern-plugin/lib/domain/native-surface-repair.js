@@ -1,8 +1,8 @@
-import { sessionEvents } from './session-events.js'
+import { sessionEvents, openTurnStep } from './session-events.js'
 import { createSessionSurfaceMutator } from './session-surface-mutations.js'
 import { createRoundAnchorResolver, roundAnchor, validAnchor } from './round-anchor.js'
 import { isCompactionCheckpoint } from './compaction-checkpoint.js'
-import { isTurnInput } from './session-turn-input.js'
+import { isTurnInput, inputEventForTurn, isFailedTurnEnd } from './session-turn-input.js'
 import { nativeOpeningMessageId } from './native-opening.js'
 import { RETAINED_STORY_ROUNDS } from './story-compaction.js'
 
@@ -19,13 +19,16 @@ function textOf(content) {
 function chatRounds(chat) {
   const rounds = []
   let users = []
+  let inputs = 0
   for (const [index, message] of (chat.messages || []).entries()) {
-    if (message?.role === 'user') { users.push(String(message.text ?? '')); continue }
+    if (message?.role === 'user') { users.push(String(message.text ?? '')); inputs++; continue }
     if (message?.role !== 'assistant') continue
     // The native reply holds the raw model output (sourceText) unless an edit wrote the
     // projected text; both are this round. Saved texts are trimmed, native ones may not be.
     const texts = new Set([message.text, message.sourceText, message.projectionText].filter(value => typeof value === 'string').map(value => value.trim()))
-    rounds.push({ messageIndex: index, turn: Number(message.turn) || 0, greeting: message.greeting === true,
+    // 旧存档没有 turn：与行计划 setFloors 同样推算，开场为 1，否则为此前玩家输入数加 1。
+    const turn = Number(message.turn) || (message.greeting === true ? 1 : inputs + 1)
+    rounds.push({ messageIndex: index, turn, greeting: message.greeting === true,
       userText: users.length ? users.join('\n\n') : null, replyText: String(message.text ?? ''), texts, anchor: message.nativeAnchor })
     users = []
   }
@@ -93,6 +96,7 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
     }
     if (validAnchor(round.anchor)) {
       const found = resolve(round.anchor)
+      if (found?.ambiguous) return { index: -1, summarized: false }
       if (found?.reply != null) {
         const index = nodes.indexOf(found.reply)
         const event = at(index)
@@ -107,7 +111,18 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
   // turn the save does not have is residue.
   const residue = seq => isStoryResidue(bySeq.get(seq)) && ended.get(turnOfSeq.get(seq)) === 'completed'
   // Keeping every node and writing nothing is no repair at all.
-  const plan = (status, keep, rewrite) => ({ status: !rewrite.length && keep >= nodes.length ? 'intact' : status, keep, rounds: rewrite, checkpoint })
+  const failedInputs = new Set([...ended].filter(([, reason]) => isFailedTurnEnd(reason))
+    .map(([turn]) => inputEventForTurn({ events }, turn)?.seq).filter(Number.isSafeInteger))
+  // 失败输入本身总受保护：只发附件的输入没有文字，不算残留，但仍要留给失败重放。
+  const protectedNode = seq => failedInputs.has(seq) ||
+    (isStoryResidue(bySeq.get(seq)) && isFailedTurnEnd(ended.get(turnOfSeq.get(seq))))
+  const plan = (status, keep, rewrite) => {
+    // 未完成回合及失败输入有独立的恢复入口，普通正文修复不能顺带吞掉它们。
+    if ((rewrite.length || keep < nodes.length) && (openTurnStep(events).turn !== null || nodes.slice(keep).some(protectedNode))) {
+      return { status: 'deferred', keep: nodes.length, rounds: [], checkpoint }
+    }
+    return { status: !rewrite.length && keep >= nodes.length ? 'intact' : status, keep, rounds: rewrite, checkpoint }
+  }
   for (let position = rounds.length - 1; position >= 0; position--) {
     const round = rounds[position]
     const found = locate(round)
@@ -129,7 +144,7 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
 
 /** Write a plan onto the surface: one replacement over the stale tail, then appends. */
 export function applyNativeSurfaceRepair(session, chat, plan, { repairId }) {
-  if (plan.status === 'intact') return { applied: false, anchors: [] }
+  if (plan.status === 'intact' || plan.status === 'deferred') return { applied: false, anchors: [] }
   if (!/^[\w-]{1,100}$/.test(String(repairId || ''))) throw new Error('修复标识无效')
   const mutator = createSessionSurfaceMutator(session, sessionEvents(session))
   const targets = (session.surface?.nodes || []).slice(plan.keep)
@@ -144,22 +159,24 @@ export function applyNativeSurfaceRepair(session, chat, plan, { repairId }) {
   const source = { kind: 'model', provider: 'dsh-tavern', model: 'native-repair' }
   const storySource = turn => Number.isSafeInteger(Number(turn)) && Number(turn) > 0 ? { ...source, tavernStoryTurn: Number(turn) } : source
   const anchors = []
-  // The repair runs between rounds, where no step is open: all its writes share one
-  // edit step. Each reply keeps its story turn in tavernStoryTurn (story alignment
-  // reads it), since its event carries the edit step's numbers.
-  mutator.editStep(() => {
-    for (const [index, round] of plan.rounds.entries()) {
+  // 宿主按步骤绘制最终正文。每个故事轮单独结束步骤，不能让后轮覆盖前轮。
+  for (const [index, round] of plan.rounds.entries()) {
+    mutator.editStep(() => {
       const id = `tavern-native-repair:${repairId}:${index}`
       const turn = round.turn
+      // 没有玩家输入承接替换时，先清掉旧尾部，再追加可绘制的开场正文。
+      if (pending && round.userText === null) write('assistant/message', { turn, step: 1,
+        message: { id: id + ':clear', role: 'assistant', content: [], source } })
       const input = round.userText === null ? null : write('user/message', { id: id + ':input', role: 'user',
         content: [{ type: 'text', text: round.userText }], source: { kind: 'user', repair: { id: repairId } } })
       const reply = write('assistant/message', { turn, step: 1, message: { id: round.greeting ? nativeOpeningMessageId(chat.id) : id + ':reply',
         role: 'assistant', content: [{ type: 'text', text: round.replyText }], source: storySource(turn) } })
       anchors.push({ messageIndex: round.messageIndex, anchor: input ? roundAnchor(turn, input, reply) : null })
-    }
-    // A stale tail with nothing to write in its place: shadow it with an empty node.
-    if (pending) write('assistant/message', { turn: 0, step: 1, message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } })
-  })
+    })
+  }
+  // 没有需要恢复的正文时，只用空节点遮蔽已撤回的尾部。
+  if (pending) mutator.editStep(() => write('assistant/message', { turn: 0, step: 1,
+    message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } }))
   return { applied: true, anchors }
 }
 
@@ -177,7 +194,7 @@ export function recordNativeSurfaceRepair(current, repaired, anchors) {
   if (current.nativeSync) { delete current.nativeSync; changed = true }
   for (const { messageIndex, anchor } of anchors) {
     const row = current.messages?.[messageIndex], read = repaired.messages?.[messageIndex]
-    if (!anchor || row?.role !== 'assistant' || row.text !== read?.text || Number(row.turn) !== Number(read?.turn)) continue
+    if (!anchor || row?.role !== 'assistant' || row.text !== read?.text || (Number(row.turn) || 0) !== (Number(read?.turn) || 0)) continue
     row.nativeAnchor = anchor
     // The rewritten reply already carries the edit; replaying the marker would target a shadowed node.
     delete row.bodyEdit

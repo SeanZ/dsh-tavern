@@ -86,6 +86,8 @@ export function createBackgroundAgentSessions(options, task) {
   const now = typeof options.now === 'function' ? options.now : Date.now
   const idleMs = Number.isSafeInteger(options.residentIdleMs) && options.residentIdleMs > 0 ? options.residentIdleMs : 5 * 60 * 1000
   const maxResidents = Number.isSafeInteger(options.maxResidentSessions) && options.maxResidentSessions > 0 ? options.maxResidentSessions : 8
+  // 前台历史编辑最多等这么久排到父会话队列；后台忙就放弃，留给下次任务重试。
+  const editWaitMs = Number.isSafeInteger(options.editWaitMs) && options.editWaitMs > 0 ? options.editWaitMs : 3000
   const releasing = new Map()
   let reapTimer, reaping, stopped = false
 
@@ -309,12 +311,16 @@ export function createBackgroundAgentSessions(options, task) {
         residentHandles.delete(traceSessionId)
         if (residentSessionByParent.get(key)===traceSessionId) residentSessionByParent.delete(key)
         requestContexts.delete(traceSessionId); requestSessions.delete(traceSessionId)
-        void Promise.resolve().then(async () => {
+        const release = Promise.resolve().then(async () => {
           try { await options.flushSession?.(handle.agent.session) }
           finally { await handle.dispose() }
           // Released: listings now leave it out, so the page may reload its session list.
           if (persistent) options.onRetired?.(traceSessionId, str(input.sessionId))
-        }).catch(error => console.warn('dsh-tavern: 退休后台会话释放失败', traceSessionId, error))
+        })
+        releasing.set(traceSessionId, release)
+        void release.catch(error => console.warn('dsh-tavern: 退休后台会话释放失败', traceSessionId, error)).finally(() => {
+          if (releasing.get(traceSessionId) === release) releasing.delete(traceSessionId)
+        })
       } else if (!persistent) {
         requestContexts.delete(traceSessionId)
         requestSessions.delete(traceSessionId)
@@ -341,6 +347,36 @@ export function createBackgroundAgentSessions(options, task) {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
     })
+  }
+
+  // 历史编辑和任务、空闲回收共用父会话队列；退休句柄释放完成后才能借用或恢复。
+  // 排队有时限：前台不能被无关的长后台任务挂住，超时后这次编辑作废，不再动该会话。
+  function withSession(sessionId, parentSessionId, work) {
+    if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
+    let expired = false, timer
+    const waited = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true
+        reject(Object.assign(new Error('后台任务仍在运行，稍后重试'), { code: 'BACKGROUND_BUSY' }))
+      }, editWaitMs)
+    })
+    const edited = enqueue(str(parentSessionId), async () => {
+      if (expired) return
+      clearTimeout(timer)
+      if (stopped) throw new Error('后台 Agent 管理器已关闭')
+      if (releasing.has(sessionId)) await releasing.get(sessionId)
+      const resident = residentHandles.get(sessionId)
+      let agent = resident?.handle.agent || agents.get(sessionId)
+      let handle
+      try {
+        if (!agent) { handle = await agents.resume({ resumeSessionId: sessionId }); agent = handle.agent }
+        return await work(agent.session, agent)
+      } finally {
+        if (handle) await handle.dispose()
+        if (resident) resident.lastUsedAt = now()
+      }
+    })
+    return Promise.race([edited, waited])
   }
 
   function owns(sessionId) {
@@ -435,5 +471,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, run, owns, requestContext, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, run, withSession, owns, requestContext, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }
