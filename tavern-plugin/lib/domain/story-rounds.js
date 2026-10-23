@@ -42,7 +42,8 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
  *            the player sending again) is 'superseded': the player has moved on
  * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
  * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层；
- *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空；
+ *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空；未接纳就出错时，
+ *          准备阶段被撤下的排队玩家输入（服务端拒绝本轮时一并撤下）接在其后；
  *          重新生成的尝试轮带 regenerating: true（它的失败归楼层操作，不是玩家自己的回合）。
  * An interrupted, failed or empty reply never makes a floor.
  */
@@ -58,6 +59,8 @@ function createStoryRoundsFold() {
   let queuedAttempt = false
   // 窗口内可见的 next-turn 队列：总是真实队列的前缀，窗口外入队的条目以 null 占位。
   let nextInputs = [], attempt = null, claiming = false
+  // 本轮准备阶段被撤下（canceled）的排队玩家输入；本轮未接纳就出错时并入 attempt.inputs。
+  let dropped = []
   let queued = [], running = null, last = -1, cached = null
   // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
   // sit in the middle of a turn whose turn/start came before the window.
@@ -112,6 +115,9 @@ function createStoryRoundsFold() {
           attempt = { ...attempt, inputs: removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })) }
           if (attempt.inputs.length && lastEnded && lastEnded.turn < attempt.turn && ['aborted', 'interrupted'].includes(lastEnded.kind)) superseded.add(lastEnded.turn)
           if (removed.some(input => input && input.regenerating)) attempt.regenerating = true
+        } else if (attempt && attempt.phase === 'preparing' && !attempt.accepted && running === attempt.turn && data.outcome === 'canceled') {
+          // 回合开始前被拒（如变量未重算）时，服务端把仍在排队的玩家输入一并撤下：文字跟本轮一起恢复。
+          dropped.push(...removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })))
         }
       }
       if (event.type === 'turn/start') {
@@ -119,6 +125,7 @@ function createStoryRoundsFold() {
         if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
         running = Number(event.data && event.data.turn)
         attempt = { turn: running, seq, phase: 'preparing', inputs: [], accepted: false, error: '' }
+        dropped = []
         claiming = true
         known = true
         // A message queued before its turn starts (the inbox splices it in) belongs to it.
@@ -132,6 +139,8 @@ function createStoryRoundsFold() {
         claiming = false
         if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
         attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
+        if (attempt.phase === 'error' && !attempt.accepted && dropped.length) attempt.inputs = [...attempt.inputs, ...dropped]
+        dropped = []
         ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
         lastEnded = { turn: Number(event.data && event.data.turn), kind: String(event.data?.reason?.kind || '') }
         running = null
@@ -143,7 +152,7 @@ function createStoryRoundsFold() {
         known = true
         adopt(running)
       }
-      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) { attempt = { ...attempt, phase: 'generating' }; claiming = false }
+      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) { attempt = { ...attempt, phase: 'generating' }; claiming = false; dropped = [] }
       if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
         if (attempt && running === attempt.turn) {
           const input = { seq, turn: running, text: textOf(event) }

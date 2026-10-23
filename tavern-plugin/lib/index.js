@@ -63,7 +63,7 @@ import { createCardSummaryCache } from './domain/card-summary-cache.js'
 import { openingPreviewPayload, openingInitializationPayload } from './domain/opening-transport.js'
 import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
-import { settlementTurn, pendingMvuSettlementState, projectDisplayRuntimeState } from './domain/chat-session-state.js'
+import { settlementTurn, pendingMvuSettlementState, projectDisplayRuntimeState, staleVariablesOf } from './domain/chat-session-state.js'
 import { createSettlementProgressGuard } from './domain/settlement-progress-guard.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
@@ -136,6 +136,7 @@ import { createSceneWorldbooks } from './domain/scene-worldbook.js'
 import { createSessionStablePrefixStorage, ensureSessionStablePrefix, readSessionStablePrefix } from './domain/session-stable-prefix.js'
 import { waitForWritableSession } from './domain/agent-readiness.js'
 import { interruptStoryQueue } from './domain/interrupt-story-queue.js'
+import { createStaleVariablesGuard } from './domain/stale-variables-guard.js'
 import { createCardDeletion } from './domain/card-deletion.js'
 import { createCardOrganization } from './domain/card-organization.js'
 import { countGamesByCard, orderCardsForLibrary } from './domain/card-list-order.js'
@@ -3823,6 +3824,13 @@ export async function apply(ctx) {
     prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
     cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
     waitReconcile: async sessionId => { await reconciling.get(str(sessionId))?.catch(() => {}) },
+    rejectStaleTurn: createStaleVariablesGuard({
+      isStale: async sessionId => {
+        const chat = await chatHeaderWithLatestFloors(sessionId, 2)
+        return Boolean(chat && chat.mvu?.enabled === true && chat.mvu.owner === 'official' && staleVariablesOf(chat))
+      },
+      agentFor: sessionId => agentRegistry.get(sessionId)
+    }),
     syncWorldBook: async function (chat) {
       if (!['story', 'script'].includes(chat.mode || 'story')) return
       try {

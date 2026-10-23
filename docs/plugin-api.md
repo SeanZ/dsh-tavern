@@ -172,7 +172,9 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `storyViewMode()` / `setStoryViewMode(boolean)` / `subscribeStoryViewMode(listener)` | 读改 C4 设置 |
 | `render` | 楼层渲染运行时，见下节 |
 
-`attempt` 是已加载事件窗口内的最新生成尝试，字段为 `{ turn, seq, phase, inputs, accepted, error, regenerating? }`，没有尝试时为 `null`。重新生成（含按要求改写）发起的尝试轮带 `regenerating: true`，它的失败由发起操作的一方报告，不是玩家自己的回合。`phase` 在输入模板准备时为 `preparing`，模型步骤开始后为 `generating`，结束后为原生 `turn/end.reason.kind`；`error` 为结束事件的错误消息。`inputs` 只取宿主为本轮认领的那条排队输入（`turn/start` 之后的认领 splice），仍在排队的后续输入不计入；在 `user/message` 写入后由正式输入替换，避免重复。`accepted` 表示已有正式用户消息；未接纳输入的早期失败不会生成楼层，也不能用 `retryFailed` 回放。此时界面可显示错误并将已知文字恢复到输入框，不自动重发。窗口没看到本轮那条输入的入队事件时，`inputs` 为空，不会错拿别的排队输入。
+`attempt` 是已加载事件窗口内的最新生成尝试，字段为 `{ turn, seq, phase, inputs, accepted, error, regenerating? }`，没有尝试时为 `null`。重新生成（含按要求改写）发起的尝试轮带 `regenerating: true`，它的失败由发起操作的一方报告，不是玩家自己的回合。`phase` 在输入模板准备时为 `preparing`，模型步骤开始后为 `generating`，结束后为原生 `turn/end.reason.kind`；`error` 为结束事件的错误消息。`inputs` 只取宿主为本轮认领的那条排队输入（`turn/start` 之后的认领 splice），仍在排队的后续输入不计入；在 `user/message` 写入后由正式输入替换，避免重复。`accepted` 表示已有正式用户消息；未接纳输入的早期失败不会生成楼层，也不能用 `retryFailed` 回放。此时界面可显示错误并将已知文字恢复到输入框，不自动重发。窗口没看到本轮那条输入的入队事件时，`inputs` 为空，不会错拿别的排队输入。未接纳就以 `error` 结束的尝试，准备阶段被撤下的排队玩家输入会接在 `inputs` 后面（见下段）。
+
+发送防御：官方 MVU 卡的最新楼层标着变量未重算（`staleVariables` 非 `null`）时，服务端在新玩家回合开始时（等后台结算完成之后、输入模板与提示构建之前）拒绝本轮：该轮以 `error` 结束，`attempt.error` 为「变量未重算：请先按当前正文重新结算（或重新生成），再发送」，`accepted` 为假，不发模型请求、不写正式用户消息；仍在排队的玩家输入一并撤下（不会在宿主出错暂停后卡在队列里），它们的文字与被拒的那条按顺序都在 `attempt.inputs` 里，界面用「编辑」恢复到输入框后再发送。刚点的重新结算若在这轮准备期间成功，标记已清除，这一轮照常进行。重新生成、按要求改写的合成输入，以及重新结算、编辑、撤回、分支等不开新玩家回合的操作不受影响；非 MVU 卡没有这个标记。界面可在 `staleVariables` 非空时预先提示，但不要只靠界面拦截。
 
 `receipts` 是已加载楼层的 MVU 变量回执，按故事轮号（`floor.story`）为键，没有回执的楼层不出现（非 MVU 卡与开场通常为空对象）。来源是 Tavern 视图 `mvuReceipts`（与聊天行回执同一份数据，只做展示投影，不新算）：视图只保留值得注意的回执（pending、error、interrupted、partial、stale）和最近 3 条普通回执，更早的普通楼层没有回执。每条为 `{ status, changes, sideEffects, failures, summary, diagnostics, counts }`：
 - `status`：`pending`、`updated`、`partial`、`error`、`stale`、`interrupted`、`unchanged` 之一，未知值按 `unchanged`。
