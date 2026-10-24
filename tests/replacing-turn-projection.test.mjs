@@ -37,22 +37,46 @@ test('没在重生成时，残留的恢复记录不再生效', () => {
   assert.deepEqual(view.suppressedDshTurns, [3])
 })
 
-// 存档记的是生成期的合成回合，实际正文在提交之后才投影进另一个编辑回合。
-// 视图必须以日志为准，否则旧回合会被当成当前正文继续显示。
-const projectedEvents = [
-  { seq: 0, type: 'user/message', data: { role: 'user', source: { kind: 'user' } } },
-  { seq: 1, type: 'assistant/message', data: { turn: 1, message: { source: { kind: 'model', provider: 'p', model: 'm' }, content: [{ type: 'text', text: '开场' }] } } },
-  { seq: 2, type: 'assistant/message', data: { turn: 11, message: { source: { kind: 'model', provider: 'p', model: 'm' }, content: [{ type: 'text', text: '被替换的正文' }] } } },
-  { seq: 3, type: 'assistant/message', surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 }, sourceEventSeqs: [2],
-    data: { turn: 12, message: { source: { kind: 'model', provider: 'p', model: 'm', tavernStoryTurn: 4 }, content: [{ type: 'text', text: '新正文' }] } } }
-]
-const projectedSession = { id: 's', events: projectedEvents, surface: { nodes: [0, 1, 3] } }
-
-test('投影记在哪个原生回合，视图就指向哪个回合', () => {
-  const view = fields.rollback({ id: 'c', sessionId: 's', mode: 'story', messages: [],
-    regeneratedDshTurns: { 4: 11 }, suppressedDshTurns: [11] }, { session: projectedSession, events: projectedEvents })
-  assert.equal(view.regeneratedDshTurns[4], 12, '存档里的 11 是生成期回合，正文实际在 12')
-  assert.deepEqual(view.supersededDshTurns, [11], '旧回合的正文已被替换，页面不能再画')
+// 存档记的是生成期回合 11；提交后的投影经写入层落在另一个编辑回合里。宿主正文折叠
+// 不画 replace，所以视图映射表示实际可绘制的座位（第 11 轮的 append），按钮和正文都归它。
+test('投影落在编辑回合时，视图指向宿主实际绘制正文的回合', async () => {
+  const { Session } = await import('./fixtures/dsh-session-host.mjs')
+  const { hostAssistantRows } = await import('./fixtures/host-assistant-rows.mjs')
+  const { projectionFixture } = await import('./fixtures/session-view-projection.mjs')
+  const { appendSessionEvent, sessionEvents } = await import('../tavern-plugin/lib/domain/session-events.js')
+  const { replaceSessionSurface } = await import('../tavern-plugin/lib/domain/session-surface-mutations.js')
+  const { planShowsRow, planStoryTurn } = await import('../tavern-plugin/lib/domain/transcript-row-plan.js')
+  const model = { kind: 'model', provider: 'p', model: 'm' }
+  const session = Session.create('projected-edit-turn')
+  const round = (turn, text, input) => {
+    appendSessionEvent(session, 'turn/start', { turn })
+    appendSessionEvent(session, 'step/start', { turn, step: 1 })
+    if (input) appendSessionEvent(session, 'user/message', { id: 'i' + turn, role: 'user', content: [{ type: 'text', text: input }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+    const reply = appendSessionEvent(session, 'assistant/message', { turn, step: 1, message: { id: 'r' + turn, role: 'assistant', content: [{ type: 'text', text }], source: model } }, { surfaceOp: 'append' })
+    appendSessionEvent(session, 'step/end', { turn, step: 1 })
+    appendSessionEvent(session, 'turn/end', { turn, reason: { kind: 'completed' } })
+    return reply
+  }
+  round(1, '开场')
+  const old = round(11, '被替换的正文', '下一句')
+  const projected = replaceSessionSurface(session, 'assistant/message',
+    { ...old.data, message: { ...old.data.message, id: 'tavern-regen:op', content: [{ type: 'text', text: '新正文' }], source: { ...model, tavernStoryTurn: 4 } } },
+    { start: old.seq, end: old.seq, sourceEventSeqs: [old.seq] })
+  const editTurn = sessionEvents(session).findLast(event => event.type === 'turn/start' && event.seq < projected.seq).data.turn
+  assert.notEqual(editTurn, 11, '替换事件落在另一个编辑回合')
+  const events = sessionEvents(session)
+  const fixture = projectionFixture({ sessionDebugEvidence: () => ({ session, loaded: true, events: sessionEvents(session), nodes: session.surface.nodes }) })
+  const chat = Object.assign(fixture.chat, { sessionId: session.id, regeneratedDshTurns: { 4: 11 }, suppressedDshTurns: [11],
+    messages: [{ role: 'assistant', turn: 1, greeting: true, text: '开场' }, { role: 'user', text: '下一句' }, { role: 'assistant', turn: 4, text: '新正文' }] })
+  const view = await fixture.projection.project.full(chat)
+  assert.equal(view.regeneratedDshTurns[4], 11, '映射指向宿主为 append 画行的第 11 轮')
+  assert.deepEqual(view.supersededDshTurns, [], '映射指向的回合不能被当成旧回合隐藏')
+  assert.equal(view.transcriptTurns['11'].story, 4, '按钮按故事第 4 轮操作')
+  assert.equal(view.transcriptTurns['11'].fromSave, 1, '原座位的旧正文由存档里的新正文顶替')
+  assert.equal(planStoryTurn(view.transcriptTurns, 11), 4)
+  const shown = hostAssistantRows(events).filter(row => planShowsRow(view.transcriptTurns, row))
+    .map(row => view.replyProjections?.find(item => item.turn === planStoryTurn(view.transcriptTurns, row.turn))?.text || row.text)
+  assert.deepEqual(shown, ['开场', '新正文'], '页面只显示开场与新正文，旧正文不再出现')
 })
 
 test('没有投影时保持存档里的映射与空的待清理列表', () => {
