@@ -89,3 +89,61 @@ test('替换端点按 Surface 顺序而非数字大小解释', () => {
   const events = [reply(0, 4), reply(1, 5), replace(2, 0), reply(3, 8, { op: 'replace', start: 2, end: 1 }, [2, 1])]
   assert.deepEqual(resolve(events), { seq: 1, turn: 5 })
 })
+
+test('范围外较新的来源不能夺走范围内的正文座位', () => {
+  const events = [reply(0, 7), reply(1, 9), reply(2, 10, { op: 'replace', start: 0, end: 0 }, [0, 1])]
+  assert.deepEqual(resolve(events), { seq: 0, turn: 7 })
+})
+
+// 撤回后撤销：restoreSurface 写 [占位, 原件]，替换范围只有占位，原件在范围外且更旧、排在最后。
+test('撤销恢复写出的 [占位, 原件] 来源仍指回原座位', async () => {
+  const { Session } = await import('./fixtures/dsh-session-host.mjs')
+  const { appendSessionEvent, sessionEvents, surfaceReplacementRange } = await import('../tavern-plugin/lib/domain/session-events.js')
+  const { replaceSessionSurface } = await import('../tavern-plugin/lib/domain/session-surface-mutations.js')
+  const { restoreSurface } = await import('../tavern-plugin/lib/domain/surface-restoration.js')
+  const { createSessionStateView } = await import('../tavern-plugin/lib/domain/chat-session-state.js')
+  const model = { kind: 'model', provider: 'p', model: 'm' }
+  const session = Session.create('restore-seat')
+  const ev = (type, data, intent) => appendSessionEvent(session, type, data, intent)
+  const round = (turn, write) => {
+    ev('turn/start', { turn })
+    ev('step/start', { turn, step: 1 })
+    const result = write()
+    ev('step/end', { turn, step: 1 })
+    ev('turn/end', { turn, reason: { kind: 'completed' } })
+    return result
+  }
+  const body = (turn, id, text) =>
+    ev('assistant/message', { turn, step: 1, message: { id, role: 'assistant', content: [{ type: 'text', text }], source: model } }, { surfaceOp: 'append' })
+  round(1, () => body(1, 'open', '开场'))
+  let input
+  const original = round(2, () => {
+    input = ev('user/message', { id: 'i2', role: 'user', content: [{ type: 'text', text: '行动' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+    return body(2, 'r2', '旧正文')
+  })
+  const projected = replaceSessionSurface(
+    session,
+    'assistant/message',
+    { turn: 2, step: 1, message: { id: 'tavern-regen:x', role: 'assistant', content: [{ type: 'text', text: '新正文' }], source: { ...model, tavernStoryTurn: 2 } } },
+    { start: original.seq, end: original.seq, sourceEventSeqs: [original.seq] },
+  )
+  const saved = [...session.surface.nodes]
+  replaceSessionSurface(
+    session,
+    'user/message',
+    { id: 'tomb', role: 'user', content: [], source: { kind: 'plugin:dsh-tavern-rollback' } },
+    { start: input.seq, end: projected.seq, sourceEventSeqs: [input.seq, projected.seq] },
+  )
+  restoreSurface(session, saved)
+  const events = sessionEvents(session)
+  const restored = events.findLast((event) => event.data?.message?.id === 'tavern-regen:x')
+  const [placeholder, cited] = restored.sourceEventSeqs
+  assert.equal(cited, projected.seq, '原件排在最后')
+  assert.ok(placeholder > cited, '占位是范围内较新的节点')
+  assert.deepEqual(surfaceReplacementRange(restored.surfaceOp), { start: placeholder, end: placeholder })
+  const at = (seq) => events.find((event) => event.seq === seq)
+  assert.deepEqual(createReplySeatResolver(at)(restored), { seq: original.seq, turn: 2 })
+  const view = createSessionStateView({ activity: () => ({ busy: false }), evidence: () => ({ session, events }) })
+    .rollback({ id: 'c', sessionId: session.id, mode: 'story', messages: [] }, { session, events })
+  assert.equal(view.regeneratedDshTurns[2], 2)
+})
