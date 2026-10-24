@@ -1574,6 +1574,7 @@ window.__ModuleLoader__.load({
 				}
 				const accepted = viewRead ? viewRead.accept(result) : result;
 				if (viewRead) rememberHistoryWindow(payload.sessionId, accepted.view);
+				if (payload.sessionId && accepted.view && typeof accepted.view.mode === "string") publishSessionMode(payload.sessionId, accepted.view.mode);
                 if (accepted.contextWindow) return {...accepted,context:expandTavernOpeningWindow(accepted.contextWindow).tavernHelper};
                 return accepted.view && accepted.view.historyWindow ? {...accepted,view:expandTavernOpeningWindow(accepted.view)} : accepted;
 			}).catch(function (error) {
@@ -3291,18 +3292,22 @@ window.__ModuleLoader__.load({
 
 
 		// `loaded` tells "not a Tavern session" apart from "the list has not arrived".
-		const tavernSessionModes = { values: {}, listeners: new Set(), loaded: false };
+		const tavernSessionModes = { values: {}, direct: {}, listeners: new Set(), loaded: false };
 		function publishSessionModes(items) {
 			const next = {};
-			(items || []).forEach(function (item) { next[item.sessionId] = item.mode || "story"; });
-			tavernSessionModes.values = next;
+			(items || []).forEach(function (item) { next[item.sessionId] = typeof item.mode === "string" ? item.mode : ""; });
+			// 明确创建/打开和真实视图已发布的模式优先，迟到的列表不能将它闪回旧值。
+			tavernSessionModes.values = Object.assign(next, tavernSessionModes.direct);
 			tavernSessionModes.loaded = true;
-			tavernSessionModes.listeners.forEach(function (listener) { listener(next); });
+			tavernSessionModes.listeners.forEach(function (listener) { listener(tavernSessionModes.values); });
 		}
 		function publishSessionMode(sessionId, mode) {
+			if (!sessionId || typeof mode !== "string" || mode === "") return;
+			tavernSessionModes.direct[sessionId] = mode;
+			if (tavernSessionModes.values[sessionId] === mode) return;
 			const next = Object.assign({}, tavernSessionModes.values, { [sessionId]: mode });
 			tavernSessionModes.values = next;
-			tavernSessionModes.listeners.forEach(function (listener) { listener(next); });
+			tavernSessionModes.listeners.forEach(function (listener) { listener(tavernSessionModes.values); });
 		}
 		function useTavernSessionMode(sessionId) {
 			const [values, setValues] = React.useState(tavernSessionModes.values);
@@ -3501,6 +3506,27 @@ window.__ModuleLoader__.load({
                 parkingRoots.set(root, container);
             }
             let observer = null;
+            // 正在处理渲染事件的消息；只有恰好一条在途时，新增节点才归属该消息，避免并发时串号。
+            const renderingMessages = new Set();
+            function currentMessage() {
+                return renderingMessages.size === 1 ? renderingMessages.values().next().value : null;
+            }
+            // 空作用域不挂文档观察器：首次登记节点时才开始观察；按消息释放后若已无节点则断开。
+            function ensureObserver() {
+                if (observer || disposed || !host || !host.MutationObserver) return;
+                observer = new host.MutationObserver(function (changes) {
+                    for (const change of changes) for (const node of change.addedNodes) {
+                        if (created.has(node)) remember(node, change.target);
+                    }
+                    park();
+                });
+                for (const root of roots) observer.observe(root, { childList: true });
+            }
+            function releaseObserverIfEmpty() {
+                if (!observer || owned.size || created.size) return;
+                observer.disconnect();
+                observer = null;
+            }
             function parkNode(node, previous) {
                 previous.nextSibling = node.nextSibling;
                 const container = parkingRoots.get(previous.root);
@@ -3526,24 +3552,55 @@ window.__ModuleLoader__.load({
                 owners.set(node, identity);
                 node.setAttribute?.("data-dsh-tavern-host-artifact", "");
                 owned.set(node, { hidden: node.hidden, disabled: node.disabled, body: root === hostDocument.body,
-                    root: root, nextSibling: node.nextSibling, parked: false });
+                    root: root, nextSibling: node.nextSibling, parked: false, message: currentMessage() });
+                ensureObserver();
             }
             let disposed = false, visible = true;
             const created = new Set();
             function captureCreated() {
                 for (const node of created) if (roots.includes(node.parentNode)) remember(node, node.parentNode);
             }
-            if (host && host.MutationObserver) {
-                observer = new host.MutationObserver(function (changes) {
-                    for (const change of changes) for (const node of change.addedNodes) {
-                        if (created.has(node)) remember(node, change.target);
-                    }
-                    park();
-                });
-                for (const root of roots) observer.observe(root, { childList: true });
+            function releaseArtifacts(message) {
+                const jq = host && host.jQuery;
+                for (const [node, previous] of Array.from(owned)) {
+                    if (previous.message !== message) continue;
+                    if (jq && typeof jq.cleanData === "function" && node.nodeType === 1) jq.cleanData([node].concat(Array.from(node.getElementsByTagName("*"))));
+                    owned.delete(node); owners.delete(node);
+                    for (const tracked of created) if (tracked === node || node.contains?.(tracked)) created.delete(tracked);
+                    node.remove();
+                }
+                releaseObserverIfEmpty();
             }
             return Object.freeze({
-                trackNode: function (node) { created.add(node); return node; },
+                trackNode: function (node) { if (!disposed) { created.add(node); ensureObserver(); } return node; },
+                // 返回结束函数；同一消息可重入，计数归零才结束归属。
+                beginMessage: function (key) {
+                    if (disposed) return function () {};
+                    captureCreated();
+                    let message = Array.from(renderingMessages).find(item => item.key === key && !item.released);
+                    if (!message) { message = { key, count: 0, released: false }; renderingMessages.add(message); }
+                    message.count++;
+                    let ended = false;
+                    return function () {
+                        if (ended) return;
+                        ended = true;
+                        // 观察器回调是微任务；先收下事件期间插入的节点再结束归属。
+                        captureCreated();
+                        if (--message.count === 0) renderingMessages.delete(message);
+                        // 消息可能先卸载、异步事件后结束；迟到的浮层也随原渲染释放。
+                        if (message.released) releaseArtifacts(message);
+                    };
+                },
+                releaseMessage: function (key) {
+                    if (disposed) return;
+                    captureCreated();
+                    const messages = new Set(renderingMessages);
+                    for (const previous of owned.values()) if (previous.message) messages.add(previous.message);
+                    for (const message of messages) if (message.key === key) {
+                        message.released = true;
+                        releaseArtifacts(message);
+                    }
+                },
                 findElementById: function (id) {
                     const node = hostDocument.getElementById(id);
                     if (node && (!ownerOf(node) || ownerOf(node) === identity)) return node;
@@ -3648,6 +3705,7 @@ window.__ModuleLoader__.load({
                     }
                     owned.clear();
                     created.clear();
+                    renderingMessages.clear();
                 }
             });
         }
@@ -5780,6 +5838,10 @@ function tavernModelRefusalNotice(text) {
 		        }).join('\n');
 		    }
 		    if (shared.users === 1 || options.colors) setColors(options.colors);
+		    // 静态楼层位于 Shadow DOM，文档中的 ::highlight 样式不会跨越样式边界。
+		    const scope = typeof root.getRootNode === 'function' ? root.getRootNode() : null;
+		    const scopedStyle = scope && scope.host ? style.cloneNode(true) : null;
+		    if (scopedStyle) scope.appendChild(scopedStyle);
 		    // This instance's ranges, so a refresh or dispose removes only its own.
 		    const owned = [];
 		    function clearOwned() {
@@ -5829,6 +5891,8 @@ function tavernModelRefusalNotice(text) {
 		    }
 		    function refresh() {
 		        timer = null;
+		        // 定时器排队期间可能已离屏；此时不清除旧区间，等恢复后再扫。
+		        if (!disposed && enabled && paused()) { dirty = true; return; }
 		        clearOwned();
 		        if (disposed || !enabled) return;
 		        computedColors = new WeakMap(); explicitColors = new WeakMap();
@@ -5855,9 +5919,29 @@ function tavernModelRefusalNotice(text) {
 		        }
 		        flush();
 		    }
-		    function schedule() { if (!disposed && enabled && timer === null) timer = win.setTimeout(refresh, 32); }
+		    // 离屏或页面隐藏时暂停扫描：保留已有区间，只记下“有变化”，恢复可见后再刷新一次。
+		    // 预读边距让即将滚入视口的消息提前着色。
+		    const visibleMargin = '600px 0px';
+		    let onscreen = true, dirty = false;
+		    function paused() { return doc.visibilityState === 'hidden' || !onscreen; }
+		    function schedule() {
+		        if (disposed || !enabled) return;
+		        if (paused()) { dirty = true; return; }
+		        if (timer === null) timer = win.setTimeout(refresh, 32);
+		    }
+		    function resume() {
+		        if (!dirty || paused()) return;
+		        dirty = false;
+		        schedule();
+		    }
 		    const observer = new win.MutationObserver(schedule);
 		    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['style', 'class', 'color', 'hidden'] });
+		    const viewport = typeof win.IntersectionObserver === 'function' ? new win.IntersectionObserver(function (entries) {
+		        onscreen = entries[entries.length - 1].isIntersecting;
+		        resume();
+		    }, { rootMargin: visibleMargin }) : null;
+		    if (viewport) viewport.observe(root);
+		    doc.addEventListener('visibilitychange', resume);
 		    shared.themed.add(schedule);
 		    // Batch mounts before reading computed styles; each message adds a stylesheet.
 		    schedule();
@@ -5866,14 +5950,17 @@ function tavernModelRefusalNotice(text) {
 		        setEnabled(value) {
 		            enabled = value !== false;
 		            if (timer !== null) win.clearTimeout(timer);
-		            timer = null;
+		            timer = null; dirty = false;
 		            if (enabled) schedule();
 		            else clearOwned();
 		        },
 		        dispose() {
 		            if (disposed) return;
 		            disposed = true; observer.disconnect(); if (timer !== null) win.clearTimeout(timer);
+		            if (viewport) viewport.disconnect();
+		            doc.removeEventListener('visibilitychange', resume);
 		            clearOwned();
+		            if (scopedStyle) scopedStyle.remove();
 		            shared.themed.delete(schedule);
 		            if (--shared.users) return;
 		            shared.theme.disconnect();
@@ -6071,9 +6158,27 @@ function tavernModelRefusalNotice(text) {
 		    };
 		}
 
+		// 一次高度采样内同一节点的样式与几何只读一次；采样结束即丢弃，下次采样重新读取。
+		// 以源码注入 iframe，只能使用自身作用域内的名字。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernLayoutSample() {
+			var styles = new Map(), rects = new Map();
+			return {
+				style: function (node) {
+					if (!styles.has(node)) styles.set(node, getComputedStyle(node));
+					return styles.get(node);
+				},
+				rect: function (node) {
+					if (!rects.has(node)) rects.set(node, node.getBoundingClientRect());
+					return rects.get(node);
+				}
+			};
+		}
+
 		// A viewport-sized card cannot determine its own iframe viewport. Use the host
 		// viewport as a floor for page layouts, while retaining authored local scrollers.
-		function tavernFrameViewportFloor() {
+		function tavernFrameViewportFloor(sample) {
+			if (!sample) sample = { style: function (node) { return getComputedStyle(node); }, rect: function (node) { return node.getBoundingClientRect(); } };
 			var viewport = 600;
 			try { viewport = window.parent.innerHeight || viewport; } catch (_) {}
 			viewport = Math.max(160, Math.min(1200, viewport));
@@ -6090,8 +6195,8 @@ function tavernModelRefusalNotice(text) {
 		                if (!summary || !summary.contains(node)) return false;
 		            }
 		        }
-				var rect = node.getBoundingClientRect();
-				var style = getComputedStyle(node);
+				var rect = sample.rect(node);
+				var style = sample.style(node);
 				return rect.width > window.innerWidth / 2 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
 			}
 			function matchesRules(rules) {
@@ -6109,13 +6214,140 @@ function tavernModelRefusalNotice(text) {
 			}
 			for (var node of document.body.querySelectorAll('*')) {
 				// Check the cheap conditions first; visible() measures layout.
-				var style = getComputedStyle(node);
+				var style = sample.style(node);
 				// Full-page fixed shells have no normal-flow height at all. Floating
 				// buttons or small dialogs must not enlarge the frame.
 				if (!viewportHeight(node.style) && !(style.position === 'fixed' && style.top === '0px' && style.bottom === '0px')) continue;
 				if (visible(node)) return viewport;
 			}
 			return 0;
+		}
+		// 显式快照只访问预算内的节点，再序列化选中的小树。节点、深度及 UTF-8 字节都有硬上限；
+		// 不整树 clone，不读取 innerHTML，也不先展开全部兄弟节点或转义超长文本。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function captureTavernBoundedDom(root, budget) {
+		    function limit(name, fallback) {
+		        var value = Number(budget && budget[name]);
+		        return Number.isFinite(value) && value > 0 ? Math.min(fallback, Math.floor(value)) : fallback;
+		    }
+		    var limits = { nodes: limit("nodes", 2000), depth: limit("depth", 32), bytes: limit("bytes", 100000) };
+		    var nodes = 0,
+		        visited = 0,
+		        bytes = 0,
+		        deepest = 0,
+		        truncated = false;
+		    var voids = /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/;
+		    function escaped(value, available, attribute) {
+		        var out = "",
+		            used = 0,
+		            index = 0;
+		        for (; index < value.length; index += part.length) {
+		            var code = value.codePointAt(index),
+		                part = String.fromCodePoint(code);
+		            var replacement =
+		                part === "&"
+		                    ? "&amp;"
+		                    : part === "<"
+		                      ? "&lt;"
+		                      : part === ">"
+		                        ? "&gt;"
+		                        : attribute && part === '"'
+		                          ? "&quot;"
+		                          : part;
+		            var cost =
+		                replacement === part ? (code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4) : replacement.length;
+		            if (used + cost > available) break;
+		            out += replacement;
+		            used += cost;
+		        }
+		        return { text: out, bytes: used, complete: index === value.length };
+		    }
+		    function own(node) {
+		        if (!/^(?:script|style)$/i.test(node.tagName)) return false;
+		        // 属性遍历也受字节预算约束，避免巨大属性集合绕过工作量限制。
+		        for (var i = 0; i < Math.min(node.attributes.length, limits.bytes); i++) {
+		            if (node.attributes[i].name.indexOf("data-dsh-tavern") === 0) return true;
+		        }
+		        return false;
+		    }
+		    function tagParts(node, available) {
+		        var name = node.tagName.toLowerCase(),
+		            close = voids.test(name) ? "" : "</" + name + ">";
+		        var head = "<" + name;
+		        var boundedName = escaped(name, available, false);
+		        if (!boundedName.complete) return null;
+		        var cost = 2 + boundedName.bytes + (close ? 3 + boundedName.bytes : 0);
+		        if (cost > available) return null;
+		        for (var i = 0; i < node.attributes.length; i++) {
+		            var attr = node.attributes[i],
+		                prefix = " " + attr.name + '="';
+		            var boundedAttribute = escaped(attr.name, available - cost, false);
+		            if (!boundedAttribute.complete) return null;
+		            cost += boundedAttribute.bytes + 4;
+		            if (cost > available) return null;
+		            var value = escaped(attr.value, available - cost, true);
+		            if (!value.complete) return null;
+		            head += prefix + value.text + '"';
+		            cost += value.bytes;
+		        }
+		        return { head: head + ">", close: close, bytes: cost };
+		    }
+		    var kept = { children: [] };
+		    var stack = [{ next: root.firstChild, depth: 1, parent: kept }];
+		    while (stack.length) {
+		        var frame = stack[stack.length - 1],
+		            node = frame.next;
+		        if (!node) {
+		            stack.pop();
+		            continue;
+		        }
+		        if (visited >= limits.nodes || bytes >= limits.bytes) {
+		            truncated = true;
+		            break;
+		        }
+		        visited++;
+		        frame.next = node.nextSibling;
+		        if (node.nodeType !== 1 && node.nodeType !== 3) continue;
+		        if (frame.depth > limits.depth) {
+		            truncated = true;
+		            continue;
+		        }
+		        if (node.nodeType === 1 && own(node)) continue;
+		        var entry;
+		        if (node.nodeType === 3) {
+		            var text = escaped(node.data, limits.bytes - bytes, false);
+		            entry = { text: text.text };
+		            bytes += text.bytes;
+		            if (!text.complete) truncated = true;
+		        } else {
+		            var tag = tagParts(node, limits.bytes - bytes);
+		            if (!tag) {
+		                truncated = true;
+		                break;
+		            }
+		            entry = { head: tag.head, close: tag.close, children: [] };
+		            bytes += tag.bytes;
+		        }
+		        frame.parent.children.push(entry);
+		        nodes++;
+		        deepest = Math.max(deepest, frame.depth);
+		        if (node.nodeType === 1 && entry.close)
+		            stack.push({ next: node.firstChild, depth: frame.depth + 1, parent: entry });
+		        if (node.nodeType === 3 && !text.complete) break;
+		    }
+		    function serialize(entry) {
+		        return entry.text !== undefined
+		            ? entry.text
+		            : entry.head + entry.children.map(serialize).join("") + entry.close;
+		    }
+		    var dom = kept.children.map(serialize).join("");
+		    var marker = "<!-- 已截断 -->",
+		        markerBytes = 18;
+		    if (truncated && bytes + markerBytes <= limits.bytes) {
+		        dom += marker;
+		        bytes += markerBytes;
+		    }
+		    return { dom: dom, truncated: truncated, nodes: nodes, visited: visited, depth: deepest, bytes: bytes };
 		}
         function normalizeFrameSizing(value) {
           if (!value || !['content', 'viewport', 'fixed'].includes(value.mode)) return null
@@ -6537,7 +6769,7 @@ function tavernModelRefusalNotice(text) {
 			const interactiveHelperShim = input && input.helperContext ? '<script data-dsh-tavern-interactive-helper>(function(){var token=' + token + ',nextId=1,pending=Object.create(null);function copy(value){try{return structuredClone(value);}catch(e){return JSON.parse(JSON.stringify(value));}}function call(method,args){return new Promise(function(resolve,reject){var requestId="interactive:"+String(nextId++);pending[requestId]={resolve:resolve,reject:reject};parent.postMessage({type:"dsh-tavern-helper-call",token:token,requestId:requestId,method:method,args:copy(args||{})},"*");});}addEventListener("message",function(event){var data=event&&event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-helper-response")return;var task=pending[data.requestId];if(!task)return;delete pending[data.requestId];if(data.ok)task.resolve(data.result);else task.reject(new Error(String(data.error||"Helper 调用失败")));});function payload(entries){if(!Array.isArray(entries))throw new TypeError("世界书条目必须是数组");return copy(entries).map(function(entry){delete entry.uid;return entry;});}var versions=Object.create(null);async function fresh(name){var result=await call("getTavernHelperWorldbook",{name:String(name||"")});var book=result&&result.worldbook||{};versions[String(name||"")]=book.version||"";return copy(book.entries||[]);}async function replace(name,entries,current,version){if(!Array.isArray(entries))throw new TypeError("世界书条目必须是数组");var before=new Map(),seen=new Set(),upserts=[];current.forEach(function(entry){before.set(String(entry.uid),JSON.stringify(entry));});copy(entries).forEach(function(entry){var key=entry.uid===undefined?"":String(entry.uid);if(key&&seen.has(key))throw new Error("世界书条目编号无效或重复");if(key)seen.add(key);if(!key||before.get(key)!==JSON.stringify(entry))upserts.push(entry);});var deletes=current.filter(function(entry){return!seen.has(String(entry.uid));}).map(function(entry){return entry.uid;});if(!upserts.length&&!deletes.length)return copy(current);var result=await call("patchTavernHelperWorldbook",{name:String(name||""),patch:{version:version,upserts:upserts,deletes:deletes}});var book=result&&result.worldbook||{},byUid=new Map(current.map(function(entry){return[String(entry.uid),entry];}));(book.changed||[]).forEach(function(entry){byUid.set(String(entry.uid),entry);});var written=(book.uids||[]).map(function(uid){return byUid.get(String(uid));});if(written.some(function(entry){return!entry;}))return await fresh(name);versions[String(name||"")]=book.version||"";return copy(written);}window.getWorldbook=async function(name){return await fresh(name);};window.updateWorldbookWith=async function(name,updater){if(typeof updater!=="function")throw new TypeError("世界书更新器必须是函数");var current=await fresh(name),version=versions[String(name||"")],draft=copy(current),next=await updater(draft);return await replace(name,next===undefined?draft:next,current,version);};window.createWorldbookEntries=async function(name,entries){var additions=payload(entries),previous;var worldbook=await window.updateWorldbookWith(name,function(current){previous=new Set(current.map(function(entry){return entry.uid;}));return current.concat(additions);});return{worldbook:worldbook,new_entries:worldbook.filter(function(entry){return!previous.has(entry.uid);})};};window.deleteWorldbookEntries=async function(name,predicate){if(typeof predicate!=="function")throw new TypeError("世界书删除条件必须是函数");var deleted=[];var worldbook=await window.updateWorldbookWith(name,function(current){return current.filter(function(entry){if(!predicate(copy(entry)))return true;deleted.push(copy(entry));return false;});});return{worldbook:worldbook,deleted_entries:deleted};};window.createChatMessages=async function(messages,option){var result=await call("createTavernHelperMessages",{messages:copy(Array.isArray(messages)?messages:[]),option:copy(option&&typeof option==="object"?option:{})});if(result&&result.stale)throw new Error("聊天已变化，消息未创建");};window.triggerSlash=function(line){return call("triggerTavernSlash",{line:window.substitudeMacros(String(line||""))}).then(function(result){return result&&Object.prototype.hasOwnProperty.call(result,"pipe")?result.pipe:result;});};window.TavernHelper=window.TavernHelper||{};["formatAsTavernRegexedString","isCharacterTavernRegexesEnabled","triggerSlash","getMessageId","getIframeName","errorCatched","retrieveDisplayedMessage","waitGlobalInitialized","getCurrentMessageId","getLastMessageId","getChatMessages","setChatMessages","getAllVariables","getCurrentCharacterName","getVariables","deleteVariable","replaceVariables","insertOrAssignVariables","insertVariables","updateVariablesWith","generateRaw","createChatMessages","getWorldbook","getCharWorldbookNames","getGlobalWorldbookNames","getChatWorldbookName","getWorldbookNames","updateWorldbookWith","createWorldbookEntries","deleteWorldbookEntries"].forEach(function(name){Object.defineProperty(window.TavernHelper,name,{enumerable:true,configurable:true,get:function(){return window[name];},set:function(value){window[name]=value;}});});})();<\/script>' : '';
 			const mvuViewObservationShim = input && input.helperContext && input.observeMvuView !== false ? '<script data-dsh-tavern-mvu-view-observer>(function(){var token=' + token + ',reported=false;function report(){if(reported)return;reported=true;window.__dshTavernMvuViewUsed=true;parent.postMessage({type:"dsh-tavern-mvu-view-used",token:token,mvuViewUsed:true},"*");}var getMvuData=window.Mvu&&window.Mvu.getMvuData;if(typeof getMvuData==="function")window.Mvu.getMvuData=function(){report();return getMvuData.apply(window.Mvu,arguments);};var getVariables=window.getVariables;if(typeof getVariables==="function")window.getVariables=function(){report();return getVariables.apply(window,arguments);};})();<\/script>' : '';
 			// parent.Mvu may throw an Error from another iframe: instanceof alone loses its stack.
-			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var captureDom=' + JSON.stringify(!(input && input.persistent === true)) + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(){timer=0;var dom="";try{if(captureDom&&document.body){var copy=document.body.cloneNode(true);Array.prototype.forEach.call(copy.querySelectorAll("script[data-dsh-tavern-frame],script[data-dsh-tavern-storage],script[data-dsh-tavern-layout]"),function(node){node.remove();});dom=copy.innerHTML;}}catch(e){}if(dom.length>100000)dom=dom.slice(0,100000)+"<!-- 已截断 -->";parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,runtime:{capturedAt:Date.now(),dom:dom,console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
+			const runtimeReporter = input && input.runtimeReporting === false ? '' : '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var domAllowed=' + JSON.stringify(!(input && input.persistent === true)) + ',captureDom=' + captureTavernBoundedDom.toString() + ';var logs=[],network=[],errors=[],timer=0;function trim(list){if(list.length>100)list.splice(0,list.length-100);}function value(input,depth){if(depth>3)return "[深度已截断]";if(input===null||input===undefined||typeof input==="boolean"||typeof input==="number"||typeof input==="string")return typeof input==="string"&&input.length>4000?input.slice(0,4000)+"…[已截断]":input;try{if(input instanceof Error||Object.prototype.toString.call(input)==="[object Error]")return {name:String(input.name),message:String(input.message).slice(0,4000),stack:String(input.stack||"").slice(0,4000)};if(Array.isArray(input))return input.slice(0,30).map(function(item){return value(item,depth+1);});if(typeof input==="object"){var out={};Object.keys(input).slice(0,30).forEach(function(key){out[key]=value(input[key],depth+1);});return out;}}catch(e){}return String(input);}function cleanUrl(input){try{var parsed=new URL(String(input),location.href);return parsed.protocol+"//"+parsed.host+parsed.pathname;}catch(e){return String(input||"").split(/[?#]/)[0].slice(0,1000);}}function send(snapshot){timer=0;parent.postMessage({type:"dsh-tavern-frame-runtime",token:token,explicit:Boolean(snapshot),runtime:{capturedAt:Date.now(),dom:snapshot?snapshot.dom:"",console:logs.slice(),network:network.slice(),errors:errors.slice()}} ,"*");}addEventListener("message",function(event){var data=event.data;if(!domAllowed||event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-dom-snapshot")return;var snapshot={dom:""};try{if(document.body)snapshot=captureDom(document.body);}catch(e){}if(timer)clearTimeout(timer);send(snapshot);});function schedule(){if(timer)return;timer=setTimeout(send,350);}["log","info","warn","error"].forEach(function(level){var original=console[level];console[level]=function(){logs.push({at:Date.now(),level:level,args:Array.prototype.map.call(arguments,function(item){return value(item,0);})});trim(logs);schedule();return original&&original.apply(console,arguments);};});addEventListener("error",function(event){var target=event.target;if(target&&target!==window){errors.push({at:Date.now(),kind:"resource",tag:String(target.tagName||""),url:cleanUrl(target.src||target.href||"")});}else errors.push({at:Date.now(),kind:"error",message:String(event.message||""),source:cleanUrl(event.filename||""),line:Number(event.lineno)||0,column:Number(event.colno)||0});trim(errors);schedule();},true);addEventListener("unhandledrejection",function(event){errors.push({at:Date.now(),kind:"unhandledrejection",message:String(event.reason&&event.reason.message||event.reason||"")});trim(errors);schedule();});if(typeof window.fetch==="function"){var nativeFetch=window.fetch;window.fetch=function(input,init){var started=Date.now(),method=String(init&&init.method||"GET").toUpperCase(),url=cleanUrl(input&&input.url||input);return nativeFetch.apply(this,arguments).then(function(response){network.push({at:started,kind:"fetch",method:method,url:url,status:Number(response.status)||0,durationMs:Date.now()-started});trim(network);if(!response.ok)schedule();return response;},function(error){network.push({at:started,kind:"fetch",method:method,url:url,failed:true,durationMs:Date.now()-started,error:String(error&&error.message||error)});trim(network);schedule();throw error;});};}if(typeof XMLHttpRequest==="function"){var nativeOpen=XMLHttpRequest.prototype.open,nativeSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.__dshRequest={started:0,method:String(method||"GET").toUpperCase(),url:cleanUrl(url)};return nativeOpen.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){var request=this.__dshRequest||{method:"GET",url:""};request.started=Date.now();this.addEventListener("loadend",function(){network.push({at:request.started,kind:"xhr",method:request.method,url:request.url,status:Number(this.status)||0,durationMs:Date.now()-request.started});trim(network);if(Number(this.status)>=400)schedule();});return nativeSend.apply(this,arguments);};}addEventListener("load",schedule);schedule();})();<\/script>';
 			// Text replacement and paint-only style writes (clocks, counters, animations) skip the
 			// full-document scan: in-flow growth still reaches the ResizeObserver on html/body.
 			// Content that grows by exactly as much as the frame just did is sized by the frame
@@ -6545,7 +6777,7 @@ function tavernModelRefusalNotice(text) {
 			// scroll inside instead of feeding the measurement back forever.
 			// Card scripts can briefly remove the root. Skip that measurement; the next
 			// activation reattaches observers to the current root without a polling watcher.
-			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var bodyRect=body.getBoundingClientRect();var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor());function visit(node,clipTop,clipBottom){var style;try{style=getComputedStyle(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=node.getBoundingClientRect();if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=node.getBoundingClientRect();clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
+			let reporter = '<script data-dsh-tavern-frame>(function(){var token=' + token + ';var viewportFloor=' + tavernFrameViewportFloor.toString() + ';var createSample=' + createTavernLayoutSample.toString() + ';var last=0;var queued=false;var active=true;var lastFrame=0,lastGap=null,lockGap=null;function measure(){var body=document.body;if(!body)return 48;var sample=createSample();var bodyRect=sample.rect(body);var scrollY=window.scrollY||0;var height=Math.max(body.scrollHeight||0,Math.ceil(bodyRect.bottom+scrollY),48,viewportFloor(sample));function visit(node,clipTop,clipBottom){var style;try{style=sample.style(node);}catch(e){return;}if(style.display==="none")return;if(style.visibility!=="hidden"&&style.position!=="fixed"){var rect=sample.rect(node);if(rect.width!==0||rect.height!==0){var top=Math.max(rect.top,clipTop),bottom=Math.min(rect.bottom+Math.max(0,parseFloat(style.marginBottom)||0),clipBottom);if(bottom>top)height=Math.max(height,Math.ceil(bottom+scrollY));}}if(String(style.overflowY||style.overflow||"visible")!=="visible"){var own=sample.rect(node);clipTop=Math.max(clipTop,own.top);clipBottom=Math.min(clipBottom,own.bottom);if(clipBottom<=clipTop)return;}var children=node.children;if(String(node.tagName||"").toLowerCase()==="details"&&!node.open){var summary=node.querySelector("summary");children=summary?[summary]:[];}for(var i=0;i<children.length;i+=1)visit(children[i],clipTop,clipBottom);}visit(body,-Infinity,Infinity);return height;}function report(){queued=false;var root=document.documentElement;if(!active||!root)return;var frame=window.innerHeight,height=measure(),gap=height-frame;if(lockGap!==null&&Math.abs(gap-lockGap)>1)lockGap=null;if(lockGap===null&&gap>1&&lastGap!==null&&frame!==lastFrame&&Math.abs(gap-lastGap)<=1)lockGap=gap;lastFrame=frame;lastGap=gap;if(lockGap!==null)height=frame;root.toggleAttribute("data-dsh-tavern-scroll",height>=32000||lockGap!==null);if(height===last)return;last=height;parent.postMessage({type:"dsh-tavern-frame-height",token:token,height:height},"*");}function schedule(){if(!active||queued)return;queued=true;if(typeof requestAnimationFrame==="function")requestAnimationFrame(report);else setTimeout(report,0);}if(typeof ResizeObserver==="function")var observer=new ResizeObserver(schedule);addEventListener("load",schedule);addEventListener("toggle",schedule,true);if(document.fonts&&document.fonts.ready)document.fonts.ready.then(schedule);var paintOnly={transform:1,"transform-origin":1,translate:1,rotate:1,scale:1,opacity:1,color:1,"background-color":1,filter:1,"box-shadow":1};function layoutChanged(record){if(record.type==="characterData")return false;if(record.type==="childList"){var nodes=Array.prototype.slice.call(record.addedNodes).concat(Array.prototype.slice.call(record.removedNodes));for(var n=0;n<nodes.length;n+=1)if(nodes[n].nodeType!==3)return true;return false;}if(record.attributeName!=="style")return true;var after=record.target.style;if(!after)return true;var before=document.createElement("span").style;before.cssText=record.oldValue||"";var names=Array.prototype.slice.call(before).concat(Array.prototype.slice.call(after));for(var k=0;k<names.length;k+=1){if(paintOnly[names[k]])continue;if(before.getPropertyValue(names[k])!==after.getPropertyValue(names[k])||before.getPropertyPriority(names[k])!==after.getPropertyPriority(names[k]))return true;}return false;}var mutations=new MutationObserver(function(records){for(var r=0;r<records.length;r+=1)if(layoutChanged(records[r])){schedule();return;}});function observe(){var root=document.documentElement;if(!root)return;mutations.observe(root,{subtree:true,childList:true,attributes:true,attributeOldValue:true,characterData:true});if(typeof observer!=="undefined"){observer.observe(root);if(document.body)observer.observe(document.body);}}addEventListener("message",function(event){var data=event.data;if(event.source!==parent||!data||data.token!==token||data.type!=="dsh-tavern-frame-measure-active")return;active=data.active!==false;if(active){observe();schedule();}else{mutations.disconnect();if(typeof observer!=="undefined")observer.disconnect();}});observe();schedule();})();<\/script>';
 			// Animated/polling cards may never become DOM-idle; bound the wait so
 			// their authenticated variable channel can start receiving updates.
 			const readyReporter = '<script data-dsh-tavern-frame-ready>(function(){var token=' + token + ',armed=false,timer=0,deadline=0,reported=false;function report(){if(reported)return;reported=true;clearTimeout(timer);clearTimeout(deadline);observer.disconnect();var finish=function(){parent.postMessage({type:"dsh-tavern-frame-ready",token:token},"*");};if(typeof requestAnimationFrame==="function")requestAnimationFrame(function(){requestAnimationFrame(finish);});else setTimeout(finish,0);}function schedule(){if(!armed||reported)return;if(timer)clearTimeout(timer);timer=setTimeout(report,240);}var observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});addEventListener("load",schedule);Promise.resolve(window.__dshTavernHelperReady).catch(function(){return false;}).then(function(){armed=true;deadline=setTimeout(report,1000);schedule();});})();<\/script>';
@@ -6553,14 +6785,14 @@ function tavernModelRefusalNotice(text) {
             const textColorRuntime = '<script data-dsh-tavern-text-colors>(function(){const colors=(' + installTavernTextColors.toString() + ')(document.body,{enabled:false},' + findTavernQuoteRanges.toString() + ');addEventListener("message",function(event){const data=event.data;if(event.source===parent&&data&&data.token===' + token + '&&data.type==="dsh-tavern-text-colors"){colors.setColors(data.textColorOverrides);colors.setEnabled(data.enabled);if(data.colorScheme==="light"||data.colorScheme==="dark")document.documentElement.style.colorScheme=data.colorScheme;}});addEventListener("pagehide",()=>colors.dispose(),{once:true});})();<\/script>';
             if (sizing) {
                 if (sizing.mode !== "content") reporter = "";
-                else reporter = reporter.replace("48,viewportFloor()", "48");
+                else reporter = reporter.replace("48,viewportFloor(sample)", "48");
             }
             const sizingRuntime = '<script data-dsh-tavern-sizing>(' + installTavernFrameSizing.toString() + ')(' + token + ',' + JSON.stringify(sizing) + ');<\/script>';
             const sizingStyle = !sizing ? "" : '<style data-dsh-tavern-sizing>html[data-dsh-tavern-sizing-scroll]{overflow-y:auto!important}html[data-dsh-tavern-sizing-scroll] body{overflow-y:visible!important}' + (sizing.mode === "content" ? '' : 'html:root,html:root body{height:100%!important;min-height:0!important}html:root body{white-space:normal}') + '</style>';
 			// Card module scripts wait for the helper globals (z, YAML) as the script sandbox does;
 			// otherwise a module using them at top level races the async import.
 			const frameHtml = helperShim || preparationRuntime ? String(html).replace(/<script\b[^>]*\btype\s*=\s*["']?module["']?[^>]*>/gi, tag => /\bsrc\s*=/i.test(tag) ? tag : tag + 'await window.__dshTavernHelperReady;') : html;
-			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,").replace('dom=copy.innerHTML;', 'Array.from(copy.querySelectorAll("script[data-dsh-tavern-text-colors],script[data-dsh-tavern-touch]")).forEach(function(node){node.remove();});dom=copy.innerHTML;');
+			const cleanRuntimeReporter = runtimeReporter.replace('addEventListener("load",schedule);schedule();', 'addEventListener("load",schedule);addEventListener("resize",schedule);schedule();').replace("capturedAt:Date.now(),", "capturedAt:Date.now(),layout:window.__dshTavernFrameLayout?window.__dshTavernFrameLayout():null,");
 			return '<!doctype html><html><head><meta charset="utf-8">'
                 + '<script data-dsh-tavern-crypto>(' + installTavernCryptoSubtlePolyfill.toString() + ')(window);<\/script>'
                 + '<script data-dsh-tavern-tilt-guard>(' + installTavernPointerTiltGuard.toString() + ')(window);<\/script>'
@@ -8626,9 +8858,14 @@ function bindTavernFontZoom(node, win) {
                 disposed = true;
                 layerObserver.disconnect();
                 nativeObserver.disconnect();
+                // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。
+                const jq = view.jQuery;
+                if (jq && typeof jq.cleanData === "function") jq.cleanData(Array.from(layer.getElementsByTagName("*")));
                 layer.replaceChildren();
                 layer.hidden = true;
                 native.hidden = false;
+                // 消息销毁或重建：通知脚本运行时释放归属这条消息的宿主浮层。
+                view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-released", { detail: { sessionId: String(options.sessionId), messageId: Number(options.messageId) } }));
             };
         }
         function tavernScriptLayers(document, sessionId, messageId) {
@@ -9230,13 +9467,25 @@ function bindTavernFontZoom(node, win) {
 			}
 			// The host renderer announces a settled message DOM; scripts that decorate
 			// messages (SillyTavern CHARACTER_MESSAGE_RENDERED) apply their edits then.
-			if (typeof hostWindow.addEventListener === "function") hostWindow.addEventListener("dsh-tavern-message-rendered", function (event) {
+			// 处理某条消息渲染事件期间挂到宿主页的浮层归属该消息；消息销毁或重建时只释放它自己的。
+			function onMessageRendered(event) {
 				const detail = event && event.detail || {};
 				for (const record of records.values()) {
 					if (record.sessionId !== String(detail.sessionId || "") || !record.trustedCardMode) continue;
-					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {});
+					const end = record.hostArtifacts ? record.hostArtifacts.beginMessage(String(detail.messageId)) : function () {};
+					emitToRecord(record, "character_message_rendered", [Number(detail.messageId)]).catch(function () {}).then(end);
 				}
-			});
+			}
+			function onMessageReleased(event) {
+				const detail = event && event.detail || {};
+				for (const record of records.values()) {
+					if (record.sessionId === String(detail.sessionId || "") && record.hostArtifacts) record.hostArtifacts.releaseMessage(String(detail.messageId));
+				}
+			}
+			if (typeof hostWindow.addEventListener === "function") {
+				hostWindow.addEventListener("dsh-tavern-message-rendered", onMessageRendered);
+				hostWindow.addEventListener("dsh-tavern-message-released", onMessageReleased);
+			}
 			async function emit(name, args, context, diagnostics, hostEventId) {
 				let current = clone(Array.isArray(args) ? args : []);
 				for (const record of records.values()) current = await emitToRecord(record, name, current, context, diagnostics, hostEventId);
@@ -9768,7 +10017,14 @@ function bindTavernFontZoom(node, win) {
 				},
                 // An overdue probe means the page itself stalled; the watchdog re-probes before judging.
                 eventResponsive: function (eventId) { const pending = pendingEvents.get(eventId); return Boolean(pending && (now() - pending.contactAt < eventTimeoutMs || now() - pending.probeDueAt > pending.probeIntervalMs)); },
-				dispose: function () { hostWindow.removeEventListener("message", receive); clear(); releaseHostStylesheetBridge(); },
+				dispose: function () {
+					hostWindow.removeEventListener("message", receive);
+					if (typeof hostWindow.removeEventListener === "function") {
+						hostWindow.removeEventListener("dsh-tavern-message-rendered", onMessageRendered);
+						hostWindow.removeEventListener("dsh-tavern-message-released", onMessageReleased);
+					}
+					clear(); releaseHostStylesheetBridge();
+				},
 				inspect: function () {
 					const record = records.get("shared");
 					const scripts = record ? Array.from(record.scripts.values()).map(function (script) { return { id: script.id, loaded: script.loaded, subscriptionsReady: script.subscriptionsReady, initializationFailed: script.initializationFailed }; }) : [];
@@ -10631,11 +10887,56 @@ function bindTavernFontZoom(node, win) {
 			});
 		}
 
+		// 人物卡消息 frame 的诊断登记处。诊断只归属当前前台会话：后台保留的 frame 不写运行报告，
+		// 显式 DOM 快照也只向前台会话的 frame 索取。frame 重建或注销时由生命周期释放登记与等待。
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		const TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS = 2000;
+		// eslint-disable-next-line no-unused-vars -- 由客户端拼接入口及 frame 脚本调用。
+		function createTavernFrameDiagnostics(host) {
+		    const entries = new Set();
+		    function foreground(sessionId) {
+		        const selected = String((host && host.__dshTavernSelectedSessionId) || "");
+		        return Boolean(sessionId) && (!selected || selected === String(sessionId));
+		    }
+		    return Object.freeze({
+		        foreground: foreground,
+		        register: function (entry) {
+		            entries.add(entry);
+		            return function () {
+		                entries.delete(entry);
+		            };
+		        },
+		        // 导出日志前调用：等待前台会话各 frame 的快照写入；单个 frame 超时只算未采集，不阻塞导出。
+		        capture: function (sessionId) {
+		            if (!foreground(sessionId)) return Promise.resolve(0);
+		            const pending = Array.from(entries)
+		                .filter(function (entry) {
+		                    return String(entry.sessionId()) === String(sessionId);
+		                })
+		                .map(function (entry) {
+		                    return Promise.resolve(entry.snapshot()).catch(function () {
+		                        return false;
+		                    });
+		                });
+		            return Promise.all(pending).then(function (results) {
+		                return results.filter(Boolean).length;
+		            });
+		        },
+		        size: function () {
+		            return entries.size;
+		        },
+		    });
+		}
+		const tavernFrameDiagnostics = createTavernFrameDiagnostics(window);
+
 		// Owns document replacement, authenticated frame messages and their cleanup.
 		// React only renders the visible/pending documents and controls lazy activation.
 		function createTavernMessageFrameLifecycle(initial, options) {
 			const hostWindow = options && options.window || window;
 			const invoke = options && options.rpc || rpc;
+			const diagnostics = options && options.diagnostics || tavernFrameDiagnostics;
+			// 显式 DOM 快照的等待者，按文档 token；frame 重建或生命周期结束时一并结清。
+			const snapshotWaiters = new Map();
 			const configuredSlashExecutor = options && options.executeSlash;
 			const invalidate = options && options.invalidate || function (sessionId) { liveTavernView.invalidate(sessionId); };
 			const channels = new Map();
@@ -10708,6 +11009,8 @@ function bindTavernFontZoom(node, win) {
 				const channel = createTavernFrameContextChannel(document);
 				// Stable callback identity preserves the per-document delta baseline.
 				document.ref = function (node) {
+                    const previousFrame = channel.element();
+                    if (document.trustedCardMode && previousFrame && previousFrame !== node) releaseTavernHostJQueryHandlers(hostWindow, previousFrame.contentWindow);
                     const previousSizing = sizingObservers.get(document.token);
                     if (previousSizing) { previousSizing.stop(); sizingObservers.delete(document.token); }
                     const stopVisibility = frameVisibility.get(document.token);
@@ -10756,7 +11059,7 @@ function bindTavernFontZoom(node, win) {
                         document.layout = layout;
                         if (document.sizing.mode !== "content") applySizing(document, channel, layout.height);
                     }));
-                    if (!node) { retireGenerations(document); channels.delete(document.token); }
+                    if (!node) { retireGenerations(document); channels.delete(document.token); settleSnapshot(document.token, false); }
 				};
 				return document;
 			}
@@ -10776,6 +11079,23 @@ function bindTavernFontZoom(node, win) {
 				if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 				runtimeTimer = null;
 				pendingRuntime = null;
+			}
+			function settleSnapshot(token, captured) {
+				const waiter = snapshotWaiters.get(token);
+				if (!waiter) return;
+				snapshotWaiters.delete(token);
+				hostWindow.clearTimeout(waiter.timer);
+				waiter.resolve(captured);
+			}
+			// 只在显式请求时让当前可见 frame 按预算采集 DOM；状态栏页面不采集 DOM。
+			function requestSnapshot() {
+				const token = visible.token, channel = channels.get(token), node = channel && channel.element();
+				if (!listener || visible.key !== desired.key || !diagnostics.foreground(visible.sessionId) || props.persistent || props.runtimeReporting === false || !props.sessionId || !(props.turn > 0) || !node || !node.contentWindow) return Promise.resolve(false);
+				settleSnapshot(token, false);
+				return new Promise(function (resolve) {
+					snapshotWaiters.set(token, { resolve: resolve, timer: hostWindow.setTimeout(function () { settleSnapshot(token, false); }, TAVERN_FRAME_SNAPSHOT_TIMEOUT_MS) });
+					node.contentWindow.postMessage({ type: "dsh-tavern-frame-dom-snapshot", token: token }, "*");
+				});
 			}
 			function sendContext(document, mode) {
 				const channel = document && channels.get(document.token);
@@ -10811,11 +11131,12 @@ function bindTavernFontZoom(node, win) {
 				props = next;
 				if (sessionChanged || props.eager === true) frozenHelperContext = props.helperContext;
 				helperContext = props.eager === true ? props.helperContext : frozenHelperContext;
-				if (desired.key !== documentKey()) desired = createDocument();
+				if (desired.key !== documentKey()) { cancelRuntimeReport(); desired = createDocument(); }
 				if (sessionChanged) {
 					// Never keep an old conversation's page eligible for writes in a new one.
                     for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 					channels.clear();
+					for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 					visible = desired; pending = null;
 					height = (props.openingPreview ? 160 : restoredTavernFrameHeight(visible.heightKey, visible.content));
 					publish();
@@ -10898,15 +11219,22 @@ function bindTavernFontZoom(node, win) {
 						if (current() && result && result.captured === true) invalidate(requestProps.sessionId);
 					}, function () {});
 				} else if (data.type === "dsh-tavern-frame-runtime" && props.runtimeReporting !== false && props.sessionId && props.turn > 0) {
+					// 后台保留的会话页面不写诊断，诊断只归属当前前台会话。
+					if (sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId)) { settleSnapshot(data.token, false); return; }
 					pendingRuntime = Object.assign({}, data.runtime, { layout: Object.assign({}, data.runtime?.layout, {
                         availableHeight: sourceDocument.layout?.available, reason: sourceDocument.sizing?.mode === "content" ? "content" : sourceDocument.layout?.reason || "content",
                         mode: sourceDocument.sizing?.mode || "legacy", source: sourceDocument.sizing?.source || "legacy"
                     }) });
-					if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(function () {
+					const flush = function () {
+						if (runtimeTimer !== null) hostWindow.clearTimeout(runtimeTimer);
 						runtimeTimer = null;
 						const runtime = pendingRuntime; pendingRuntime = null;
-						if (current()) invoke("captureDisplayRuntime", { turn: requestProps.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, requestProps.sessionId).catch(function () {});
-					}, 1000);
+						if (!current() || sourceDocument !== visible || sourceDocument.key !== desired.key || !diagnostics.foreground(sourceDocument.sessionId) || !runtime) return Promise.resolve(false);
+						return Promise.resolve(invoke("captureDisplayRuntime", { turn: requestProps.persistent ? requestProps.turn : sourceDocument.turn, partIndex: requestProps.partIndex, runtime: Object.assign({}, runtime, { panelId: requestProps.panelId || "", placement: requestProps.placement || (requestProps.persistent ? "sidebar" : "message") }) }, sourceDocument.sessionId)).then(function () { return true; }, function () { return false; });
+					};
+					// 显式快照立即写入，导出日志时才能读到；常规报告仍合并一秒。
+					if (data.explicit === true) flush().then(function (captured) { settleSnapshot(data.token, captured); });
+					else if (runtimeTimer === null) runtimeTimer = hostWindow.setTimeout(flush, 1000);
 				} else if ((data.type === "dsh-tavern-opening-worldbook" || data.type === "dsh-tavern-opening-save" || data.type === "dsh-tavern-opening-read") && !props.sessionId && props.openingPreview) {
 					void (async function () {
 					try {
@@ -11079,6 +11407,7 @@ function bindTavernFontZoom(node, win) {
 					const openingArtifacts = props.openingPreview && props.trustedCardMode
 						? createTavernHostArtifactScope({ document: hostWindow.document }) : null;
 					hostWindow.addEventListener("message", receive);
+					const unregisterDiagnostics = diagnostics.register({ sessionId: function () { return props.sessionId; }, snapshot: requestSnapshot });
                     const releaseComposer = props.trustedCardMode && hostWindow.document
                         ? installFrameHostComposer(hostWindow.document, function (node) {
                             const channel = channels.get(visible.token);
@@ -11099,13 +11428,13 @@ function bindTavernFontZoom(node, win) {
 					return function () {
                         touchRelay.stop();
 						releaseComposer();
-						if (openingArtifacts) {
+						if (props.trustedCardMode) {
 							for (const channel of channels.values()) {
 								const frame = channel.element();
 								if (frame) releaseTavernHostJQueryHandlers(hostWindow, frame.contentWindow);
 							}
-							openingArtifacts.dispose();
 						}
+                        if (openingArtifacts) openingArtifacts.dispose();
 						if (unsubscribeTheme) unsubscribeTheme();
                         frameSizeObservers.forEach(function (observer) { observer.disconnect(); });
                         frameSizeObservers.clear();
@@ -11116,6 +11445,8 @@ function bindTavernFontZoom(node, win) {
                         for (const owner of Array.from(generationOwners)) retireGenerations(owner);
 						listener = null; lifetime++;
 						hostWindow.removeEventListener("message", receive);
+						unregisterDiagnostics();
+						for (const token of Array.from(snapshotWaiters.keys())) settleSnapshot(token, false);
 						cancelRuntimeReport();
 					};
 				}
@@ -16132,6 +16463,184 @@ function TavernBgmChat(props) {
 		open && place ? require("react-dom").createPortal(h(TavernBgmPanel, { chat: true, panelRef: panel, style: place }), document.body) : null);
 }
 
+// 故事契约 C4（docs/plugin-api-ui.md「故事视图契约」）：开启 storyViewMode 后，
+// 故事与剧本的 Chat 使用宿主原生行，独立插件负责楼层；其它模式和未知模式保留上游渲染。
+// 浏览器缓存上次设置，首屏在模式尚未确认时不先挂故事 iframe 再卸载。
+function createTavernStoryViewMode(host) {
+  const key = "dsh-tavern:story-view-mode";
+  const listeners = new Set();
+  let enabled = false,
+    loading = null;
+  try {
+    enabled = host.localStorage.getItem(key) === "1";
+  } catch (_) {}
+  function apply(value) {
+    const next = value === true;
+    try {
+      host.localStorage.setItem(key, next ? "1" : "0");
+    } catch (_) {}
+    if (next === enabled) return;
+    enabled = next;
+    listeners.forEach(function (listener) {
+      listener();
+    });
+  }
+  function refresh() {
+    if (!loading)
+      loading = rpc("getTavernSettings")
+        .then(
+          function (result) {
+            apply(result && result.settings && result.settings.storyViewMode);
+          },
+          function () {},
+        )
+        .then(function () {
+          loading = null;
+        });
+    return loading;
+  }
+  return Object.freeze({
+    enabled: function () {
+      return enabled;
+    },
+    subscribe: function (listener) {
+      listeners.add(listener);
+      return function () {
+        listeners.delete(listener);
+      };
+    },
+    refresh: refresh,
+    async set(value) {
+      if (typeof value !== "boolean")
+        throw new Error("故事视图模式设置必须是布尔值");
+      const result = await rpc("updateTavernSettings", {
+        patch: { storyViewMode: value },
+      });
+      apply(result && result.settings && result.settings.storyViewMode);
+      return enabled;
+    },
+    start: function () {
+      void refresh();
+      // Another tab changed it: its write to the cache reaches this tab as a storage event.
+      const onStorage = function (event) {
+        if (event.key === key) apply(event.newValue === "1");
+      };
+      if (typeof host.addEventListener !== "function") return function () {};
+      host.addEventListener("storage", onStorage);
+      return function () {
+        host.removeEventListener("storage", onStorage);
+      };
+    },
+  });
+}
+const tavernStoryViewMode = createTavernStoryViewMode(window);
+// 故事模式目录只返回公开的会话模式；未知会话先保留 Tavern 界面，按需读取轻量目录。
+let tavernStoryModeRequest = null;
+function tavernStorySessionMode(sessionId) {
+  return tavernSessionModes.values[String(sessionId || "")] || "";
+}
+function readTavernStorySessionMode(sessionId) {
+  const known = tavernStorySessionMode(sessionId);
+  if (known) return Promise.resolve(known);
+  if (!tavernStoryModeRequest) {
+    tavernStoryModeRequest = rpc("listSessions")
+      .then(function (result) {
+        publishSessionModes(result && result.sessions);
+      })
+      .finally(function () {
+        tavernStoryModeRequest = null;
+      });
+  }
+  return tavernStoryModeRequest.then(function () {
+    return tavernStorySessionMode(sessionId);
+  });
+}
+function subscribeTavernStorySessionMode(sessionId, listener) {
+  let stopped = false;
+  const notify = function () {
+    if (stopped) return;
+    listener(tavernStorySessionMode(sessionId));
+  };
+  tavernSessionModes.listeners.add(notify);
+  notify();
+  void readTavernStorySessionMode(sessionId).catch(function () {});
+  return function () {
+    stopped = true;
+    tavernSessionModes.listeners.delete(notify);
+  };
+}
+function tavernStorySessionState(sessionId) {
+  const mode = tavernStorySessionMode(sessionId);
+  const play = isPlayMode(mode);
+  return Object.freeze({
+    mode: mode,
+    known: mode !== "",
+    isPlay: play,
+    storyViewActive: tavernStoryViewMode.enabled() && play,
+  });
+}
+function tavernStoryViewActive(sessionId) {
+  return (
+    tavernStoryViewMode.enabled() &&
+    isPlayMode(tavernStorySessionMode(sessionId))
+  );
+}
+// 集中维护聊天行所有权；监听公开主视图与模式目录，不依赖侧栏或被撤下的渲染器。
+function whileTavernDrawsChat(register, sessions) {
+  return function () {
+    let dispose = null;
+    let stopped = false;
+    function sync() {
+      if (stopped) return;
+      const sessionId = tavernMainSessionId(sessions);
+      const wanted = !tavernStoryViewActive(sessionId);
+      if (wanted && !dispose) dispose = register() || function () {};
+      else if (!wanted && dispose) {
+        const release = dispose;
+        dispose = null;
+        release();
+      }
+      if (sessionId && !tavernStorySessionMode(sessionId))
+        void readTavernStorySessionMode(sessionId).catch(function () {});
+    }
+    const stop = tavernStoryViewMode.subscribe(sync);
+    const stopSessions =
+      sessions && sessions.list && typeof sessions.list.subscribe === "function"
+        ? sessions.list.subscribe(sync)
+        : function () {};
+    tavernSessionModes.listeners.add(sync);
+    sync();
+    return function () {
+      stopped = true;
+      stop();
+      stopSessions();
+      tavernSessionModes.listeners.delete(sync);
+      if (dispose) dispose();
+      dispose = null;
+    };
+  };
+}
+// 楼层操作接管的菜单与 dock 只在开关开启且会话属于游玩组时撤下。
+function useTavernStoryViewMode(sessionId) {
+  const subscribe = React.useCallback(
+    function (notify) {
+      const stop = tavernStoryViewMode.subscribe(notify);
+      const stopMode = subscribeTavernStorySessionMode(sessionId, notify);
+      return function () {
+        stop();
+        stopMode();
+      };
+    },
+    [sessionId],
+  );
+  const read = React.useCallback(
+    function () {
+      return tavernStoryViewActive(sessionId);
+    },
+    [sessionId],
+  );
+  return React.useSyncExternalStore(subscribe, read, read);
+}
         function composerOffsetPx(layoutHeight, visualOffsetTop, rectTop) {
             // DOMRect 和 fixed 的定位都基于布局视口；offsetTop 已包含在 rectTop 中，不能再次相加。
             return Math.max(0, Math.round(Number(layoutHeight) - Number(rectTop)));
@@ -16179,12 +16688,15 @@ function TavernBgmChat(props) {
                 // A capped seat keeps its own box size while content grows, so watch its children too.
                 if (seat) for (const child of seat.children) observer?.observe(child);
             }
+            // classList.add/remove 状态不变也会重写 class 属性，惊动观察根节点 class 的主题/配色观察器；
+            // toggle 带 force 只在状态变化时写入。
+            function setClass(name, on) { html.classList.toggle(name, on); }
             function sync() {
                 frame = 0;
                 if (disposed) return;
-                html.classList.toggle("dsh-tavern-coarse-play", narrow.matches);
+                setClass("dsh-tavern-coarse-play", narrow.matches);
                 if (!narrow.matches && !touch.matches) {
-                    html.classList.remove("dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll");
+                    for (const name of ["dsh-tavern-viewport-pinned", "dsh-tavern-short-viewport", "dsh-tavern-seat-scroll"]) setClass(name, false);
                     restore();
                     return;
                 }
@@ -16196,12 +16708,12 @@ function TavernBgmChat(props) {
                 if (!(height > 0)) return;
                 setPx("--dsh-vv-top", top);
                 setPx("--dsh-vv-height", height);
-                html.classList.add("dsh-tavern-viewport-pinned");
+                setClass("dsh-tavern-viewport-pinned", true);
                 // 整个外壳使用可视区高度，输入条仍贴外壳底部，避免重复叠加键盘补偿。
                 const headerBottom = header ? header.getBoundingClientRect().bottom - top : 44;
                 setPx("--dsh-header-bottom", headerBottom);
                 // 横屏键盘下优先保留编辑和发送；展开列表改为可关闭的覆盖层。
-                html.classList.toggle("dsh-tavern-short-viewport", height - headerBottom < 280);
+                setClass("dsh-tavern-short-viewport", height - headerBottom < 280);
                 const pin = seat || doc.querySelector("[data-composer-card]");
                 if (pin) {
                     const rectTop = pin.getBoundingClientRect().top;
@@ -16220,7 +16732,7 @@ function TavernBgmChat(props) {
                 }
                 // Only scroll the seat when its content really exceeds the cap: a scrolling seat clips
                 // every menu that opens upward from the composer (更多, access mode, model picker).
-                html.classList.toggle("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
+                setClass("dsh-tavern-seat-scroll", Boolean(seat && seat.scrollHeight > seat.clientHeight + 1));
             }
 
             function schedule() {
@@ -16596,6 +17108,11 @@ function TavernBgmChat(props) {
 		}
 
 		function tavernStoryTurnForDshTurn(view, turn) {
+            // 正文及其操作按钮使用同一行计划；窗口外或旧视图才回退到旧映射。
+            if (view?.transcriptTurns && (view.transcriptFrom == null || Number(turn) >= Number(view.transcriptFrom))) {
+                const row = view.transcriptTurns[String(turn)];
+                return row?.reply === 0 ? 0 : Number(row?.story ?? turn);
+            }
 			const mappings = view && view.regeneratedDshTurns && typeof view.regeneratedDshTurns === "object" ? view.regeneratedDshTurns : {};
 			const lookup = createSessionViewReader.storyTurnLookup;
 			if (lookup?.has(mappings)) return lookup.read(mappings,turn);
@@ -16805,7 +17322,7 @@ function TavernBgmChat(props) {
 				// Rounds past the render depth keep their prose; the card's HTML waits for one click.
 				if (typeof options.deferHtml === "function") {
 					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== index) return null;
-					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近 3 轮渲染卡片界面，更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
+					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
 				}
 				// Plugin markers inside card HTML cannot be split out; show them after that part.
 				const pluginHtml = options.plugin && !options.openingPreview ? options.plugin.renderHtmlMarkers(String(part.content !== undefined ? part.content : part.html || "")) : null;
@@ -17245,6 +17762,27 @@ function TavernBgmChat(props) {
 		}
 
 		function createTavernAssistantRendererFeatureModule() {
+			// The row plan hides rolled-back and superseded turns, but the host keeps their
+			// nodes mounted forever. Decide before the row's own hooks run, so a hidden row
+			// only watches its plan entry, not the view, the chat or its frames.
+			function TavernPlannedRow(props) {
+				const turn = String(props.turn);
+				const plan = useScopedLiveTavernView(props.sessionId, props.revision, [["transcriptTurns", turn], ["transcriptFrom"]]);
+				React.useEffect(function () { return tavernChatPresence.mount(props.sessionId); }, [props.sessionId]);
+				return tavernPlanShowsRow(tavernPlanOf(plan.view), turn, props.kind) ? props.children : null;
+			}
+			// Only the latest rounds run a card's HTML (heavy status bars, input templates);
+			// earlier ones show text and a 「渲染此轮」 button. Watching the latest round lets a
+			// floor drop its frames as soon as it leaves the window, not on its next render.
+			// A phone layout keeps one live round, wider layouts three.
+			const TAVERN_LIVE_HTML_ROUNDS = narrowLayout() ? 1 : 3;
+			function useTavernHtmlDeferred(sessionId, storyTurn) {
+				const subscribe = React.useCallback(function (notify) { return liveTavernView.subscribe(sessionId, notify, [["$projectionLatestTurn"]]); }, [sessionId]);
+				const read = React.useCallback(function () {
+					return storyTurn > 0 && tavernLatestProjectionTurn(liveTavernView.getSnapshot(sessionId).view) - storyTurn >= TAVERN_LIVE_HTML_ROUNDS;
+				}, [sessionId, storyTurn]);
+				return React.useSyncExternalStore(subscribe, read, read);
+			}
 			function TavernUserNodeView(props) {
 				const data = props.node.data;
 				const location = props.node.location;
@@ -17257,6 +17795,8 @@ function TavernBgmChat(props) {
 				const editedText = liveState.view?.userInputEdits?.[String(turn)];
 				const text = typeof editedText === "string" ? editedText : tavernUserTextForTurn(liveState.view, turn, data.content);
 				const [copied, setCopied] = React.useState(false);
+				const [renderTemplate, setRenderTemplate] = React.useState(false);
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, tavernStoryTurnForDshTurn(liveTavernView.getSnapshot(props.sessionId).view, turn));
 				const copyTimer = React.useRef(null);
 				React.useEffect(function () { return function () { if (copyTimer.current !== null) window.clearTimeout(copyTimer.current); }; }, []);
 				function copy() {
@@ -17275,8 +17815,10 @@ function TavernBgmChat(props) {
 				const latestUserTurn = props.useChat(React.useCallback(function (snapshot) {
 					return latestTavernUserTurn(snapshot, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null);
 				}, [transcriptTurns, transcriptFrom]));
-				const selectAssistantId = React.useCallback(function (snapshot) { return tavernAssistantMessageIdForTurn(snapshot, turn); }, [turn]);
-				const assistantMessageId = props.useChat(selectAssistantId);
+				// A user message belongs to the round its own native turn closes; that
+				// closing reply carries the fork target (only completed turns can fork).
+				const tail = props.useTurnData("turn-tail");
+				const assistantMessageId = tail && tail.closing && tail.closing.finalNode ? tail.closing.finalNode.messageId : null;
 				const forkState = useScopedLiveTavernView(props.sessionId, "user-fork:" + String(assistantMessageId || ""), [["mode"], ["forkTurnsByMessageId", String(assistantMessageId || "")]]);
 				const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 				const [forking, setForking] = React.useState(false);
@@ -17315,8 +17857,10 @@ function TavernBgmChat(props) {
 				});
 				const time = Number.isFinite(Number(data.time)) ? new Date(Number(data.time)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 				const templateDisplay = typeof editedText === "string" ? null : liveState.view?.inputTemplateDisplays?.[turn];
+				const deferTemplate = Boolean(templateDisplay) && outsideHtmlWindow && !renderTemplate;
 				return React.createElement("div", { className: "dsh-tavern-user-row" },
-					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text), extras) : null),
+					React.createElement("div", { className: "dsh-tavern-user-stack" }, renderedImages, (text !== "" || extras.length > 0) ? React.createElement("div", { className: "dsh-tavern-user-bubble" }, templateDisplay && !deferTemplate ? React.createElement(TavernMessageFrame, {content:templateDisplay,sessionId:props.sessionId,turn:turn,partIndex:"user-template",frameOwner:props.frameOwner,eager:true}) : React.createElement("div", { style: { whiteSpace: "pre-wrap" } }, text),
+						deferTemplate ? React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: function () { setRenderTemplate(true); } }, "渲染此轮") : null, extras) : null),
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null,
 						canEdit ? React.createElement(DshUi.Tooltip, { label: "编辑这条输入", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-edit", "aria-label": "编辑这条输入", disabled: editBusy, onClick: edit }, React.createElement(DshUi.IconEditOutlineRegular, null))) : null,
 						canFork ? React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork }, React.createElement(DshUi.IconBranchOutlineRegular, null))) : null,
@@ -17462,7 +18006,7 @@ function TavernBgmChat(props) {
 				const turn = turnRef ? Number(turnRef.turn) : 0;
 				const settled = data.status !== "running";
 				const revision = String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "");
-				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)]]);
+				const mapping = useLiveTavernView(props.sessionId, revision, [["$storyHostTurn", String(turn)], ["transcriptTurns", String(turn)], ["transcriptFrom"]]);
 				const storyTurn = tavernStoryTurnForDshTurn(mapping.view, turn);
 				const currentView = liveTavernView.getSnapshot(props.sessionId).view;
                 const liveState = useLiveTavernView(props.sessionId, revision, tavernAssistantViewPaths(storyTurn, storyTurn > 0 && storyTurn === tavernLatestProjectionTurn(currentView)));
@@ -17475,10 +18019,9 @@ function TavernBgmChat(props) {
 				const ownsTurn = !tail || !tail.closing || !data.finalNode || tail.closing.finalNode.seq === data.finalNode.seq;
 					const projection = settled && ownsTurn ? tavernProjectionForTurn(liveState.view, storyTurn) : null;
 					const latestProjectionTurn = tavernLatestProjectionTurn(liveState.view);
-				// Only the latest 3 rounds run a card's HTML interface (heavy status bars);
-				// earlier ones show text and a 「渲染此轮」 button.
 				const [renderRound, setRenderRound] = React.useState(false);
-				const deferHtml = !renderRound && storyTurn > 0 && latestProjectionTurn - storyTurn >= 3 ? function () { setRenderRound(true); } : null;
+				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, storyTurn);
+				const deferHtml = !renderRound && outsideHtmlWindow ? function () { setRenderRound(true); } : null;
                 React.useEffect(function () {
                     if(!historyNode.current || !currentView?.historyWindow || !ownsTurn || projection || storyTurn<=0 || storyTurn>=tavernLatestProjectionTurn(currentView))return;
                     let cancelWait = null;
@@ -17580,9 +18123,6 @@ function TavernBgmChat(props) {
 					t: props.t
 				});
 				const distantHeight = useTavernDistantFloor(historyNode, settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
-				// A reply the row plan does not draw (an old body being regenerated, a repair
-				// copy): its row is hidden; render nothing into it either. After all hooks.
-				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
 				// A registered presenter may fold this finished reply into one line; only the step
@@ -17691,8 +18231,10 @@ function TavernBgmChat(props) {
 						React.createElement(TavernIllustrateIcon, null)));
 			}
 			function register(input) {
+				// Fork contract C4: in story view mode the chat rows are the host's own (modules/story-view-mode.js).
+				const chatEffect = function (run, label) { return input.ctx.effect(whileTavernDrawsChat(run, input.ctx.sessions), label); };
 				// uiWorkspace 由 dsh-client-ui-workspace 提供；缺失时（老宿主/未加载）退化为 sessions.retain。
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					installTavernReplyRuns(input.ctx.sessions);
 					return function () { disposeTavernReplyRuns(); };
 				}, "dsh-tavern: reply reveal runs");
@@ -17710,7 +18252,7 @@ function TavernBgmChat(props) {
 						name: "conversation.session.header.actions", id: "dsh-tavern-script-runtime", order: -140, label: "人物卡脚本运行时"
 					}, function () { return React.createElement(TavernScriptRuntime, { owner: scriptOwner }); }); });
 				}, "dsh-tavern: conversation script lifecycle");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "assistant-step",
@@ -17721,23 +18263,30 @@ function TavernBgmChat(props) {
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
 						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
-						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
+						// A reply the row plan does not draw (an old body being regenerated, a repair copy).
+						const data = props.node.data;
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
+							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "user",
 						priority: -1
-					}, TavernUserNodeView); });
+					}, function (props) {
+						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "user", revision: String(props.node.data.time || "") },
+							React.createElement(TavernUserNodeView, props));
+					}); });
 				}, "dsh-tavern: raw user message renderer");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-fork", order: 20,
 						inject: function (sessionId) { return { sessionId: sessionId }; }
 					}, TavernForkAssistantAction); });
 				}, "dsh-tavern: conversation fork action");
-				input.ctx.effect(function () {
+				chatEffect(function () {
 					return input.slots.inject("conversation.chat.assistant-actions", function () { return input.slots.register({
 						name: "conversation.chat.assistant-actions", id: "dsh-tavern-illustrate", order: 21,
 						inject: function (sessionId) { return { sessionId: sessionId }; }
@@ -19187,15 +19736,19 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}
-			async function forkConversation(item, currentTitle, turn) {
+			// floor: the story view's 「创建分支」 (tavernStory.forkAt) forks at that floor's current
+			// reply through the floor RPCs, gets the result back and reports its own errors.
+			async function forkConversation(item, currentTitle, turn, floor) {
 				setMenuSession(null);
 				setBusy(true); setError("");
 				let targetSessionId = "";
 				let forkCreated = false;
 				try {
-					const plan = await call("prepareConversationFork", { chatId: item.chatId, sessionId: item.sessionId, turn: Number(turn) || 0 });
+					const plan = floor
+						? await call("prepareFloorFork", { sessionId: item.sessionId, turn: Number(turn) || 0 })
+						: await call("prepareConversationFork", { chatId: item.chatId, sessionId: item.sessionId, turn: Number(turn) || 0 });
 					targetSessionId = await props.conversationHost.forkSession(item.sessionId, plan.atSeq);
-					await call("forkChat", {
+					const bound = await call(floor ? "forkFloor" : "forkChat", {
 						chatId: item.chatId,
 						sessionId: item.sessionId,
 						targetSessionId: targetSessionId,
@@ -19208,11 +19761,13 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 					const pending = { sessionId: targetSessionId, targetMode: item.mode };
 					setPendingOpen(pending);
 					await finishPendingOpen(pending);
+					if (floor) return { sessionId: targetSessionId, chatId: bound.fork.chatId, turn: bound.turn, replySeq: bound.replySeq };
 				} catch (err) {
 					if (targetSessionId && !forkCreated) {
 						try { await props.archiveSession(targetSessionId); }
 						catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) console.warn("dsh-tavern: 清理分叉目标 Session 失败", archiveError); }
 					}
+					if (floor) throw err;
 					setError("分叉对话失败：" + String(err && err.message || err));
 				} finally { setBusy(false); }
 			}
@@ -19223,7 +19778,7 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 					if (!item) throw new Error("找不到当前游玩存档");
 					const summary = summaries[item.sessionId];
 					const title = item.title || (summary && summary.displayTitle ? summary.displayTitle : item.cardName + "的新对话");
-					return forkConversation(item, title, request.turn);
+					return forkConversation(item, title, request.turn, request.floor === true);
 				});
 			}, [history, summaries, busy]);
 			const h = React.createElement;
@@ -22627,14 +23182,16 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				link.href = "/api/dsh-tavern/card-export?path=" + encodeURIComponent(card.path);
 				document.body.appendChild(link); link.click(); link.remove();
 			}
+			// 引用按钮只认真实可用的回调：制卡会话且注入了回调才显示。
+			const mention = sessionMode === "card" && typeof props.appendMention === "function" ? props.appendMention : null;
 			const h = React.createElement;
 			if (selectedPath) {
 				if (!card) return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" }, h("div", { className: "dsh-tavern-status-head" }, h("button", { className: "dsh-tavern-btn", onClick: clearCard }, "← 返回人物卡库")), loading ? h("div", { className: "dsh-tavern-empty" }, "正在读取人物卡…") : error ? h("div", { className: "dsh-tavern-dock-error" }, error, h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")) : h("div", { className: "dsh-tavern-empty" }, "人物卡读取失败", h("button", { className: "dsh-tavern-btn", onClick: function () { loadCard(selectedPath); } }, "重新读取")));
-				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: sessionMode === "card" ? function () { props.appendMention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
+				return h(React.Fragment, null, h(TavernCardPluginsBox, { path: selectedPath }), h(CardFieldsPanel, { view: { card: card }, library: true, organizationSettings: organization.detailSettings(cards.find(item => item.path === selectedPath)), busy: busy, onBack: clearCard, onAttach: mention ? function () { mention(card.path, card.name); } : null, onOpenWorldBook: props.openWorldBook, onRename: renameCard, onExport: exportCardFile, onDelete: deleteCardFile, onSaved: function (saved) { setCard(Object.assign({}, saved, { path: selectedPath })); refreshCards(); } }));
 			}
 			const visible = organization.visible;
 			// "@" quotes a card into the card workspace conversation; only there does it mean anything.
-			const mentionButton = sessionMode === "card" ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); props.appendMention(item.path, item.name); } }, "@"); } : null;
+			const mentionButton = mention ? function (item) { return h("button", { type: "button", className: "dsh-tavern-card-mention", title: "在对话中引用", "aria-label": "在对话中引用：" + item.name, onClick: function (event) { event.stopPropagation(); mention(item.path, item.name); } }, "@"); } : null;
 			return h("div", { className: "dsh-tavern-library dsh-tavern-card-library" },
 				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "人物卡库"), h("div", { className: "dsh-tavern-question-sub" }, cards.length + " 张人物卡"), h("div", { className: "dsh-tavern-library-head-actions" }, h(MobileCardImportButton, { inputRef: importInput, disabled: busy, onImported: async function (imported) { await refreshCards(); await loadCard(imported.path); notifyTavernDataChanged(["cards"], "cards"); } }), h("input", { ref: importInput, type: "file", multiple: true, accept: TAVERN_CARD_FILE_ACCEPT, style: { display: "none" }, onChange: function (event) { const files = Array.from(event.target.files || []); importCardFiles(files); event.target.value = ""; } }))),
 				h("div", { className: "dsh-tavern-question-sub dsh-tavern-card-import-hint", role: "status" }, importStatus || "支持多选 PNG、JSON、CHARX、DSH 人物卡一起导入"),
@@ -23002,8 +23559,12 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 				order: 3,
 				single: true,
 				component: function (props) {
+					// 只给制卡会话注入引用回调；其他会话不注入空回调，人物卡库也就不显示引用按钮。
+					const sessionId = props.scope.sessionId;
+					const mode = useTavernSessionMode(sessionId);
 					return React.createElement(CardLibraryTab, Object.assign({}, props, {
-						appendMention: function (path, label) { appendMention(props.scope.sessionId, "card", path, label); },
+						appendMention: mode === "card" && sessionId && typeof appendMention === "function"
+							? function (path, label) { appendMention(sessionId, "card", path, label); } : undefined,
 						archiveSession: function (sessionId) { return ctx.workspaces.archiveSession(sessionId); },
 						openWorldBook: function (source) {
 							openTavernSidebarTab(ctx, { type: "dsh-tavern:worldbooks", meta: { worldBookSource: source } }, { sessionId: props.scope.sessionId });
@@ -23087,28 +23648,23 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 		// assistant/step node does. Rolled back, failed and regenerated turns stay in
 		// the host's node list forever (only their rows are hidden), so the row plan
 		// decides which input is really the visible tail.
+		// Every mounted user row asks this of the same immutable node list on each Chat
+		// snapshot: answer once per list and plan, not once per row.
+		const latestUserTurnByNodes = new WeakMap();
 		function latestTavernUserTurn(snapshot, plan) {
 			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			let turn = 0;
+			const cached = latestUserTurnByNodes.get(nodes);
+			const turns = plan ? plan.turns : null, from = plan ? plan.from : null;
+			if (cached && cached.turns === turns && cached.from === from) return cached.turn;
+			let turn = 0, latest = 0;
 			for (let index = nodes.length - 1; index >= 0; index -= 1) {
 				const node = nodes[index];
 				turn = nodeTurn(node) || turn;
 				if (node.kind !== "user") continue;
-				if (tavernPlanShowsRow(plan, turn, "user")) return turn;
+				if (tavernPlanShowsRow(plan, turn, "user")) { latest = turn; break; }
 			}
-			return 0;
-		}
-		// A user message belongs to the round drawn by the assistant of the same
-		// native turn; its closing message carries the fork target.
-		function tavernAssistantMessageIdForTurn(snapshot, turn) {
-			const expected = Number(turn) || 0;
-			const nodes = snapshot && snapshot.legacy && snapshot.legacy.nodes || [];
-			for (let index = nodes.length - 1; index >= 0; index -= 1) {
-				const node = nodes[index];
-				if (node.kind !== "assistant" || !node.messageId) continue;
-				if (nodeTurn(node) === expected) return node.messageId;
-			}
-			return null;
+			latestUserTurnByNodes.set(nodes, { turns: turns, from: from, turn: latest });
+			return latest;
 		}
 
 		// Presentation only: keep host-owned error nodes and append-only history intact.
@@ -23414,6 +23970,34 @@ const worldBookSwitcherFeature = createWorldBookSwitcherFeatureModule();
 		}
 		function tavernPlanOf(view) {
 			return view && view.transcriptTurns ? { turns: view.transcriptTurns, from: view.transcriptFrom } : null;
+		}
+		// The dock's row projections only have work while the chat view shows. The host
+		// renders one Conversation view at a time and gives dock entries no selection, so
+		// Tavern's own chat rows count themselves per session: none mounted means another
+		// view (or an empty chat) is showing and the projections stay off.
+		function createTavernChatPresence() {
+			const counts = new Map(), listeners = new Set();
+			function notify() { listeners.forEach(function (listener) { listener(); }); }
+			return {
+				mount: function (sessionId) {
+					const id = String(sessionId || ""), count = counts.get(id) || 0;
+					counts.set(id, count + 1);
+					if (count === 0) notify();
+					return function () {
+						const next = (counts.get(id) || 1) - 1;
+						if (next > 0) { counts.set(id, next); return; }
+						counts.delete(id);
+						notify();
+					};
+				},
+				shown: function (sessionId) { return counts.has(String(sessionId || "")); },
+				subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; }
+			};
+		}
+		const tavernChatPresence = createTavernChatPresence();
+		function useTavernChatShown(sessionId) {
+			const read = React.useCallback(function () { return tavernChatPresence.shown(sessionId); }, [sessionId]);
+			return React.useSyncExternalStore(tavernChatPresence.subscribe, read, read);
 		}
 		function createTurnHistoryProjection(options) {
 			options = options || {};
@@ -24391,6 +24975,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				async function exportLogs() {
 					setBusy(true);
 					try {
+						// 只有显式导出日志时才让当前会话的卡片按预算采集 DOM；采集失败不影响导出。
+						await tavernFrameDiagnostics.capture(props.sessionId).catch(function () {});
 						const result = await rpc("exportTavernLogs", {}, props.sessionId);
 						const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0); });
 						downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename);
@@ -25427,6 +26013,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const [replayBusy, setReplayBusy] = React.useState(false);
 			const [withdrawBusy, setWithdrawBusy] = React.useState(false);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const storyView = useTavernStoryViewMode(props.sessionId);
 			const projectedTaskRef = React.useRef("");
 			React.useEffect(function () {
 				if (!taskForMessage) return;
@@ -25512,8 +26099,9 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 						generate(false);
 					}
 				} }, settlementActive ? "后台结算中…" : (activity.busy ? activity.label : ((busy || taskBusy) ? "生成中…" : (hasReadyPanel ? "重新生成候选项" : "生成候选项")))),
-				(canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
-				canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null,
+				// 故事视图里重新生成走楼层操作，失败轮重试与编辑走输入框状态条。
+				!storyView && (canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", disabled: frontRunning || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
+				!storyView && canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null,
 				canReplayFailed ? h(TavernDebugButton, { sessionId: props.sessionId, className: "dsh-tavern-choice-trigger", label: "交给调试 Agent" }) : null
 			);
 		}
@@ -25585,10 +26173,12 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             const messageId = String(props.messageId || "");
             const liveState = useScopedLiveTavernView(props.sessionId, "rollback-to:" + messageId, [["mode"], ["canRollback"], ["rollbackTargetTurn"], ["forkTurnsByMessageId", messageId]]);
             const [busy, setBusy] = React.useState(false);
+            // 故事视图接管回退入口（与菜单「回退本轮」一致），原生审计视图不再重复提供。
+            const storyView = useTavernStoryViewMode(props.sessionId);
             const view = liveState.view;
             const turn = Number(view && view.forkTurnsByMessageId && view.forkTurnsByMessageId[messageId]) || 0;
             const latest = Number(view && view.rollbackTargetTurn) || 0;
-            if (!view || !isPlayMode(view.mode) || view.canRollback !== true || !(turn > 0) || !(latest > turn)) return null;
+            if (storyView || !view || !isPlayMode(view.mode) || view.canRollback !== true || !(turn > 0) || !(latest > turn)) return null;
             async function rollbackTo() {
                 if (busy) return;
                 if (!await askTavernConfirm("回退到第 " + turn + " 轮？\n\n第 " + turn + " 轮之后的所有输入和正文都会删除，剧情状态回到第 " + turn + " 轮结束时。之后可在菜单里「撤销回退」一次全部恢复。", { confirmText: "回退", cancelText: "取消" })) return;
@@ -25805,6 +26395,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const [placement, setPlacement] = React.useState(null);
 			const root = React.useRef(null);
 			const trigger = React.useRef(null);
+			// 故事视图里编辑与回退归楼层操作，失败轮已打墓碑，不再需要恢复错误提示。
+			const storyView = useTavernStoryViewMode(props.sessionId);
             // Removing cleared notices is a one-way quiet; this puts them back after
             // the player changed their mind (or hid the tail the hard way).
             async function restoreErrorNotices() {
@@ -25843,10 +26435,10 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				React.createElement("button", { ref: trigger, type: "button", className: "dsh-tavern-choice-trigger", "aria-haspopup": "menu", "aria-expanded": open, onClick: function () { setOpen(function (value) { return !value; }); } }, "更多 ▾"),
 				React.createElement("div", { className: "dsh-tavern-more-menu", role: "menu", hidden: !open, style: placement || undefined, onClick: function (event) { if (event.target && event.target.closest && event.target.closest("button:not(:disabled)")) setOpen(false); } },
                     React.createElement(TavernStopBackgroundAction, Object.assign({}, props, { inMenu: true })),
-					React.createElement(TavernEditBodyAction, props),
-					React.createElement(TavernRollbackAction, props),
+					storyView ? null : React.createElement(TavernEditBodyAction, props),
+					storyView ? null : React.createElement(TavernRollbackAction, props),
                     React.createElement(TavernUndoRollbackAction, props),
-                    React.createElement("button", { type: "button", role: "menuitem", disabled: restoring, title: "把已移除或已隐藏的失败提示显示回来，正文和历史不受影响", onClick: restoreErrorNotices }, "恢复全部错误提示"),
+                    storyView ? null : React.createElement("button", { type: "button", role: "menuitem", disabled: restoring, title: "把已移除或已隐藏的失败提示显示回来，正文和历史不受影响", onClick: restoreErrorNotices }, "恢复全部错误提示"),
 					React.createElement(TavernDebugButton, { sessionId: props.sessionId, role: "menuitem", label: "遇到问题？交给调试 Agent" }),
 					React.createElement(TavernCompactionAction, Object.assign({}, props, { inMenu: true })))
 			);
@@ -25860,12 +26452,14 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const running = props.useSession(function (snapshot) { return snapshot.running === true; });
 			const live = useLiveTavernView(ownerSessionId, String(running) + ":" + String(latestMessageId || ""));
 			const imageTurn = Number(live.view && live.view.latestAssistantTurn) || 0;
+			// 故事视图模式下候选项（生成候选项、下一步行动、带意见重新生成）整组撤下，其余按钮照常。
+			const storyView = useTavernStoryViewMode(props.sessionId);
 			const h = React.createElement;
 			if (!sessionMode) return null;
 			if (address) return isPlayMode(sessionMode) ? h("div", { className: "dsh-tavern-dock-actions" },
 				h(TavernStopBackgroundAction, { sessionId: ownerSessionId })) : null;
 			return h("div", { className: "dsh-tavern-dock-actions" },
-				isPlayMode(sessionMode) && latestMessageId ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
+				isPlayMode(sessionMode) && latestMessageId && !storyView ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
 				isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null,
 				isPlayMode(sessionMode) ? React.createElement(TavernMoreActions, props) : React.createElement(TavernCompactionAction, props),
                 live.view && live.view.contextCompaction && live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running" ? h("span", { role: "status", className: "dsh-tavern-settings-desc" }, "正在压缩前后台上下文…")
@@ -25912,6 +26506,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
 			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
@@ -25929,7 +26524,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				tavernCoordination.invalidate(props.sessionId);
 			}
 			React.useEffect(function () {
-				const root = marker.current && marker.current.closest("[data-conversation-scroll]");
+				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
 				const controls = createTurnErrorControls(root, {
@@ -25971,7 +26566,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
 				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); };
-			}, [props.sessionId, revision]);
+			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
 		// Share in-flight reads across effect restarts and duplicate mounts.
@@ -26020,7 +26615,9 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
+			const chatShown = useTavernChatShown(props.sessionId);
 			React.useEffect(function () {
+				if (!chatShown) return;
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
@@ -26043,7 +26640,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				});
 				observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-chat-flow-kind", "data-chat-turn", "data-turn-tail"] });
 				return function () { observer.disconnect(); if (frame !== null) window.cancelAnimationFrame(frame); };
-			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom]);
+			}, [props.sessionId, latestMessageId, running, backgroundTurnsRevision, transcriptTurns, transcriptFrom, chatShown]);
 			return null;
 		}
         const { CandidateQuestion, CandidateGuidePanel, RegenPanel } = createPlayInteractionPanels({
@@ -26134,27 +26731,1078 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 					executeCompact: function (sessionId) { return ctx.remote.commands.execute(sessionId, "/compact", []); }
 				})); }
 			)), "dsh-tavern: candidate dock actions");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			// 故事视图模式下不注册候选项面板（「下一步行动」与「重新生成候选项」）；条目里的失败轮投影只服务 Tavern 聊天行。
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-question", order: -120, label: "下一步行动" },
 				function (props) { return React.createElement(React.Fragment, null,
 					React.createElement(SupersededTurnErrors, Object.assign({}, props, { key: props.sessionId })),
 					React.createElement(TurnHistoryProjection, Object.assign({}, props, { key: "history:" + props.sessionId })),
 					React.createElement(CandidateQuestion, Object.assign({}, props, { sessions: ctx.sessions }))
 				); }
-			)), "dsh-tavern: candidate question panel");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			)), ctx.sessions), "dsh-tavern: candidate question panel");
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-guide", order: -115, label: "重新生成候选项" },
 				function (props) { return React.createElement(CandidateGuidePanel, props); }
-			)), "dsh-tavern: candidate guide panel");
-			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
+			)), ctx.sessions), "dsh-tavern: candidate guide panel");
+			// 故事视图模式下不注册：重新生成与改写走楼层操作（C5 只共用 interactions 状态，不依赖此面板挂载），
+			// 编辑正文与失败轮编辑由楼层操作和状态条承担。
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-regen", order: -110, label: "重新生成正文" },
 				function (props) { return React.createElement(React.Fragment, null, React.createElement(RegenPanel, props), React.createElement(BodyEditPanel, props)); }
-			)), "dsh-tavern: regen body panel");
+			)), ctx.sessions), "dsh-tavern: regen body panel");
 		}
-		return Object.freeze({ register: register });
+		// Fork contract C5: the story service (features/story-service.js) reuses these flows.
+		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, replayFailedTurn: submitFailedTurnReplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();
+// The story as it stands in the save, folded from the session log alone: the player's
+// inputs and the settled replies the model still sees, one floor per round, in order.
+// The host keeps every event forever; rollbacks, regenerations and failed-turn cleanups
+// are surface replacements over older ranges. Folding the surface the way the host does
+// (append to the tail, a replacement takes the place of the range it shadows) leaves
+// exactly the current story, so no save floors and no row plan are needed.
+//
+// Same rules as the row plan (transcript-row-plan.js): a reply's story round is its
+// `source.tavernStoryTurn` when a replacement wrote it, else its own native turn; a
+// player input is a `user/message` whose source kind is 'user'.
+//
+// Pure and self-contained: the browser bundle embeds it with `@include-domain`, so it
+// imports nothing and touches no Node or DOM API.
+
+const STORY_SETTLED_ENDS = ['completed', 'max-tokens']
+
+function storyRoundsText(content) {
+  return (Array.isArray(content) ? content : []).filter(block => block && block.type === 'text').map(block => String(block.text || '')).join('')
+}
+function storyRoundsRange(op) {
+  return { start: op.startSeq ?? op.start, end: op.endSeq ?? op.end }
+}
+const storyRoundsIsReplace = event => Boolean(event && event.surfaceOp && typeof event.surfaceOp === 'object' && event.surfaceOp.op === 'replace')
+const storyRoundsIsSurface = event => Boolean(event && (event.surfaceOp === 'append' || storyRoundsIsReplace(event)))
+const storyRoundsIsPlayerInput = event => event && event.type === 'user/message' && event.data && event.data.source && event.data.source.kind === 'user'
+// A regeneration attempt's input: its reply becomes the round's only through the replacement.
+const storyRoundsIsRegenerationSource = source => Boolean(source) && (source.kind === 'plugin:dsh-tavern-regen' || source.kind === 'plugin' && source.plugin === 'dsh-tavern-regen')
+const storyRoundsIsRegeneration = event => Boolean(event && event.type === 'user/message' && storyRoundsIsRegenerationSource(event.data && event.data.source))
+const storyRoundsIsModelReply = event => event && event.type === 'assistant/message' && event.data && event.data.message && event.data.message.source && event.data.message.source.kind === 'model'
+
+/**
+ * One game's rounds, fed its log in order (each event once; a page of later events at a
+ * time is fine). `result()` returns
+ *   { floors, abandoned, open, attempt }
+ * floors:    [{ story, inputs: [{ seq, turn, text }], reply: { seq, turn, id, text },
+ *              history: [{ seq, turn, text, current }] }]   — the opening has no inputs;
+ *              history lists the model's own generations (raw text), reply is the current node
+ * abandoned: [{ seq, turn, text, reason }] player inputs that are no longer story;
+ *            reason is the failed turn's end kind ('error' | 'aborted' | 'interrupted')
+ *            or 'rolled-back' / 'replaced'; an aborted or interrupted turn the next turn
+ *            replaced by claiming a player input (the story queue's auto interrupt, or
+ *            the player sending again) is 'superseded': the player has moved on
+ * open:      the running turn's surface { turn, inputs, reply, regenerating? }, or null
+ * attempt: 最新生成尝试，独立保存准备阶段、已提交输入与结束错误，不影响已结算楼层；
+ *          接纳前的 inputs 只取宿主为本轮认领的那条，窗口看不到其入队时为空；未接纳就出错时，
+ *          准备阶段被撤下的排队玩家输入（服务端拒绝本轮时一并撤下）接在其后；
+ *          重新生成的尝试轮带 regenerating: true（它的失败归楼层操作，不是玩家自己的回合）。
+ * An interrupted, failed or empty reply never makes a floor.
+ */
+function createStoryRoundsFold() {
+  const events = new Map()
+  let nodes = []
+  const turnOf = new Map() // player input seq -> native turn
+  const ended = new Map() // native turn -> turn/end reason kind
+  const replacedBy = new Map() // seq -> the replacement that shadowed it
+  const attempts = new Set() // native turns a regeneration input opened
+  const superseded = new Set() // stopped native turns a later turn's claimed player input replaced
+  let lastEnded = null // { turn, kind } of the latest turn/end
+  let queuedAttempt = false
+  // 窗口内可见的 next-turn 队列：总是真实队列的前缀，窗口外入队的条目以 null 占位。
+  let nextInputs = [], attempt = null, claiming = false
+  // 本轮准备阶段被撤下（canceled）的排队玩家输入；本轮未接纳就出错时并入 attempt.inputs。
+  let dropped = []
+  let queued = [], running = null, last = -1, cached = null
+  // Until the window shows a lifecycle boundary or a turn-numbered event, a message may
+  // sit in the middle of a turn whose turn/start came before the window.
+  let known = false
+  function adopt(turn) {
+    for (const input of queued) turnOf.set(input, turn)
+    if (queuedAttempt) attempts.add(turn)
+    queued = []; queuedAttempt = false
+  }
+
+  function shadow(event) {
+    const { start, end } = storyRoundsRange(event.surfaceOp)
+    let first = nodes.indexOf(start), final = nodes.indexOf(end)
+    let removed
+    if (first >= 0 && final >= first) removed = nodes.slice(first, final + 1)
+    else {
+      // A window that starts later than the range: drop what it holds of it.
+      const sources = Array.isArray(event.sourceEventSeqs) ? new Set(event.sourceEventSeqs) : null
+      removed = nodes.filter(seq => sources ? sources.has(seq) : seq >= start && seq <= end)
+      first = removed.length ? nodes.indexOf(removed[0]) : (nodes.length && start < nodes[0] ? 0 : nodes.length)
+    }
+    const gone = new Set(removed)
+    nodes = nodes.slice(0, first).filter(seq => !gone.has(seq)).concat([event.seq], nodes.slice(first).filter(seq => !gone.has(seq)))
+    for (const seq of removed) {
+      replacedBy.set(seq, event.seq)
+      // An edited input stands for the one it replaced, in that turn.
+      if (storyRoundsIsPlayerInput(event) && turnOf.has(seq) && !turnOf.has(event.seq)) turnOf.set(event.seq, turnOf.get(seq))
+    }
+    for (const seq of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) if (!replacedBy.has(seq)) replacedBy.set(seq, event.seq)
+  }
+
+  /** Fold events in log order; events already folded are skipped. */
+  function addEvents(list) {
+    for (const event of Array.isArray(list) ? list : []) {
+      const seq = Number(event && event.seq)
+      if (!Number.isSafeInteger(seq) || seq <= last) continue
+      last = seq
+      events.set(seq, event)
+      cached = null
+      // 输入模板在 user/message 之前运行；从原生 inbox 保存本次尝试，失败也不能丢掉反馈。
+      if (event.type === 'agent/inbox/spliced' && event.data?.target === 'next-turn') {
+        const data = event.data
+        const inserted = (data.inserted || []).map(message => ({
+          seq, text: storyRoundsText(message.content), player: message.source?.kind === 'user', regenerating: storyRoundsIsRegenerationSource(message.source)
+        }))
+        // 下标相对真实队列；窗口没见过的前面条目补占位，已知条目才不会错位。
+        while (nextInputs.length < data.start) nextInputs.push(null)
+        const removed = nextInputs.splice(data.start, data.removedCount ?? 0, ...inserted)
+        // 宿主在 turn/start 之后立即认领本轮那一条（不带 canceled）；取消、撤下不算认领。
+        if (claiming && data.removedCount > 0 && data.outcome !== 'canceled') {
+          claiming = false
+          attempt = { ...attempt, inputs: removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })) }
+          if (attempt.inputs.length && lastEnded && lastEnded.turn < attempt.turn && ['aborted', 'interrupted'].includes(lastEnded.kind)) superseded.add(lastEnded.turn)
+          if (removed.some(input => input && input.regenerating)) attempt.regenerating = true
+        } else if (attempt && attempt.phase === 'preparing' && !attempt.accepted && running === attempt.turn && data.outcome === 'canceled') {
+          // 回合开始前被拒（如变量未重算）时，服务端把仍在排队的玩家输入一并撤下：文字跟本轮一起恢复。
+          dropped.push(...removed.filter(input => input && input.player).map(({ seq, text }) => ({ seq, turn: attempt.turn, text })))
+        }
+      }
+      if (event.type === 'turn/start') {
+        // A turn that never ended before the next began was cut off (the server stopped).
+        if (running !== null && !ended.has(running)) ended.set(running, 'interrupted')
+        running = Number(event.data && event.data.turn)
+        attempt = { turn: running, seq, phase: 'preparing', inputs: [], accepted: false, error: '' }
+        dropped = []
+        claiming = true
+        known = true
+        // A message queued before its turn starts (the inbox splices it in) belongs to it.
+        adopt(running)
+        continue
+      }
+      if (event.type === 'turn/end') {
+        // The window began inside this turn: what came before its end belongs to it.
+        if (!known) adopt(Number(event.data && event.data.turn))
+        known = true
+        claiming = false
+        if (!attempt || attempt.turn !== Number(event.data.turn)) attempt = { turn: Number(event.data.turn), inputs: [], accepted: false }
+        attempt = { ...attempt, seq, phase: String(event.data.reason?.kind || 'interrupted'), error: String(event.data.reason?.error?.message || '') }
+        if (attempt.phase === 'error' && !attempt.accepted && dropped.length) attempt.inputs = [...attempt.inputs, ...dropped]
+        dropped = []
+        ended.set(Number(event.data && event.data.turn), String(event.data && event.data.reason && event.data.reason.kind || ''))
+        lastEnded = { turn: Number(event.data && event.data.turn), kind: String(event.data?.reason?.kind || '') }
+        running = null
+        continue
+      }
+      if (!known && (event.type === 'step/start' || event.type === 'step/end' || event.type === 'assistant/message' && event.surfaceOp === 'append') && Number.isSafeInteger(Number(event.data && event.data.turn)) && Number(event.data.turn) > 0) {
+        // A step of a turn whose start is outside the window: that turn is running.
+        running = Number(event.data.turn)
+        known = true
+        adopt(running)
+      }
+      if (attempt && event.type === 'step/start' && Number(event.data?.turn) === attempt.turn) { attempt = { ...attempt, phase: 'generating' }; claiming = false; dropped = [] }
+      if (storyRoundsIsPlayerInput(event) && event.surfaceOp === 'append') {
+        if (attempt && running === attempt.turn) {
+          const input = { seq, turn: running, text: textOf(event) }
+          attempt = { ...attempt, accepted: true, inputs: attempt.accepted ? [...attempt.inputs, input] : [input] }
+        }
+        if (running === null) queued.push(seq)
+        else turnOf.set(seq, running)
+      }
+      if (storyRoundsIsRegeneration(event) && event.surfaceOp === 'append') {
+        if (running === null) queuedAttempt = true
+        else attempts.add(running)
+        if (attempt && running === attempt.turn && !attempt.regenerating) attempt = { ...attempt, regenerating: true }
+      }
+      if (!storyRoundsIsSurface(event)) continue
+      if (storyRoundsIsReplace(event)) shadow(event)
+      else nodes.push(seq)
+    }
+  }
+
+  function textOf(event) {
+    return event.type === 'user/message' ? storyRoundsText(event.data && event.data.content) : storyRoundsText(event.data && event.data.message && event.data.message.content)
+  }
+  function storyOf(event) {
+    const story = Number(event.data && event.data.message && event.data.message.source && event.data.message.source.tavernStoryTurn)
+    return Number.isSafeInteger(story) && story > 0 ? story : Number(event.data && event.data.turn)
+  }
+  // Every reply the round has had: the model's own generations (append replies) behind the
+  // current node's replacement chain. Replacements (reply projections, regeneration
+  // bodies, edits) are renderings of a generation, not results of their own: each stands
+  // for the one it names (`tavernResultSeq`, written by a result switch) or else the
+  // latest generation it covers.
+  function historyOf(current) {
+    const reachable = seq => {
+      const seen = new Set(), found = []
+      const visit = at => {
+        if (seen.has(at)) return
+        seen.add(at)
+        const event = events.get(at)
+        if (!event || event.type !== 'assistant/message') return
+        if (!storyRoundsIsReplace(event)) { if (storyRoundsIsModelReply(event) && textOf(event) !== '') found.push(event); return }
+        for (const source of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) visit(source)
+      }
+      visit(seq)
+      return found.sort((a, b) => a.seq - b.seq)
+    }
+    const found = reachable(current.seq)
+    if (!found.length) return [{ seq: current.seq, turn: Number(current.data.turn), text: textOf(current), current: true }]
+    // 单一来源的正文编辑沿用被编辑结果的选择；重生成合并多个来源时，默认选最新生成。
+    const visited = new Set()
+    function selectedResult(event) {
+      if (!event || visited.has(event.seq) || event.type !== 'assistant/message') return undefined
+      visited.add(event.seq)
+      const named = Number(event.data.message.source?.tavernResultSeq)
+      if (found.some(item => item.seq === named)) return named
+      if (!storyRoundsIsReplace(event)) return found.some(item => item.seq === event.seq) ? event.seq : undefined
+      const sources = event.sourceEventSeqs
+      return Array.isArray(sources) && sources.length === 1 ? selectedResult(events.get(sources[0])) : undefined
+    }
+    const currentSeq = selectedResult(current) ?? found[found.length - 1].seq
+    return found.map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
+  }
+  function failedEnd(turn) {
+    const kind = ended.get(turn)
+    return kind !== undefined && !STORY_SETTLED_ENDS.includes(kind) ? kind : ''
+  }
+  function abandonReason(seq, visible) {
+    const failed = failedEnd(turnOf.get(seq))
+    if (failed) return superseded.has(turnOf.get(seq)) ? 'superseded' : failed
+    for (let next = replacedBy.get(seq), steps = 0; next !== undefined && steps < 1000; next = replacedBy.get(next), steps++) {
+      const event = events.get(next)
+      const content = event && (event.type === 'user/message' ? event.data && event.data.content : event.data && event.data.message && event.data.message.content)
+      // An empty replacement is a tombstone (rollback, cleanup); a non-empty one an edit or repair.
+      if (Array.isArray(content) && content.length === 0) return 'rolled-back'
+      if (visible.has(next)) return ''
+    }
+    return visible.has(seq) ? '' : 'replaced'
+  }
+
+  function result() {
+    if (cached) return cached
+    const floors = [], abandoned = []
+    let inputs = [], open = null
+    const opened = () => (open = open || { turn: running, inputs: [], reply: null })
+    for (const seq of nodes) {
+      const event = events.get(seq)
+      if (storyRoundsIsPlayerInput(event)) {
+        const input = { seq, turn: turnOf.has(seq) ? turnOf.get(seq) : null, text: textOf(event) }
+        // Queued for the next turn, or part of the one running now.
+        if (input.turn === null && !storyRoundsIsReplace(event) || input.turn !== null && input.turn === running) opened().inputs.push(input)
+        else if (input.turn === null || ended.has(input.turn) && !failedEnd(input.turn)) inputs.push(input)
+        continue
+      }
+      if (!storyRoundsIsModelReply(event)) continue
+      const text = textOf(event)
+      if (text === '') continue
+      const turn = Number(event.data.turn)
+      if (turn === running) { opened().reply = { seq, turn, text }; if (attempts.has(turn)) open.regenerating = true; continue }
+      if (!storyRoundsIsReplace(event) && attempts.has(turn)) continue
+      // An append reply is story once its turn completed; a replacement is Tavern's own settled write.
+      if (!storyRoundsIsReplace(event) && !(ended.has(turn) && !failedEnd(turn))) continue
+      const story = storyOf(event)
+      const reply = { seq, turn, id: String(event.data.message.id || ''), text }
+      const previous = floors[floors.length - 1]
+      // A later step of the same round (after a tool call) is that round's reply.
+      if (!inputs.length && previous && previous.story === story) { previous.reply = reply; previous.history = historyOf(event); continue }
+      floors.push({ story, inputs, reply, history: historyOf(event) })
+      inputs = []
+    }
+    const visible = new Set(nodes)
+    for (const [seq, turn] of turnOf) {
+      const event = events.get(seq)
+      if (storyRoundsIsReplace(event) || event.data.source.repair) continue
+      const reason = abandonReason(seq, visible)
+      if (reason) abandoned.push({ seq, turn, text: textOf(event), reason })
+    }
+    abandoned.sort((a, b) => a.seq - b.seq)
+    cached = { floors, abandoned, open, attempt }
+    return cached
+  }
+
+  return { addEvents, result, get folded() { return last } }
+}
+
+/** The rounds of a whole log (or a page of it) at once. */
+function foldStoryRounds(events) {
+  const fold = createStoryRoundsFold()
+  fold.addEvents(events)
+  return fold.result()
+}
+
+// Fork contract C5 (docs/plugin-api-ui.md「故事视图契约」): the browser service `tavernStory`
+// a story-view plugin injects. Floor actions call the same RPCs and client flows as the dock
+// controls (play-controls.js); this file adds no story rules of its own.
+const TAVERN_STORY_FAILED_ENDS = ["error", "aborted", "interrupted"];
+// One `rollbackTurn` removes one round (or first clears a failed tail); a jump of more
+// floors than this is refused rather than looped through.
+const TAVERN_STORY_MAX_ROLLBACK_STEPS = 100;
+// 重新结算的指导意见上限，与旧聊天行「重新结算变量」对话框相同。
+const TAVERN_STORY_GUIDANCE_MAX = 4000;
+
+function tavernStoryTurnArgument(value, label) {
+	const turn = Number(value);
+	if (!Number.isSafeInteger(turn) || turn < 1) throw new TypeError(label + " 需要正整数楼层轮次");
+	return turn;
+}
+function tavernStorySessionArgument(value, label) {
+	if (typeof value !== "string" || value === "") throw new TypeError(label + " 需要 sessionId");
+	return value;
+}
+function tavernStoryEvents(entries) {
+	const events = [];
+	for (const entry of entries || []) if (entry && entry.type === "event" && entry.event) events.push(entry.event);
+	return events;
+}
+// 流式正文预览最多每 100 ms 回调一次；楼层或尝试变化时立即回调。
+const TAVERN_STORY_LIVE_TEXT_MS = 100;
+// 运行中回合的流式正文：宿主事件窗口里的临时条目 `assistant/live-chunk`（text-delta），按尝试拼接。
+// 一次尝试落定时宿主用 settle-assistant 撤掉它的临时条目，所以窗口里只剩还在生成的那次。
+function tavernStoryLiveChunk(live, entry) {
+	const data = entry && entry.type === "transient" && entry.event && entry.event.data;
+	if (!data || !data.chunk || data.chunk.type !== "text-delta") return live;
+	const text = String(data.chunk.text || "");
+	if (live && live.attemptId === data.attemptId && live.turn === data.turn) return { attemptId: live.attemptId, turn: live.turn, text: live.text + text };
+	return { attemptId: data.attemptId, turn: data.turn, text: text };
+}
+function tavernStoryLiveOf(entries) {
+	let live = null;
+	for (const entry of entries || []) live = tavernStoryLiveChunk(live, entry);
+	return live;
+}
+// 最新楼层的后台结算（变量、姿态等）仍在等待或运行：与 Tavern 视图 activity 同一判定（readActivity）。
+function tavernStorySettling(view) {
+	const activity = view && view.activity;
+	return Boolean(activity) && (activity.busy === true || activity.phase === "pending");
+}
+const TAVERN_STORY_SETTLING_ERROR = "正在结算，稍候再试";
+// 最新楼层的后台结算状态（视图 settleStatus / settlementTurn / settleError）；视图未读到时为 null。
+function tavernStorySettlement(view) {
+	if (!view) return null;
+	const status = tavernStorySettling(view) || view.settleStatus === "running" ? "running" : view.settleStatus === "error" ? "error" : "idle";
+	const turn = Number(view.settlementTurn);
+	return Object.freeze({
+		status: status,
+		turn: Number.isSafeInteger(turn) && turn > 0 ? turn : null,
+		error: status === "error" ? tavernStoryClip(view.settleError || "后台结算失败，请重试。", TAVERN_STORY_RECEIPT_LIMITS.text) : null
+	});
+}
+// 每楼 MVU 回执只做展示投影（同旧聊天行 TavernMvuReceipt）：过滤镜像路径，字段白名单，长度截断。
+// 上限写在 docs/plugin-api-ui.md「故事视图契约」。
+const TAVERN_STORY_RECEIPT_LIMITS = Object.freeze({ value: 120, path: 200, operation: 20, text: 500, items: 50, diagnostics: 3 });
+const TAVERN_STORY_RECEIPT_STATUSES = ["pending", "updated", "partial", "error", "stale", "interrupted", "unchanged"];
+// MVU display/delta 镜像与 schema 维护留在回执里供诊断，不是玩家关心的变化。
+const TAVERN_STORY_RECEIPT_MIRROR = /^\/(?:delta_data|display_data|schema)(?:\/|$)/;
+function tavernStoryClip(value, limit) {
+	const text = String(value);
+	return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+}
+// before/after 只给展示字符串：短值原样；过长的对象、数组给摘要，其余截断。
+function tavernStoryReceiptValue(value) {
+	const limit = TAVERN_STORY_RECEIPT_LIMITS.value;
+	if (value === undefined) return "（不存在）";
+	let parsed = value;
+	if (typeof value === "string") {
+		if (value.length <= limit) return value;
+		if (!/^\s*[[{]/.test(value)) return tavernStoryClip(value, limit);
+		try { parsed = JSON.parse(value); } catch (_error) { return tavernStoryClip(value, limit); }
+	} else if (value === null || typeof value !== "object") return tavernStoryClip(String(value), limit);
+	else {
+		const json = JSON.stringify(value);
+		if (json.length <= limit) return json;
+	}
+	if (Array.isArray(parsed)) return "[" + parsed.length + " 项]";
+	if (parsed === null || typeof parsed !== "object") return tavernStoryClip(String(value), limit);
+	const keys = Object.keys(parsed);
+	return tavernStoryClip("{" + keys.slice(0, 5).join(", ") + (keys.length > 5 ? ", …" : "") + "}（" + keys.length + " 项）", limit);
+}
+function tavernStoryReceiptChange(change) {
+	return Object.freeze({
+		path: tavernStoryClip(change && change.path || "/", TAVERN_STORY_RECEIPT_LIMITS.path),
+		operation: tavernStoryClip(change && change.operation || "", TAVERN_STORY_RECEIPT_LIMITS.operation),
+		before: tavernStoryReceiptValue(change && change.before),
+		after: tavernStoryReceiptValue(change && change.after)
+	});
+}
+function tavernStoryReceiptChanges(list) {
+	return (Array.isArray(list) ? list : []).filter(function (change) { return !TAVERN_STORY_RECEIPT_MIRROR.test(String(change && change.path || "")); });
+}
+const tavernStoryReceiptCache = new WeakMap();
+function tavernStoryReceipt(receipt) {
+	if (!receipt || typeof receipt !== "object") return null;
+	const known = tavernStoryReceiptCache.get(receipt);
+	if (known) return known;
+	const limits = TAVERN_STORY_RECEIPT_LIMITS;
+	const status = TAVERN_STORY_RECEIPT_STATUSES.includes(receipt.status) ? receipt.status : "unchanged";
+	const changes = tavernStoryReceiptChanges(receipt.changes), sideEffects = tavernStoryReceiptChanges(receipt.sideEffects);
+	const failures = Array.isArray(receipt.failures) ? receipt.failures : [];
+	const diagnostics = (status === "error" || status === "partial") && Array.isArray(receipt.runtimeDiagnostics)
+		? receipt.runtimeDiagnostics.filter(function (item) { return item && item.message && ["warn", "error"].includes(item.level); }).slice(-limits.diagnostics)
+			.map(function (item) { return tavernStoryClip(item.message, limits.text); })
+		: [];
+	const projected = Object.freeze({
+		status: status,
+		changes: Object.freeze(changes.slice(0, limits.items).map(tavernStoryReceiptChange)),
+		sideEffects: Object.freeze(sideEffects.slice(0, limits.items).map(tavernStoryReceiptChange)),
+		failures: Object.freeze(failures.slice(0, limits.items).map(function (failure) {
+			return Object.freeze({
+				path: tavernStoryClip(failure && (failure.path || failure.command) || "", limits.path),
+				operation: tavernStoryClip(failure && failure.operation || "", limits.operation),
+				message: tavernStoryClip(failure && failure.message || "未知错误", limits.text)
+			});
+		})),
+		summary: tavernStoryClip(receipt.summary || "", limits.text),
+		diagnostics: Object.freeze(diagnostics),
+		counts: Object.freeze({ changes: changes.length, sideEffects: sideEffects.length, failures: failures.length })
+	});
+	tavernStoryReceiptCache.set(receipt, projected);
+	return projected;
+}
+// 本窗口各楼层的回执，按故事轮号（= floor.story，也是视图 mvuReceipts 的 turn）。
+function tavernStoryReceipts(view, floors) {
+	const receipts = {};
+	if (view) for (const floor of floors) {
+		const receipt = tavernStoryReceipt(tavernMvuReceiptForTurn(view, floor.story));
+		if (receipt) receipts[floor.story] = receipt;
+	}
+	return Object.freeze(receipts);
+}
+// The player input a failed or stopped round dropped, while it is still the latest thing
+// the player did: no later floor, no newer input, nothing running.
+function tavernStoryInterruptedInput(rounds) {
+	if (!rounds || rounds.open) return null;
+	const input = rounds.abandoned[rounds.abandoned.length - 1];
+	if (!input || !TAVERN_STORY_FAILED_ENDS.includes(input.reason)) return null;
+	const last = rounds.floors[rounds.floors.length - 1];
+	if (last && Math.max(last.reply.seq, ...last.inputs.map(item => item.seq)) > input.seq) return null;
+	return Object.freeze({ seq: input.seq, turn: input.turn, text: input.text, reason: input.reason });
+}
+
+function createTavernStoryService(options) {
+	const sessions = options.sessions;
+	const actions = options.actions;
+	const flow = actions.interactions;
+	function eventSourceOf(sessionId) {
+		const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
+		if (!binding || !binding.eventSource) throw new Error("这一局没有在当前页面打开");
+		return binding.eventSource;
+	}
+	function foldNow(sessionId) {
+		const rounds = foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries));
+		return Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds) }));
+	}
+	// The Tavern view of the game (the dock reads the same one), loaded once if nothing holds it yet.
+	function viewOf(sessionId) {
+		const state = liveTavernView.getSnapshot(sessionId);
+		if (state.view) return Promise.resolve(state.view);
+		return new Promise(function (resolve, reject) {
+			let settled = false, stop = null;
+			function check(next) {
+				if (settled || !(next.view || next.phase === "error")) return;
+				settled = true;
+				if (stop) stop();
+				if (next.view) resolve(next.view); else reject(new Error(next.error || "读取本局状态失败"));
+			}
+			stop = liveTavernView.subscribe(sessionId, check);
+			if (settled) stop();
+		});
+	}
+	function afterChange(sessionId) {
+		notifyTavernDataChanged(["sessions"], "story-service");
+		liveTavernView.invalidate(sessionId);
+		tavernCoordination.invalidate(sessionId);
+	}
+	function clearPanels() {
+		flow.candidates.set(null); flow.regeneration.set(null); flow.guide.set(null);
+	}
+	// Same steps as the dock's 「回退本轮」 (TavernRollbackAction).
+	async function rollbackOnce(sessionId, expectedTurn) {
+		try {
+			const result = await rpc("rollbackTurn", { expectedTurn: expectedTurn }, sessionId) || {};
+			actions.historyProjection.rolledBack(sessionId, result.view);
+			clearPanels();
+			return result;
+		} finally { afterChange(sessionId); }
+	}
+	// regenBody always rewrites the latest floor: check it is the one asked for, on the live
+	// event window (current) and on the Tavern view (whether this floor may be regenerated).
+	async function latestFloor(sessionId, storyTurn, label) {
+		const rounds = foldNow(sessionId), latest = rounds.floors[rounds.floors.length - 1];
+		if (rounds.open) throw new Error("正在生成，请完成或停止后再" + label);
+		if (!latest || latest.story !== storyTurn) throw new Error(label + "只能用于最新楼层（当前第 " + (latest ? latest.story : 0) + " 轮）");
+		const view = await viewOf(sessionId);
+		if (tavernStorySettling(view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
+		if (!isPlayMode(view.mode) || view.canRegenerate !== true) throw new Error("这一层不能" + label);
+		return view;
+	}
+	// The dock's body regeneration flow, so guidance memory and the in-flight guard are shared.
+	async function regenerateBody(sessionId, guidance, extra) {
+		const panel = flow.regeneration.set({ sessionId: sessionId, phase: "input", guidance: "", text: "", error: "", tail: null });
+		flow.candidates.set(null);
+		await flow.regenerateBody(panel, guidance, extra || {});
+		const after = flow.regeneration.getSnapshot();
+		if (after && after.sessionId === sessionId && (after === panel || after.phase === "error")) {
+			flow.regeneration.set(null);
+			throw new Error(after === panel ? "正文正在重新生成，请等待完成" : after.error);
+		}
+		afterChange(sessionId);
+		return { view: liveTavernView.getSnapshot(sessionId).view };
+	}
+
+	const service = {
+		apiVersion: 1,
+		// 模式与接管规则是同一来源；UI 不通过楼层或存档推测会话身份。
+		sessionMode: function (sessionId) { return tavernStorySessionState(tavernStorySessionArgument(sessionId, "sessionMode")); },
+		readSessionMode: function (sessionId) { tavernStorySessionArgument(sessionId, "readSessionMode"); return readTavernStorySessionMode(sessionId).then(function () { return tavernStorySessionState(sessionId); }); },
+		subscribeSessionMode: function (sessionId, listener) {
+			tavernStorySessionArgument(sessionId, "subscribeSessionMode");
+			if (typeof listener !== "function") throw new TypeError("subscribeSessionMode 需要 listener 函数");
+			let stopped = false;
+			const notify = function () { if (!stopped) listener(tavernStorySessionState(sessionId)); };
+			const stopMode = subscribeTavernStorySessionMode(sessionId, notify);
+			const stopSetting = tavernStoryViewMode.subscribe(notify);
+			return function () { stopped = true; stopMode(); stopSetting(); };
+		},
+		storyViewActive: function (sessionId) { return tavernStoryViewActive(sessionId); },
+		/** Floor rendering runtime (contract C7, features/story-render.js). */
+		render: options.render || null,
+		/** Whether Tavern leaves the chat rows to the host (contract C4). */
+		storyViewMode: function () { return tavernStoryViewMode.enabled(); },
+		setStoryViewMode: function (value) { return tavernStoryViewMode.set(value); },
+		subscribeStoryViewMode: function (listener) {
+			if (typeof listener !== "function") throw new TypeError("subscribeStoryViewMode 需要 listener 函数");
+			return tavernStoryViewMode.subscribe(function () { listener(tavernStoryViewMode.enabled()); });
+		},
+		/**
+		 * Floors folded from this page's event window (C1), now and after every change.
+		 * listener({ floors, abandoned, open, attempt, interrupted, settling, staleVariables, receipts, settlement, hasMore, from }); returns unsubscribe.
+		 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled);
+		 * `settling` is true while the latest floor's background settlement is pending or running;
+		 * `staleVariables` is { turn, replySeq } while an MVU card's latest floor shows a switched
+		 * result its variables were not settled for (saved; cleared once resettle succeeds), else null.
+		 * `receipts` maps a loaded floor's story turn to its MVU receipt (display projection of the
+		 * view's mvuReceipts); `settlement` is { status: 'running' | 'error' | 'idle', turn, error }
+		 * of the latest floor's background settlement, null until the Tavern view is read.
+		 */
+		subscribeRounds: function (sessionId, listener) {
+			tavernStorySessionArgument(sessionId, "subscribeRounds");
+			if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
+			const source = eventSourceOf(sessionId);
+			let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false, staleVariables = null;
+			let view = null, settlement = null;
+			function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
+			function emit() {
+				if (timer !== null) { window.clearTimeout(timer); timer = null; }
+				if (stopped) return;
+				const snapshot = source.getSnapshot(), rounds = fold.result();
+				published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
+				const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
+				const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
+				listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
+					receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+			}
+			function publish() {
+				if (stopped) return;
+				const snapshot = source.getSnapshot();
+				if (snapshot.revision === revision) return;
+				// Live appends extend the fold; a prepend, rebaseline or settlement folds the window again.
+				if (fold && snapshot.change && snapshot.change.kind === "append" && snapshot.revision === revision + 1) {
+					fold.addEvents(tavernStoryEvents(snapshot.change.entries));
+					for (const entry of snapshot.change.entries) live = tavernStoryLiveChunk(live, entry);
+				} else {
+					fold = createStoryRoundsFold(); fold.addEvents(tavernStoryEvents(snapshot.entries));
+					live = tavernStoryLiveOf(snapshot.entries);
+				}
+				revision = snapshot.revision;
+				if (fold.result() !== published || snapshot.hasMore !== hasMore) return emit();
+				// Streaming chunks change no floor: only the preview text, at most every 100 ms.
+				if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
+			}
+			// Settlement state, receipts and the stale-variables mark live in the Tavern view, not in the event window.
+			function readView(state) {
+				const next = state && state.view || null;
+				const nextSettling = tavernStorySettling(next);
+				const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
+				const nextSettlement = tavernStorySettlement(next);
+				const changed = nextSettling !== settling || JSON.stringify(stale) !== JSON.stringify(staleVariables)
+					|| JSON.stringify(nextSettlement) !== JSON.stringify(settlement) || (next && next.mvuReceipts) !== (view && view.mvuReceipts);
+				view = next;
+				if (!changed) return false;
+				settling = nextSettling; staleVariables = stale; settlement = nextSettlement;
+				return true;
+			}
+			readView(liveTavernView.getSnapshot(sessionId));
+			const stopView = liveTavernView.subscribe(sessionId, function (state) {
+				if (readView(state) && fold) emit();
+			}, [["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
+			const unsubscribe = source.subscribe(publish);
+			publish();
+			return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };
+		},
+		/** Every reply the floor has had, oldest first; `current` marks the one shown. */
+		listResults: function (sessionId, storyTurn) {
+			const turn = tavernStoryTurnArgument(storyTurn, "listResults");
+			const floor = foldNow(tavernStorySessionArgument(sessionId, "listResults")).floors.find(function (item) { return item.story === turn; });
+			return floor ? floor.history : null;
+		},
+		/**
+		 * Show an earlier generation of the latest floor again (`replySeq` from listResults).
+		 * Returns { switched, turn, replySeq, mvu: 'stale' | 'unchanged', view }; 'stale' means
+		 * the variables still follow the reply shown before and want a settlement retry.
+		 */
+		switchResult: async function (sessionId, storyTurn, replySeq) {
+			tavernStorySessionArgument(sessionId, "switchResult");
+			const turn = tavernStoryTurnArgument(storyTurn, "switchResult");
+			const seq = Number(replySeq);
+			if (!Number.isSafeInteger(seq) || seq < 0) throw new TypeError("switchResult 需要 listResults 给出的 replySeq");
+			const before = await latestFloor(sessionId, turn, "切换历史结果");
+			try {
+				const result = await rpc("switchFloorResult", { turn: turn, replySeq: seq }, sessionId);
+				clearPanels();
+				const mvu = result && result.mvu;
+				// Only an MVU card's variables can be settled again for the shown reply (resettle).
+				const officialMvu = Boolean(before.tavernMvuRuntime && before.tavernMvuRuntime.owner === "official");
+				return { switched: result && result.switched === true, turn: result && result.turn, replySeq: result && result.replySeq, mvu: mvu, resettle: mvu === "stale" && officialMvu, view: result && result.view };
+			} finally { afterChange(sessionId); }
+		},
+		/**
+		 * Start a new game from this floor's current reply (any settled floor, the opening
+		 * included); later floors stay behind. Same flow as the chat's fork button (the sidebar
+		 * forks the native session, binds the save, names and opens the new game), through the
+		 * floor RPCs. Resolves once the new game is open: { sessionId, chatId, turn, replySeq }.
+		 */
+		forkAt: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "forkAt");
+			const turn = tavernStoryTurnArgument(storyTurn, "forkAt");
+			const rounds = foldNow(sessionId);
+			const attempting = rounds.attempt && (rounds.attempt.phase === "preparing" || rounds.attempt.phase === "generating");
+			if (rounds.open || attempting) throw new Error("正在生成，请完成或停止后再创建分支");
+			if (tavernStorySettling(liveTavernView.getSnapshot(sessionId).view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
+			if (!rounds.floors.some(function (floor) { return floor.story === turn; })) throw new Error("第 " + turn + " 轮不是当前已加载的楼层");
+			return tavernConversationForkRequests.request({ sessionId: sessionId, turn: turn, floor: true });
+		},
+		/** 打断指定原生回合，并重新投递队尾那条排队输入，让它接着成为下一轮。 */
+		interruptQueued: function (sessionId, turn) {
+			return rpc("interruptStoryQueue", { turn: tavernStoryTurnArgument(turn, "interruptQueued") }, tavernStorySessionArgument(sessionId, "interruptQueued"));
+		},
+		/**
+		 * Remove this floor and every later one (latest first), clearing a failed tail on the way.
+		 * `input` is the removed floor's own player input ({ text }), for the composer; null
+		 * when the floor is outside the loaded window or has none (the opening).
+		 */
+		rollbackTo: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "rollbackTo");
+			const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
+			let view = await viewOf(sessionId);
+			if (turn > (Number(view.rollbackTargetTurn) || 0)) throw new Error("第 " + turn + " 轮不是现有楼层");
+			const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
+			const floor = binding && binding.eventSource ? foldNow(sessionId).floors.find(function (item) { return item.story === turn; }) : null;
+			const input = floor && floor.inputs.length ? { text: floor.inputs.map(function (item) { return item.text; }).join("\n") } : null;
+			const rolledBack = [];
+			let clearedInput = null;
+			for (let step = 0; ; step++) {
+				const clearing = view.canClearIncompleteReply === true;
+				const target = Number(view.rollbackTargetTurn) || 0;
+				if (!clearing && target < turn) break;
+				if (step >= TAVERN_STORY_MAX_ROLLBACK_STEPS) throw new Error("一次最多回退 " + TAVERN_STORY_MAX_ROLLBACK_STEPS + " 层");
+				// A failed tail is cleared first (its input comes back); the next call removes a floor.
+				const result = await rollbackOnce(sessionId, clearing ? null : target);
+				const next = result.view || {};
+				if (clearing) { if (typeof next.clearedInput === "string") clearedInput = next.clearedInput; }
+				else rolledBack.push(target);
+				if (!clearing && (Number(next.rollbackTargetTurn) || 0) >= target && next.canClearIncompleteReply !== true) throw new Error("第 " + target + " 轮回退后仍是最新楼层");
+				if (clearing && next.canClearIncompleteReply === true) throw new Error("未能清除失败的回合");
+				view = next;
+				if (next.rollbackWarning) tavernErrorHub.report("回退提示", new Error(next.rollbackWarning));
+			}
+			return { view: view, rolledBack: rolledBack, clearedInput: clearedInput, input: input };
+		},
+		/** Resample the latest floor without guidance (the dock's 重新生成正文 with an empty box). */
+		regenerate: async function (sessionId, storyTurn) {
+			tavernStorySessionArgument(sessionId, "regenerate");
+			await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerate"), "重新生成");
+			return regenerateBody(sessionId, "");
+		},
+		/** Rewrite the latest floor with guidance; it becomes the game's remembered guidance. */
+		regenerateWithGuidance: async function (sessionId, storyTurn, guidance, extra) {
+			tavernStorySessionArgument(sessionId, "regenerateWithGuidance");
+			if (typeof guidance !== "string" || guidance.trim() === "") throw new TypeError("regenerateWithGuidance 需要非空 guidance");
+			await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerateWithGuidance"), "按要求改写");
+			return regenerateBody(sessionId, guidance, extra && extra.restyle === true ? { restyle: true, styleGuidance: String(extra.styleGuidance || "") } : {});
+		},
+		/**
+		 * Edit the latest floor's prose (the dock's 编辑正文 panel: getBodyEdit / saveBodyEdit).
+		 * get → { token, turn, parts: [{ kind: 'text', text } | { kind: 'html' | 'marker' }] };
+		 * save(sessionId, storyTurn, { token, texts }) with one string per text part, HTML kept.
+		 * The model sees the edited text from the next round on; variables are not settled again.
+		 */
+		editReply: {
+			get: async function (sessionId, storyTurn) {
+				tavernStorySessionArgument(sessionId, "editReply.get");
+				const turn = tavernStoryTurnArgument(storyTurn, "editReply.get");
+				await latestFloor(sessionId, turn, "编辑正文");
+				const result = await rpc("getBodyEdit", {}, sessionId);
+				const edit = result && result.edit;
+				if (!edit || Number(edit.turn) !== turn) throw new Error("最新正文已变化，请刷新后再编辑");
+				return { token: edit.token, turn: turn, parts: edit.parts };
+			},
+			save: async function (sessionId, storyTurn, edit) {
+				tavernStorySessionArgument(sessionId, "editReply.save");
+				const turn = tavernStoryTurnArgument(storyTurn, "editReply.save");
+				if (!edit || typeof edit.token !== "string" || !Array.isArray(edit.texts) || edit.texts.some(function (text) { return typeof text !== "string"; })) throw new TypeError("editReply.save 需要 get 给出的 token 与 texts 字符串数组");
+				await latestFloor(sessionId, turn, "编辑正文");
+				try {
+					const result = await rpc("saveBodyEdit", { token: edit.token, turn: turn, texts: edit.texts }, sessionId);
+					clearPanels();
+					return { view: result && result.view };
+				} finally { afterChange(sessionId); }
+			}
+		},
+		/**
+		 * Change the player input of the latest floor (getBodyEdit / saveBodyEdit with role
+		 * 'user': a replacement on the model surface and the save's text). The reply stays;
+		 * call regenerate afterwards for a reply to the new input — it reads the saved text.
+		 */
+		editInput: async function (sessionId, storyTurn, text) {
+			tavernStorySessionArgument(sessionId, "editInput");
+			const turn = tavernStoryTurnArgument(storyTurn, "editInput");
+			if (typeof text !== "string" || text.trim() === "") throw new TypeError("editInput 需要非空输入文字");
+			await latestFloor(sessionId, turn, "修改输入");
+			const floor = foldNow(sessionId).floors.find(function (item) { return item.story === turn; });
+			const input = floor && floor.inputs[floor.inputs.length - 1];
+			if (!input) throw new Error("这一层没有玩家输入");
+			try {
+				const read = await rpc("getBodyEdit", { role: "user", turn: input.turn, seq: input.seq }, sessionId);
+				const edit = read && read.edit;
+				if (!edit || edit.role !== "user") throw new Error("读取这条输入失败");
+				const result = await rpc("saveBodyEdit", { token: edit.token, role: "user", index: edit.index, turn: edit.turn, seq: edit.seq, texts: [text] }, sessionId);
+				clearPanels();
+				return { view: result && result.view };
+			} finally { afterChange(sessionId); }
+		},
+		/**
+		 * Settle the latest floor again for the reply it now shows (retrySettlement), e.g. after
+		 * switchResult reported mvu 'stale'. Latest floor only; the server decides whether this
+		 * card has a settlement to redo. `options.guidance` (optional, ≤ 4000 characters) applies to
+		 * this settlement only; omitted, the server reuses the last guidance. Resolves once the
+		 * settlement is queued: { view }.
+		 */
+		resettle: async function (sessionId, storyTurn, options) {
+			tavernStorySessionArgument(sessionId, "resettle");
+			const turn = tavernStoryTurnArgument(storyTurn, "resettle");
+			const guidance = options === undefined || options === null ? undefined : options.guidance;
+			if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("resettle 的第三个参数需要 { guidance? }");
+			if (guidance !== undefined && (typeof guidance !== "string" || guidance.length > TAVERN_STORY_GUIDANCE_MAX)) throw new TypeError("resettle 的 guidance 需要不超过 " + TAVERN_STORY_GUIDANCE_MAX + " 字的字符串");
+			await latestFloor(sessionId, turn, "重新结算");
+			try {
+				const result = await rpc("retrySettlement", guidance === undefined ? { turn: turn } : { turn: turn, guidance: guidance }, sessionId);
+				if (result && result.view) liveTavernView.setView(sessionId, result.view);
+				return { view: result && result.view };
+			} finally { afterChange(sessionId); }
+		},
+		/** The guidance last used for this game (offered again when rewriting once more). */
+		guidance: function (sessionId) { return flow.guidance(tavernStorySessionArgument(sessionId, "guidance")); },
+		/** Replay a failed or stopped latest round with its original input. */
+		retryFailed: async function (sessionId) {
+			tavernStorySessionArgument(sessionId, "retryFailed");
+			const result = await actions.replayFailedTurn(sessionId);
+			return { view: result && result.view };
+		},
+		/** The input a failed or stopped round dropped, while the player has not moved on; or null. */
+		readInterruptedInput: function (sessionId) {
+			return foldNow(tavernStorySessionArgument(sessionId, "readInterruptedInput")).interrupted;
+		},
+		/** Store a floor's static HTML (contract C3); `floor` is a floor from subscribeRounds. */
+		writeFloorSnapshot: async function (sessionId, floor, snapshot) {
+			tavernStorySessionArgument(sessionId, "writeFloorSnapshot");
+			const turn = tavernStoryTurnArgument(floor && floor.story, "writeFloorSnapshot");
+			if (!floor.reply || !Number.isSafeInteger(Number(floor.reply.seq))) throw new TypeError("writeFloorSnapshot 需要带 reply.seq 的楼层");
+			if (!snapshot || typeof snapshot.html !== "string") throw new TypeError("writeFloorSnapshot 需要 html 字符串");
+			return rpc("saveFloorSnapshot", { turn: turn, reply: String(floor.reply.seq), html: snapshot.html, truncated: snapshot.truncated === true }, sessionId);
+		},
+		/** Stored snapshots of these floors, by story turn; one taken of another reply is left out. */
+		readFloorSnapshots: async function (sessionId, floors) {
+			tavernStorySessionArgument(sessionId, "readFloorSnapshots");
+			const wanted = (Array.isArray(floors) ? floors : []).filter(function (floor) { return floor && floor.reply && Number.isSafeInteger(Number(floor.story)) && floor.story > 0; });
+			if (!wanted.length) return {};
+			const result = await rpc("getFloorSnapshots", { turns: wanted.map(function (floor) { return floor.story; }) }, sessionId);
+			const stored = result && result.snapshots || {}, snapshots = {};
+			for (const floor of wanted) {
+				const snapshot = stored[floor.story];
+				if (snapshot && snapshot.reply === String(floor.reply.seq)) snapshots[floor.story] = snapshot;
+			}
+			return snapshots;
+		},
+		readFloorSnapshot: async function (sessionId, floor) {
+			const snapshots = await service.readFloorSnapshots(sessionId, [floor]);
+			return floor && snapshots[floor.story] || null;
+		}
+	};
+	return service;
+}
+
+// 初始化只发布故事契约；导航、面板和产品视图仍由独立插件持有。
+function registerTavernStoryContract(ctx) {
+	if (typeof ctx.provide !== "function") return;
+	ctx.provide("tavernStory", createTavernStoryService({
+		sessions: ctx.sessions,
+		actions: playControlsFeature.storyActions,
+		render: createTavernStoryRender({ executeSlash: createTavernFrameSlashExecutor(ctx) })
+	}));
+}
+// Fork contract C7 (docs/plugin-api-ui.md「故事视图契约」): render one story floor the way
+// Tavern's chat row does — its regex/beautified projection, Helper context and run policy —
+// for a story-view plugin, as `tavernStory.render`. A live floor runs the card's HTML in
+// Tavern's own message frames; any other floor is static: text, script-free HTML, or a
+// snapshot, sanitized and shown in a shadow root so its styles stay inside the floor.
+const TAVERN_FLOOR_SNAPSHOT_LIMIT = 512 * 1024;
+const TAVERN_FLOOR_FRAME_TIMEOUT_MS = 1500;
+const tavernFloorScriptPattern = /<(?:script|iframe|object|embed)\b/i;
+
+// Static HTML that can sit in the host page, which shares DSH's origin and RPC: card HTML
+// comes from third-party presets and cards, so only a whitelist survives (as in
+// inline-fragment.js). Allowed elements are rebuilt one by one with allowed attributes;
+// an unknown element gives way to its text and allowed children; dangerous or foreign-
+// namespace subtrees (svg, math) go entirely. Controls stay inert, links open elsewhere,
+// and html/body/:root rules apply to the floor (the shadow host).
+const TAVERN_FLOOR_TAGS = new Set(["div", "span", "p", "img", "br", "hr", "b", "strong", "i", "em", "u", "s", "small", "sub", "sup", "mark", "del", "ins", "q", "cite", "abbr", "time", "blockquote", "pre", "code", "kbd",
+	"ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "h1", "h2", "h3", "h4", "h5", "h6", "a",
+	"details", "summary", "section", "article", "aside", "header", "footer", "nav", "main", "figure", "figcaption", "center", "style", "button", "input", "label", "progress", "meter"]);
+const TAVERN_FLOOR_DROPPED = new Set(["svg", "math", "script", "iframe", "frame", "frameset", "object", "embed", "applet", "template", "form", "link", "meta", "base", "noscript", "portal", "textarea", "select"]);
+const TAVERN_FLOOR_ATTRIBUTES = new Set(["class", "id", "style", "title", "alt", "src", "href", "width", "height", "colspan", "rowspan", "span", "open", "disabled", "checked", "value", "type", "role", "lang", "dir", "align", "min", "max", "low", "high", "optimum", "datetime", "start", "reversed", "for"]);
+const TAVERN_FLOOR_INPUT_TYPES = new Set(["text", "checkbox", "radio", "range", "number", "button"]);
+function tavernFloorUrl(value, image) {
+	const url = String(value || "").replace(/[\u0000- \u007f]/g, "");
+	if (/^https?:/i.test(url)) return true;
+	if (image && /^data:image\//i.test(url)) return true;
+	// Relative: no scheme at all (and not protocol-relative).
+	return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[\\/]{2}/.test(url);
+}
+// CSS that cannot load or run anything: no imports, legacy script hooks or script/non-image URLs.
+function cleanTavernFloorCss(css) {
+	return String(css || "").replace(/<\/?style/gi, "")
+		.replace(/@import\b[^;]*;?/gi, "")
+		.replace(/expression\s*\(/gi, "(")
+		.replace(/(?:behavior|-moz-binding)\s*:[^;}]*;?/gi, "")
+		.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, function (match, _quote, value) {
+			const url = value.trim();
+			return /\\/.test(url) || /^(?:javascript|vbscript):/i.test(url) || /^data:/i.test(url) && !/^data:image\//i.test(url) ? "none" : match;
+		});
+}
+function sanitizeTavernFloorHtml(html, doc) {
+	const template = doc.createElement("template");
+	template.innerHTML = String(html || "");
+	const output = doc.createElement("template");
+	function copy(source, target) {
+		for (const node of Array.from(source.childNodes)) {
+			if (node.nodeType === 3) { target.appendChild(doc.createTextNode(node.data)); continue; }
+			// The truncation marker of a bounded snapshot is the only comment kept.
+			if (node.nodeType === 8) { if (node.data === " 已截断 ") target.appendChild(doc.createComment(node.data)); continue; }
+			if (node.nodeType !== 1) continue;
+			const tag = node.localName;
+			if (node.namespaceURI !== "http://www.w3.org/1999/xhtml" || TAVERN_FLOOR_DROPPED.has(tag)) continue;
+			if (!TAVERN_FLOOR_TAGS.has(tag)) { copy(node, target); continue; }
+			const element = doc.createElement(tag);
+			if (tag === "style") {
+				element.textContent = cleanTavernFloorCss(node.textContent).replace(/(^|[{},]\s*)(?:html|body|:root)(?=[\s,{.:#\[>~+]|$)/g, "$1:host");
+				target.appendChild(element);
+				continue;
+			}
+			for (const attr of Array.from(node.attributes)) {
+				const name = attr.name.toLowerCase();
+				if (!(TAVERN_FLOOR_ATTRIBUTES.has(name) || /^(?:data|aria)-[a-z0-9_.-]+$/.test(name))) continue;
+				if ((name === "src" || name === "href") && !tavernFloorUrl(attr.value, name === "src" && tag === "img")) continue;
+				if (name === "type" && tag === "input" && !TAVERN_FLOOR_INPUT_TYPES.has(attr.value.toLowerCase())) continue;
+				element.setAttribute(name, name === "style" ? cleanTavernFloorCss(attr.value) : attr.value);
+			}
+			if (tag === "a" && element.hasAttribute("href")) { element.setAttribute("target", "_blank"); element.setAttribute("rel", "noopener noreferrer"); }
+			if (tag === "button" || tag === "input") { element.setAttribute("disabled", ""); if (tag === "button") element.setAttribute("type", "button"); }
+			copy(node, element);
+			target.appendChild(element);
+		}
+	}
+	copy(template.content, output.content);
+	return output.innerHTML;
+}
+
+function TavernFloorStaticHtml(props) {
+	const ref = React.useRef(null);
+	React.useLayoutEffect(function () {
+		const root = ref.current;
+		if (!root) return;
+		const shadow = root.shadowRoot || root.attachShadow({ mode: "open" });
+		const content = root.ownerDocument.createElement("div");
+		content.className = "dsh-tavern-floor-content";
+		content.innerHTML = sanitizeTavernFloorHtml(props.html, root.ownerDocument);
+		shadow.replaceChildren(content);
+		const colors = installTavernTextColors(content, {}, findTavernQuoteRanges);
+		// The page keeps its place: a snapshot's form never submits, its controls stay inert.
+		const stop = function (event) { event.preventDefault(); };
+		shadow.addEventListener("submit", stop, true);
+		const unbind = bindTavernFontZoom(root, root.ownerDocument.defaultView);
+		return function () { shadow.removeEventListener("submit", stop, true); colors.dispose(); unbind(); shadow.innerHTML = ""; };
+	}, [props.html]);
+	return React.createElement("div", { ref: ref, className: "mes_text dsh-tavern-floor-static" });
+}
+
+// The DOM a message frame shows now, through its bounded snapshot channel. A trusted
+// frame shares this page's origin and is read directly; a sandboxed one answers the
+// channel's message (the token sits in its runtime reporter).
+function captureTavernFloorFrame(frame, budget) {
+	try {
+		const body = frame.contentDocument && frame.contentDocument.body;
+		if (body) return Promise.resolve(captureTavernBoundedDom(body, budget));
+	} catch (_) {}
+	const match = /var token=("(?:[^"\\]|\\.)*");var domAllowed=true/.exec(String(frame.getAttribute("srcdoc") || frame.srcdoc || ""));
+	const target = frame.contentWindow;
+	if (!match || !target) return Promise.resolve(null);
+	const token = JSON.parse(match[1]), host = frame.ownerDocument.defaultView;
+	return new Promise(function (resolve) {
+		let timer = null;
+		function done(value) { host.removeEventListener("message", receive); host.clearTimeout(timer); resolve(value); }
+		function receive(event) {
+			const data = event.data;
+			if (event.source !== target || !data || data.token !== token || data.type !== "dsh-tavern-frame-runtime" || data.explicit !== true) return;
+			done({ dom: String(data.runtime && data.runtime.dom || ""), truncated: /<!-- 已截断 -->$/.test(String(data.runtime && data.runtime.dom || "")) });
+		}
+		host.addEventListener("message", receive);
+		timer = host.setTimeout(function () { done(null); }, TAVERN_FLOOR_FRAME_TIMEOUT_MS);
+		target.postMessage({ type: "dsh-tavern-frame-dom-snapshot", token: token }, "*");
+	});
+}
+
+function createTavernStoryRender(options) {
+	const executeSlash = options && options.executeSlash;
+	function viewOf(sessionId) {
+		const state = liveTavernView.getSnapshot(sessionId);
+		if (state.view) return Promise.resolve(state.view);
+		return new Promise(function (resolve, reject) {
+			let settled = false, stop = null;
+			function check(next) {
+				if (settled || !(next.view || next.phase === "error")) return;
+				settled = true;
+				if (stop) stop();
+				if (next.view) resolve(next.view); else reject(new Error(next.error || "读取本局状态失败"));
+			}
+			stop = liveTavernView.subscribe(sessionId, check);
+			if (settled) stop();
+		});
+	}
+	function floorOf(view, storyTurn) {
+		const projection = tavernProjectionForTurn(view, storyTurn);
+		const parts = projectionPartsOf(projection);
+		const policy = view && view.tavernRuntimePolicy || {};
+		const latestTurn = tavernLatestProjectionTurn(view);
+		return {
+			storyTurn: storyTurn, mode: view && view.mode || "", projection: projection, parts: parts,
+			hasScript: parts.some(function (part) { return part.kind === "html" && tavernFloorScriptPattern.test(String(part.content !== undefined ? part.content : part.html || "")); }),
+			helperContext: view && view.tavernHelper || null, frameSizing: policy.frameSizing, trustedCardMode: policy.trustedCardMode === true,
+			latestTurn: latestTurn,
+			// Older floors outside Tavern's history window have no projection until it grows.
+			waitingForHistory: !projection && Boolean(view && view.historyWindow) && storyTurn < latestTurn
+		};
+	}
+
+	/**
+	 * One floor's body. props: { sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?,
+	 * revision?, containerRef?, fallbackText? }. Live runs the card HTML in message frames; otherwise
+	 * snapshotHtml, or the projection with script-free static HTML.
+	 */
+	function FloorBody(props) {
+		const sessionId = props.sessionId, storyTurn = Number(props.storyTurn) || 0, live = props.live === true;
+		const paths = [["mode"], ["tavernRuntimePolicy"], ["historyWindow"], ["$projectionTurn", String(storyTurn)], ["$projectionLatestTurn", String(storyTurn)]].concat(live ? [["tavernHelper"]] : []);
+		// Subscribed to this floor's paths only; the projection is read from the whole view.
+		const state = useLiveTavernView(sessionId, String(props.revision || ""), paths);
+		// The page owns no iframe for it: Tavern keeps message frames alive when React lets go
+		// (retained frames); a floor that stops being live releases its frames at once.
+		const fallbackOwner = React.useRef(null);
+		if (!fallbackOwner.current) fallbackOwner.current = { sessionId: sessionId, storyTurn: storyTurn };
+		const owner = props.owner || fallbackOwner.current;
+		React.useEffect(function () {
+			if (!live) return;
+			return function () { tavernRetainedFrames.invalidateOwner(owner); };
+		}, [live, owner]);
+		const h = React.createElement;
+		const codeLabels = { copyLabel: "复制", copiedLabel: "已复制" };
+		let body;
+		if (!live && typeof props.snapshotHtml === "string") body = h(TavernFloorStaticHtml, { html: props.snapshotHtml });
+		else {
+			const floor = floorOf(state.view, storyTurn);
+			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
+				: typeof props.fallbackText === "string" ? h(TavernColoredMarkdown, { text: props.fallbackText, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels }) : null;
+			else if (live) body = renderTavernProjection(floor.projection, { sessionId: sessionId, turn: storyTurn, codeLabels: codeLabels,
+				helperContext: floor.helperContext, helperContextReader: function () { return liveTavernView.getSnapshot(sessionId).view?.tavernHelper; },
+				frameSizing: floor.frameSizing, trustedCardMode: floor.trustedCardMode, eagerFrame: props.eager === true, frameOwner: owner, executeSlash: executeSlash });
+			else body = floor.parts.map(function (part, index) {
+				return part.kind === "markdown"
+					? h(TavernColoredMarkdown, { key: index, text: String(part.text || ""), labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels })
+					: h(TavernFloorStaticHtml, { key: index, html: String(part.content !== undefined ? part.content : part.html || "") });
+			});
+		}
+		return h("div", { ref: props.containerRef, className: "dsh-tavern-assistant dsh-tavern-floor-body", "data-tavern-floor": String(storyTurn), "data-live": live || undefined }, body);
+	}
+
+	return Object.freeze({
+		/** The floor's projection, Helper context and run policy from the Tavern view. */
+		projectFloor: async function (sessionId, storyTurn) {
+			const turn = tavernStoryTurnArgument(storyTurn, "projectFloor");
+			return floorOf(await viewOf(tavernStorySessionArgument(sessionId, "projectFloor")), turn);
+		},
+		/** Extend Tavern's history window one page back, for floors still waiting for it. */
+		loadOlderProjections: async function (sessionId) {
+			const view = await viewOf(tavernStorySessionArgument(sessionId, "loadOlderProjections"));
+			if (!view.historyWindow) return false;
+			await requestOlderHistory(sessionId, view.historyWindow.from);
+			return true;
+		},
+		/** A player input's display template (by its native turn), unless the input was edited. */
+		readInputTemplate: async function (sessionId, inputTurn) {
+			const view = await viewOf(tavernStorySessionArgument(sessionId, "readInputTemplate"));
+			const key = String(Number(inputTurn) || 0);
+			if (typeof view.userInputEdits?.[key] === "string") return null;
+			const html = view.inputTemplateDisplays?.[key];
+			return typeof html === "string" && html !== "" ? html : null;
+		},
+		FloorBody: FloorBody,
+		StaticHtml: TavernFloorStaticHtml,
+		sanitizeHtml: function (html) { return sanitizeTavernFloorHtml(html, window.document); },
+		/**
+		 * Static HTML of what a floor shows now: its message frames through their bounded
+		 * snapshot channel, other parts from the page. Returns { html, truncated, frames, missed }.
+		 */
+		captureFloorSnapshot: async function (element, budget) {
+			if (!element || element.nodeType !== 1) throw new TypeError("captureFloorSnapshot 需要楼层容器或 iframe 元素");
+			const doc = element.ownerDocument;
+			const sources = element.tagName === "IFRAME" ? [element] : Array.from(element.children);
+			let html = "", truncated = false, frames = 0, missed = 0;
+			for (const node of sources) {
+				const frame = node.tagName === "IFRAME" ? node : node.querySelector && node.querySelector("iframe.dsh-tavern-message-frame:not([aria-hidden=\"true\"])");
+				let piece;
+				if (frame) {
+					const captured = await captureTavernFloorFrame(frame, budget);
+					if (captured) { frames += 1; piece = captured; }
+					else { missed += 1; continue; }
+				} else piece = captureTavernBoundedDom(node, budget);
+				const part = node.tagName === "IFRAME" ? piece.dom : "<div>" + piece.dom + "</div>";
+				if (html.length + part.length > TAVERN_FLOOR_SNAPSHOT_LIMIT) { truncated = true; break; }
+				html += part;
+				truncated = truncated || piece.truncated === true;
+			}
+			return { html: sanitizeTavernFloorHtml(html, doc), truncated: truncated, frames: frames, missed: missed };
+		}
+	});
+}
 
         // Offline estimate for comparing sections, not a tokenizer or a bill: a CJK character
         // is about 1.5 tokens, a Latin word piece of 4 letters or 3 digits about 1.
@@ -26430,6 +28078,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			window.__dshTavernLoaded = true;
 			ctx.effect(function () { return tavernTextLayoutFeature.register(ctx); }, "dsh-tavern: text layout in appearance settings");
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
+			ctx.effect(() => tavernStoryViewMode.start(), "dsh-tavern: story view mode setting");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
@@ -26451,6 +28100,8 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
 			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
+			// Fork contract C5/C7: the story-view plugin's service (docs/plugin-api-ui.md「故事视图契约」).
+			registerTavernStoryContract(ctx);
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
@@ -26644,6 +28295,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 		exports.TavernMessageFrame = TavernMessageFrame;
 		exports.TavernPersistentStatusRuntime = TavernPersistentStatusRuntime;
 		exports.createTavernMessageFrameLifecycle = createTavernMessageFrameLifecycle;
+		exports.createTavernFrameDiagnostics = createTavernFrameDiagnostics;
 		exports.createTavernScriptExecutionModule = createTavernScriptExecutionModule;
 		exports.createTavernScriptSessionOwner = createTavernScriptSessionOwner;
 		exports.createTavernSessionRetention = createTavernSessionRetention;
@@ -26733,6 +28385,12 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         exports.tavernModelRefusalNotice = tavernModelRefusalNotice;
         exports.renderTavernProjection = renderTavernProjection;
 		exports.latestTavernUserTurn = latestTavernUserTurn;
+		exports.liveTavernView = liveTavernView;
+		exports.tavernStoryViewMode = tavernStoryViewMode;
+		exports.createTavernStoryService = createTavernStoryService;
+		exports.tavernConversationForkRequests = tavernConversationForkRequests;
+		exports.createTavernStoryRender = createTavernStoryRender;
+		exports.playControlsFeature = playControlsFeature;
 		exports.createConversationLifecycleModule = createConversationLifecycleModule;
 		exports.createConversationHostAdapter = createConversationHostAdapter;
 		exports.createConversationPrewarmModule = createConversationPrewarmModule;
