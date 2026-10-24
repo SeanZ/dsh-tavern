@@ -17,9 +17,9 @@ function memoryLog() {
   })
 }
 
-function install(log, headers, pluginSettlementProgress) {
+function install(log, headers, pluginSettlementProgress, stageDirectorStream, emitted) {
   let stream
-  const game = { id: 'chat-game', mode: 'story', requestMode: 'dsh' }
+  const game = { id: 'chat-game', mode: 'story', requestMode: 'sillytavern' }
   const ctx = { on(name, fn) { if (name === 'llm/stream') stream = fn }, llm: {}, get() {}, logger: () => ({ warn() {} }) }
   registerModelStreamHooks({
     ctx, agentRegistry: { get: () => undefined },
@@ -28,12 +28,12 @@ function install(log, headers, pluginSettlementProgress) {
     chatForSession: async () => undefined,
     chatHeaderForSession: async id => id === 'session-game' ? game : undefined,
     foregroundStrategies: { projectRequest: () => null, completeRequest() {} },
-    fullTemplateRuntime: {}, modelRequestLog: log, pluginSettlementProgress, requestCoordinates: new Map(), str: value => typeof value === 'string' ? value : '',
-    sessionStateForSession: async () => null, updateChat: async () => {}, worldbookRecallLog: {}, runtimePrompt: () => '', storyRetention: async () => ({})
+    fullTemplateRuntime: {}, modelRequestLog: log, pluginSettlementProgress, stageDirectorStream, requestCoordinates: new Map([['session-game', { turn: 2, step: 1 }]]), str: value => typeof value === 'string' ? value : '',
+    sessionStateForSession: async () => null, updateChat: async () => {}, worldbookRecallLog: { requested: async () => {} }, runtimePrompt: () => '', storyRetention: async () => ({})
   })
   return async sessionId => {
     const chunks = []
-    for await (const chunk of stream({ sessionId, messages: [{ role: 'user', content: [{ type: 'text', text: '结算' }] }] }, async function * () { yield { type: 'text-delta', text: '好' }; yield { type: 'finish', reason: { kind: 'stop' } } })) chunks.push(chunk)
+    for await (const chunk of stream({ sessionId, messages: [{ role: 'user', content: [{ type: 'text', text: '结算' }] }] }, async function * () { if (emitted) yield * emitted(); else { yield { type: 'text-delta', text: '好' }; yield { type: 'finish', reason: { kind: 'stop' } } } })) chunks.push(chunk)
     return chunks
   }
 }
@@ -52,6 +52,26 @@ test('a plugin agent created under a game is logged as that game\'s background r
   assert.equal(found.turn, 7, 'filed under the game\'s latest turn')
   assert.equal(found.request.messages[0].content[0].text, '结算')
   assert.equal(await log.latestForSession('stray'), null, 'agents outside a game are not logged')
+})
+
+test('the real model-stream hook feeds only foreground story deltas and cancels a failed stream', async () => {
+  const seen = [], beginnings = []; let cancelled = 0
+  const stages = { async begin(...args) { beginnings.push(args); return { append: text => seen.push(text), cancel: () => cancelled++ } } }
+  const send = install(memoryLog(), {}, null, stages, async function * () {
+    yield { type: 'block-start', index: 0, blockType: 'reasoning' }
+    yield { type: 'text-delta', index: 0, text: 'Reasoning is not story.' }
+    yield { type: 'block-start', index: 1, blockType: 'text' }
+    yield { type: 'text-delta', index: 1, text: 'Story.\n' }
+    yield { type: 'finish', reason: { kind: 'error' } }
+  })
+  const chunks = await send('session-game')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(chunks.length, 5, 'the original foreground stream is not consumed or rewritten')
+  assert.deepEqual(beginnings, [['session-game', 2]])
+  assert.equal(seen.join(''), 'Story.\n')
+  assert.equal(cancelled, 1)
+  await send('unrelated')
+  assert.equal(beginnings.length, 1)
 })
 
 test('a plugin settlement reports which plugin is settling and whether its agent is producing output', async () => {

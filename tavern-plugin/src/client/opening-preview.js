@@ -63,6 +63,8 @@ function installOpeningPreviewBridge(token, preview) {
   window.generate = function (config) { return generation('generateTavernHelper', config); };
   window.generateRaw = function (config) { return generation('generateTavernHelperRaw', config); };
   window.getCharWorldbookNames = function () { return { primary: worldbook ? worldbook.name : null, additional: [] }; };
+  window.getGlobalWorldbookNames = function () { return []; };
+  window.getChatWorldbookName = function () { return null; };
   window.getWorldbook = async function (name) {
     if (preview.preparationId) {
       const result = await request('dsh-tavern-opening-read', {});
@@ -80,7 +82,7 @@ function installOpeningPreviewBridge(token, preview) {
     worldbook = copy(result.worldbook);
     return copy(worldbook.entries);
   };
-  window.TavernHelper = Object.assign({}, original && original.helper, { triggerSlash: window.triggerSlash, generate: window.generate, generateRaw: window.generateRaw, getCharWorldbookNames: window.getCharWorldbookNames,
+  window.TavernHelper = Object.assign({}, original && original.helper, { triggerSlash: window.triggerSlash, generate: window.generate, generateRaw: window.generateRaw, getCharWorldbookNames: window.getCharWorldbookNames, getGlobalWorldbookNames: window.getGlobalWorldbookNames, getChatWorldbookName: window.getChatWorldbookName,
     getWorldbook: window.getWorldbook, updateWorldbookWith: window.updateWorldbookWith });
   const chat = [{ is_user: false, name: preview.characterName || '', mes: swipes[selected], swipe_id: selected, swipes: swipes.slice() }];
   let savedIndex = selected;

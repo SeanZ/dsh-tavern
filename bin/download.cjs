@@ -10,6 +10,7 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
+const { inflateRawSync } = require('node:zlib')
 
 const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|android\/|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
 const EXCLUDED_PART = new Set(['.', '..', 'docs', 'tests', '__tests__', 'testsets'])
@@ -187,9 +188,50 @@ async function readManifest({ metadataUrl, exact, minVersion, stallMs, attempts,
   return best.metadata
 }
 
+// The files of a zip (stored or deflated, no ZIP64): the runtime archive CI publishes holds well
+// under 65535 entries and 4 GB.
+function unzipEntries(buffer) {
+  let end = -1
+  for (let at = buffer.length - 22; at >= Math.max(0, buffer.length - 65557); at--) if (buffer.readUInt32LE(at) === 0x06054b50) { end = at; break }
+  if (end < 0) throw failure('ARCHIVE', '压缩包结构损坏（找不到目录）')
+  const count = buffer.readUInt16LE(end + 10), offset = buffer.readUInt32LE(end + 16)
+  const entries = new Map()
+  let at = offset
+  for (let index = 0; index < count; index++) {
+    if (at + 46 > end || buffer.readUInt32LE(at) !== 0x02014b50) throw failure('ARCHIVE', '压缩包目录损坏')
+    const method = buffer.readUInt16LE(at + 10), compressed = buffer.readUInt32LE(at + 20), size = buffer.readUInt32LE(at + 24)
+    const nameLength = buffer.readUInt16LE(at + 28), local = buffer.readUInt32LE(at + 42)
+    const name = buffer.toString('utf8', at + 46, at + 46 + nameLength)
+    at += 46 + nameLength + buffer.readUInt16LE(at + 30) + buffer.readUInt16LE(at + 32)
+    if (name.endsWith('/')) continue
+    if (local + 30 > buffer.length || buffer.readUInt32LE(local) !== 0x04034b50) throw failure('ARCHIVE', `压缩包内容损坏：${name}`)
+    const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28)
+    const data = buffer.subarray(start, start + compressed)
+    const bytes = method === 0 ? data : method === 8 ? inflateRawSync(data) : null
+    if (!bytes || bytes.length !== size) throw failure('ARCHIVE', `压缩包内容损坏：${name}`)
+    entries.set(name, bytes)
+  }
+  return entries
+}
+
+// CI publishes the manifest's files as one zip at a pinned commit; one request instead of hundreds.
+function runtimeArchive(metadata) {
+  const archive = metadata?.archive
+  if (!archive || !/^[0-9a-f]{40}$/i.test(String(archive.commit || '')) || !/^[0-9a-f]{64}$/i.test(String(archive.sha256 || ''))
+    || !/^[A-Za-z0-9._-]+\.zip$/.test(String(archive.path || '')) || !Number.isSafeInteger(archive.size) || archive.size <= 0) return null
+  return archive
+}
+
+// Every jsDelivr node, starting with the one the installer named, for the immutable archive URL.
+function archiveUrls(rootUrl, archive) {
+  const first = new URL(`${rootUrl}@${archive.commit}/${archive.path}`)
+  if (!JSDELIVR_NODES.includes(first.hostname)) return [first.href]
+  return [first.hostname, ...JSDELIVR_NODES.filter(host => host !== first.hostname)].map(host => { const each = new URL(first); each.hostname = host; return each.href })
+}
+
 // Download the runtime files listed by a jsDelivr manifest into `destination`.
 // Files whose bytes already match in `installed` are reused instead of downloaded.
-async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, concurrency = 6, stallMs = 30000,
+async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, concurrency = 16, stallMs = 30000,
   budgetMs = 300000, attempts = 2, status = () => {}, fetch: request, targetCommit = '', minVersion = '', exactManifest = false } = {}) {
   const source = hostOf(rootUrl)
   const metadata = await readManifest({ metadataUrl, exact: exactManifest, minVersion, stallMs, attempts, fetch: request, status })
@@ -204,9 +246,27 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   const controller = new AbortController()
   const budget = AbortSignal.timeout(budgetMs)
   const signal = AbortSignal.any([controller.signal, budget])
-  let next = 0, done = 0, reused = 0, received = 0
-  const report = () => status(`下载代码（${source}）：${done}/${files.length} 文件，复用 ${reused}，已下载 ${(received / 1048576).toFixed(1)} MB`)
-  report()
+  const archive = runtimeArchive(metadata)
+  if (archive) {
+    try {
+      await extractRuntimeArchive({ archive, files, rootUrl, destination, stallMs, signal, fetch: request, status })
+      await fs.writeFile(path.join(destination, 'dsh-tavern-runtime.json'), `${JSON.stringify(metadata, null, 2)}\n`)
+      return metadata
+    } catch (error) {
+      if (budget.aborted) throw new Error(`备用源下载超过 ${duration(budgetMs)}，将切换备用方案`, { cause: error })
+      status(`代码压缩包不可用（${describeFailure(error)}），改为逐个文件下载…`)
+    }
+  }
+  let next = 0, done = 0, reused = 0, received = 0, reportedAt = 0
+  // A progress line every five seconds at most: the Windows installer appends each line to its log
+  // and echoes it, and a pipe it reads slower than we write stalls this process (and the download).
+  const report = (force = false) => {
+    const now = Date.now()
+    if (!force && now - reportedAt < 5000) return
+    reportedAt = now
+    status(`下载代码（${source}）：${done}/${files.length} 文件，复用 ${reused}，已下载 ${(received / 1048576).toFixed(1)} MB`)
+  }
+  report(true)
   const worker = async () => {
     while (next < files.length) {
       signal.throwIfAborted()
@@ -236,6 +296,7 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   }
   try {
     await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker))
+    report(true)
   } catch (error) {
     controller.abort()
     if (budget.aborted) throw new Error(`备用源下载超过 ${duration(budgetMs)}，将切换备用方案`, { cause: error })
@@ -243,6 +304,35 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   }
   await fs.writeFile(path.join(destination, 'dsh-tavern-runtime.json'), `${JSON.stringify(metadata, null, 2)}\n`)
   return metadata
+}
+
+// One zip, verified as a whole and then file by file against the manifest, before anything is written.
+async function extractRuntimeArchive({ archive, files, rootUrl, destination, stallMs, signal, fetch: request, status }) {
+  const urls = archiveUrls(rootUrl, archive)
+  let reportedAt = 0
+  const megabytes = bytes => (bytes / 1048576).toFixed(1)
+  status(`下载代码压缩包（${hostOf(urls[0])}）：0/${megabytes(archive.size)} MB`)
+  const { bytes, url } = await download(urls, { label: '代码压缩包', sha256: archive.sha256, size: archive.size, stallMs, signal, fetch: request,
+    onProgress: ({ host, received }) => {
+      const now = Date.now()
+      if (now - reportedAt < 5000) return
+      reportedAt = now
+      status(`下载代码压缩包（${host}）：${megabytes(received)}/${megabytes(archive.size)} MB`)
+    } })
+  status(`下载代码压缩包（${hostOf(url)}）：${megabytes(archive.size)}/${megabytes(archive.size)} MB，正在解压 ${files.length} 个文件…`)
+  const entries = unzipEntries(bytes)
+  const verified = files.map(file => {
+    const content = entries.get(file.path)
+    if (!content || createHash('sha256').update(content).digest('hex') !== file.sha256.toLowerCase()) throw failure('ARCHIVE', `压缩包与运行清单不一致：${file.path}`)
+    return { file, content }
+  })
+  for (const { file, content } of verified) {
+    signal.throwIfAborted()
+    const target = path.join(destination, ...file.path.split('/'))
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, content)
+  }
+  status(`代码已就绪：${files.length} 个文件`)
 }
 
 const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY']
@@ -360,7 +450,7 @@ async function main(argv) {
   throw new Error(`未知命令：${command || '(空)'}`)
 }
 
-module.exports = { download, downloadFile, downloadRuntime, readManifest, manifestCandidates, compareVersions, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
+module.exports = { download, downloadFile, downloadRuntime, unzipEntries, readManifest, manifestCandidates, compareVersions, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1 })

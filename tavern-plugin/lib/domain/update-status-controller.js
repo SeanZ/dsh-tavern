@@ -100,7 +100,7 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
   async function checkUpdate() {
     const status = statusValue;
     if (!active) return;
-    if (action.pending || isUpdateBusy(status) || ["restart-required", "installed-restart-required", "package-managed"].includes(status.phase)) return;
+    if (action.pending || isUpdateBusy(status) || ["restart-required", "installed-restart-required"].includes(status.phase)) return;
     action.pending = true;
     action.generation += 1;
     publishUpdateStatus({ ...status, phase: "checking", host: status.host || "cli", checkedAt: now(), error: "" });
@@ -127,9 +127,7 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
       const repairing = status.phase === "repair-required";
       if (!await confirm(repairing
         ? "将重新安装当前构建以修复上次未完成的更新，期间会短暂断开。人物卡、资料和对话数据会保留。\n确定修复安装吗？"
-        : status.packageManaged
-          ? "将用 DSH 的插件管理安装" + (status.latestVersion ? " v" + status.latestVersion : "最新版") + "，完成后需重启 DSH。人物卡、资料和对话数据不会受到影响。\n确定更新吗？"
-          : "更新期间会短暂断开，人物卡、资料和对话数据不会受到影响。\n确定更新到 GitHub 最新版吗？")) return;
+        : "更新期间会短暂断开，人物卡、资料和对话数据不会受到影响。\n确定更新到 GitHub 最新版吗？")) return;
       if (!active) return;
       startedAt = now();
       recovery = { sawOffline: false, reloading: false };

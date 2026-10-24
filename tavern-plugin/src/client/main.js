@@ -400,6 +400,18 @@ window.__ModuleLoader__.load({
 		}
 
 		function rpc(method, args, sessionId, requestOptions) {
+			// While DSH restarts (after an update) it accepts requests a moment before Tavern's
+			// routes and auth are mounted: they answer 404/401/5xx without running the handler.
+			// Wait that window out instead of reporting it; a lasting failure still surfaces.
+			const RESTART_STATUSES = [401, 404, 502, 503, 504];
+			async function fetchThroughRestart(url, request) {
+				const deadline = Date.now() + 8000;
+				for (let delay = 250; ; delay = Math.min(delay * 2, 2000)) {
+					const response = await fetch(url, request);
+					if (!RESTART_STATUSES.includes(response.status) || Date.now() + delay > deadline || request.signal?.aborted) return response;
+					await new Promise(function (resolve) { window.setTimeout(resolve, delay); });
+				}
+			}
 			const runtimeControl = ["claimTavernScriptWork", "startTavernScriptWork", "getTavernScriptWorkState", "heartbeatTavernScriptRuntime", "completeTavernHelperEvent", "releaseTavernHelperRuntime"].includes(method);
 			const controlChannel = runtimeControl && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
 			const started = Date.now();
@@ -437,7 +449,7 @@ window.__ModuleLoader__.load({
 			if (requestOptions && requestOptions.keepalive === true) request.keepalive = true;
 			const responsePromise = controlChannel
 				? Promise.resolve().then(() => controlChannel.control(method, JSON.parse(requestBody), requestOptions && requestOptions.signal))
-				: fetch("/api/dsh-tavern/" + method, request).then(async function (response) {
+				: fetchThroughRestart("/api/dsh-tavern/" + method, request).then(async function (response) {
                 if (trace) trace.headersMs = Math.round(performance.now() - clockStart);
                 const result = await readTavernJsonResponse(response, trace ? body => { trace.bodyChars = body.length; } : undefined);
                 if (trace) {
@@ -830,7 +842,18 @@ window.__ModuleLoader__.load({
 
 // @include features/cast-presentation.js
 
-// @include features/cast-stage.js
+// @include-domain cast-stage-state.js
+// @include-domain stage-performance-playback.js
+// @include-domain stage-skin.js
+// @include features/stage-skin.js
+// @include modules/stage-runtime.js
+// @include features/stage-runtime.js
+// @include features/stage-assets.js
+// @include features/stage-mode.js
+// @include features/stage-settings.js
+// @include modules/stage-music.js
+// @include modules/stage-bgm.js
+// @include features/stage-bgm.js
 
 // @include modules/story-view-mode.js
 // @include ui/message-frame.js
@@ -885,6 +908,7 @@ window.__ModuleLoader__.load({
 // @include features/story-render.js
 
 // @include features/request-context.js
+// @include features/polish-compare.js
 
 
 		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "betterSidebar", "remote", "remote.commands", "tavernSessionSignals", "theme"];
@@ -908,6 +932,10 @@ window.__ModuleLoader__.load({
                 name: "conversation.view", id: "dsh-tavern:gallery", order: 12,
                 label: "画廊", inject: sessionId => ({ gallerySessionId: sessionId })
             }, SceneImageGallery)), "dsh-tavern: picture gallery");
+            ctx.effect(() => slots.inject("conversation.view", () => slots.register({
+                name: "conversation.view", id: "dsh-tavern:polish", order: 13,
+                label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
+            }, PolishComparisonView)), "dsh-tavern: polish comparison");
 			// Public browser API for third-party plugins (docs/plugin-api.md).
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);
@@ -917,6 +945,8 @@ window.__ModuleLoader__.load({
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
 			tavernSessionSignals = signals;
+			ctx.effect(() => tavernStageRuntime.start(ctx.sessions), "dsh-tavern: session-owned stage runtime");
+			ctx.effect(() => startTavernBgm(ctx.sessions), "dsh-tavern: BGM player");
 			ctx.effect(function () { return function () { if (tavernSessionSignals === signals) tavernSessionSignals = undefined; }; }, "dsh-tavern: remote session signals");
 			ctx.effect(function () { return tavernRuntimeGenerationMonitor.start(); }, "dsh-tavern: runtime generation monitor");
 			function reconcileLibraryTabTitles() {

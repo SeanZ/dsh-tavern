@@ -77,8 +77,53 @@ $RuntimePaths = @(
   'tavern-plugin'
 )
 
-# Machine-readable progress for the Windows launcher; also useful in terminals.
-function Write-InstallStatus([string]$Message) { Write-Host ("DSH_STATUS " + $Message) }
+# A program reading the output (the in-app updater) gets the DSH_STATUS lines it parses; a person
+# at a console gets three numbered steps with one short line per update, and the details go to the
+# diagnostics log only.
+$FriendlyOutput = -not [Console]::IsOutputRedirected
+$InstallStarted = Get-Date
+$InstallSteps = @{ '下载代码' = 1; '安装依赖' = 2; '本地配置' = 3 }
+$script:CurrentInstallStep = 0
+function Write-InstallStatus([string]$Message) {
+  if (-not $FriendlyOutput) { Write-Host ("DSH_STATUS " + $Message); return }
+  $Stage = ($Message -split '[：（(，]', 2)[0]
+  if ($Stage -like '下载代码*' -or $Stage -like '下载源*' -or $Stage -like '代码*') { $Stage = '下载代码' }
+  $Number = $InstallSteps[$Stage]
+  if ($Number -and $Number -ne $script:CurrentInstallStep) {
+    $script:CurrentInstallStep = $Number
+    Write-Host ''
+    Write-Host ("[$Number/3] " + $Stage) -ForegroundColor Cyan
+  }
+  $Detail = if ($Message.StartsWith($Stage + '：')) { $Message.Substring($Stage.Length + 1) } else { $Message }
+  Write-Host ('      ' + $Detail)
+}
+
+# The first desktop install links the desktop profile to Tavern, which needs DeepSeek Harness
+# closed (later in-app updates rewrite the linked profile while it runs).
+function Test-DesktopLinked {
+  $Live = Join-Path $DshRoot 'profiles\desktop'
+  $Tavern = Join-Path $DshRoot 'profiles\tavern'
+  try {
+    $Item = Get-Item -LiteralPath $Live -Force -ErrorAction Stop
+    if (-not $Item.LinkType -or -not (Test-Path -LiteralPath $Tavern)) { return $false }
+    $Target = [string]@($Item.Target)[0]
+    if (-not [IO.Path]::IsPathRooted($Target)) { $Target = Join-Path (Split-Path -Parent $Live) $Target }
+    return [IO.Path]::GetFullPath($Target).TrimEnd('\') -ieq [IO.Path]::GetFullPath($Tavern).TrimEnd('\')
+  } catch { return $false }
+}
+# Close DeepSeek Harness for a first install, before minutes of downloads rather than at the end.
+# Returns whether it was running, so the installer reopens it when done.
+function Close-DesktopForFirstInstall {
+  if ($InstallHost -ne 'desktop' -or (Test-DesktopLinked)) { return $false }
+  if (-not @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue).Count) { return $false }
+  Write-InstallStatus '首次安装需要先退出 DeepSeek Harness，正在关闭（装完会自动重新打开）…'
+  Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | ForEach-Object { try { [void]$_.CloseMainWindow() } catch {} }
+  for ($Wait = 0; $Wait -lt 10 -and @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue).Count; $Wait++) { Start-Sleep -Seconds 1 }
+  Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+  if (@(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue).Count) { throw '无法自动关闭 DeepSeek Harness：请在任务栏右下角托盘图标上右键退出，再重新运行安装命令。' }
+  return $true
+}
 
 function Test-Command([string]$Name) {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
@@ -141,6 +186,7 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
+const { inflateRawSync } = require('node:zlib')
 
 const RUNTIME_PATH = /^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|cordis\.patch\.yml|install\.ps1|install\.sh|android\/|bin\/|config\/|presets\/|patches\/|tavern-plugin\/)/
 const EXCLUDED_PART = new Set(['.', '..', 'docs', 'tests', '__tests__', 'testsets'])
@@ -318,9 +364,50 @@ async function readManifest({ metadataUrl, exact, minVersion, stallMs, attempts,
   return best.metadata
 }
 
+// The files of a zip (stored or deflated, no ZIP64): the runtime archive CI publishes holds well
+// under 65535 entries and 4 GB.
+function unzipEntries(buffer) {
+  let end = -1
+  for (let at = buffer.length - 22; at >= Math.max(0, buffer.length - 65557); at--) if (buffer.readUInt32LE(at) === 0x06054b50) { end = at; break }
+  if (end < 0) throw failure('ARCHIVE', '压缩包结构损坏（找不到目录）')
+  const count = buffer.readUInt16LE(end + 10), offset = buffer.readUInt32LE(end + 16)
+  const entries = new Map()
+  let at = offset
+  for (let index = 0; index < count; index++) {
+    if (at + 46 > end || buffer.readUInt32LE(at) !== 0x02014b50) throw failure('ARCHIVE', '压缩包目录损坏')
+    const method = buffer.readUInt16LE(at + 10), compressed = buffer.readUInt32LE(at + 20), size = buffer.readUInt32LE(at + 24)
+    const nameLength = buffer.readUInt16LE(at + 28), local = buffer.readUInt32LE(at + 42)
+    const name = buffer.toString('utf8', at + 46, at + 46 + nameLength)
+    at += 46 + nameLength + buffer.readUInt16LE(at + 30) + buffer.readUInt16LE(at + 32)
+    if (name.endsWith('/')) continue
+    if (local + 30 > buffer.length || buffer.readUInt32LE(local) !== 0x04034b50) throw failure('ARCHIVE', `压缩包内容损坏：${name}`)
+    const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28)
+    const data = buffer.subarray(start, start + compressed)
+    const bytes = method === 0 ? data : method === 8 ? inflateRawSync(data) : null
+    if (!bytes || bytes.length !== size) throw failure('ARCHIVE', `压缩包内容损坏：${name}`)
+    entries.set(name, bytes)
+  }
+  return entries
+}
+
+// CI publishes the manifest's files as one zip at a pinned commit; one request instead of hundreds.
+function runtimeArchive(metadata) {
+  const archive = metadata?.archive
+  if (!archive || !/^[0-9a-f]{40}$/i.test(String(archive.commit || '')) || !/^[0-9a-f]{64}$/i.test(String(archive.sha256 || ''))
+    || !/^[A-Za-z0-9._-]+\.zip$/.test(String(archive.path || '')) || !Number.isSafeInteger(archive.size) || archive.size <= 0) return null
+  return archive
+}
+
+// Every jsDelivr node, starting with the one the installer named, for the immutable archive URL.
+function archiveUrls(rootUrl, archive) {
+  const first = new URL(`${rootUrl}@${archive.commit}/${archive.path}`)
+  if (!JSDELIVR_NODES.includes(first.hostname)) return [first.href]
+  return [first.hostname, ...JSDELIVR_NODES.filter(host => host !== first.hostname)].map(host => { const each = new URL(first); each.hostname = host; return each.href })
+}
+
 // Download the runtime files listed by a jsDelivr manifest into `destination`.
 // Files whose bytes already match in `installed` are reused instead of downloaded.
-async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, concurrency = 6, stallMs = 30000,
+async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, concurrency = 16, stallMs = 30000,
   budgetMs = 300000, attempts = 2, status = () => {}, fetch: request, targetCommit = '', minVersion = '', exactManifest = false } = {}) {
   const source = hostOf(rootUrl)
   const metadata = await readManifest({ metadataUrl, exact: exactManifest, minVersion, stallMs, attempts, fetch: request, status })
@@ -335,9 +422,27 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   const controller = new AbortController()
   const budget = AbortSignal.timeout(budgetMs)
   const signal = AbortSignal.any([controller.signal, budget])
-  let next = 0, done = 0, reused = 0, received = 0
-  const report = () => status(`下载代码（${source}）：${done}/${files.length} 文件，复用 ${reused}，已下载 ${(received / 1048576).toFixed(1)} MB`)
-  report()
+  const archive = runtimeArchive(metadata)
+  if (archive) {
+    try {
+      await extractRuntimeArchive({ archive, files, rootUrl, destination, stallMs, signal, fetch: request, status })
+      await fs.writeFile(path.join(destination, 'dsh-tavern-runtime.json'), `${JSON.stringify(metadata, null, 2)}\n`)
+      return metadata
+    } catch (error) {
+      if (budget.aborted) throw new Error(`备用源下载超过 ${duration(budgetMs)}，将切换备用方案`, { cause: error })
+      status(`代码压缩包不可用（${describeFailure(error)}），改为逐个文件下载…`)
+    }
+  }
+  let next = 0, done = 0, reused = 0, received = 0, reportedAt = 0
+  // A progress line every five seconds at most: the Windows installer appends each line to its log
+  // and echoes it, and a pipe it reads slower than we write stalls this process (and the download).
+  const report = (force = false) => {
+    const now = Date.now()
+    if (!force && now - reportedAt < 5000) return
+    reportedAt = now
+    status(`下载代码（${source}）：${done}/${files.length} 文件，复用 ${reused}，已下载 ${(received / 1048576).toFixed(1)} MB`)
+  }
+  report(true)
   const worker = async () => {
     while (next < files.length) {
       signal.throwIfAborted()
@@ -367,6 +472,7 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   }
   try {
     await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker))
+    report(true)
   } catch (error) {
     controller.abort()
     if (budget.aborted) throw new Error(`备用源下载超过 ${duration(budgetMs)}，将切换备用方案`, { cause: error })
@@ -374,6 +480,35 @@ async function downloadRuntime({ metadataUrl, rootUrl, destination, installed, c
   }
   await fs.writeFile(path.join(destination, 'dsh-tavern-runtime.json'), `${JSON.stringify(metadata, null, 2)}\n`)
   return metadata
+}
+
+// One zip, verified as a whole and then file by file against the manifest, before anything is written.
+async function extractRuntimeArchive({ archive, files, rootUrl, destination, stallMs, signal, fetch: request, status }) {
+  const urls = archiveUrls(rootUrl, archive)
+  let reportedAt = 0
+  const megabytes = bytes => (bytes / 1048576).toFixed(1)
+  status(`下载代码压缩包（${hostOf(urls[0])}）：0/${megabytes(archive.size)} MB`)
+  const { bytes, url } = await download(urls, { label: '代码压缩包', sha256: archive.sha256, size: archive.size, stallMs, signal, fetch: request,
+    onProgress: ({ host, received }) => {
+      const now = Date.now()
+      if (now - reportedAt < 5000) return
+      reportedAt = now
+      status(`下载代码压缩包（${host}）：${megabytes(received)}/${megabytes(archive.size)} MB`)
+    } })
+  status(`下载代码压缩包（${hostOf(url)}）：${megabytes(archive.size)}/${megabytes(archive.size)} MB，正在解压 ${files.length} 个文件…`)
+  const entries = unzipEntries(bytes)
+  const verified = files.map(file => {
+    const content = entries.get(file.path)
+    if (!content || createHash('sha256').update(content).digest('hex') !== file.sha256.toLowerCase()) throw failure('ARCHIVE', `压缩包与运行清单不一致：${file.path}`)
+    return { file, content }
+  })
+  for (const { file, content } of verified) {
+    signal.throwIfAborted()
+    const target = path.join(destination, ...file.path.split('/'))
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, content)
+  }
+  status(`代码已就绪：${files.length} 个文件`)
 }
 
 const PROXY_KEYS = ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY']
@@ -491,7 +626,7 @@ async function main(argv) {
   throw new Error(`未知命令：${command || '(空)'}`)
 }
 
-module.exports = { download, downloadFile, downloadRuntime, readManifest, manifestCandidates, compareVersions, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
+module.exports = { download, downloadFile, downloadRuntime, unzipEntries, readManifest, manifestCandidates, compareVersions, describeFailure, runtimeFiles, proxyEnvironment, applyProxyEnvironment, DownloadError, RUNTIME_PATH }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1 })
@@ -920,7 +1055,21 @@ try {
       $DesktopCandidates += @(Get-Process -Name $DesktopName -ErrorAction SilentlyContinue | ForEach-Object { $_.Path })
     }
     $OfficialDesktopExecutable = $DesktopCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
-    if (-not $OfficialDesktopExecutable) { throw '请先安装官方 DeepSeek Harness（https://deepseek.com/harness/）（装在其他位置时，可用 DSH_DESKTOP_APP_EXECUTABLE 指定程序路径）' }
+    if (-not $OfficialDesktopExecutable) {
+      # A community app installed instead of the official one gets told where its installer is.
+      $CommunityDesktop = @('DSH NEXT', 'DSH Desktop') | Where-Object {
+        $Name = $_
+        (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA ('Programs\' + $Name + '\' + $Name + '.exe'))) -or
+        ($env:ProgramFiles -and (Test-Path -LiteralPath (Join-Path $env:ProgramFiles ($Name + '\' + $Name + '.exe')))) -or
+        @(Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like ($Name + '*') }).Count -gt 0 -or
+        @(Get-Process -Name $Name -ErrorAction SilentlyContinue).Count -gt 0
+      } | Select-Object -First 1
+      if ($CommunityDesktop) { throw ('检测到社区版 ' + $CommunityDesktop + '，当前版本只支持官方 DeepSeek Harness（https://deepseek.com/harness/）。继续用社区版请改用稳定版的安装命令：https://github.com/flizzywine/dsh-tavern/blob/stable/README.md') }
+      throw '请先安装官方 DeepSeek Harness（https://deepseek.com/harness/）（装在其他位置时，可用 DSH_DESKTOP_APP_EXECUTABLE 指定程序路径）'
+    }
+    $FirstDesktopInstall = -not (Test-DesktopLinked)
+    $ReopenDesktop = Close-DesktopForFirstInstall
     New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
     $OfficialDesktopModuleSource = @'
 // Bootstrap for official DeepSeek Harness only. Electron reads packaged app.asar files.
@@ -975,7 +1124,7 @@ function layout(executable, platform = process.platform) {
 function prepare({ executable, home, env = process.env, platform = process.platform }) {
   if (!executable || !home) throw Error('请先安装官方 DeepSeek Harness，并指定安装目录');
   const paths = layout(executable, platform);
-  if (paths.name !== OFFICIAL) throw Error('桌面版仅支持官方 DeepSeek Harness，不支持社区 DSH Desktop / DSH NEXT：' + executable
+  if (paths.name !== OFFICIAL) throw Error('桌面版仅支持官方 DeepSeek Harness：' + executable
     + '（读到的应用包名：' + (paths.name || '无法读取') + '，应用目录：' + paths.app + '）');
   const bootstrap = paths.bootstrap;
   for (const file of [bootstrap, paths.pnpm]) if (!exists(file)) throw Error('桌面运行时不完整：' + file);
@@ -1096,7 +1245,7 @@ if (require.main === module) {
     $ErrorActionPreference = 'Continue'
     foreach ($ProxyLine in @(& node (Get-DownloadModule) proxy-env 2>$null)) {
       if ([string]$ProxyLine -match '^([A-Z_]+)=(.*)$') { $AddedProxyNames += $Matches[1]; Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] }
-      elseif ([string]$ProxyLine -like 'DSH_STATUS *') { Write-Host $ProxyLine }
+      elseif ([string]$ProxyLine -like 'DSH_STATUS *') { Write-InstallStatus ([string]$ProxyLine).Substring(11) }
     }
   } catch { Write-Warning "无法读取系统代理设置：$($_.Exception.Message)" }
   finally { $ErrorActionPreference = $PreviousPreference }
@@ -1199,16 +1348,27 @@ try {
     $PreviousPreference = $ErrorActionPreference
     $Code = 1
     $InvocationError = ''
+    # At a console these steps show only their progress, every few seconds; everything else is logged.
+    $Quiet = $FriendlyOutput -and $Step -in @('source.files', 'dependencies.install', 'dependencies.relink', 'profile.install')
+    $PackageLabel = if ($Step -eq 'profile.install') { '本地配置' } else { '安装依赖' }
+    $ShownAt = [DateTime]::MinValue
     try {
       $ErrorActionPreference = 'Continue'
       & $Command @CommandArgs 2>&1 | ForEach-Object {
         $Line = [string]$_
         if ($_ -is [System.Management.Automation.ErrorRecord]) {
           [IO.File]::AppendAllText($ErrorFile, "$Line`n")
-          Write-Host $Line
+          if (-not $Quiet) { Write-Host $Line }
         } else {
           [IO.File]::AppendAllText($OutputFile, "$Line`n")
-          if (-not $CaptureOutput) { Write-Host $Line }
+          if ($FriendlyOutput -and $Line -like 'DSH_STATUS *') { Write-InstallStatus $Line.Substring(11) }
+          elseif ($Quiet) {
+            if ($Line -match '^Progress: resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)' -and ($Line -like '*, done*' -or ([DateTime]::Now - $ShownAt).TotalSeconds -ge 5)) {
+              $ShownAt = [DateTime]::Now
+              Write-InstallStatus ("$PackageLabel：已就绪 $($Matches[4])/$($Matches[1]) 个包（本地复用 $($Matches[2])，新下载 $($Matches[3])）")
+            }
+          }
+          elseif (-not $CaptureOutput) { Write-Host $Line }
         }
       }
       $Code = $LASTEXITCODE
@@ -1221,12 +1381,15 @@ try {
     $Event = if ($Code -eq 0) { 'installer.stage.succeeded' } else { 'installer.stage.failed' }
     Write-UpdateLog $Event $Step ([string]$Code) ([string]$Started) $OutputFile
     if ($Code -ne 0) {
-      throw "步骤 $Step 失败（退出码 $Code）。`n$Combined`n诊断日志：$UpdateLogRoot/update-diagnostics.jsonl"
+      # The output was shown as it ran and is in the diagnostics log: name the reason once.
+      if ($CaptureOutput) { throw "步骤 $Step 失败（退出码 $Code）。`n$Combined" }
+      $Reason = @($Combined -split "`r?`n" | Where-Object { $_.Trim() -and $_ -notmatch '^INSTALLATION_PROCESS_FAILED|^DSH_STATUS ' }) | Select-Object -Last 1
+      throw ("步骤 $Step 失败（退出码 $Code）" + $(if ($Reason) { "：$($Reason.Trim())" } else { '。' }))
     }
     if ($CaptureOutput) { return $Stdout.Trim() }
   }
   Write-UpdateLog 'installer.started' 'bootstrap'
-  Write-Host "更新诊断日志：$UpdateLogRoot/update-diagnostics.jsonl"
+  if (-not $FriendlyOutput) { Write-Host "更新诊断日志：$UpdateLogRoot/update-diagnostics.jsonl" }
   $ArchivePath = Join-Path $TempDir 'app.zip'
   $ExtractDir = Join-Path $TempDir 'extract'
   $UsedGit = $false
@@ -1249,7 +1412,7 @@ try {
       Write-Warning ("Git 增量更新失败，正在尝试 jsDelivr 备用源：" + $_.Exception.Message)
     }
   }
-  if ($null -eq $GitCommand) { Write-UpdateLog 'installer.stage.failed' 'git.unavailable' '127'; Write-Warning '未找到 Git，正在尝试备用源。' }
+  if ($null -eq $GitCommand) { Write-UpdateLog 'installer.stage.failed' 'git.unavailable' '127'; if ($FriendlyOutput) { Write-InstallStatus '下载代码：未安装 Git，改用 jsDelivr 下载' } else { Write-Warning '未找到 Git，正在尝试备用源。' } }
   if (-not $UsedGit) {
     try {
       Write-InstallStatus '下载代码：正在连接 jsDelivr 备用源…'
@@ -1370,7 +1533,7 @@ try {
     & node $Stager prepare --app $AppDir --source $SourceDir.FullName --commit $TargetCommit | Out-Null
     Assert-LastCommand '准备新版本失败，当前版本未改动。'
     Write-InstallStatus '安装依赖：正在连接软件包仓库，已有缓存将直接复用…'
-    Invoke-InstallCommand 'dependencies.install' $PnpmCommand @('--dir', "$AppDir.staging", 'install', '--frozen-lockfile', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000')
+    Invoke-InstallCommand 'dependencies.install' $PnpmCommand @('--dir', "$AppDir.staging", 'install', '--frozen-lockfile', '--config.minimum-release-age=0', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000')
 
     if (Test-Path $OldLauncher) {
       $PreviousApp = $true
@@ -1383,9 +1546,10 @@ try {
     & node $Stager swap --app $AppDir
     Assert-LastCommand ('切换新版本失败，已恢复原版本。安装目录可能被占用：请关闭位于 ' + $AppDir + ' 中的终端、资源管理器窗口或编辑器后重试。')
     # Re-link in place: Windows junctions and pnpm metadata record absolute paths.
-    Invoke-InstallCommand 'dependencies.relink' $PnpmCommand @('--dir', $AppDir, 'install', '--offline', '--frozen-lockfile', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000') -TimeoutMs 300000
+    Invoke-InstallCommand 'dependencies.relink' $PnpmCommand @('--dir', $AppDir, 'install', '--offline', '--frozen-lockfile', '--config.minimum-release-age=0', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000') -TimeoutMs 300000
 
     Write-InstallStatus '本地配置：正在注册 Tavern 并检查兼容性…'
+    if (Close-DesktopForFirstInstall) { $ReopenDesktop = $true }
     Invoke-InstallCommand 'profile.install' 'node' @((Join-Path $AppDir 'bin\dsh-tavern.mjs'), 'install', '--host', $InstallHost) -TimeoutMs 1200000
     & node $Stager commit --app $AppDir
     $AppSwapped = $false
@@ -1419,14 +1583,21 @@ try {
     }
 
     Write-InstallStatus '安装依赖：正在连接软件包仓库，已有缓存将直接复用…'
-    Invoke-InstallCommand 'dependencies.install' $PnpmCommand @('--dir', $AppDir, 'install', '--frozen-lockfile', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000')
+    Invoke-InstallCommand 'dependencies.install' $PnpmCommand @('--dir', $AppDir, 'install', '--frozen-lockfile', '--config.minimum-release-age=0', '--reporter=append-only', '--fetch-timeout=30000', '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000')
 
     Write-InstallStatus '本地配置：正在注册 Tavern 并检查兼容性…'
+    if (Close-DesktopForFirstInstall) { $ReopenDesktop = $true }
     Invoke-InstallCommand 'profile.install' 'node' @((Join-Path $AppDir 'bin\dsh-tavern.mjs'), 'install', '--host', $InstallHost) -TimeoutMs 1200000
   }
   if ($InstallHost -eq 'desktop') {
-    Write-Host 'DSH Tavern Desktop 版安装完成。'
-    Write-Host '请重启官方 DeepSeek Harness，酒馆已安装到独立 tavern 配置；原版 desktop 已备份，可在设置 → Profile 切换中切换。'
+    $Elapsed = (Get-Date) - $InstallStarted
+    Write-Host ''
+    Write-Host ('DSH Tavern 安装完成，用时 ' + [int][math]::Floor($Elapsed.TotalMinutes) + ' 分 ' + $Elapsed.Seconds + ' 秒。') -ForegroundColor Green
+    Write-Host '酒馆装在独立的 tavern 配置里；原来的 desktop 配置已备份，可在设置 → Profile 切换中切回。'
+    if (($FirstDesktopInstall -or $ReopenDesktop) -and -not @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue).Count -and $OfficialDesktopExecutable) {
+      Write-Host '正在打开 DeepSeek Harness…'
+      Start-Process -FilePath $OfficialDesktopExecutable
+    } else { Write-Host '请重启官方 DeepSeek Harness 进入酒馆。' }
   }
   else {
     if ($env:DSH_TAVERN_DEFER_SERVICE_START -ne '1') {

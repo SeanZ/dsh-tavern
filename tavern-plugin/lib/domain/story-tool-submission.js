@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
 import { createSessionSurfaceMutator } from './session-surface-mutations.js'
+import { producerSource } from './message-source.js'
+import { isTurnInput } from './session-turn-input.js'
 import { toolResultsOf } from './tool-result-message.js'
 
 export const STORY_SUBMIT_TOOL_NAME = 'submit_story'
 export const STORY_SUBMIT_PROMPT = [
   '<output_method>',
-  '本轮最终正文必须调用 submit_story 工具，完整放入 content 字符串参数，不要直接输出正文或重复复述。',
-  '可以先使用已开放的历史查询、剧本读取或联网搜索；submit_story 必须是本轮最后一次工具调用。',
-  '正文中的所有原有标签、格式和内容要求保持不变；提交成功即结束本轮，无需再输出任何消息。',
+  '本轮所有面向玩家的输出都必须通过工具调用完成：最终输出必须调用 submit_story，完整放入 content 字符串参数。',
+  '除已开放的其他工具调用外，不要输出任何普通文本、摘要、说明或收尾语；写在 content 之外的文字会被丢弃。',
+  '可以先使用已开放的其他工具查询资料；submit_story 必须是本轮最后一次工具调用。',
+  '每轮只调用一次 submit_story；content 必须包含完整最终输出，保留全部标签、格式和内容要求，不要省略、缩写或用占位符代替。',
+  '提交成功即结束本轮，不要再输出任何消息。',
+  '请按上述规则完成本轮；最后必须调用 submit_story 提交全部输出，不要先输出普通文本。',
   '</output_method>'
 ].join('\n')
 
@@ -16,13 +21,63 @@ export const STORY_SUBMIT_PROMPT = [
 // the request cannot serve.
 export const STORY_SUBMIT_PROMPT_STRICT = [
   '<output_method>',
-  '本轮最终正文必须直接调用 submit_story 工具，完整放入 content 字符串参数。',
-  '不要调用任何其他工具，也不要先查询资料；submit_story 是本轮唯一允许的工具调用，提交成功即结束本轮。',
-  '正文中的所有原有标签、格式和内容要求保持不变。',
+  '本轮所有面向玩家的输出都必须通过 submit_story 工具完成，完整放入 content 字符串参数。',
+  '不要调用任何其他工具，也不要先查询资料；submit_story 是本轮唯一允许的工具调用。',
+  '除 submit_story 调用外，不要输出任何普通文本、摘要、说明或收尾语；写在 content 之外的文字会被丢弃。',
+  '每轮只调用一次 submit_story；content 必须包含完整最终输出，保留全部标签、格式和内容要求，不要省略、缩写或用占位符代替。',
+  '提交成功即结束本轮，不要再输出任何消息。',
+  '现在直接生成完整输出并调用 submit_story 提交，不要先输出普通文本，也不要调用其他工具。',
   '</output_method>'
 ].join('\n')
 
-/** A global switch (Tavern settings); it applies to story and script play only. */
+// Input-only: the tool is declared solely so the replayed history's calls name a
+// tool the provider knows about. It is not this turn's output channel.
+export const STORY_INPUT_ONLY_PROMPT = [
+  '<output_method>',
+  '历史里的 submit_story 调用只是过去正文的记录，不是本轮的提交要求。',
+  '本轮请直接输出正文，不要调用 submit_story。',
+  '</output_method>'
+].join('\n')
+
+// A real assistant turn before the input, not a trailing prefill: the model
+// sees its own accepted commitment, while the request still ends on the player's
+// message. Request-only; never written to the save.
+export const STORY_SUBMIT_ACK_TEXT = '收到。本轮所有面向玩家的输出都通过工具调用完成，最终输出放入 submit_story 的 content，不直接输出普通文本。'
+
+export function withStorySubmitAck(messages, turn) {
+  if (!Array.isArray(messages)) return messages
+  let inputIndex = -1
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (isTurnInput(messages[index])) { inputIndex = index; break }
+  }
+  // No room before the input (or it is the very first message): leave the
+  // request alone rather than making the provider start on an assistant turn.
+  if (inputIndex <= 0) return messages
+  const ack = {
+    id: 'tavern-submit-ack:' + (Number(turn) || 0),
+    role: 'assistant',
+    source: producerSource('dsh-tavern', { form: 'submit-ack' }),
+    content: [{ type: 'text', text: STORY_SUBMIT_ACK_TEXT }]
+  }
+  return [...messages.slice(0, inputIndex), ack, ...messages.slice(inputIndex)]
+}
+
+// Appended after third-party sections so the last instruction in the system
+// prompt is still the submission contract, regardless of how long they are.
+export const STORY_SUBMIT_REMINDER = [
+  '<output_method_reminder>',
+  '最后提醒：本轮所有面向玩家输出的唯一出口是 submit_story；最终输出必须放入 content，不要输出普通文本，也不要重复上面的确认。',
+  '</output_method_reminder>'
+].join('\n')
+
+export function appendStorySubmissionReminder(assembly, outputEnabled) {
+  if (outputEnabled !== true) return assembly
+  const sections = Array.isArray(assembly?.sections) ? assembly.sections : []
+  if (!sections.some(section => section.name === 'tavern:story-tool-submission')) return assembly
+  return { ...assembly, sections: [...sections, { name: 'tavern:story-tool-submission-reminder', text: STORY_SUBMIT_REMINDER }] }
+}
+
+/** A Tavern settings switch; it applies to story and script play only. */
 export function storyToolCallEnabled(chat, enabled) {
   return enabled === true && !!chat && (!chat.mode || chat.mode === 'story' || chat.mode === 'script')
 }
@@ -137,8 +192,8 @@ export function activeStoryTurn(session) {
 export function createStorySubmissionTool({ chatForSession, enabled, isBackground = () => false }) {
   return {
     name: STORY_SUBMIT_TOOL_NAME,
-    description: '提交本轮完整最终正文。全部正文放入 content；成功后结束本轮，不再补充回复。',
-    parameters: { content: { type: 'string', required: true, description: '完整正文，保留原有格式和标签' } },
+    description: '提交本轮全部最终输出，是所有面向玩家文本的唯一出口。全部输出放入 content，不要省略；成功后结束本轮，不再补充回复。',
+    parameters: { content: { type: 'string', required: true, description: '完整最终输出，必须包含全部内容并保留原有格式和标签，不要省略或改写' } },
     output: { schema: { type: 'string' }, render(_args, value) { return [{ type: 'text', text: value }] } },
     isConcurrencySafe() { return false },
     async execute(args, exec) {
@@ -147,7 +202,7 @@ export function createStorySubmissionTool({ chatForSession, enabled, isBackgroun
       const sessionId = session?.id || ''
       if (!sessionId || isBackground(sessionId)) throw new Error('正文提交只用于前台游玩回合')
       const chat = await chatForSession(sessionId)
-      if (!storyToolCallEnabled(chat, await enabled())) throw new Error('未开启正文走工具调用')
+      if (!storyToolCallEnabled(chat, await enabled())) throw new Error('未开启输入或输出走工具调用')
       const turn = activeStoryTurn(session)
       if (turn === null) throw new Error('当前没有正在生成的游玩回合')
       const content = validContent(args?.content)
@@ -155,7 +210,7 @@ export function createStorySubmissionTool({ chatForSession, enabled, isBackgroun
       // The same body twice is the model repeating itself after a lost receipt;
       // returning it again is harmless and keeps the round from failing.
       if (previous && previous.content !== content) throw new Error('本轮已提交正文，不允许重复覆盖')
-      if (typeof exec.concludeTurn !== 'function') throw new Error('当前 DSH 版本不支持工具提交后结束回合，请关闭正文走工具调用或更新 DSH')
+      if (typeof exec.concludeTurn !== 'function') throw new Error('当前 DSH 版本不支持工具提交后结束回合，请关闭输出走工具调用或更新 DSH')
       exec.signal?.throwIfAborted()
       exec.concludeTurn()
       return content

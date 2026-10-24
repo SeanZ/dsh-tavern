@@ -80,7 +80,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
 }
 
 /** Edit prose only; do not replay macros, scripts or settlement. */
-export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative, cancelPreparation }) {
+export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative, cancelPreparation, beforeReplyEdit }) {
   const pending = new Set()
   function refuseClosedPatch() {
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
@@ -155,7 +155,7 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     const { chat, message, parts } = await context(sessionId)
     return { token: token(chat, message), turn: message.turn, parts: parts.map(part => part.kind === 'text' ? part : { kind: part.kind }) }
   }
-  async function save(sessionId, input) {
+  async function saveText(sessionId, input) {
     if (pending.has(sessionId)) throw new Error('正在保存正文，请稍候')
     pending.add(sessionId)
     try {
@@ -201,6 +201,13 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       else await repairNative(sessionId, agent.session)
       return present(saved)
     } finally { pending.delete(sessionId) }
+  }
+  // What hangs on the shown text version (dialogue speakers) follows the edit once it is saved.
+  async function save(sessionId, input) {
+    const carry = typeof beforeReplyEdit === 'function' ? await beforeReplyEdit(sessionId) : null
+    const saved = await saveText(sessionId, input)
+    if (carry) await carry()
+    return saved
   }
   // A player input is a floor too: the model surface gets a replacement
   // user/message, while the Chat keeps the new text so the page can render it.

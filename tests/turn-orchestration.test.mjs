@@ -95,6 +95,7 @@ function harness(mode, options = {}) {
   }
   const orchestrator = createTurnOrchestrator({
     storyToolCall: async () => options.storyToolCall === true,
+    storyInputToolCall: async () => options.storyInputToolCall === true,
     store,
     planner: {
       async plan(input) {
@@ -355,6 +356,12 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
   const oneNames = await one.orchestrator.visibleTools('session-1')
   assert.equal(oneNames.includes('worldbook_search'), false)
   assert.equal(oneNames.includes('submit_story'), true)
+
+  // 仅输入回放时也要声明 submit_story，否则历史里回放的调用没有对应工具。
+  const inputOnly = harness('story', { storyInputToolCall: true })
+  assert.equal((await inputOnly.orchestrator.visibleTools('session-1')).includes('submit_story'), true)
+  const off = harness('story')
+  assert.equal((await off.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
   const submitOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['submit_story'] } })
   assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), false)

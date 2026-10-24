@@ -330,11 +330,11 @@ ctx.tavernUi.registerTurnView({
 
 ## `getStage(gameId, { count? })`、`watchStage(gameId, listener)`（第 2 版）
 
-舞台要显示的东西：`{ enabled, player, card, background, characters, turns }`。`background` 是人物卡带的主背景图地址，没有时为空字符串。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, text, lines }`，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`characters` 同宿主侧 `getCastAssets`；`enabled` 是玩家是否打开了「对话头像」。`watchStage` 先回调一次，之后在新的一轮、新的标注、素材变化后再回调，只在这一局在当前页面打开时有效。
+舞台要显示的东西：`{ enabled, player, card, background, music, stage, characters, turns }`。`stage` 是导演持续状态 `{ figures: [{ speaker, emotion }], background: string | null, music: string | null }`，背景和音乐的状态值是素材名称，省略增量保持原状，明确清空才消失。外层 `background` 是导演选定背景的已解析地址，未选择或缺失时为空字符串；外层 `music` 是 `{ name, url } | null`，只读投影，不授予写入或自动播放权限。`turns` 是最近 `count` 轮（默认 5，最多 10）的 `{ turn, key, text, lines, pages, performances }`，`key` 绑定正文版本，`text` 是去掉 HTML 块的正文，`lines` 同宿主侧 `getCast`；`pages` 是宿主按非空行编号的 `{at,text,kind,speaker?,emotion?,quotes?}`，`performances` 是该轮已接纳的页级一次性事件（见[舞台设计](design/cast-presentation.md)），不属于持续 `stage`，读取不等于播放；`characters` 同宿主侧 `getCastAssets`；`enabled` 是人物卡的舞台开关。`watchStage` 先回调一次，之后在新的一轮、新的标注、导演提交、素材变化后再回调，只在这一局在当前页面打开时有效。人物/表情、背景、音乐来自已接受的导演事务；台词标注不再推导舞台状态。
 
 ## `registerStageView({ id, label, render })`（第 2 版）
 
-换掉舞台的画面：右侧栏的「舞台」页和「全屏舞台」都会用它。Tavern 保留阅读流程（逐句翻页、自动播放、读到最后一句时的输入框），插件只画场景，例如加背景、镜头、Live2D、特效。
+换掉舞台的画面：只有全屏舞台使用它。Tavern 保留阅读流程（逐句翻页、自动播放、读到最后一句时的输入框），插件只画场景，例如加背景、镜头、Live2D、特效。
 
 ```js
 ctx.tavernUi.registerStageView({
@@ -355,15 +355,15 @@ ctx.tavernUi.registerStageView({
 | `stage` | 同 `getStage` 的返回值 |
 | `beats` | 最新一轮拆成的「句」：`{ kind: 'line', text, speaker, emotion, turn }`（标注过的台词所在的一行）或 `{ kind: 'narration', text, turn }`（旁白段落） |
 | `index`、`beat` | 当前读到第几句、这一句 |
-| `fullscreen` | 是否在全屏舞台里 |
+| `fullscreen` | 固定为 true（仅保留全屏舞台） |
 | `advance()` | 翻到下一句，点击场景时调用 |
 | `footer` | Tavern 的翻页、自动、退出按钮，请放进插件自己的文字框里 |
 
-- 注册后舞台默认用插件的画面；舞台页顶部出现「舞台样式」选择，玩家可以选回内置，这台浏览器记住选择。插件卸载后回到内置舞台。
-- `render` 返回 `null` 或出错时用内置画面，错误写进错误提示。只想换全屏、不换右侧栏时，对 `fullscreen === false` 返回 `null`。
+- 注册后舞台默认用插件的画面；「舞台设置」出现「舞台样式」选择，玩家可以选回内置，这台浏览器记住选择。插件卸载后回到内置舞台。
+- `render` 返回 `null` 或出错时用内置画面，错误写进错误提示。
 - 全屏时读到最后一句，Tavern 会在底部 88px 内显示输入框；插件的画面请把这块空出来，别把文字框放在那里。
-- 舞台入口只在玩家打开「对话头像」后出现。
-- 完整示例见 [`examples/tavern-plugin-director`](../examples/tavern-plugin-director/)：宿主侧用结算任务做「导演」，每轮定下地点、时间和气氛；浏览器侧按它画舞台。
+- 舞台入口只在「舞台设置」里「对话气泡」和「舞台模式」都开着时出现。
+- 内置独立导演负责舞台数据，插件视图只呈现宿主投影，不再附带第二个导演示例；流式前缀与最终正文共用阅读来源，刷新不重播演出。见[角色演出](design/cast-presentation.md)。
 
 ## `speak({ gameId, speaker?, text, emotion?, narration? })`、`stopSpeech()`（第 2 版）
 
@@ -371,7 +371,7 @@ ctx.tavernUi.registerStageView({
 
 ## `playMusic(url | { url, title?, volume? })`、`stopMusic()`（第 2 版）
 
-背景音乐由 Tavern 播放：同一时间一首、循环；传入同一个地址时接着放，换地址时淡入新曲，传空字符串或调 `stopMusic()` 时淡出。玩家在舞台上方的「♪ 音乐」开关决定听不听得到（记在这个浏览器里），所有卡的音乐都受这一个开关管。离开这一局（切换、删除对话）或这一局不再显示舞台时，Tavern 会停掉音乐；插件换局后要重新调 `playMusic`。`volume` 为 0–1，默认 0.45。
+背景音乐由 Tavern 播放：同一时间一首、循环；传入同一个地址时接着放，换地址时淡入新曲，传空字符串或调 `stopMusic()` 时淡出。玩家在全屏舞台控制栏的「♪ 音乐」开关决定听不听得到（记在这个浏览器里），所有卡的音乐都受这一个开关管。离开这一局（切换、删除对话）或这一局不再显示舞台时，Tavern 会停掉音乐；插件换局后要重新调 `playMusic`。`volume` 为 0–1，默认 0.45。
 
 ## 故事视图契约（本 fork）
 
@@ -379,7 +379,7 @@ ctx.tavernUi.registerStageView({
 
 ### 故事视图模式：关闭 Tavern 的聊天行渲染（C4）
 
-全局设置 `storyViewMode`（默认关闭）开启后，在主视图为故事或剧本会话时，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮，也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、侧栏页签照常。输入框 dock 只保留插件按钮与「更多」里的停止后台、撤销撤回与压缩；候选项一组（「生成候选项」按钮、「下一步行动」与「重新生成候选项」面板）不再显示，与故事视图楼层操作、输入框状态条重复的入口也不再显示：「重新生成正文」按钮与面板（`dsh-tavern-regen` 不注册）、失败轮「重新生成本轮」「撤回这条输入」、编辑正文面板，以及「更多」里的编辑正文、回退本轮、恢复全部错误提示。关闭时与上游完全一致。
+全局设置 `storyViewMode`（默认关闭）开启后，在主视图为故事或剧本会话时，Tavern 不再注册 `conversation.chat.node` 的 `user` / `assistant-step` 行渲染器和 `conversation.chat.assistant-actions` 的分叉、配图按钮（上游新增的每轮「回退到这一轮」按钮也不显示），也不再监听回复揭示；聊天视图回到宿主原生渲染，留作审计视图。依附聊天行的会话级工作随之停止：撤回/错误行的两个 DOM 投影按聊天行挂载数为 0 不建观察器，聊天行的卡片 iframe 与保留帧不再创建。人物卡脚本运行时、状态栏、侧栏页签照常。输入框 dock 只保留插件按钮与「更多」里的停止后台、撤销撤回与压缩；候选项一组（「生成候选项」按钮、「下一步行动」与「重新生成候选项」面板）不再显示，与故事视图楼层操作、输入框状态条重复的入口也不再显示：「重新生成正文」按钮与面板（`dsh-tavern-regen` 不注册）、失败轮「重新生成本轮」「撤回这条输入」、编辑正文面板，以及「更多」里的编辑正文、回退本轮、恢复全部错误提示。关闭时与上游完全一致。
 
 - 读改：`getTavernSettings` / `updateTavernSettings({ patch: { storyViewMode } })`。变更立即生效，不用刷新；其他标签页经本地缓存同步。
 - 本机缓存上次读到的开关值；只有已确认属于游玩组的会话才接管。未知模式保留 Tavern 界面，确认后再切换。

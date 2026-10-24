@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 
-import { createStorySubmissionTool, storySubmissionForTurn } from "../tavern-plugin/lib/domain/story-tool-submission.js"
+import { appendStorySubmissionReminder, createStorySubmissionTool, STORY_SUBMIT_ACK_TEXT, storySubmissionForTurn, withStorySubmitAck } from "../tavern-plugin/lib/domain/story-tool-submission.js"
 import { assistantResultForTurn } from '../tavern-plugin/lib/domain/session-turn-result.js'
 
 function fixture(content = '<game>正文\\引号"\n新行</game>', { error = false, result = content, turn = 2 } = {}) {
@@ -64,6 +64,39 @@ test('提交回执的正文取自调用参数，宿主改写回执也认', () =>
 
 test('报错的回执仍不算提交', () => {
   assert.equal(storySubmissionForTurn(fixture('她推开门。', { error: true }), 2), null)
+})
+
+test('真实 assistant 确认插在当前输入之前，输入仍在最后', () => {
+  const messages = [
+    { role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: '开场' }] },
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '第一次' }] },
+    { role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: '上一轮正文' }] },
+    { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '第二次' }] }
+  ]
+  const acknowledged = withStorySubmitAck(messages, 3)
+  assert.equal(acknowledged.length, 5)
+  assert.equal(acknowledged[3].role, 'assistant')
+  assert.equal(acknowledged[3].source.kind, 'plugin:dsh-tavern')
+  assert.equal(acknowledged[3].source.form, 'submit-ack')
+  assert.equal(acknowledged[3].content[0].text, STORY_SUBMIT_ACK_TEXT)
+  assert.equal(acknowledged[4], messages[3], '玩家输入仍在最后')
+  const onlyInput = [messages[3]]
+  assert.equal(withStorySubmitAck(onlyInput, 1), onlyInput, '输入是第一条时不插')
+})
+
+test('输出走工具调用时在插件 sections 之后补最后提醒', () => {
+  const assembly = { sections: [
+    { name: 'tavern:story-tool-submission', text: 'rules' },
+    { name: 'plugin:one', text: 'third-party' }
+  ] }
+  const withReminder = appendStorySubmissionReminder(assembly, true)
+  assert.deepEqual(withReminder.sections.map(section => section.name),
+    ['tavern:story-tool-submission', 'plugin:one', 'tavern:story-tool-submission-reminder'])
+  assert.match(withReminder.sections.at(-1).text, /唯一出口是 submit_story/)
+  assert.match(withReminder.sections.at(-1).text, /不要重复上面的确认/)
+  assert.equal(appendStorySubmissionReminder(assembly, false), assembly, '输入回放不加提交提醒')
+  assert.equal(appendStorySubmissionReminder({ sections: [{ name: 'plugin:one' }] }, true).sections.length, 1,
+    '本局关闭提交工具时没有提醒可加')
 })
 
 const server = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')

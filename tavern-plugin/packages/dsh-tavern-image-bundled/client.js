@@ -3086,8 +3086,8 @@ function versionsOf(jobId) {
           h('div', { style: S.card },
             h('div', { style: S.row },
               h('label', { style: S.row },
-                h('input', { type: 'checkbox', disabled: config.imageEnabled === false, checked: config.plannerEnabled !== false, onChange: e => save({ plannerEnabled: e.target.checked }) }),
-                h('span', { style: { fontSize: '13px' } }, '每轮自动规划配图（前台只写正文）'),
+                h('input', { type: 'checkbox', disabled: config.imageEnabled === false, checked: config.plannerEnabled !== false, onChange: e => save({ plannerEnabled: e.target.checked, ...(e.target.checked ? { autoImageGen: false } : {}) }) }),
+                h('span', { style: { fontSize: '13px' } }, '① 每轮自动规划配图　（插件另请模型写提示词，边解析边提交）'),
               ),
             ),
             h('div', { style: S.row },
@@ -3100,6 +3100,12 @@ function versionsOf(jobId) {
               h('label', { style: S.row },
                 h('input', { type: 'checkbox', checked: config.characterAutoUpdate !== false, disabled: Number(config.tavernApi?.apiVersion) < 2, onChange: e => save({ characterAutoUpdate: e.target.checked }) }),
                 h('span', { style: { fontSize: '13px', opacity: Number(config.tavernApi?.apiVersion) < 2 ? .65 : 1 } }, Number(config.tavernApi?.apiVersion) < 2 ? '自动记录明确的永久外貌变化（需要 Tavern API v2）' : '自动记录明确的永久外貌变化'),
+              ),
+            ),
+            h('div', { style: S.row },
+              h('label', { style: S.row },
+                h('input', { type: 'checkbox', checked: config.autoImageGen === true, onChange: e => save({ autoImageGen: e.target.checked, ...(e.target.checked ? { plannerEnabled: false } : {}) }) }),
+                h('span', { style: { fontSize: '13px' } }, '② 自动生图规则　（前台模型自己写提示词，省一次调用，正文写完才出图）'),
               ),
             ),
             h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 2fr)', gap: '8px 12px', marginTop: '14px' } },
@@ -5236,7 +5242,12 @@ function versionsOf(jobId) {
         const pv = String(config[providerKey] || '')
         const md = String(config[modelKey] || '')
         const ef = String(config[effortKey] || '')
-        const models = (llmModels[pv] || []).filter(m => !onlyVision || m.vision)
+        const allModels = llmModels[pv] || []
+        const visionModels = allModels.filter(m => m.vision)
+        // 看图模型只列能看图的；但如果这个服务商一个都没标记（比如 opencode 渠道没有
+        // inputModalities 里的 image），不能因此变成空下拉 —— 退回全部并提示。
+        const noVisionMarked = Boolean(onlyVision) && Boolean(pv) && allModels.length > 0 && visionModels.length === 0
+        const models = !onlyVision ? allModels : (visionModels.length ? visionModels : allModels)
         const reason = llmReasoning[pv + '/' + md]
         const optStyle = {}
         const set = (patch) => setData(current => Object.assign({}, current, { config: Object.assign({}, current?.config || {}, patch) }))
@@ -5261,6 +5272,9 @@ function versionsOf(jobId) {
               models.map(m => h('option', { key: m.id, value: m.id, style: optStyle }, m.name + (onlyVision && m.vision ? '　👁' : ''))),
               md && !models.some(m => m.id === md) ? h('option', { value: md, style: optStyle }, md + '（当前值）') : null,
             ),
+              noVisionMarked ? h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } },
+                '「' + pv + '」没有标记支持看图的模型，这里列出它的全部模型；能不能读图取决于该服务商是否真的支持图像输入。'
+              ) : null,
             h('select', {
               'aria-label': label + ' 推理等级', title: '推理等级', value: ef, style: select(),
               onChange: e => { set({ [effortKey]: e.target.value }); save({ [effortKey]: e.target.value }) },

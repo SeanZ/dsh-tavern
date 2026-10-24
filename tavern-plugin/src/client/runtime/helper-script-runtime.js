@@ -23,8 +23,8 @@
 			const pendingMutationSessions = new Map();
 			const closedEventIds = new Set();
 			const closedEventOrder = [];
-			const structuralMutationMethods = new Set(["updateTavernHelperPrompts", "updateTavernHelperMessages", "createTavernHelperMessages", "replaceTavernHelperWorldbook", "saveTavernExtensionSettings", "saveTavernWorldInfo", "saveTavernChatData"]);
-			const allowedMethods = new Set(["getTavernHelperContext", "generateTavernHelper", "generateTavernHelperRaw", "stopTavernHelperGeneration", "stopAllTavernHelperGeneration", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "createTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook", "saveTavernExtensionSettings", "loadTavernWorldInfo", "saveTavernWorldInfo", "saveTavernChatData"]);
+			const structuralMutationMethods = new Set(["updateTavernHelperPrompts", "updateTavernHelperMessages", "createTavernHelperMessages", "replaceTavernHelperWorldbook", "patchTavernHelperWorldbook", "saveTavernExtensionSettings", "saveTavernWorldInfo", "saveTavernChatData"]);
+			const allowedMethods = new Set(["getTavernHelperContext", "generateTavernHelper", "generateTavernHelperRaw", "stopTavernHelperGeneration", "stopAllTavernHelperGeneration", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "createTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook", "patchTavernHelperWorldbook", "saveTavernExtensionSettings", "loadTavernWorldInfo", "saveTavernWorldInfo", "saveTavernChatData"]);
 			let activeSessionId = "";
 			let root = null;
 			let previous = null;
@@ -875,7 +875,7 @@
 						syncMvuDataReadiness(record);
 					}
 					post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: true, result: result });
-					if ((data.method === "updateTavernHelperPrompts" || data.method === "updateTavernHelperVariables" || data.method === "updateTavernHelperMessages" || data.method === "createTavernHelperMessages" || data.method === "replaceTavernHelperWorldbook" || data.method === "saveTavernExtensionSettings" || data.method === "saveTavernWorldInfo" || data.method === "saveTavernChatData") && result && !result.transactional && result.updated !== false && result.stale !== true && records.get(record.id) === record) reportMutation(record.sessionId, data.method, result.contextDelta ? Object.assign({}, result, { context: record.context }) : result);
+					if ((data.method === "updateTavernHelperPrompts" || data.method === "updateTavernHelperVariables" || data.method === "updateTavernHelperMessages" || data.method === "createTavernHelperMessages" || data.method === "replaceTavernHelperWorldbook" || data.method === "patchTavernHelperWorldbook" || data.method === "saveTavernExtensionSettings" || data.method === "saveTavernWorldInfo" || data.method === "saveTavernChatData") && result && !result.transactional && result.updated !== false && result.stale !== true && records.get(record.id) === record) reportMutation(record.sessionId, data.method, result.contextDelta ? Object.assign({}, result, { context: record.context }) : result);
 				}, function (error) {
 					post(record, { type: "dsh-tavern-helper-response", requestId: data.requestId, ok: false, error: String(error && error.message || error), errorCode: String(error && error.code || "") });
 				});

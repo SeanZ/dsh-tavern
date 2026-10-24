@@ -20,8 +20,11 @@ import {
   replaceTavernHelperVariables
 } from './tavern-helper-context.js'
 import {
+  patchTavernHelperWorldbookEntries,
   projectTavernHelperWorldbook,
-  replaceTavernHelperWorldbookOperations
+  replaceTavernHelperWorldbookOperations,
+  tavernHelperWorldbookChanges,
+  tavernHelperWorldbookVersion
 } from './tavern-helper-worldbook.js'
 
 // The fast template patch lost its revision race to another write: worth retrying.
@@ -44,6 +47,9 @@ export function createTavernScriptHostAdapter(options = {}) {
   const syncTemplateState = createFullPromptTemplateSync()
   const templateCharacters = createJsonValueProjectionCache({ capacity: 8, maxBytes: 64 * 1024 * 1024 })
   const mutationTails = new Map()
+  // A library book reaches the game's view of it a little after a write. Until the game's
+  // save moves past the revision the write started from, reads and writes start from what was written.
+  const writtenWorldbooks = new Map()
   const settlement = createMvuSettlementTransactions({
     resolveChat, resolveSettlementBase: options.resolveSettlementBase,
     resolveChatSlice: options.resolveChatSlice, resolveChangedChatSlice: options.resolveChangedChatSlice,
@@ -289,6 +295,10 @@ export function createTavernScriptHostAdapter(options = {}) {
     if (name !== '' && name !== 'current' && name !== str(record.view.displayName)) {
       throw new Error('当前兼容层只能访问人物卡绑定的世界书: ' + name)
     }
+    const written = writtenWorldbooks.get(str(sessionId))
+    if (written === undefined) return { chat, record }
+    if (written.key === worldbookKey(record) && Number(chat._storageRevision) <= written.revision) return { chat, record: written.record }
+    writtenWorldbooks.delete(str(sessionId))
     return { chat, record }
   }
 
@@ -301,26 +311,57 @@ export function createTavernScriptHostAdapter(options = {}) {
     finally { if (mutationTails.get(key) === current) mutationTails.delete(key) }
   }
 
-  async function getWorldbook(sessionId, name, template = false) {
-    const resolved = await worldbookRecord(sessionId, name, template, undefined, true)
-    return { worldbook: projectTavernHelperWorldbook(resolved.record.view) }
+  // The book's own entries as scripts see them; plugin entries the game adds per turn are not part of it.
+  function scriptWorldbookVersion(record) {
+    return tavernHelperWorldbookVersion(projectTavernHelperWorldbook({ entries: record.view.entries.filter(entry => !entry.plugin) }).entries)
   }
 
-  async function replaceWorldbook(sessionId, name, entries, expectedEntries, template = false) {
+  async function getWorldbook(sessionId, name, template = false, knownVersion) {
+    const resolved = await worldbookRecord(sessionId, name, template, undefined, true)
+    const version = scriptWorldbookVersion(resolved.record)
+    const worldbook = projectTavernHelperWorldbook(resolved.record.view)
+    // A script that already holds this version keeps its copy; a large book is not sent again.
+    if (knownVersion !== undefined && knownVersion === version) return { worldbook: { name: worldbook.name, version, unchanged: true } }
+    return { worldbook: { ...worldbook, version } }
+  }
+
+  async function writeWorldbook(sessionId, name, template, requestedFrom) {
     const initial = await worldbookRecord(sessionId, name, template)
     return await serializeWorldbook(worldbookKey(initial.record), async function () {
       const resolved = await worldbookRecord(sessionId, name, template)
       if (worldbookKey(resolved.record) !== worldbookKey(initial.record)) throw new Error('世界书绑定已变化，请重新读取后重试')
-      if (expectedEntries !== undefined && JSON.stringify(projectTavernHelperWorldbook(resolved.record.view).entries) !== JSON.stringify(expectedEntries)) {
-        throw new Error('世界书已被其他操作修改，请重新读取后重试')
-      }
+      const before = projectTavernHelperWorldbook(resolved.record.view).entries
+      const entries = requestedFrom(before, scriptWorldbookVersion(resolved.record))
       const operations = replaceTavernHelperWorldbookOperations(resolved.record.view, entries)
       if (settlement.has(sessionId) && operations.length > 0) throw new Error('MVU 结算事务不能修改跨存储的世界书')
       const updated = operations.length === 0
         ? resolved.record
-        : await observeResourceSave(resourceSaveSummary('worldbook', resolved.record.localChatId ? 'session' : resolved.record.source.kind === 'card' ? 'card' : 'worldbook', projectTavernHelperWorldbook(resolved.record.view).entries, entries), () => updateBoundWorldbook(resolved, { operations }), summary => options.recordResourceSave?.(sessionId, summary))
-      return { updated: operations.length > 0, worldbook: projectTavernHelperWorldbook(updated.view) }
+        : await observeResourceSave(resourceSaveSummary('worldbook', resolved.record.localChatId ? 'session' : resolved.record.source.kind === 'card' ? 'card' : 'worldbook', before, entries), () => updateBoundWorldbook(resolved, { operations }), summary => options.recordResourceSave?.(sessionId, summary))
+      // A saved book comes back without the plugin entries the game adds on top; keep them as a read shows them.
+      const plugins = updated === resolved.record ? [] : resolved.record.view.entries.filter(entry => entry.plugin)
+      const version = scriptWorldbookVersion(updated)
+      const revision = Number(resolved.chat?._storageRevision)
+      if (operations.length > 0 && Number.isFinite(revision)) writtenWorldbooks.set(str(sessionId), { key: worldbookKey(updated), revision, record: { ...updated, view: { ...updated.view, entries: [...updated.view.entries, ...plugins] } } })
+      return { updated: operations.length > 0, before, version, worldbook: projectTavernHelperWorldbook({ ...updated.view, entries: [...updated.view.entries, ...plugins] }) }
     })
+  }
+
+  async function replaceWorldbook(sessionId, name, entries, expectedEntries, template = false) {
+    const result = await writeWorldbook(sessionId, name, template, function (before) {
+      if (expectedEntries !== undefined && JSON.stringify(before) !== JSON.stringify(expectedEntries)) throw new Error('世界书已被其他操作修改，请重新读取后重试')
+      return entries
+    })
+    return { updated: result.updated, worldbook: result.worldbook }
+  }
+
+  /** Write only the changed entries; the version read earlier stands in for the whole expected book. */
+  async function patchWorldbook(sessionId, name, patch, template = false) {
+    const result = await writeWorldbook(sessionId, name, template, function (before, version) {
+      if (version !== str(patch && patch.version)) throw new Error('世界书已被其他操作修改，请重新读取后重试')
+      return patchTavernHelperWorldbookEntries(before, patch)
+    })
+    const after = result.worldbook.entries
+    return { updated: result.updated, worldbook: { name: result.worldbook.name, version: result.version, ...tavernHelperWorldbookChanges(result.before, after) } }
   }
 
   async function updateBoundWorldbook(resolved, request, nativeDocument) {
@@ -633,6 +674,7 @@ export function createTavernScriptHostAdapter(options = {}) {
     createMessages,
     getWorldbook,
     replaceWorldbook,
+    patchWorldbook,
     readFullPromptTemplateState,
     saveFullPromptTemplateState,
     saveFullPromptTemplateSettings,

@@ -1,7 +1,7 @@
-// Build 大肥鱼.dshcard from the Galgame fork's card bundle (docs/design/dsh-card-format.md):
+// Build 大肥鱼.source.dshcard (the raw source for compress.mjs) from the Galgame fork's card bundle (docs/design/dsh-card-format.md):
 // the card, its four asset packs as they are, and the galgame card plugin in ./plugin.
 //
-//   node examples/dafeiyu-card/build.mjs dafeiyu.card-bundle.zip 大肥鱼.dshcard
+//   node examples/dafeiyu-card/build.mjs dafeiyu.card-bundle.zip 大肥鱼.source.dshcard
 //
 // The bundle is the fork's release attachment:
 // https://github.com/jerryzmtz/dsh-tavern-galgame/releases/latest/download/dafeiyu.card-bundle.zip
@@ -69,7 +69,6 @@ entries.push({ path: 'dsh.json', content: JSON.stringify({
   plugins: [{ name: JSON.parse(await readFile(path.join(pluginDir, 'package.json'), 'utf8')).name, path: 'plugins/galgame/', purpose: '每轮导演舞台：换场景、时段、服装和背景音乐，在舞台上显示' }],
   // A new game starts with the stage-friendly preset and settlement on; no status bar, no web search.
   defaults: {
-    stage: true,
     preset: { path: 'presets/dafeiyu-stage.json', title: '大肥鱼 · 舞台演出' },
     settings: { statusBarPlacement: 'sidebar', backgroundTasks: { posture: true, variables: true }, webSearch: false, sceneImages: false }
   },

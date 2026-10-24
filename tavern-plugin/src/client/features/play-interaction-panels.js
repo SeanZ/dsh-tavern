@@ -137,6 +137,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 							return h("button", { key: text, type: "button", className: "dsh-tavern-regen-example", onClick: function () { addExample(text); } }, text);
 						})),
 						h("button", { type: "button", className: "dsh-tavern-regen-cancel", onClick: props.onCancel }, "取消"),
+						props.secondary ? h("button", { type: "button", className: "dsh-tavern-regen-cancel", title: props.secondary.title, disabled: props.secondary.disabled, onClick: props.secondary.onClick }, props.secondary.label) : null,
 						h("button", { type: "button", className: "dsh-tavern-question-primary dsh-tavern-regen-submit", onClick: props.onSubmit }, props.submitLabel)
 					)
 				);
@@ -157,6 +158,16 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const [guidance, setGuidance] = React.useState(function () { return interactions.guidance(props.sessionId); });
 			const [restyle, setRestyle] = React.useState(false);
 			const [styleGuidance, setStyleGuidance] = React.useState("");
+			const [reviewing, setReviewing] = React.useState(false);
+			const [reviewNote, setReviewNote] = React.useState("");
+			const [reviewSeconds, setReviewSeconds] = React.useState(0);
+			React.useEffect(() => {
+				if (!reviewing) return undefined;
+				const started = Date.now();
+				setReviewSeconds(0);
+				const timer = setInterval(() => setReviewSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+				return () => clearInterval(timer);
+			}, [reviewing]);
             React.useEffect(() => { setRestyle(false); setStyleGuidance(""); }, [props.sessionId]);
 			const styleState = useLiveTavernView(props.sessionId, "regen-style");
 			const styleEnabled = styleState.view?.styleReferenceEnabled === true;
@@ -167,19 +178,39 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             function generate() {
                 return interactions.regenerateBody(panel, guidance, { restyle: styleEnabled && restyle, styleGuidance });
             }
+            // 精修: like a regeneration, the panel waits and closes once the polished reply is in;
+            // the comparison and its undo live on the 精修对比 page.
+            async function runPolish() {
+                setReviewing(true); setReviewNote("");
+                try {
+                    const result = await rpc("polishBody", { guidance }, props.sessionId);
+                    const skipped = result.edits.filter(edit => edit.status !== "ok").length;
+                    if (result.guidance) { setGuidance(result.guidance); setReviewNote("审稿没有按格式输出修改清单，内容已填进意见框，可以按意见重新生成"); }
+                    else if (!result.view) setReviewNote(skipped ? "审稿给出的 " + skipped + " 条修改都没在正文里找到原文，正文没有改动" : "审稿没有发现需要修改的地方");
+                    else {
+                        liveTavernView.setView(props.sessionId, result.view);
+                        notifyTavernDataChanged(["sessions"], "play-controls");
+                        tavernCoordination.invalidate(props.sessionId);
+                        window.dispatchEvent(new CustomEvent("dsh-tavern-polished", { detail: { sessionId: props.sessionId } }));
+                        setRegenPanel(null);
+                    }
+                } catch (error) { setReviewNote("精修失败：" + String(error?.message || error)); }
+                finally { setReviewing(false); }
+            }
 			return h(RegenGuideForm, {
 				title: "重新生成正文",
-				hint: "不填意见是重新来一次；填了意见就在当前正文基础上改",
-				loading: panel.phase === "loading" ? (panel.restyle ? "正在换文风联想并重新生成…" : panel.rewrite ? "正在按意见改写正文…" : "正在重新生成正文…") : "",
-				extra: styleEnabled ? h("div", { className: "dsh-tavern-regen-style" },
+				hint: "不填意见是重新来一次；填了意见就在当前正文基础上改；精修：按原则直接改好（填了意见会一并照意见改），对比和撤销在「精修对比」页",
+				loading: reviewing ? "正在精修正文… " + reviewSeconds + " 秒" : panel.phase === "loading" ? (panel.restyle ? "正在换文风联想并重新生成…" : panel.rewrite ? "正在按意见改写正文…" : "正在重新生成正文…") : "",
+				extra: h(React.Fragment, null, styleEnabled ? h("div", { className: "dsh-tavern-regen-style" },
 					h("label", null, h("input", { type: "checkbox", checked: restyle, onChange: event => setRestyle(event.target.checked) }), " 同时换一段文风联想"),
-					restyle ? h("input", { className: "dsh-tavern-regen-input", value: styleGuidance, maxLength: 500, placeholder: "换参考的要求（可选），例如：要金庸的打斗描写", onChange: event => setStyleGuidance(event.target.value) }) : null) : null,
-				error: panel.error,
+					restyle ? h("input", { className: "dsh-tavern-regen-input", value: styleGuidance, maxLength: 500, placeholder: "换参考的要求（可选），例如：要金庸的打斗描写", onChange: event => setStyleGuidance(event.target.value) }) : null) : null),
+				error: panel.error || reviewNote,
 				value: guidance,
 				onChange: setGuidance,
 				placeholder: "指导意见（可选）",
 				examples: ["写得更长", "侧重心理描写", "加快节奏"],
 				submitLabel: "生成并替换正文",
+				secondary: { label: "精修", title: "按「正文精修原则」审读当前正文，直接改掉问题（一句到整段），填了指导意见会优先照意见改；不重新生成；前后对比与撤销在顶部「精修对比」页", disabled: reviewing, onClick: runPolish },
 				onSubmit: generate,
 				onCancel: function () { setRegenPanel(null); }
 			});

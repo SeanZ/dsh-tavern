@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { pluginInstallation, appearance } from './introduction.mjs'
+import { appearance } from './introduction.mjs'
 
 // Plugin developer docs have one source in docs/; the site renders it as is.
 const REPO = 'https://github.com/flizzywine/dsh-tavern/blob/main/'
@@ -282,8 +282,7 @@ export const overview = {
 
 ## 去哪找插件
 
-- [Discord 交流群](https://discord.gg/hYAEjKnpra)：作者发布和讨论插件的地方，插件最全。
-- [讨论区的 Show and tell](https://github.com/flizzywine/dsh-tavern/discussions/categories/show-and-tell)
+- [Discord 交流群](https://discord.gg/hYAEjKnpra)：作者在这里分享和讨论插件。
 
 ## 自己写插件
 
@@ -319,8 +318,7 @@ export const overview = {
 `,
 }
 
-export const extraPages = [{ id: "local-settings", title: "本局设置", group: "play", intro: "在游玩顶部调整当前游戏，已有对话与变量保留。", content: "## 本局设置：只调整正在玩的这局\n\n入口在游玩顶部“本局设置”，打开后显示在右侧。大多数选项修改后自动保存，玩家称呼在离开输入框后保存；留意保存反馈。已有对话和变量保留。\n\n| 分组 | 设置 | 用途与生效范围 |\n| --- | --- | --- |\n| 游玩 | 玩家称呼 | 修改后用于后续内容，不重写已有正文 |\n| 游玩 | 当前预设 | 为本局选择外部预设，或不使用外部预设；影响后续正文 |\n| 游玩 | 长期偏好 | 选择已确认长期偏好或不使用长期偏好，下一轮生效；可展开核对本局实际内容，库中有更新时可应用最新版本 |\n| 游玩 | 状态栏位置 | 状态栏显示在侧边栏或正文下方 |\n| 模型 | 后台模型与推理强度 | 选择独立模型或跟随前台；下一次后台任务生效，正在执行的任务不变 |\n| 模型 | 生图 Agent 模型 | 整理插图画面、写绘图提示词用的模型；默认跟随前台（此时用最低推理强度，出图更快），也可单独选模型和推理强度；下一次生图生效 |\n| 功能 | 变量结算 | 只在 MVU 卡显示；控制后台 MVU 更新，关闭后变量和状态栏不再更新 |\n| 功能 | 人物姿势 | 每轮总结人物位置、动作和姿势，供前台保持一致，不在界面显示 |\n| 功能 | 联网搜索 | 允许本局前后台按需查外部资料，后续请求生效 |\n| 高级（默认折叠） | 写作 Skill | 控制本局后续可加载的写作方法，不删除已经加载到历史中的内容 |\n| 高级（默认折叠） | 插件 | 本局用到的第三方插件：按局开关、选择由谁负责结算、调整结算任务先后、查看最近错误 |\n\n切换预设、长期偏好、模型、推理强度或相关任务与工具配置可能使提示词缓存失效，首次请求会增加耗时和费用。无需为了每轮剧情频繁改设置；临时写作要求可以使用 [Guide](#b09)。\n\n" },
-  { id: 'plugin-installation', title: '用 DSH 命令安装 Tavern（试验）', group: 'getting-started', intro: '已有 DSH 时，用 dsh plugin 命令把 Tavern 安装到独立 Profile。这是安装 Tavern 本身的一种方式，不是给 Tavern 装插件；给酒馆装插件见「插件」部分。', content: pluginInstallation },
+export const extraPages = [{ id: "local-settings", title: "本局设置", group: "play", intro: "在游玩顶部调整当前游戏，已有对话与变量保留。", content: "## 本局设置：只调整正在玩的这局\n\n入口在游玩顶部“本局设置”，打开后显示在右侧。大多数选项修改后自动保存，玩家称呼在离开输入框后保存；留意保存反馈。已有对话和变量保留。\n\n| 分组 | 设置 | 用途与生效范围 |\n| --- | --- | --- |\n| 游玩 | 玩家称呼 | 修改后用于后续内容，不重写已有正文 |\n| 游玩 | 当前预设 | 为本局选择外部预设，或不使用外部预设；影响后续正文 |\n| 游玩 | 长期偏好 | 选择已确认长期偏好或不使用长期偏好，下一轮生效；可展开核对本局实际内容，库中有更新时可应用最新版本 |\n| 游玩 | 状态栏位置 | 状态栏显示在侧边栏或正文下方 |\n| 模型 | 后台模型与推理强度 | 选择独立模型或跟随前台；下一次后台任务生效，正在执行的任务不变 |\n| 模型 | 生图 Agent 模型 | 整理插图画面、写绘图提示词用的模型；默认跟随前台（此时用最低推理强度，出图更快），也可单独选模型和推理强度；下一次生图生效 |\n| 功能 | 变量结算 | 只在 MVU 卡显示；控制后台 MVU 更新，关闭后变量和状态栏不再更新 |\n| 功能 | 人物姿势 | 每轮总结人物位置、动作和姿势，供前台保持一致，并显示在酒馆状态里 |\n| 功能 | 联网搜索 | 允许本局前后台按需查外部资料，后续请求生效 |\n| 高级（默认折叠） | 写作 Skill | 控制本局后续可加载的写作方法，不删除已经加载到历史中的内容 |\n| 高级（默认折叠） | 插件 | 本局用到的第三方插件：按局开关、选择由谁负责结算、调整结算任务先后、查看最近错误 |\n\n切换预设、长期偏好、模型、推理强度或相关任务与工具配置可能使提示词缓存失效，首次请求会增加耗时和费用。无需为了每轮剧情频繁改设置；临时写作要求可以使用 [Guide](#b09)。\n\n" },
   { id: 'appearance', title: '皮肤与外观', group: 'play', intro: '选择酒馆主题、强调色与壁纸。', content: appearance },
   { id: 'dshcard-guide', title: 'DSH 人物卡制作', group: 'dshcard', intro: '把人物卡、素材、卡内插件和推荐预设装进一个 .dshcard 文件：格式、示例卡和打包调试。', content: developerDoc('dshcard-guide.md') },
   { id: 'dshcard-tutorial', title: 'DSH 人物卡开发实例：大肥鱼', group: 'dshcard', intro: '以大肥鱼样板卡为例，按动手顺序讲：卡片结构、各部分作用、卡内插件怎么挂到舞台、打包导入和调试。', content: developerDoc('dshcard-tutorial.md') },

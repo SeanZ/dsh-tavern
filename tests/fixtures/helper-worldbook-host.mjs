@@ -38,7 +38,8 @@ export async function createHelperWorldbookHost(embedded = false, multiple = fal
       if (method === 'saveTavernExtensionSettings') return adapter.saveExtensionSettings('audit', args.settings, args.expectedSettings)
       if (method === 'loadTavernWorldInfo') return adapter.loadWorldInfo('audit', args.name)
       if (method === 'saveTavernWorldInfo') return adapter.saveWorldInfo('audit', args.name, args.worldInfo, args.expectedWorldInfo)
-      if (method === 'getTavernHelperWorldbook') return adapter.getWorldbook('audit', args.name)
+      if (method === 'getTavernHelperWorldbook') return adapter.getWorldbook('audit', args.name, false, args.knownVersion)
+      if (method === 'patchTavernHelperWorldbook') return adapter.patchWorldbook('audit', args.name, args.patch)
       if (method === 'replaceTavernHelperWorldbook') return adapter.replaceWorldbook('audit', args.name, args.entries, args.expectedEntries)
       throw Error('Unexpected method: ' + method)
     }

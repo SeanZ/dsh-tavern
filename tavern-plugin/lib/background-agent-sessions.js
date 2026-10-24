@@ -152,6 +152,7 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function descriptorFor(input, persistent) {
+    if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
       mode: 'one-shot', provider: 'dsh-tavern-phone', label: '手机私聊',
       persona: '只扮演指定联系人回复一条手机私聊，不推进正文或修改游戏状态。'

@@ -112,3 +112,30 @@
 准备 ticket 绑定原 Session 与 lifecycle revision，创建前重新检查源仍处于开场阶段。前端只接受同一消息 iframe 已保存的 ticket，重复开始调用共用 Promise。保存/创建失败上报可见错误。没有给普通正式消息开放任意 saveChat 正文改写。
 
 新增集成测试执行生成消息 iframe 的真实开场桥、准备草稿及原生 Conversation Lifecycle，验证新 Session 打开、世界书选项携带、原历史未改、重复点击、已有剧情拒绝与伪造开场拒绝。完整实机页面仍需用户刷新后确认；浏览器认证页面此前被工具安全策略拒绝，未绕过该限制。
+
+### 准备页的脚本楼层与聊天数据（2026-10-24）
+
+报错来源是准备页的能力白名单：脚本在开场预览里调用 `createChatMessages` 与 `saveChat`，落到宿主即 `createTavernHelperMessages` 与 `saveTavernChatData`，此前直接在 `callOpeningRuntime` 末尾以“准备阶段暂不支持此宿主操作”拒绝，向导型开场因此停在初始化。
+
+现在两项都按同一原则映射到本局草稿，不写任何共享资源，也不改原生历史：
+
+- `createTavernHelperMessages` 复用正式会话的 `appendTavernHelperMessages`，楼层以 `tavern-helper` 身份（`tavernRole` 保留 system/assistant/user）追加到草稿，只允许落到末尾，`insert_before` 与非法 role 明确报错。
+- `saveTavernChatData` 复用 `validateChatPluginRequest` 与 `applyChatPluginData`：开场白的 `tavernPluginData`、当前变量快照与聊天 `tavernPluginMetadata` 写入草稿，返回新的 `context`，脚本可在下一次调用里读到新状态。
+- 草稿自 `_storageRevision: 1` 起记录每次写入的快照（最近 16 版），保存请求必须命中其中的版本，否则提示重新打开准备页；跨聊天、跨 lifecycle 的请求一律拒绝。
+
+建局时上述内容一并提交：开场白带插件数据，聊天元数据进入新局，脚本预写的楼层排在开场白之后、开局系统楼层之前。系统楼层仍由 `applyOpeningCommand` 追加，因此“设定在系统位置、场景楼层在前”的顺序不变；已存在的会话不会补写这些草稿楼层。
+
+测试：`tests/opening-preparation-chat-data.test.mjs` 覆盖楼层追加与顺序、非法 role/insert_before、插件数据与元数据往返、过期版本与错聊天拒绝，以及准备页草稿直接建局的继承路径。
+
+### 开局命令先记录后开始（2026-10-24）
+
+向导卡把开始拆成两步是常态。大凉龙虎传 v4.1 的写法是 `await triggerSlash('/send ' + txt)` → `await DSHOpening327.persist()` → `await triggerSlash('/trigger')`，其中 persist 要把预设、门派写进本局变量。旧实现在第一句就把单独的 `/send` 折成“/send 文本 | /trigger”并立刻建局，预览 iframe 在 persist 之前卸载，卡固有问题因此永远丢数据。
+
+现在的分工是：单独的 `/send 文本` 与 `/sys 文本` 只把内容记进草稿（`draft.pendingOpening`），返回 `{ deferred: true, input: '' }`，页面继续挂着，卡的 persist 与建局前脚本楼层照常写草稿；下一条 `/trigger` 才用 `applyPendingOpeningCommand` 合成开始命令：留住的 `/send` 文本成为首轮输入，留住的 `/sys` 文本成为开局系统楼层。
+
+- 显式管道优先：`/sys 文本 | /trigger`、`/send 文本 | /trigger`、`/cut 0` 组合不再看草稿里留的内容，写什么就是什么。
+- 调用串行：`sourceDocument.openingCommandQueue` 让卡的连续调用按顺序结算；`openingCommandStarted` 保证只建一局，重复 `/trigger` 返回同一结果。
+- 兜底：只发 `/send` 却从不发 `/trigger` 的卡（如无限回廊 9.10）不会卡住——页面安静 2 秒后按记下的文本开局，这正是 SillyTavern 里 `/send` 的行为；期间真 `/trigger` 到了就按它走，仍然只开始一次。
+- 宿主窗口的观察器：`window.parent.MutationObserver` 属于宿主领域，拿不到沙箱里的补丁。`小手机v9` 正是用它观察 `window.parent.document.body`，于是宿主节点代理直接进了原生构造器，报“parameter 1 is not of type 'Node'”。兼容窗口现在对 `MutationObserver`、`IntersectionObserver`、`ResizeObserver` 统一套一层解包，取不到合法节点时改为观察文档根。
+
+测试：`tests/tavern-opening-slash-bridge.test.mjs` 覆盖单独 `/send`、单独 `/sys`、显式管道优先、重复 `/trigger` 只提交一次与其余命令拒绝；`tests/opening-preparation-chat-data.test.mjs` 覆盖草稿里的“先记录后开始”以及两步之间继续保存插件数据。

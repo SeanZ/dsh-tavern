@@ -50,7 +50,7 @@ const pinScenario = process.argv.includes('--pin-panel')
 const displayScenario = pinScenario || process.argv.includes('--display-regression')
 const recoveryScenario = process.argv.includes('--surface-recovery')
 const helperApiScenario = process.argv.includes('--helper-api')
-// Story body submitted through the submit_story tool (per-conversation toggle, off by default).
+// Story body submitted through the submit_story tool (global input/output switches, off by default).
 const storyToolScenario = process.argv.includes('--story-tool')
 // Dialogue avatars: settlement annotates speakers, quoted lines show as speaker rows.
 const castScenario = process.argv.includes('--cast')
@@ -187,8 +187,6 @@ try {
       prompt_order: [{ order: [{ identifier: 'main', enabled: true }] }]
     }))
     await mkdir(join(data, 'resources/cards'), { recursive: true })
-    // The stage plugin example: a director settlement task and a plugin stage view.
-    if (castScenario) await cp(join(source, 'examples/tavern-plugin-director'), join(data, 'plugins/tavern-plugin-director'), { recursive: true })
     // Deliberate continuous DOM updates: a real status card must receive new
     // variables even when it never reaches the frame's DOM-idle threshold.
     const status = '<div id="e2e-gold">金币：加载中</div><script>function refresh(){const v=getAllVariables();document.getElementById("e2e-gold").textContent="金币："+(v.stat_data?.gold??"未初始化")}refresh();setInterval(refresh,200)</script>'
@@ -513,12 +511,11 @@ try {
     for (const [name, value] of Object.entries(patch)) assert.equal(result.settings?.[name], value, JSON.stringify(result))
     return result
   }
-  if (storyToolScenario) await step('开启正文走工具调用', async () => {
+  if (storyToolScenario) await step('开启输入与输出走工具调用', async () => {
     const chatUrl = page.url()
-    await setTavernSettings({ storyToolCall: true })
-    // The stage is per card and off for ordinary cards; this card turns it on.
-    const stage = await page.evaluate(async () => (await fetch('/api/dsh-tavern/setCardStage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: 'cards/e2e.json', enabled: true }) })).json())
-    assert.equal(stage.enabled, true)
+    await setTavernSettings({ storyInputToolCall: true, storyOutputToolCall: true })
+    // 舞台模式 is global and needs 对话气泡 (舞台设置 › 基础设置).
+    await setTavernSettings({ castPresentation: true, stageToggles: { stage: true } })
     await page.goto(chatUrl)
     await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
   })

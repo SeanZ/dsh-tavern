@@ -53,7 +53,7 @@ export function assertDesktopStopped(homes, { requireGuiClosed = false } = {}) {
   const normalize = value => value.replaceAll('\\', '/').toLowerCase()
   for (const line of commands.split('\n')) {
     const command = normalize(line)
-    if (requireGuiClosed && /(?:deepseek harness|dsh next|dsh desktop)(?:\.exe)?[\"]?\s*$/.test(command.trim())) throw Error('请完整退出桌面版（DeepSeek Harness / DSH NEXT）后再安装或迁移数据。')
+    if (requireGuiClosed && /(?:deepseek harness|dsh next|dsh desktop)(?:\.exe)?[\"]?\s*$/.test(command.trim())) throw Error('请完整退出 DeepSeek Harness 后再安装或迁移数据。')
     if (!command.includes('dsh-desktop-host')) continue
     if (homes.some(home => command.includes(normalize(path.join(home, 'profiles'))))) throw Error('请完整退出使用源目录或目标目录的官方桌面，再迁移用户数据。')
   }

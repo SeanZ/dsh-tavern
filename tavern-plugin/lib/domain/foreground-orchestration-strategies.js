@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { projectPlayerContent } from './player-input-content.js'
 import { resolveRuntimePresetMacros } from './runtime-presets.js'
 import { projectRuntimePresetRequest } from './runtime-preset-lifecycle.js'
-import { STORY_SUBMIT_PROMPT, STORY_SUBMIT_PROMPT_STRICT, STORY_SUBMIT_TOOL_NAME } from './story-tool-submission.js'
+import { STORY_INPUT_ONLY_PROMPT, STORY_SUBMIT_PROMPT, STORY_SUBMIT_PROMPT_STRICT, STORY_SUBMIT_TOOL_NAME, withStorySubmitAck } from './story-tool-submission.js'
 import { NO_FOREGROUND_TOOLS_PROMPT, normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { projectHistoryAsToolCalls } from './history-tool-call.js'
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
@@ -308,13 +308,22 @@ export function createNativePlayOrchestrationStrategy(options) {
       }
       // Persist/migrate the fixed system snapshot before native request assembly.
       if (typeof options.ensureSessionPrefix === 'function') await options.ensureSessionPrefix(input)
+      // A replayed transcript calls a tool. Strict providers reject a call whose
+      // declaration is missing, so replay only when this turn offers submit_story;
+      // the per-game tool switch can still remove it after the global settings say on.
+      const historyWanted = typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false
+      const outputWanted = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
+      const submitVisible = typeof options.visibleTools !== 'function'
+        || (await options.visibleTools(sessionId)).includes(STORY_SUBMIT_TOOL_NAME)
+      const submitOffered = historyWanted && submitVisible
       stagedRequests.set(sessionId, {
         turn: Math.max(0, Number(payload.turn) || 0),
         step: Math.max(1, Number(payload.step) || 1),
         scope: 'foreground',
         snapshot: snapshot || null,
         // Resolved here because the request projection below is synchronous.
-        historyToolCall: typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false,
+        historyToolCall: submitOffered,
+        storyOutputToolCall: outputWanted && submitVisible,
         historyLayout: typeof options.historyLayout === 'function' ? String(await options.historyLayout() || 'story') : 'story'
       })
     }
@@ -403,6 +412,13 @@ export function createNativePlayOrchestrationStrategy(options) {
     }
     const labelled = labelPresetFront(request.messages, frontTexts.get(sessionId))
     if (labelled !== request.messages) request = Object.assign({}, request, { messages: labelled })
+    // A real assistant turn placed before the current player input, not after
+    // it: providers still see the player's message last, and the model reads its
+    // own submission commitment right before answering.
+    if (staged.storyOutputToolCall === true) {
+      const acknowledged = withStorySubmitAck(request.messages, staged.turn)
+      if (acknowledged !== request.messages) request = Object.assign({}, request, { messages: acknowledged })
+    }
     if (request === optionsValue) return null
     return markRequestHandled(request, PROJECTED)
   }
@@ -467,13 +483,21 @@ export function createNativePlayOrchestrationStrategy(options) {
     }
     if (playMode) assembly.tools = assembly.tools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name))
     // The submission contract follows the tools that actually survived the
-    // per-game switches and the plugin scopes. The strict wording is only true
-    // when submit_story is the single model-facing tool.
+    // per-game switches and the plugin scopes. When only input replay is on, the
+    // tool is declared for the history but the model must write prose directly.
+    // The strict wording is only true when submit_story is the single tool.
     if (playMode) {
       const toolNames = new Set(assembly.tools.map(schema => schema.name))
-      if (toolNames.size === 0) sections.push({ name: 'tavern:no-foreground-tools', text: NO_FOREGROUND_TOOLS_PROMPT })
-      else if (toolNames.size === 1 && toolNames.has(STORY_SUBMIT_TOOL_NAME)) sections.push({ name: 'tavern:story-tool-submission', text: STORY_SUBMIT_PROMPT_STRICT })
-      else if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) sections.push({ name: 'tavern:story-tool-submission', text: STORY_SUBMIT_PROMPT })
+      const outputToolCall = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
+      if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) {
+        if (outputToolCall) {
+          sections.push({ name: 'tavern:story-tool-submission', text: toolNames.size === 1 ? STORY_SUBMIT_PROMPT_STRICT : STORY_SUBMIT_PROMPT })
+        } else {
+          sections.push({ name: 'tavern:story-tool-submission', text: STORY_INPUT_ONLY_PROMPT })
+        }
+      } else if (toolNames.size === 0) {
+        sections.push({ name: 'tavern:no-foreground-tools', text: NO_FOREGROUND_TOOLS_PROMPT })
+      }
     }
     assembly.sections = sections
     return assembly

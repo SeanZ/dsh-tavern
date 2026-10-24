@@ -1,6 +1,0 @@
-# dsh-tavern-launcher profile patch layer —— 只插一条 loader entry。
-# 宿主半侧（lib/index.js）由此挂载；浏览器半侧由 dsh-client-modules 通过
-# package.json 的 dsh.client 声明自动发现，与官方 ui-* 包一致。
-- insert:
-    - id: tavern-launcher
-      name: 'dsh-tavern-launcher'

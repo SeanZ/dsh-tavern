@@ -60,7 +60,7 @@ test('一键安装先安装下载包依赖，再运行 Tavern 安装器', () => 
     '& node $OldLauncher stop', '& node $Stager swap', "Invoke-InstallCommand 'dependencies.relink'", "Invoke-InstallCommand 'profile.install' 'node'", '& node $Stager commit'])
   // Desktop and releases without the stager keep installing in place.
   const legacyUnix = unixInstaller.slice(unixInstaller.indexOf('node "${STAGER}" commit'))
-  order(legacyUnix, ['pnpm --dir "${APP_DIR}" install --frozen-lockfile\n', 'node "${APP_DIR}/bin/dsh-tavern.mjs" install'])
+  order(legacyUnix, ['pnpm --dir "${APP_DIR}" install --frozen-lockfile --config.minimum-release-age=0\n', 'node "${APP_DIR}/bin/dsh-tavern.mjs" install'])
   const legacyWindows = windowsInstaller.slice(windowsInstaller.indexOf('& node $Stager commit'))
   order(legacyWindows, ["Invoke-InstallCommand 'dependencies.install' $PnpmCommand @('--dir', $AppDir, 'install', '--frozen-lockfile'", "Invoke-InstallCommand 'profile.install' 'node'"])
 })

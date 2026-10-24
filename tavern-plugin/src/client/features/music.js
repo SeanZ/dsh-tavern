@@ -1,5 +1,6 @@
-		// Background music: one looping track for the page. Plugins say which track plays; the player
-		// owns the on/off switch (kept in this browser), so every card's music obeys the same switch.
+		// Plugin music (tavernUi.playMusic): one looping track for the page. Plugins say which track plays; the player
+		// owns the on/off switch (kept in this browser), so every plugin's music obeys the same switch. The stage's own
+		// BGM is the BGM player's (modules/stage-bgm.js), not this one.
 		const TAVERN_MUSIC_KEY = "dsh-tavern-music-enabled";
 		const tavernMusic = (function () {
 			let enabled = true;
@@ -54,13 +55,13 @@
 			return React.useSyncExternalStore(tavernMusic.subscribe, tavernMusic.get);
 		}
 
-		/** The music switch beside the stage; shown only while some track is meant to play. */
+		/** The plugin music switch beside the stage; shown only while a plugin's track is meant to play. */
 		function TavernMusicToggle() {
 			const h = React.createElement;
 			const music = useTavernMusic();
 			if (!music.track) return null;
 			const label = music.enabled ? "关闭音乐" : "打开音乐";
-			return h("button", { type: "button", className: "dsh-tavern-stage-head-btn" + (music.enabled ? "" : " is-off"), "aria-pressed": music.enabled, "aria-label": label,
+			return h("button", { type: "button", className: music.enabled ? "is-on" : "", "aria-pressed": music.enabled, "aria-label": label,
 				title: (music.track.title ? "♪ " + music.track.title + "\n" : "") + label,
 				onClick: function () { tavernMusic.setEnabled(!music.enabled); } }, music.enabled ? "♪ 音乐" : "♪ 静音");
 		}

@@ -1,14 +1,42 @@
 import { compactionPolicy } from './auto-compaction.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
+import { readJudgeConfig, validateJudgeConfig } from './engine-judge.js'
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
+// Global stage switches a patch may set.
+const STAGE_TOGGLES = Object.freeze(['stage', 'music'])
+// 舞台模式 › 可用演出: the director commands the director may use, every one on by default (stage-director.js).
+export const STAGE_DIMENSIONS = Object.freeze(['scene', 'cast', 'acts', 'screenEffects'])
+// 舞台模式 › 每轮上限: how many screen effects (`beat`) one reply may use.
+export const STAGE_ACTION_CAPS = Object.freeze({ beat: 6 })
+const stageDimensions = document => Object.fromEntries(STAGE_DIMENSIONS.map(key => [key, object(object(document).stageDimensions)[key] !== false]))
+const stageActionCaps = document => Object.fromEntries(Object.entries(STAGE_ACTION_CAPS).map(([key, fallback]) => {
+  const value = object(object(document).stageActionCaps)[key]
+  return [key, Number.isSafeInteger(value) && value >= 1 && value <= 256 ? value : fallback]
+}))
+const PACK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const globalPackIds = document => Array.isArray(object(document).globalEnabledPackIds) ? document.globalEnabledPackIds.filter(id => typeof id === 'string' && PACK_ID.test(id)) : []
 
 // A stored blank here is the user's choice and overrides the default; only
 // resetting (deleting the key) restores it.
 const BLANK_ALLOWED_PROMPTS = new Set(['system-append'])
+
+// The single `storyToolCall` switch used to cover both directions; before that
+// history had a switch of its own. Reads migrate in place: a merged save turns
+// both on, and an old history-only save turns input on while output stays as it
+// was. Explicit new fields always win over the retired ones.
+export function storyToolCallSettings(document) {
+  const source = object(document)
+  const merged = Object.hasOwn(source, 'storyToolCall') ? source.storyToolCall === true : null
+  const history = Object.hasOwn(source, 'storyHistoryToolCall') ? source.storyHistoryToolCall === true : null
+  return {
+    input: Object.hasOwn(source, 'storyInputToolCall') ? source.storyInputToolCall === true : (history === null ? merged === true : history),
+    output: Object.hasOwn(source, 'storyOutputToolCall') ? source.storyOutputToolCall === true : merged === true
+  }
+}
 
 function promptOverride(document, name) {
   const value = object(document.promptOverrides)[name]
@@ -196,10 +224,35 @@ export function applyTavernSettingsPatch(current, patch) {
     if (!['after-fill', 'after-send'].includes(input.candidateDismissMode)) throw new Error('无效的候选项收起方式')
     next.candidateDismissMode = input.candidateDismissMode
   }
-  if (Object.hasOwn(input, 'storyToolCall')) {
-    if (typeof input.storyToolCall !== 'boolean') throw new Error('正文走工具调用设置必须是布尔值')
-    next.storyToolCall = input.storyToolCall
-    // History replay used to be a switch of its own; it now follows this one.
+  // Two independent directions: input replays the history that is sent to the
+  // model, output turns this turn's body into a submission call. Legacy switches
+  // are folded into the pair and then dropped, so a later patch to one side can
+  // never fall back to a stale merged value.
+  if (Object.hasOwn(input, 'storyToolCall') || Object.hasOwn(input, 'storyHistoryToolCall') ||
+      Object.hasOwn(input, 'storyInputToolCall') || Object.hasOwn(input, 'storyOutputToolCall')) {
+    const current = storyToolCallSettings(next)
+    let inputToolCall = current.input
+    let outputToolCall = current.output
+    if (Object.hasOwn(input, 'storyToolCall')) {
+      if (typeof input.storyToolCall !== 'boolean') throw new Error('正文走工具调用设置必须是布尔值')
+      inputToolCall = input.storyToolCall
+      outputToolCall = input.storyToolCall
+    }
+    if (Object.hasOwn(input, 'storyHistoryToolCall')) {
+      if (typeof input.storyHistoryToolCall !== 'boolean') throw new Error('历史正文走工具调用设置必须是布尔值')
+      inputToolCall = input.storyHistoryToolCall
+    }
+    if (Object.hasOwn(input, 'storyInputToolCall')) {
+      if (typeof input.storyInputToolCall !== 'boolean') throw new Error('输入走工具调用设置必须是布尔值')
+      inputToolCall = input.storyInputToolCall
+    }
+    if (Object.hasOwn(input, 'storyOutputToolCall')) {
+      if (typeof input.storyOutputToolCall !== 'boolean') throw new Error('输出走工具调用设置必须是布尔值')
+      outputToolCall = input.storyOutputToolCall
+    }
+    next.storyInputToolCall = inputToolCall
+    next.storyOutputToolCall = outputToolCall
+    delete next.storyToolCall
     delete next.storyHistoryToolCall
   }
   if (Object.hasOwn(input, 'autoOpenStatusPanel')) {
@@ -216,8 +269,37 @@ export function applyTavernSettingsPatch(current, patch) {
     next.storyViewMode = input.storyViewMode
   }
   if (Object.hasOwn(input, 'castPresentation')) {
-    if (typeof input.castPresentation !== 'boolean') throw new Error('对话头像设置必须是布尔值')
+    if (typeof input.castPresentation !== 'boolean') throw new Error('对话气泡设置必须是布尔值')
     next.castPresentation = input.castPresentation
+  }
+  // The stage's global switches (舞台设置 › 基础设置); 舞台模式 is stageToggles.stage, BGM stageToggles.music.
+  if (Object.hasOwn(input, 'stageToggles')) {
+    const toggles = object(input.stageToggles)
+    if (!Object.keys(toggles).length || Object.entries(toggles).some(([key, value]) => !STAGE_TOGGLES.includes(key) || typeof value !== 'boolean')) throw new Error('舞台开关只能是 ' + STAGE_TOGGLES.join('、') + '，且必须是布尔值')
+    next.stageToggles = { ...object(next.stageToggles), ...toggles }
+  }
+  // 舞台模式 › 可用演出 and 每轮上限: every card's director; a patch names only what it changes.
+  if (Object.hasOwn(input, 'stageDimensions')) {
+    const dimensions = object(input.stageDimensions)
+    if (!Object.keys(dimensions).length || Object.entries(dimensions).some(([key, value]) => !STAGE_DIMENSIONS.includes(key) || typeof value !== 'boolean')) throw new Error('可用演出只能是 ' + STAGE_DIMENSIONS.join('、') + '，且必须是布尔值')
+    next.stageDimensions = { ...object(next.stageDimensions), ...dimensions }
+  }
+  if (Object.hasOwn(input, 'stageActionCaps')) {
+    const caps = object(input.stageActionCaps)
+    if (!Object.keys(caps).length || Object.entries(caps).some(([key, value]) => !Object.hasOwn(STAGE_ACTION_CAPS, key) || !Number.isSafeInteger(value) || value < 1 || value > 256)) throw new Error('每轮上限只能是 ' + Object.keys(STAGE_ACTION_CAPS).join('、') + '，且必须是 1 到 256 的整数')
+    next.stageActionCaps = { ...object(next.stageActionCaps), ...caps }
+  }
+  // 舞台模式 › 判断模型 (engine-judge.js): the whole config; an omitted field takes its default or the provider's preset.
+  // The API Key itself is never a setting (rpc setJudgeKey stores it in the host credential store).
+  if (Object.hasOwn(input, 'stageJudge')) next.stageJudge = validateJudgeConfig(input.stageJudge)
+  // A pack the player turns on for every card (全局) or off again: one pack per change, applied to the stored list.
+  if (Object.hasOwn(input, 'globalPack')) {
+    const { packId, enabled } = object(input.globalPack)
+    if (typeof packId !== 'string' || !PACK_ID.test(packId) || typeof enabled !== 'boolean') throw new Error('无效的素材包设置')
+    const ids = globalPackIds(next).filter(id => id !== packId)
+    if (enabled) ids.push(packId)
+    if (ids.length) next.globalEnabledPackIds = ids
+    else delete next.globalEnabledPackIds
   }
   if (Object.hasOwn(input, 'contextCompaction')) next.contextCompaction = { ...compactionPolicy(input.contextCompaction), revision: Date.now() }
   if (Object.prototype.hasOwnProperty.call(input, 'backgroundTasks')) {
@@ -281,6 +363,7 @@ export function presentTavernSettings(document, defaults) {
     return { name, text: custom === null ? String(defaults[name] || '') : custom, customized: custom !== null }
   })
   const story = prompts.find(function (item) { return item.name === 'story' }) || { text: '', customized: false }
+  const storyToolCalls = storyToolCallSettings(document)
   return {
     defaultPlaySettings: normalizePlayDefaults(object(document).defaultPlaySettings),
     defaultDisabledWritingSkills: Array.isArray(object(document).defaultDisabledWritingSkills) ? object(document).defaultDisabledWritingSkills.filter(name => typeof name === 'string') : [],
@@ -291,12 +374,19 @@ export function presentTavernSettings(document, defaults) {
     hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
     headerItems: readHeaderItems(object(document).headerItems),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
-    // One switch for both: new bodies submitted as tool calls, history replayed as
-    // them. A save that turned on either of the two former switches keeps it on.
-    storyToolCall: object(document).storyToolCall === true || object(document).storyHistoryToolCall === true,
+    storyInputToolCall: storyToolCalls.input,
+    storyOutputToolCall: storyToolCalls.output,
     castPresentation: object(document).castPresentation === true,
     // Story view (fork contract): off keeps the upstream chat and failed-turn behaviour.
     storyViewMode: object(document).storyViewMode === true,
+    // 舞台模式 and BGM: one switch each for every card, on by default; the stage also needs 对话气泡 (castPresentation).
+    stageToggles: { stage: object(object(document).stageToggles).stage !== false, music: object(object(document).stageToggles).music !== false },
+    stageDimensions: stageDimensions(document),
+    stageActionCaps: stageActionCaps(document),
+    // Unset by default: no judge stage, green entries follow their triggers.
+    stageJudge: readJudgeConfig(object(document).stageJudge),
+    // Asset packs on for every card (全局); a card adds its own (本卡) in its cast manifest.
+    globalEnabledPackIds: globalPackIds(document),
     // Only the latest floors run a card's HTML interface; 0 renders every floor.
     autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     // Library edits reach a running game on its next turn; only an explicit

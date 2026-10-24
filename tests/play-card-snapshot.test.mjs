@@ -243,3 +243,24 @@ test('没有本局副本的游戏也能显式重载人物卡，且不新建世�
   card = { ...card, name: '再改' }
   await assert.rejects(api.replacement(chat, card, stale), /人物卡已再次修改/)
 })
+
+test('重载人物卡的检测与校验值按磁盘上最新的卡算，不拿本局冻结的卡和自己比', async () => {
+  const { createWorldBookLibrary } = await import('../tavern-plugin/lib/domain/worldbook-library.js')
+  const entry = (id, content, enabled = true) => ({ id, comment: content, content, constant: true, enabled, keys: [] })
+  const frozen = { name: '内嵌', character_book: { entries: [entry(0, '旧条目')] } }
+  let latest = frozen
+  const worldBooks = createWorldBookLibrary({ normalizePath: p => p, removeStandalone: async () => {},
+    cards: { read: async () => latest }, resources: { bindingForCard: async () => ({ kind: 'default' }) } })
+  const api = createPlayCardSnapshots({ worldBooks, planner: { plan: async ({ worldBookContext }) => ({ text: worldBookContext }) },
+    readCard: async chat => chat.cardDefinitionSnapshot, readLatestCard: async () => latest,
+    writeChat: async () => { throw new Error('不能整份覆盖存档') } })
+  const chat = { id: 'frozen-card', mode: 'story', cardPath: 'cards/frozen.json', cardDefinitionSnapshot: frozen, messages: [{ role: 'assistant', text: '开场' }] }
+  await api.prepare(chat, frozen)
+  assert.equal((await api.currentStatus(chat, { busy: true })).available, false, '卡没改不提示')
+
+  latest = { ...frozen, character_book: { entries: [entry(0, '改过的条目')] } }
+  const status = await api.currentStatus(chat, { busy: true })
+  assert.equal(status.cardChanged, true, '改了卡内嵌世界书要提示')
+  const patch = await api.replacement(chat, latest, status.digest)
+  assert.match(patch.cardContextSnapshot, /改过的条目/, '按页面拿到的校验值能重载成功')
+})

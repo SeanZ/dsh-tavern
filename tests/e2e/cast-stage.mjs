@@ -24,37 +24,23 @@ function figurePng([r, g, b], width = 120, height = 200) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))])
 }
 
-// The stage: right panel, character material, full-screen reader that can send the next input.
+// Stage panels open from the right sidebar's start page (其他); the full-screen reader can send the next input.
+export async function openStagePanel(page, title) {
+  await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).filter({ visible: true }).first().click()
+  await page.locator('.dsh-tavern-start section[aria-label="其他"] .dsh-tavern-start-card').filter({ hasText: new RegExp('^' + title + '$') }).filter({ visible: true }).first().click()
+}
 export async function castStageChecks({ page, step, output, report }) {
-  await step('插件舞台：导演插件定下的地点和时间画在舞台上，可选回内置舞台', async () => {
-    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
-    const choice = page.getByRole('combobox', { name: '舞台样式' })
-    assert.equal(await choice.inputValue(), 'tavern-plugin-director:scene', '装了插件舞台时默认用它')
-    await page.locator('.dsh-tavern-stage-section').getByText('酒馆大堂 · 夜晚', { exact: true }).waitFor()
-    await page.waitForTimeout(400)
-    await page.screenshot({ path: join(output, 'cast-stage-plugin.png') })
-    await choice.selectOption('dsh-tavern:builtin')
-    report.castStagePlugin = true
-  })
-  await step('舞台：右侧小舞台按台词换人，导入立绘包后显示立绘', async () => {
-    const scene = page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-scene')
-    await scene.waitFor()
-    // Opens at the turn's last annotated line.
-    await page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-name').filter({ hasText: '你' }).waitFor()
-    await page.getByRole('button', { name: '上一句', exact: true }).first().click()
-    await page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-name').filter({ hasText: '店主' }).waitFor()
-    assert.equal(await scene.locator('.dsh-tavern-stage-figure-letter').first().textContent(), '店')
+  await step('舞台：舞台素材里导入角色立绘包', async () => {
     const pack = writeZipEntries([{ path: '店主/joy.png', content: figurePng([214, 140, 92]) }, { path: '店主/neutral.png', content: figurePng([150, 150, 170]) }, { path: 'notes.txt', content: 'x' }])
     const chooser = page.waitForEvent('filechooser')
-    await page.getByText('角色素材', { exact: true }).filter({ visible: true }).first().click()
+    await openStagePanel(page, '舞台素材')
     await page.getByRole('button', { name: '导入 ST 立绘包', exact: true }).click()
     await (await chooser).setFiles({ name: 'pack.zip', mimeType: 'application/zip', buffer: pack })
     await page.getByText('导入 2 张立绘（店主），跳过 1 个文件').waitFor()
-    await scene.locator('.dsh-tavern-stage-figure img[alt="店主"]').waitFor()
-    assert.match(await scene.locator('.dsh-tavern-stage-figure img[alt="店主"]').getAttribute('src'), /\/api\/dsh-tavern\/cast-asset\?card=[0-9a-f]{64}&file=[0-9a-f]{32}\.png/)
+    await page.locator('.dsh-tavern-cast-manager-row').filter({ hasText: '店主' }).getByText('2 张立绘', { exact: true }).waitFor()
     await page.waitForTimeout(600)
-    await page.screenshot({ path: join(output, 'cast-stage-panel.png') })
-    report.castStagePanel = true
+    await page.screenshot({ path: join(output, 'cast-stage-materials.png') })
+    report.castStageMaterials = true
   })
   await step('舞台全屏：逐句翻页，Esc 退出', async () => {
     await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
@@ -109,7 +95,7 @@ export async function castSpeechChecks({ page, step, output, report }) {
       assert.deepEqual(requests[0].body, { model: 'tts-1', input: '欢迎回来，这是你的奖励。', voice: 'alloy', response_format: 'mp3' })
       assert.equal(requests[0].authorization, 'Bearer sk-e2e')
 
-      await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
+      await openStagePanel(page, '舞台素材')
       const voice = page.getByLabel('店主 的声音', { exact: true })
       await voice.fill('onyx')
       await voice.press('Enter')
@@ -231,6 +217,8 @@ export async function dshCardPlayChecks({ page, step, output, report }) {
       await page.waitForTimeout(500)
     }
     assert.doesNotMatch(reply.error || '', /没有名为/, '卡内插件启用后加载')
+    // 舞台模式 is global and needs 对话气泡; the card's plugin directs once both are on.
+    await call('updateTavernSettings', { patch: { castPresentation: true, stageToggles: { stage: true } } })
     await page.reload()
     await page.getByRole('button', { name: /选择人物卡.*新开游玩/ }).click()
     await page.getByText('大肥鱼', { exact: true }).first().click()
@@ -239,11 +227,13 @@ export async function dshCardPlayChecks({ page, step, output, report }) {
     await composer.waitFor()
     // A new game opens its settings and status tabs first; open the stage after that.
     await page.getByText(/人物设计档案/).filter({ visible: true }).first().waitFor()
-    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
+    // The stage look is a row of 舞台设置 › 基础设置 once a plugin offers a stage view.
+    await openStagePanel(page, '舞台设置')
     const choice = page.getByRole('combobox', { name: '舞台样式' })
     await choice.locator('option', { hasText: '大肥鱼舞台' }).waitFor({ state: 'attached' })
     await choice.selectOption({ label: '大肥鱼舞台（dsh-card-dafeiyu-galgame）' })
-    const tab = page.locator('.dsh-tavern-stage-section')
+    await page.getByRole('button', { name: '舞台', exact: true }).click()
+    const tab = page.locator('.dsh-tavern-stage-overlay')
     // The opening scene comes from the card: living room at night, its music, the maid outfit.
     await tab.getByText(/^现代客厅 · ♪ /).waitFor()
     const portrait = tab.locator('img[alt="大肥鱼"]')
@@ -251,6 +241,7 @@ export async function dshCardPlayChecks({ page, step, output, report }) {
     const opening = await portrait.getAttribute('src')
     report.dafeiyu.opening = await tab.getByText(/^现代客厅 · ♪ /).textContent()
     await page.screenshot({ path: join(output, 'dafeiyu-opening.png') })
+    await page.keyboard.press('Escape')
     await composer.fill('一起去地铁站吧')
     await composer.press('Enter')
     // The settlement directs the next scene (the fixed model picks the Claude outfit): the portrait changes.
@@ -270,9 +261,9 @@ export async function dshCardPlayChecks({ page, step, output, report }) {
     assert.equal(directed.result.figure.outfit, 'Claude')
     assert.equal(directed.result.time, 'night')
     report.dafeiyu.directed = { background: directed.result.background.name, outfit: directed.result.figure.outfit, music: directed.result.music.name }
-    // The stage stays in front while background agents run; it shows the new outfit by itself.
-    await page.waitForFunction(([selector, before]) => { const image = document.querySelector(selector); return image && image.offsetParent && image.getAttribute('src') !== before }, ['.dsh-tavern-stage-section img[alt="大肥鱼"]', opening], { timeout: 30000 })
-    await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
+    await page.getByRole('button', { name: '舞台', exact: true }).click()
+    // Reopening uses the updated scene.
+    await page.waitForFunction(([selector, before]) => { const image = document.querySelector(selector); return image && image.offsetParent && image.getAttribute('src') !== before }, ['.dsh-tavern-stage-overlay img[alt="大肥鱼"]', opening], { timeout: 30000 })
     await page.waitForTimeout(800)
     await page.screenshot({ path: join(output, 'dafeiyu-stage.png') })
     await page.keyboard.press('Escape')
@@ -293,7 +284,7 @@ async function importArchive(page, name, bytes) {
 export async function castStageInputChecks({ page, step, report }) {
   await step('舞台全屏：在最后一句后直接发送下一轮', async () => {
     await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
-    await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
+    await page.getByRole('button', { name: '舞台', exact: true }).click()
     const overlay = page.locator('.dsh-tavern-stage-overlay')
     await overlay.waitFor()
     await page.keyboard.press('End')

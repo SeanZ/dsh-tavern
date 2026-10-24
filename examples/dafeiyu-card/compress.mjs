@@ -1,11 +1,11 @@
-// Shrink a built 大肥鱼.dshcard for distribution: PNG pictures become WebP, music and sound
+// Shrink the built 大肥鱼.source.dshcard into the distributed 大肥鱼.dshcard: PNG pictures become WebP, music and sound
 // effects are re-encoded as Ogg Opus, each only where it saves enough. Packs stay
 // content-addressed: a re-encoded file gets a new hash, and every reference to it (the
 // pack manifest, figures, sprites, the card's own assets) follows. With --drop-live2d the
 // Live2D models go (the sample card shows static standing pictures); other bundles stay.
 // The card plugin is refreshed from ./plugin. Needs cwebp and ffmpeg (with libopus) on PATH.
 //
-//   node examples/dafeiyu-card/compress.mjs 大肥鱼.dshcard 大肥鱼.min.dshcard --drop-live2d
+//   node examples/dafeiyu-card/compress.mjs 大肥鱼.source.dshcard 大肥鱼.dshcard --drop-live2d
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'

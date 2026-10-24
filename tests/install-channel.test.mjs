@@ -29,15 +29,6 @@ test('安装脚本只接受桌面版与命令行版宿主', { skip: process.plat
   assert.match(result.stderr, /只支持官方桌面和独立命令行/)
 })
 
-test('Windows 双击安装文件与 README 的桌面版命令一致：CRLF、% 已转义', () => {
-  const cmd = readFileSync(new URL('dsh-tavern-install.cmd', root), 'utf8')
-  assert.ok(cmd.split('\n').slice(0, -1).every(line => line.endsWith('\r')), '每行须以 CRLF 结尾')
-  const line = cmd.split('\r\n').find(text => text.startsWith('powershell '))
-  assert.doesNotMatch(line.replaceAll('%%', ''), /%/, '单个 % 会被 cmd 当作变量展开')
-  const command = /-Command "(.*)"$/.exec(line)[1].replaceAll('%%', '%')
-  assert.ok(readFileSync(new URL('README.md', root), 'utf8').includes(command), 'README 中找不到同一条桌面版命令')
-})
-
 test('安装脚本内嵌自己的版本号，jsDelivr 下载不接受比它旧的运行清单', () => {
   const version = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).version
   const sh = readFileSync(new URL('install.sh', root), 'utf8')

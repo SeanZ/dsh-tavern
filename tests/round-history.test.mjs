@@ -740,32 +740,40 @@ test('恢复不打断当前进程中的重生成或宿主仍在运行的回合',
   assert.deepEqual(h.chat, before)
 })
 
-test('恢复时消息面保存失败保留恢复点，下次重试成功且临时会话释放', async () => {
+// The save is the truth: no native failure may leave the marker that locks the save.
+test('恢复时消息面保存失败也按存档恢复原正文，模型上下文标记待修复', async () => {
   const { h } = await interruptedRegeneration()
   const original = structuredClone(h.revisions.get(h.chat.regenRecovery.beforeRevision).messages)
-  let disposed = 0, fail = true
+  let disposed = 0
   h.options.sessions = {
     get: () => undefined,
     resume: async () => ({ agent: h.agent, dispose: async () => { disposed++ } }),
-    flush: async () => { if (fail) throw new Error('flush failed') }
+    flush: async () => { throw new Error('flush failed') }
   }
-  await assert.rejects(h.create().recover('chat'), /flush failed/)
-  assert.equal(h.chat.regenInProgress, true)
-  assert.ok(h.chat.regenRecovery)
-  assert.equal(disposed, 1)
-  fail = false
   await h.create().recover('chat')
   assert.deepEqual(h.chat.messages, original)
-  assert.ok(!h.chat.regenInProgress)
-  assert.equal(disposed, 2)
+  assert.ok(!h.chat.regenInProgress && !h.chat.regenRecovery)
+  assert.equal(h.chat.nativeSync.status, 'stale')
+  assert.equal(disposed, 1)
 })
 
-test('历史恢复点丢失时不删除标志或伪造原正文', async () => {
+test('历史恢复点丢失时不伪造原正文，但也不留下锁死存档的标志', async () => {
   const { h } = await interruptedRegeneration()
   const before = structuredClone(h.chat)
   h.options.chats.readRevision = async () => undefined
-  await assert.rejects(h.create().recover('chat'), /恢复点/)
-  assert.deepEqual(h.chat, before)
+  await h.create().recover('chat')
+  assert.deepEqual(h.chat.messages, before.messages)
+  assert.ok(!h.chat.regenInProgress && !h.chat.regenRecovery)
+  assert.equal(h.chat.nativeSync.status, 'stale')
+})
+
+test('另一进程留下的重新生成标志不会挡住回退', async () => {
+  const { h } = await interruptedRegeneration()
+  const original = structuredClone(h.revisions.get(h.chat.regenRecovery.beforeRevision).messages)
+  const view = await h.create().rollback('session', 'chat')
+  assert.ok(view.rolledBack)
+  assert.ok(!h.chat.regenInProgress)
+  assert.equal(h.chat.messages.length, original.length - 2)
 })
 
 test('重放与重生成、回退互斥', async () => {
@@ -792,14 +800,17 @@ test('重放与重生成、回退互斥', async () => {
   await assert.rejects(regenerating.replayFailed('chat', 'session'), /正在重新生成/)
 })
 
-test('native replacement failure after Chat commit must remain recoverable',async()=>{
- const h=harness({checkpoint:true,journal:true});const append=h.session.append
+test('native replacement failure after Chat commit keeps the new body and repairs the native tail',async()=>{
+ const h=harness({checkpoint:true,journal:true});const append=h.session.append;let repaired=0
+ h.options.repairNative=async()=>{repaired++}
  h.session.append=function(type,data,intent){if(type==='assistant/message' && intent?.surfaceOp?.op==='replace')throw Error('disk/projection failure');return append.call(this,type,data,intent)}
- await assert.rejects(h.create().regenerate('chat','','session'),/disk\/projection failure/)
+ const view=await h.create().regenerate('chat','','session')
  h.session.append=append
- await h.create().recover('chat')
- const surface=h.session.surface.nodes.map(seq=>h.session.events[seq]).filter(e=>e.type==='assistant/message').map(e=>e.data.message.content[0]?.text)
- assert.deepEqual(surface,[h.chat.messages.at(-1).text], 'Chat and native context must agree after recovery')
+ assert.ok(view.adopted)
+ assert.equal(h.chat.messages.at(-1).text,view.adopted.text)
+ assert.ok(!h.chat.regenInProgress && !h.chat.regenRecovery)
+ assert.equal(h.chat.nativeSync.status,'stale')
+ assert.equal(repaired,1)
 })
 
 test('failed regeneration must preserve a Guide saved while model is running',async()=>{

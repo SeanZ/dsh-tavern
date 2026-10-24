@@ -1,3 +1,4 @@
+import { observeStageText } from '../domain/stage-director-stream.js'
 import { createImportContextPreparation } from '../domain/import-context-preparation.js'
 import { createStoryCompactionRequest, nativelyRetainedRounds, retainRecentStoryRounds, storyVolumeMerge, storyVolumePlan, usesStoryCompaction } from '../domain/story-compaction.js'
 import { installCompactionRequestProjection } from '../domain/compaction-request.js'
@@ -16,6 +17,7 @@ export function registerModelStreamHooks({
   modelRequestLog,
   pluginCompactionNotes,
   pluginSettlementProgress,
+  stageDirectorStream,
   requestCoordinates,
   storyRetention,
   runtimePrompt,
@@ -146,12 +148,20 @@ export function registerModelStreamHooks({
       }
       const progress = child ? event => pluginSettlementProgress?.model(child.context.parentSessionId, event) : () => {}
       progress('start')
+      const stage = stageDirectorStream && !backgroundContext && !child && options.purpose === undefined && ['story', 'script'].includes(chat?.mode)
+        ? observeStageText({ begin: () => stageDirectorStream.begin(sessionId, coordinates?.turn), signal: options.signal,
+          warn: error => console.warn('dsh-tavern: 舞台流已停止', str(error?.message || error)) }) : null
       let responseText = ''
+      const blockTypes = new Map()
       let finish = null
       let failure = null
       try {
         for await (const chunk of stream) {
-          if (chunk && chunk.type === 'text-delta') responseText += str(chunk.text)
+          if (chunk?.type === 'block-start') blockTypes.set(chunk.index, chunk.blockType)
+          if (chunk && chunk.type === 'text-delta') {
+            responseText += str(chunk.text)
+            if (!blockTypes.has(chunk.index) || blockTypes.get(chunk.index) === 'text') stage?.append(str(chunk.text))
+          }
           if (chunk && ['text-delta', 'reasoning-delta', 'tool-call-delta'].includes(chunk.type)) progress('output')
           if (chunk && chunk.type === 'finish') finish = chunk.reason === undefined ? chunk : chunk.reason
           yield chunk
@@ -163,6 +173,7 @@ export function registerModelStreamHooks({
       } finally {
         progress('end')
         const completed = finish && finish.kind !== 'error' && finish.kind !== 'aborted'
+        void stage?.finish(completed && !failure)
         foregroundStrategies.completeRequest(options, completed)
         const owner = child ? child.chat : chat
         if (owner && requestRecord) {

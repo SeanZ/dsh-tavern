@@ -891,9 +891,13 @@ export function createTurnOrchestrator(options) {
     if (chat === undefined || chat === null) return []
     const mode = chat.mode || 'story'
     const webTools = chat.webSearchEnabled === true ? ['web_search'] : []
-    const storyTools = storyToolCallEnabled(chat, await options.storyToolCall?.()) ? [STORY_SUBMIT_TOOL_NAME] : []
+    // Input replay names the submission tool in history, so either direction
+    // requires it to be declared in this request.
+    const outputToolCall = (await options.storyToolCall?.()) === true
+    const inputToolCall = (await options.storyInputToolCall?.()) === true
+    const storyTools = storyToolCallEnabled(chat, outputToolCall || inputToolCall) ? [STORY_SUBMIT_TOOL_NAME] : []
     // Card workbenches keep their fixed editing tools; the per-game switches are play-only.
-    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
+    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
     const names = mode === 'script'
       ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
       : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]

@@ -29,3 +29,4 @@ test('请求里旧回复照样被去掉，旧正文只经由改写输入出现�
   assert.equal(JSON.stringify(projected).split('旧正文').length - 1, 1)
 })
 
+

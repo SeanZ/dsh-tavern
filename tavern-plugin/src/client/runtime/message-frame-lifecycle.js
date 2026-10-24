@@ -495,38 +495,73 @@
 				} else if (data.type === "dsh-tavern-helper-call" && !props.sessionId && props.openingPreview) {
 					// The pending frame initializes its private draft before it becomes visible.
 					if (sourceDocument.key !== desired.key) return;
+                    // A card that only ever sends /send has no /trigger to come; its text
+                    // still starts the game once the page is truly quiet (its persist ran),
+                    // as /send does in SillyTavern: no call of this page still running and
+                    // none for 2 s. Every call pauses the wait; the last one to settle re-arms it.
+                    const fireOpeningFallback = function () {
+                        sourceDocument.openingFallbackTimer = null;
+                        if (!listener || sourceDocument !== visible || sourceDocument.openingCommandStarted || !sourceDocument.openingFallbackWanted) return;
+                        sourceDocument.openingFallbackWanted = false;
+                        const plan = (sourceDocument.openingCommandQueue || Promise.resolve()).then(function () {
+                            return invoke("callOpeningRuntime", { id: props.openingPreview.preparationId,
+                                method: "prepareOpeningCommand", args: { line: "/trigger",
+                                    openingId: openingPreviewSelection(props.openingPreview, props.openingPreview.selectedIndex) } });
+                        });
+                        const started = plan.then(function (next) {
+                            if (!next || next.deferred) return null;
+                            if (!sourceDocument.openingCommandStarted) sourceDocument.openingCommandStarted = submitOpening(sourceDocument, next.input);
+                            return sourceDocument.openingCommandStarted;
+                        }).catch(function (error) { tavernErrorHub.report("开始游戏", error); });
+                        sourceDocument.openingCommandQueue = started.then(function () {}, function () {});
+                    };
+                    const settleOpeningCall = function () {
+                        sourceDocument.openingCalls = Math.max(0, (sourceDocument.openingCalls || 0) - 1);
+                        if (sourceDocument.openingCalls || !sourceDocument.openingFallbackWanted || sourceDocument.openingCommandStarted || !current()) return;
+                        if (sourceDocument.openingFallbackTimer) hostWindow.clearTimeout(sourceDocument.openingFallbackTimer);
+                        sourceDocument.openingFallbackTimer = hostWindow.setTimeout(fireOpeningFallback, 2000);
+                    };
+                    if (sourceDocument.openingFallbackTimer) { hostWindow.clearTimeout(sourceDocument.openingFallbackTimer); sourceDocument.openingFallbackTimer = null; }
+                    sourceDocument.openingCalls = (sourceDocument.openingCalls || 0) + 1;
                     if (data.method === "triggerTavernSlash") {
                         // Only a pipe ending in /trigger starts the game. Scripts also query
                         // (/pass {{user}}) or notify (/echo); answer those without starting.
                         const line = String(data.args && data.args.line || "");
-                        if (!/(?:^|\|)\s*\/trigger(?:\s[^|]*)?\s*$/.test(line)) {
+                        // A lone /send or /sys only prepares the text; the page has to
+                        // stay mounted until the script saves its data and sends /trigger.
+                        const preparesOnly = /^\/(send|sys)\s+[\s\S]+$/.test(line.trim()) && !/(?<!\\)\|(?=\s*\/)/.test(line);
+                        if (!preparesOnly && !/(?:^|\|)\s*\/trigger(?:\s[^|]*)?\s*$/.test(line)) {
                             const query = /^\s*\/pass\s+([\s\S]*)$/.exec(line);
                             const names = { user: String(helperContext && helperContext.playerName || "你"), char: String(helperContext && helperContext.characterName || "角色") };
                             const result = query ? { pipe: query[1].replace(/{{\s*(user|char)\s*}}/gi, function (_, key) { return names[key.toLowerCase()]; }).replace(/{{[^{}]*}}/g, "") }
                                 : /^\s*\/echo\b/.test(line) ? { pipe: "" } : null;
                             if (current()) event.source.postMessage(result
                                 ? { type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result: result }
-                                : { type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: "开局准备页只执行以 /trigger 结束的开局命令" }, "*");
+                                : { type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: "开局准备页只执行 /send 文本、/sys 文本或以 /trigger 结束的开局命令" }, "*");
+                            settleOpeningCall();
                             return;
                         }
-                        if (!sourceDocument.openingCommandStart) {
-                            sourceDocument.openingCommandStart = Promise.resolve().then(async function () {
-                                if (!current() || sourceDocument !== visible) throw new Error("开场预览已失效，请重新打开");
-                                const plan = await invoke("callOpeningRuntime", { id: props.openingPreview.preparationId,
-                                    method: "prepareOpeningCommand", args: { line: String(data.args && data.args.line || ""),
-                                        openingId: openingPreviewSelection(props.openingPreview, props.openingPreview.selectedIndex) } });
-                                return submitOpening(sourceDocument, plan.input);
-                            }).catch(function (error) {
-                                sourceDocument.openingCommandStart = null;
-                                tavernErrorHub.report("开始游戏", error);
-                                throw error;
-                            });
-                        }
-                        sourceDocument.openingCommandStart.then(function (result) {
+                        // Calls arrive in the order the card makes them, so they queue
+                        // behind each other; the draft keeps what a lone /send recorded.
+                        const step = (sourceDocument.openingCommandQueue || Promise.resolve()).then(async function () {
+                            if (!current() || sourceDocument !== visible) throw new Error("开场预览已失效，请重新打开");
+                            const plan = await invoke("callOpeningRuntime", { id: props.openingPreview.preparationId,
+                                method: "prepareOpeningCommand", args: { line: line,
+                                    openingId: openingPreviewSelection(props.openingPreview, props.openingPreview.selectedIndex) } });
+                            if (plan && plan.deferred) { sourceDocument.openingFallbackWanted = true; return { pipe: "", deferred: true }; }
+                            sourceDocument.openingFallbackWanted = false;
+                            if (!sourceDocument.openingCommandStarted) sourceDocument.openingCommandStarted = submitOpening(sourceDocument, plan.input);
+                            return sourceDocument.openingCommandStarted;
+                        }).catch(function (error) {
+                            tavernErrorHub.report("开始游戏", error);
+                            throw error;
+                        });
+                        sourceDocument.openingCommandQueue = step.then(function () {}, function () {});
+                        step.then(function (result) {
                             if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result }, "*");
                         }, function (error) {
                             if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: String(error.message || error) }, "*");
-                        });
+                        }).finally(settleOpeningCall);
                         return;
                     }
 					(data.method === "submitTavernHelperInput"
@@ -535,9 +570,9 @@
 						if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result }, "*");
 					}, function (error) {
 						if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: String(error.message || error) }, "*");
-					});
+					}).finally(settleOpeningCall);
 				} else if (data.type === "dsh-tavern-helper-call" && props.sessionId) {
-					const allowedMethods = new Set(["generateTavernHelper", "generateTavernHelperRaw", "stopTavernHelperGeneration", "stopAllTavernHelperGeneration", "prepareSessionOpening", "createTavernHelperMessages", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook"]);
+					const allowedMethods = new Set(["generateTavernHelper", "generateTavernHelperRaw", "stopTavernHelperGeneration", "stopAllTavernHelperGeneration", "prepareSessionOpening", "createTavernHelperMessages", "updateTavernHelperPrompts", "updateTavernHelperVariables", "updateTavernHelperMessages", "getTavernHelperWorldbook", "replaceTavernHelperWorldbook", "patchTavernHelperWorldbook"]);
 					if (data.method === "startSessionOpening") {
 						const request = sourceDocument.openingRequest;
 						const start = async function () {

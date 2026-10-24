@@ -185,13 +185,13 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   Object.setPrototypeOf(plugin, ui.service)
   assert.deepEqual(JSON.parse(JSON.stringify(await plugin.getStage('game-1'))), { enabled: true, player: '你', card: { name: 'A' }, characters: [{ name: '林曦' }], turns: [{ turn: 2, text: 't', lines: [] }] })
   let input = null
-  const dispose = plugin.registerStageView({ id: 'vn', label: '视觉小说', render: value => { input = value; return value.fullscreen ? 'vn-scene' : null } })
+  const dispose = plugin.registerStageView({ id: 'vn', label: '视觉小说', render: value => { input = value; assert.equal(value.fullscreen, true); return value.beat ? 'vn-scene' : null } })
   assert.throws(() => plugin.registerStageView({ id: 'vn', label: '重复', render() {} }), /已注册/)
   assert.throws(() => plugin.registerStageView({ id: 'Bad', label: 'x', render() {} }), /id/)
 
   const start = source.indexOf('function tavernStagePublicData(data)')
   const choiceStart = source.indexOf('const TAVERN_VIEW_BUILTIN')
-  const code = source.slice(choiceStart, source.indexOf('function useTavernTurnView(', choiceStart)) + source.slice(start, source.indexOf('function useTavernStageReader(', start))
+  const code = source.slice(choiceStart, source.indexOf('function useTavernTurnView(', choiceStart)) + source.slice(start, source.indexOf('function playTavernStagePerformance(', start))
   const h = (type, props, ...children) => ({ type, props, children: children.flat() })
   const stored = new Map()
   const stage = vm.runInNewContext(code + '; ({ useTavernStageView, TavernStageSceneView, TavernStageViewSwitch })', {
@@ -202,8 +202,8 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   let choice = stage.useTavernStageView()
   assert.equal(choice.view.label, '视觉小说', '没选过时用插件视图')
   const beats = [{ kind: 'line', text: '“你好。”', speaker: '林曦', emotion: 'joy' }]
-  const props = fullscreen => ({ view: choice.view, sessionId: 'game-1', data: { player: '你', card: { name: 'A' }, cast: [] }, beats, index: 0, fullscreen, onAdvance() {}, footer: 'controls' })
-  let tree = stage.TavernStageSceneView(props(true))
+  const props = (index = 0) => ({ view: choice.view, sessionId: 'game-1', data: { player: '你', card: { name: 'A' }, cast: [] }, beats, index, onAdvance() {}, footer: 'controls' })
+  let tree = stage.TavernStageSceneView(props())
   assert.equal(tree.type, 'Boundary')
   assert.equal(tree.props.fallback.type, 'Builtin')
   const body = tree.children[0]
@@ -212,7 +212,7 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   assert.equal(input.beat.speaker, '林曦')
   assert.equal(input.footer, 'controls')
   assert.deepEqual(input.stage.characters, [])
-  tree = stage.TavernStageSceneView(props(false))
+  tree = stage.TavernStageSceneView(props(1))
   assert.equal(tree.children[0].type(tree.children[0].props).type, 'Builtin', '返回 null 时用内置舞台')
 
   const viewSwitch = stage.TavernStageViewSwitch({ choice })
@@ -221,7 +221,7 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   choice.choose('dsh-tavern:builtin')
   choice = stage.useTavernStageView()
   assert.equal(choice.view, null)
-  assert.equal(stage.TavernStageSceneView({ ...props(true), view: null }).type, 'Builtin')
+  assert.equal(stage.TavernStageSceneView({ ...props(), view: null }).type, 'Builtin')
   dispose()
   stored.clear()
   choice = stage.useTavernStageView()

@@ -200,6 +200,28 @@ function installWindowBasics(w) {
   if (!w.crypto?.randomUUID) Object.defineProperty(w, 'crypto', { value: globalThis.crypto, configurable: true })
   if (!w.requestAnimationFrame) { w.requestAnimationFrame = fn => setTimeout(() => fn(Date.now()), 16); w.cancelAnimationFrame = id => clearTimeout(id) }
   if (!w.matchMedia) w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+  installUserTiming(w.performance)
+}
+
+// jsdom's performance has now() only; card scripts time themselves with marks and measures.
+function installUserTiming(performance) {
+  if (!performance || typeof performance.mark === 'function') return
+  let entries = []
+  const startOf = value => typeof value === 'number' ? value : value === undefined ? 0 : entries.findLast(entry => entry.name === value && entry.entryType === 'mark')?.startTime ?? 0
+  const add = entry => { entries.push(entry); if (entries.length > 1000) entries = entries.slice(-1000); return entry }
+  Object.assign(performance, {
+    mark: (name, options) => add({ name: String(name), entryType: 'mark', startTime: options?.startTime ?? performance.now(), duration: 0, detail: options?.detail ?? null }),
+    measure(name, start, end) {
+      const options = start && typeof start === 'object' ? start : null
+      const from = startOf(options ? options.start : start), to = options?.end !== undefined ? startOf(options.end) : end !== undefined ? startOf(end) : performance.now()
+      return add({ name: String(name), entryType: 'measure', startTime: from, duration: to - from, detail: options?.detail ?? null })
+    },
+    getEntries: () => entries.slice(),
+    getEntriesByName: (name, type) => entries.filter(entry => entry.name === name && (!type || entry.entryType === type)),
+    getEntriesByType: type => entries.filter(entry => entry.entryType === type),
+    clearMarks: name => { entries = entries.filter(entry => entry.entryType !== 'mark' || (name !== undefined && entry.name !== name)) },
+    clearMeasures: name => { entries = entries.filter(entry => entry.entryType !== 'measure' || (name !== undefined && entry.name !== name)) }
+  })
 }
 
 // ---- Host page -------------------------------------------------------------

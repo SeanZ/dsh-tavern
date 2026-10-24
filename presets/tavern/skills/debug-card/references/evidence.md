@@ -45,6 +45,7 @@
 | MVU、姿势或候选项异常 | tavern、background，必要时 request | 区分任务未启用、未运行、调用失败和提交内容错误；前台成功不代表后台成功 |
 | 预设、长期偏好或模型设置未生效 | preset、context、request，结合相关 Agent 日志 | 根据真实请求检查实际发送内容；请求为空或截断时不能推断未发送 |
 | 生成或结算慢 | foreground、background、tavern、request | 使用可得时间证据区分阶段与缓存；长连接存在本身不证明泄漏 |
+| 页面打开、切换慢，酒馆报错或功能失效 | `tavern_read_runtime_health`，再对照相关轮次 | 只有页面请求的服务端耗时和酒馆自己的警告报错；不含模型生成时间和浏览器渲染卡顿 |
 | 多轮连续性问题 | turns，再读相关轮；确需完整上下文才读 conversation | conversation 是 Session 层对话，不是全部原始模型请求 |
 
 foreground / background 读取原生 Agent Session 事件。运行时未加载该 Session 时工具会明确报告不可读；用 Tavern 持久记录继续排查，不能将日志缺失认作任务未执行。真实请求仅证明该条记录对应的 Agent 与轮次。

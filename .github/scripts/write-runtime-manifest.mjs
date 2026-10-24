@@ -11,11 +11,20 @@ if (!Number.isSafeInteger(releaseSequence) || releaseSequence <= 0) throw new Er
 
 const entries = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml', 'install.ps1', 'install.sh', 'android', 'bin', 'config', 'presets', 'patches', 'tavern-plugin']
 const files = []
+// Kept in the repository (license-required upstream sources, the client source) but never read by an
+// installed copy: lib/client.js is the built client, and only these upstream files are loaded at runtime.
+const developmentOnly = [
+  { prefix: 'tavern-plugin/src/' },
+  { prefix: 'tavern-plugin/lib/vendor/st-prompt-template/upstream/', keep: ['LICENSE', 'settings.html'] },
+  { prefix: 'tavern-plugin/lib/vendor/magvarupdate/upstream/', keep: ['LICENSE'] },
+]
+const isDevelopmentOnly = file => developmentOnly.some(rule => file.startsWith(rule.prefix) && !(rule.keep || []).includes(file.slice(rule.prefix.length)))
 
 async function collect(relative) {
   const absolute = path.join(root, relative)
   const items = await readdir(absolute, { withFileTypes: true }).catch((error) => error?.code === 'ENOTDIR' ? null : Promise.reject(error))
   if (items === null) {
+    if (isDevelopmentOnly(relative.replaceAll('\\', '/'))) return
     const content = await readFile(absolute)
     files.push({ path: relative.replaceAll('\\', '/'), sha256: createHash('sha256').update(content).digest('hex'), size: content.length })
     return

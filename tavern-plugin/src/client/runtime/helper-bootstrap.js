@@ -126,7 +126,8 @@
                         || (Number(incoming.lifecycleRevision || 0) === Number(state.lifecycleRevision || 0)
                             && Number(incoming.stateRevision || 0) < Number(state.stateRevision || 0)))) return;
 					if (incoming) { state = Object.assign({}, state, copy(incoming)); state.messages = modules.applyVariableReceipt.indexApi.from(state.messages || []); if (!incoming.transaction) delete state.transaction; }
-					if (result.worldbook) state.worldbook = copy(result.worldbook);
+					// Version-only and patch replies are merged by the worldbook API itself.
+					if (result.worldbook && Array.isArray(result.worldbook.entries)) state.worldbook = copy(result.worldbook);
 					// Chat-data saves acknowledge their own submitted snapshot separately.
 					if (incoming && facade && method !== "saveTavernChatData") facade.sync(state);
 				},
@@ -541,17 +542,19 @@
 			};
 			window.getWorldbookNames = function () { return state.worldbook && state.worldbook.name ? [state.worldbook.name] : []; };
 			window.getCharWorldbookNames = function () { return { primary: state.worldbook && state.worldbook.name || null, additional: [] }; };
+			// Global and extra bound books reach scripts merged into the game's one book; there is no separate chat book.
+			window.getGlobalWorldbookNames = function () { return []; };
+			window.getChatWorldbookName = function () { return null; };
 			window.getWorldbook = async function (name) {
 				if (state.worldbook && (name === "current" || name === state.worldbook.name)) {
                     const access = state.worldbook.resourceAccess;
-                    if (!access) return copy(state.worldbook.entries || []);
+                    // A copy from an earlier write is checked by version; only a changed book comes back whole.
+                    if (!access) return state.worldbook.version ? await freshWorldbook(state.worldbook.name) : copy(state.worldbook.entries || []);
                     const book = await resources.readAsync(access);
                     if (state.worldbook?.resourceAccess?.token === access.token) state.worldbook = copy(book);
                     return copy(book && book.entries || []);
                 }
-				const result = await call("getTavernHelperWorldbook", { name: name });
-				state.worldbook = copy(result.worldbook);
-				return copy(state.worldbook.entries || []);
+				return await freshWorldbook(name);
 			};
 			function legacyWorldbookEntry(entry, index) {
 				const extra = entry.extra || {};
@@ -601,25 +604,44 @@
 					return entry;
 				});
 			}
-			async function writeWorldbook(name, entries, expectedEntries) {
-				const result = await call("replaceTavernHelperWorldbook", { name: name, entries: worldbookPayload(entries), expectedEntries: expectedEntries });
-				state.worldbook = copy(result.worldbook);
+			function fullWorldbook(worldbook) {
+				state.worldbook = copy(worldbook);
 				return copy(state.worldbook.entries || []);
 			}
+			// Send only the entries that differ from the version read; a large book is not uploaded again.
+			async function writeWorldbook(name, entries, current, version) {
+				const next = worldbookPayload(entries), before = new Map(), seen = new Set(), upserts = [];
+				for (const entry of current) before.set(String(entry.uid), JSON.stringify(entry));
+				for (const entry of next) {
+					const key = entry.uid === undefined ? "" : String(entry.uid);
+					if (key && seen.has(key)) throw new Error("世界书条目编号无效或重复");
+					if (key) seen.add(key);
+					if (!key || before.get(key) !== JSON.stringify(entry)) upserts.push(entry);
+				}
+				const deletes = current.filter(function (entry) { return !seen.has(String(entry.uid)); }).map(function (entry) { return entry.uid; });
+				if (!upserts.length && !deletes.length) return copy(current);
+				const result = await call("patchTavernHelperWorldbook", { name: name, patch: { version: version, upserts: upserts, deletes: deletes } });
+				const book = result.worldbook, byUid = new Map(current.map(function (entry) { return [String(entry.uid), entry]; }));
+				for (const entry of book.changed || []) byUid.set(String(entry.uid), entry);
+				const written = (book.uids || []).map(function (uid) { return byUid.get(String(uid)); });
+				if (written.some(function (entry) { return !entry; })) return await freshWorldbook(name);
+				return fullWorldbook({ name: book.name, version: book.version, entries: written });
+			}
 			async function freshWorldbook(name) {
-				const result = await call("getTavernHelperWorldbook", { name: name });
-				state.worldbook = copy(result.worldbook);
-				return copy(state.worldbook.entries || []);
+				const held = state.worldbook && state.worldbook.name === name && state.worldbook.version && Array.isArray(state.worldbook.entries) ? state.worldbook : null;
+				const result = await call("getTavernHelperWorldbook", held ? { name: name, knownVersion: held.version } : { name: name });
+				if (held && result.worldbook && result.worldbook.unchanged && result.worldbook.version === held.version) { state.worldbook = held; return copy(held.entries); }
+				return fullWorldbook(result.worldbook);
 			}
 			window.replaceWorldbook = async function (name, entries) {
 				const current = await freshWorldbook(name);
-				await writeWorldbook(name, entries, current);
+				await writeWorldbook(name, entries, current, state.worldbook.version);
 			};
 			window.updateWorldbookWith = async function (name, updater) {
 				if (typeof updater !== "function") throw new TypeError("世界书更新器必须是函数");
-				const current = await freshWorldbook(name), draft = copy(current);
+				const current = await freshWorldbook(name), version = state.worldbook.version, draft = copy(current);
 				const next = await updater(draft);
-				return await writeWorldbook(name, next === undefined ? draft : next, current);
+				return await writeWorldbook(name, next === undefined ? draft : next, current, version);
 			};
 			window.createWorldbookEntries = async function (name, entries) {
 				const additions = worldbookPayload(entries).map(function (entry) { delete entry.uid; return entry; });

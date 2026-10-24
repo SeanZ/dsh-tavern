@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
@@ -120,6 +122,34 @@ function entryPatch(entry) {
     sticky: finite(entry.effect.sticky, '黏性', true), cooldown: finite(entry.effect.cooldown, '冷却', true), delay: finite(entry.effect.delay, '延迟', true),
     helperExtra: extra
   }
+}
+
+/** Content version of projected entries; a script sends it back so a write can detect a concurrent edit. */
+export function tavernHelperWorldbookVersion(entries) {
+  return createHash('sha1').update(JSON.stringify(entries)).digest('hex')
+}
+
+/** The full requested book from a patch: upserts replace their uid in place or are added in order; deletes drop by uid. */
+export function patchTavernHelperWorldbookEntries(source, patch) {
+  const upserts = patch && patch.upserts !== undefined ? patch.upserts : []
+  const deletes = patch && patch.deletes !== undefined ? patch.deletes : []
+  if (!Array.isArray(upserts) || !Array.isArray(deletes)) throw new Error('世界书改动必须是数组')
+  const known = new Set(source.map(entry => String(entry.uid)))
+  const removed = new Set(deletes.map(String)), replaced = new Map(), added = []
+  for (const entry of upserts) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('世界书条目必须是对象')
+    const key = entry.uid === undefined ? '' : String(entry.uid)
+    if (key && (replaced.has(key) || removed.has(key) || added.some(other => other.uid !== undefined && String(other.uid) === key))) throw new Error('世界书条目编号无效或重复')
+    if (key && known.has(key)) replaced.set(key, entry)
+    else added.push(entry)
+  }
+  return source.filter(entry => !removed.has(String(entry.uid))).map(entry => replaced.get(String(entry.uid)) || entry).concat(added)
+}
+
+/** What a write changed: the book's uid order plus only the entries that differ, so a script can update its copy. */
+export function tavernHelperWorldbookChanges(before, after) {
+  const previous = new Map(before.map(entry => [String(entry.uid), JSON.stringify(entry)]))
+  return { uids: after.map(entry => entry.uid), changed: after.filter(entry => previous.get(String(entry.uid)) !== JSON.stringify(entry)) }
 }
 
 /** Replace by stable uid, preserving untouched raw fields and resolving embedded refs before deletion. */

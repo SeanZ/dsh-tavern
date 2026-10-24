@@ -23,39 +23,9 @@ Android 仅提供独立 APK，要求 Android 11 及以上、ARM64；不再提供
 
 [返回项目首页](../README.md) · [在线使用文档](https://flizzywine.github.io/dsh-tavern/)
 
-### Windows 一键安装版
-
-本分支已将一键包宿主切换为官方 **DeepSeek Harness 0.2.1-rc.2**，新的 EXE 尚未发布。验证后会提供 Releases 下载；测试构建由 `Windows Setup` 工作流生成。旧社区版安装包不适用于此分支。新包双击后选择原安装文件夹，再点击「安装并启动」，沿用原数据。
-
-- **以后启动：** 双击桌面或开始菜单中的「DSH Tavern」。也可以在安装目录双击 `DSH Tavern.exe`；不要直接运行 `runtime-…` 里的 `DeepSeek Harness.exe`，内部程序需要外层启动器提供正确的数据路径。
-- **安装位置：** 首次可自选，默认 `%LOCALAPPDATA%\DSH-Tavern`。新安装的程序、运行文件和数据放在所选目录下；数据位于 `data` 子目录。完成提示和目录中的 `如何启动.txt` 列出实际位置。
-- **下载包：** 安装器会在所选目录保存固定启动入口，安装完成后可以删除下载的 `Setup.exe`，不会影响快捷方式。
-- **旧版修复：** 新安装器会识别旧便携版的 `%LOCALAPPDATA%\DSH-Tavern-Portable`、历史 `D:\Workspace\.DSH-Tavern` 和更早的 `%LOCALAPPDATA%\DSH-Tavern`。点击「修复并启动」会关闭所选安装的旧进程、联网更新运行时和 Tavern 插件，并补建入口、取消旧安装文件夹的隐藏属性。请先保存当前操作；人物卡、聊天和设置保留，不自动搬动数据。
-- **断网或失败：** 已建立的桌面、开始菜单入口仍可用于重试。错误窗口显示文件位置，安装目录的 `launcher-error.txt` 记录启动问题，数据目录的 `first-install.log` 记录首次联网安装问题。
-- **重装与备份：** 再次运行安装包会沿用已记录的位置。新安装备份整个 `data` 目录；旧版请按完成提示中的实际数据位置备份。不要只移动 `runtime-…` 或修改 `launcher-settings.xml` 来迁移数据，现有依赖可能包含绝对路径。原安装位置失效时，安装器会提供「使用原目录」「重新安装」和「取消」。需要保留数据时，连接原磁盘或选择原安装文件夹；确认已卸载并希望重新开始时，点击「重新安装」并选择位置，无需手动清理注册表。重新安装不会删除旧文件，也不能恢复已删除的数据。
-
 Windows Desktop 安装和更新使用 Desktop 自带的 pnpm 与 Node（即 Desktop 程序本身），不再另外下载 Node；旧版留下的 `tools/desktop-package-manager` 目录不再使用，可以删除。安装器会自动使用 Windows 系统代理（PAC 自动配置除外）。若旧版一直卡在“正在更新”，先关闭旧更新任务，再使用新版安装器修复入口；普通 Desktop 从系统终端重新运行本文安装命令。命令行版继续使用独立 Node，macOS/Linux 不应用这项 Windows 修复。
 
 Desktop 固定为 **0.2.1-rc.2**；以后在酒馆界面更新插件。仅 Desktop 安装和更新内置 **`dsh-pocket 2.12.0`**（固定版本），并移除冲突的 `dsh-web-mobile`；手机扫码入口在 **设置 → 手机访问**，无需自行安装插件。CLI 不安装 Pocket，升级时会移除旧版 Pocket。Android / DSHA 不安装 Pocket，继续使用 `dsh-web-mobile`。切换到下面的 CLI 安装方式不会自动同步这份数据。
-
-### 用 DSH 命令安装 Tavern（试验）
-
-适用于已经安装 **DSH 0.2.1-rc.2、Node.js 22.19+、pnpm**、准备新建独立 `tavern` Profile 的用户：
-
-需要 Git，在终端运行：
-
-```bash
-dsh plugin --profile tavern add @deepseek-ai/dsh-web-app github:flizzywine/dsh-tavern
-dsh --profile tavern
-```
-
-第一条命令由 DSH 创建 Profile，装上网页组件和完整运行包并启用酒馆；第二条启动网页。新建的 `tavern` Profile 默认不带网页组件，所以要在同一条命令里一起加上。酒馆使用当前 DSH，不会另装或升级宿主。运行包包含侧栏、人物卡功能、预设和 Skill，无需自行构建。启动时检查 DSH 适配版本。
-
-> **暂不可用：** DSH 0.2.1-rc.2 解析依赖时有缺陷，这条路线启动会报 `createRequire.resolve.paths is not a function`（[#300](https://github.com/flizzywine/dsh-tavern/issues/300)），需等 DSH 修复。在此之前请用下面的命令行安装方式。
-
-数据位于当前 `DSH_HOME` 下的 `profile-data/tavern/`；未设置 `DSH_HOME` 时通常为 `~/.dsh/profile-data/tavern/`。程序由 Profile 的包管理器维护。更新时先关闭酒馆，重新运行第一条安装命令，再启动。页面中的「查看更新命令」提供同一条命令，不使用原来的源码更新器。
-
-当前先支持普通 DSH CLI 的新安装。不要往专用安装器已经管理的 `tavern` Profile 直接叠装；原 CLI、Desktop、Android 安装继续使用各自原有方式。这条路线不会迁移旧 CLI 的独立数据，也不附带 Desktop 的 Pocket 手机访问配置或宿主字体文件修改。侧栏终端复用宿主提供的 `node-pty`；宿主缺少此依赖时，终端会显示修复提示，酒馆仍可使用。
 
 ### 命令行及宿主内安装
 
@@ -125,7 +95,7 @@ curl -fsSL 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/install
 
 安装程序会自动安装依赖、启动 dsh-tavern，并在首次安装时打开网页。关闭页面后，运行 `dsh-tavern open` 可重新打开；也可运行 `dsh-tavern status`，复制显示的完整访问地址（含鉴权 token，请勿分享）。不要只输入不带 token 的地址，以免出现鉴权提示。更新时优先使用 Git 增量同步；Git 不可用或同步失败时才下载完整 ZIP。
 
-一键安装及更新、Android 安装默认通过 [npmmirror 国内镜像](https://npmmirror.com/) 下载 npm 依赖，不修改全局 npm 配置。如需使用其他源，在运行安装命令前设置 `DSH_TAVERN_NPM_REGISTRY`：PowerShell 使用 `$env:DSH_TAVERN_NPM_REGISTRY='https://registry.npmjs.org'`，macOS / Linux 使用 `export DSH_TAVERN_NPM_REGISTRY=https://registry.npmjs.org`。
+安装、更新与 Android 安装默认通过 [npmmirror 国内镜像](https://npmmirror.com/) 下载 npm 依赖，不修改全局 npm 配置。如需使用其他源，在运行安装命令前设置 `DSH_TAVERN_NPM_REGISTRY`：PowerShell 使用 `$env:DSH_TAVERN_NPM_REGISTRY='https://registry.npmjs.org'`，macOS / Linux 使用 `export DSH_TAVERN_NPM_REGISTRY=https://registry.npmjs.org`。
 
 首次使用时，在左侧栏底部打开 **设置 → 模型**，填写模型服务的 API 密钥。
 
@@ -206,7 +176,7 @@ dsh-tavern stop
 dsh-tavern restart
 ```
 
-**更新酒馆：** 更新沿用已安装目录，保留数据。完整覆盖重装步骤见[更新与重新安装](https://flizzywine.github.io/dsh-tavern/#a02--section-9)。
+**更新酒馆：** 更新沿用已安装目录，保留数据。完整覆盖重装步骤见[更新](https://flizzywine.github.io/dsh-tavern/#a02--section-6)。
 
 ```bash
 dsh-tavern update

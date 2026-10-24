@@ -26,8 +26,10 @@
  *
  * Route security: the same trust fence as dsh-better-sidebar's /sidebar
  * routes — loopback (or a configured trusted authority) Host header and
- * same-origin browser markers only. This is a DNS-rebinding / cross-site
- * defense, not authentication.
+ * same-origin browser markers only (403) — then the host's own session check,
+ * `connection.requestRejection(req)`, exactly as `/api/...` uses it (401 when
+ * the browser session is missing). A client that reaches a trusted authority
+ * cannot read or write preferences without logging in.
  */
 
 import { homedir } from "node:os";
@@ -295,6 +297,13 @@ export function apply(ctx) {
 		handler: async (req, res) => {
 			if (!isTrustedApiRequest(req, trustedHosts(ctx))) {
 				writeJson(res, 403, { ok: false, error: { code: "forbidden", message: "forbidden" } });
+				return;
+			}
+			const connection = ctx.get("connection");
+			const rejection = typeof connection?.requestRejection === "function" ? connection.requestRejection(req) : 503;
+			if (rejection) {
+				const code = rejection === 401 ? "unauthorized" : rejection === 403 ? "forbidden" : "unavailable";
+				writeJson(res, rejection, { ok: false, error: { code, message: code } });
 				return;
 			}
 			try {

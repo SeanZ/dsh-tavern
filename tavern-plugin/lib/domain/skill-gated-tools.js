@@ -11,7 +11,7 @@ const SKILL_TOOLS = Object.freeze({
   'create-writing-skill': ['tavern_save_skill'],
   'user-profile': ['tavern_user_profile_read', 'tavern_user_profile_save'],
   'create-card': ['tavern_user_profile_read'],
-  'debug-card': ['tavern_read_play_chat']
+  'debug-card': ['tavern_read_play_chat', 'tavern_read_runtime_health']
 })
 const GATED = new Set(Object.values(SKILL_TOOLS).flat())
 const SKILL_CONTENT = /<skill_content name=\\?"([^"\\]+)/g

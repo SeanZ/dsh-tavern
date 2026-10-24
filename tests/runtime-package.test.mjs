@@ -20,8 +20,11 @@ const bundledWorldbooks = ['tavern-plugin/packages/dsh-tavern-image-bundled/世�
 required.push('bin/bundled-scene-image-plugin.mjs', 'tavern-plugin/packages/dsh-tavern-image-bundled/package.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/BUNDLED-VERSION.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/cordis.patch.yml', 'tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js', 'tavern-plugin/packages/dsh-tavern-image-bundled/client.js', ...bundledWorldbooks)
 required.push('tavern-plugin/lib/domain/server-template-runtime.js', 'tavern-plugin/lib/domain/server-template-worker.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/engine.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/manifest.json')
 required.push('tavern-plugin/lib/domain/tavern-client-assets.js', 'tavern-plugin/lib/client-assets/tavern.css')
-required.push('bin/build-tavern-client.mjs', 'tavern-plugin/src/client/main.js',
-  ...['runtime-generation-monitor', 'library-refresh', 'live-tavern-view'].map(name => `tavern-plugin/src/client/modules/${name}.js`))
+required.push('bin/build-tavern-client.mjs')
+// In the repository and the Git package, but never read by an installed copy (lib/client.js is the
+// built client; only settings.html and the licenses of the vendored upstream sources are loaded).
+const developmentOnly = ['tavern-plugin/src/client/main.js', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/package.json', 'tavern-plugin/lib/vendor/magvarupdate/upstream/package.json']
+const keptUpstream = ['tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/LICENSE', 'tavern-plugin/lib/vendor/magvarupdate/upstream/LICENSE']
 
 // Git emits USTAR/PAX UTF-8 names; Windows tar's listing and extraction depend on locale.
 function gitTarFiles(archive) {
@@ -134,7 +137,7 @@ test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), 'tavern-runtime-package-'))
   t.after(() => rm(fixture, { recursive: true, force: true }))
   for (const directory of ['android', 'bin', 'config', 'presets', 'tavern-plugin']) await mkdir(path.join(fixture, directory))
-  for (const file of new Set([...required, 'cordis.patch.yml', 'install.sh', 'install.ps1', 'android/setup.sh'])) {
+  for (const file of new Set([...required, ...developmentOnly, ...keptUpstream, 'cordis.patch.yml', 'install.sh', 'install.ps1', 'android/setup.sh'])) {
     await mkdir(path.dirname(path.join(fixture, file)), { recursive: true })
     await writeFile(path.join(fixture, file), await readFile(path.join(root, file)))
   }
@@ -149,7 +152,8 @@ test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
   assert.equal(manifest.releaseSequence, 42)
   assert.equal(manifest.version, JSON.parse(await readFile(path.join(fixture, 'package.json'), 'utf8')).version)
   assert.ok(manifest.files.some(file => file.path === 'android/setup.sh'), 'CDN 清单需要 android/ 才能增量更新 APK 端的安装脚本')
-  for (const file of required) {
+  for (const file of developmentOnly) assert.ok(!manifest.files.some(entry => entry.path === file), `CDN 清单不应下载开发用文件：${file}`)
+  for (const file of [...required, ...keptUpstream]) {
     const entry = manifest.files.find(entry => entry.path === file)
     assert.ok(entry, `CDN 清单遗漏：${file}`)
     const content = await readFile(path.join(fixture, file))

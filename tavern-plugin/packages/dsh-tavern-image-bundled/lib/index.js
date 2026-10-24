@@ -690,8 +690,6 @@ route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => e
   // 手动配图：浏览器侧「🎨 生图」按钮走这条，链路和自动配图完全一致
   route(`${BASE}/attach-turn`, handleAttachTurn)
 
-  registerImageTool(ctx, ready)
-  // 已停用（改用 Tavern 官方 promptSection + attach 链路）：installImageToolHint(ctx)
   // 已停用（改用 Tavern 官方 promptSection + attach 链路）：installAutoImagePrompt(ctx, ready)
   logger.info?.('dsh-tavern-image: 已加载（控制台 ' + BASE + '/console）')
 }
@@ -738,109 +736,6 @@ async function handleJobs(request, response, url, engine) {
   if (!job) { sendJson(response, 404, { ok: false, error: 'job-not-found' }); return }
   if (url.searchParams.get('image') === '1') { engine.sendImage(response, job, request.headers.range); return }
   sendJson(response, 200, { ok: true, job: engine.publicJob(job) })
-}
-
-// =====================================================================
-// 生图工具：让前台模型写完正文后主动调一次
-// =====================================================================
-
-const TOOL_NAME = 'generate_scene_images'
-
-function registerImageTool(ctx, ready) {
-  if (typeof ctx.inject !== 'function') return
-  ctx.inject(['tools'], scoped => {
-    const tools = scoped.tools
-    const diag = { hasService: Boolean(tools), hasRegister: typeof tools?.register === 'function' }
-    if (typeof globalThis !== 'undefined') globalThis.__rphubToolsDiag = diag
-    if (!tools || typeof tools.register !== 'function') {
-      diag.error = '没有 tools 服务'
-      scoped.logger?.warn?.('dsh-tavern-image: 当前 DSH 没有 tools 服务，生图工具未注册')
-      return
-    }
-    const definition = {
-      name: TOOL_NAME,
-      description: '为刚刚写好的这一轮正文生成插图。写完正文后调用一次，把正文原文原样传进来；'
-        + '插件会在后台按当前卡片的设定与世界书规划画面、调用已配置的生图渠道，并把图插到正文对应句子后面。'
-        + '没有开启生图或不需要配图时不要调用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: '刚写好的正文原文（完整，不要摘要、不要改写）' },
-          count: { type: 'number', description: '这一轮想要几张，留空则按插件设置' },
-        },
-        required: ['text'],
-      },
-      output: {
-        schema: {
-          type: 'object',
-          properties: {
-            ok: { type: 'boolean' },
-            generated: { type: 'number' },
-            note: { type: 'string' },
-          },
-        },
-        render: (args, value) => [{ type: 'text', text: String(value && value.note ? value.note : '已处理配图请求') }],
-      },
-      async execute(args, exec) {
-        const engine = await ready()
-        const input = args && typeof args === 'object' ? args : {}
-        const body = String(input.text ?? '').trim()
-        if (!body) return { ok: false, generated: 0, note: '没收到正文，无法配图' }
-        const result = await engine.planFromTool({
-          text: body,
-          count: input.count,
-          sessionId: exec?.agent?.id ? String(exec.agent.id) : '',
-        })
-        return result
-      },
-    }
-    const install = () => {
-      try {
-        const dispose = tools.register(definition)
-        diag.registered = true
-        try {
-          const found = typeof tools.get === 'function' ? tools.get(TOOL_NAME) : undefined
-          diag.visible = Boolean(found)
-        } catch (error) { diag.getError = String(error?.message ?? error) }
-        try {
-          if (typeof tools.schemas === 'function') {
-            const names = (tools.schemas() ?? []).map(s => String(s?.name ?? ''))
-            diag.totalTools = names.length
-            diag.foundInSchemas = names.includes(TOOL_NAME)
-          }
-        } catch (error) { diag.schemasError = String(error?.message ?? error) }
-        return dispose
-      } catch (error) {
-        diag.registerError = String(error?.message ?? error)
-        throw error
-      }
-    }
-    if (typeof scoped.effect === 'function') scoped.effect(install, 'dsh-tavern-image: ' + TOOL_NAME)
-    else install()
-  })
-}
-
-/** 告诉前台模型：写完正文后请调用生图工具。 */
-function installImageToolHint(ctx) {
-  if (typeof ctx.inject !== 'function') return
-  ctx.inject(['systemPrompt'], scoped => {
-    const systemPrompt = scoped.systemPrompt
-    if (!systemPrompt || typeof systemPrompt.section !== 'function') return
-    const register = () => systemPrompt.section({
-      name: 'dsh-tavern-image:image-tool-hint',
-      order: AUTO_SECTION_ORDER + 1,
-      text: () => [
-        '## 配图',
-        '写这一轮正文**之前**，先把准备写的正文原文传给 ' + TOOL_NAME + ' 工具（参数 text）。',
-        '工具会返回若干插图标记（形如 [[img:xxxxxxxx]]），每条都写明该插在哪句话之后。',
-        '你把标记**原样**插进正文对应句子之后，再输出正文。标记会由界面渲染成图片。',
-        '标记的写法一个字都不能改（不要加空格、不要翻译、不要解释它），也不要自己编造新的标记。',
-        '正文其余部分照常写，不需要描述画面。',
-      ].join('\n'),
-    })
-    if (typeof scoped.effect === 'function') scoped.effect(register, 'dsh-tavern-image: image tool hint')
-    else register()
-  })
 }
 
 // =====================================================================
@@ -2588,53 +2483,8 @@ let worldbookCache = null
       return { ok: true, raw, traits, size: ref.width + 'x' + ref.height }
     }
 
-    let lastPlan = null
-    /** 正文指纹：工具那条路没有消息 id，用它跟正文对上。 */
-    function hashText(value) {
-      let a = 2166136261
-      const source = String(value ?? '')
-      for (let i = 0; i < source.length; i++) a = Math.imul(a ^ source.charCodeAt(i), 16777619)
-      return (a >>> 0).toString(36)
-    }
-
     function plansFor(messageId) {
       return messageId ? plansByMessage.get(String(messageId)) ?? null : null
-    }
-
-    /**
-     * 前台模型调用工具时走这条路：它在 agent 链里，能拿到发起者身份，
-     * 所以这里的规划是"带着卡片上下文"跑的，和后台自动规划共用同一套规划逻辑。
-     */
-    async function planFromTool({ text, count, sessionId }) {
-      try {
-        const plan = await planMessage({
-          text,
-          messageId: 'tool-' + Date.now(),
-          turn: 0,
-          count,
-          sessionId,
-          manual: true,
-        })
-        if (!plan || !plan.plans || !plan.plans.length) {
-          return { ok: false, generated: 0, note: '配图没产出：' + (plan?.error || '模型没有返回可用的 <image> 块') }
-        }
-        lastPlan = plan
-        lastPlan.textHash = hashText(text)
-        const marks = plan.plans.map(item => {
-          const key = String(item.jobId ?? '').slice(0, 8)
-          const where = String(item.mount ?? '').replace(/\s+/g, ' ').slice(0, 42)
-          const what = String(item.title ?? '').slice(0, 20)
-          return '- 在「' + where + '」这一句之后插入 [[img:' + key + ']]' + (what ? '（' + what + '）' : '')
-        }).join('\n')
-        return {
-          ok: true,
-          generated: plan.plans.length,
-          note: '已提交 ' + plan.plans.length + ' 张插图，正在后台绘制。\n'
-            + '现在请输出这一轮的正文，并在下面这些位置原样插入标记（标记不要改动、不要解释）：\n' + marks,
-        }
-      } catch (error) {
-        return { ok: false, generated: 0, note: '配图失败：' + (error?.message ?? String(error)) }
-      }
     }
 
     function sweep() {
@@ -2887,8 +2737,6 @@ let worldbookCache = null
           // Tavern 官方接口桥的自检：装了没、Tavern 给了哪些能力
           tavernBridge: deps.bridge ? { installed: true, exports: Object.keys(deps.bridge) } : { installed: false },
           tavernApi: deps.tavern ? { apiVersion: deps.tavern.apiVersion, hasAttach: typeof deps.tavern.attach === 'function', hasPromptSection: typeof deps.tavern.promptSection === 'function', hasGetTurn: typeof deps.tavern.getTurn === 'function', hasOnTurnSettled: typeof deps.tavern.onTurnSettled === 'function', hasTurnData: typeof deps.tavern.readTurnData === 'function' } : null,
-          toolName: TOOL_NAME,
-          toolsDiag: (() => { try { return globalThis.__rphubToolsDiag ?? null } catch { return null } })(),
           plannerEnabled: config.plannerEnabled !== false, plannerProvider: config.plannerProvider ?? '',
           visionProvider: config.visionProvider ?? '',
           plannerEffort: String(config.plannerEffort ?? ''),
@@ -3081,11 +2929,6 @@ let worldbookCache = null
               data: { ask: messageId.slice(0, 14) || '(空)', hit: plan ? (plan.plans ? plan.plans.length : 0) : 0, mapSize: plansByMessage.size, keys: [...plansByMessage.keys()].map(k => String(k).slice(0, 10)).slice(0, 6), fallback: String(_url?.searchParams?.get('fallback') ?? '') },
             })
           } catch {}
-          // 工具那条路是模型主动调的，对不上消息 id；正文里如果出现了那次的挂载句，就用最近一次
-          if (!plan && lastPlan && _url?.searchParams?.get('fallback') === '1') {
-            const wanted = String(_url?.searchParams?.get('hash') ?? '')
-            if (wanted && lastPlan.textHash === wanted) plan = lastPlan
-          }
           sendJson(response, 200, { ok: true, plan, plans: plan ? plan.plans : null })
           return
         }
@@ -4524,7 +4367,7 @@ let worldbookCache = null
     return {
       consoleHtml, consoleState, handleConsole, readBody, sendImage,
       startJob, startReplacement, revisePrompt, cancelJob, refresh, getJob: id => (id ? getJob(id) : null), findJob, publicJob,
-      planFromTool, planMessage,
+      planMessage,
       currentConfig: () => config,
       // 手动配图：读这一轮的 textVersion 与正文，再交给官方桥 attach
       attachTurn: async ({ gameId, turn }) => {
@@ -5389,15 +5232,95 @@ export function resolveWeightMode(config = {}, backend = '', mode = 'tags') {
   return novelai ? 'keep' : 'convert'
 }
 
-function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBackend) {
+/** 按权重组分段拆 tag：2::hair bun, double bun:: 算一组，不按裸逗号拆。 */
+function splitCharacterTagGroups(text) {
+  const source = String(text ?? '')
+  const groups = []
+  let buffer = ''
+  let weighted = false
+  const push = () => {
+    if (buffer.trim()) groups.push(buffer.trim())
+    buffer = ''
+  }
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === ':' && source[i + 1] === ':') {
+      weighted = !weighted
+      buffer += '::'
+      i++
+      continue
+    }
+    if (source[i] === ',' && !weighted) {
+      push()
+      continue
+    }
+    buffer += source[i]
+  }
+  push()
+  return groups.map(segment => {
+    const match = /^(-?\d+(?:\.\d+)?)\s*::([\s\S]*)::$/.exec(segment)
+    if (!match) return { weight: null, tags: [segment] }
+    return { weight: match[1], tags: match[2].split(',').map(tag => tag.trim()).filter(Boolean) }
+  })
+}
+
+function characterTagKey(tag) {
+  return String(tag ?? '').trim()
+    .replace(/^(-?\d+(?:\.\d+)?)\s*::([\s\S]*)::$/, '$2')
+    .replace(/^\(([\s\S]*?):\s*-?\d+(?:\.\d+)?\)$/, '$1')
+    .replace(/^[(\[{]+|[)\]}]+$/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * 角色负面优先：同一个 tag 在本角色负面里出现时，从本角色正面删掉。
+ * 只处理同一个角色，不跨角色；权重组按组保留，固定源文本不改。
+ */
+function dedupeCharacterNegativePriority(prompt, uc) {
+  const negativeKeys = new Set()
+  const negativeGroups = []
+  for (const group of splitCharacterTagGroups(uc)) {
+    const tags = []
+    for (const tag of group.tags) {
+      const key = characterTagKey(tag)
+      if (!key || negativeKeys.has(key)) continue
+      negativeKeys.add(key)
+      tags.push(tag)
+    }
+    if (!tags.length) continue
+    negativeGroups.push(group.weight === null ? tags.join(', ') : `${group.weight}::${tags.join(', ')}::`)
+  }
+
+  const positiveKeys = new Set()
+  const positiveGroups = []
+  for (const group of splitCharacterTagGroups(prompt)) {
+    const tags = []
+    for (const tag of group.tags) {
+      const key = characterTagKey(tag)
+      if (!key || positiveKeys.has(key) || negativeKeys.has(key)) continue
+      positiveKeys.add(key)
+      tags.push(tag)
+    }
+    if (!tags.length) continue
+    positiveGroups.push(group.weight === null ? tags.join(', ') : `${group.weight}::${tags.join(', ')}::`)
+  }
+
+  return { prompt: positiveGroups.join(', '), uc: negativeGroups.join(', ') }
+}
+
+function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBackend, options = {}) {
   const weightMode = resolveWeightMode(cfg, backend, style)
+  const characterNegativePriority = options?.characterNegativePriority === true
   return (Array.isArray(list) ? list : []).map(item => {
     const raw = String(item?.prompt ?? '')
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
-    const injected = injectDefinitions(expanded, scoped, cfg, { style, raw })
+    const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
     const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style })
     const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
-    return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style }) }
+    const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style })
+    if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
+    const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
+    return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }
   }).filter(item => item.prompt)
 }
 
@@ -5434,6 +5357,7 @@ function containsNameToken(text, key) {
 }
 export function injectDefinitions(text, definitions, config = {}, options = {}) {
   const source = String(text ?? '')
+  const keepNegative = options?.keepNegative === true
   if (!source || !definitions) return { text: source, hits: [] }
   const have = tagSet(source)
   const added = []
@@ -5526,7 +5450,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     for (const raw of personNegatives[0]) {
       for (const tag of splitTags(raw)) {
         const key = tag.toLowerCase()
-        if (!key || negatives.includes(tag) || shown(tag)) continue
+        if (!key || negatives.includes(tag) || (!keepNegative && shown(tag))) continue
         negatives.push(tag)
       }
     }
@@ -5642,8 +5566,8 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 
 export function compileChannelJob({ params, config, definitions, channel = null, onStage = null }) {
   const prepared = prepareImagePrompt({ params, config, definitions, channel, onStage })
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend)
   const nativeNovelai = channel?.provider === 'novelai' && channel?.options?.protocol !== 'chat'
+  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend, { characterNegativePriority: nativeNovelai })
   if (!nativeNovelai && characters.length) {
     prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
     prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(', ')

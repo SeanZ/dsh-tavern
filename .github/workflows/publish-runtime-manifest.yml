@@ -27,11 +27,34 @@ jobs:
           git checkout "$GITHUB_REF_NAME"
           git pull --ff-only origin "$GITHUB_REF_NAME"
           node .github/scripts/write-runtime-manifest.mjs "$(git rev-parse HEAD)" "${{ github.run_number }}"
-      - name: Commit manifest
+      # The manifest's files as one zip on a branch of its own (force-pushed, one commit), so an
+      # install downloads a single immutable file from jsDelivr instead of every file.
+      - name: Publish runtime archive
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          archive="$RUNNER_TEMP/runtime.zip"
+          rm -f "$archive"
+          node -e "for (const file of require('./dsh-tavern-runtime.json').files) console.log(file.path)" | zip -X -9 -q -D "$archive" -@
+          dist="runtime-archive-${GITHUB_REF_NAME}"
+          git worktree add --detach "$RUNNER_TEMP/dist"
+          (
+            cd "$RUNNER_TEMP/dist"
+            git checkout -q --orphan "$dist"
+            git rm -rfq .
+            cp "$archive" runtime.zip
+            git add runtime.zip
+            git commit -qm "runtime archive for $(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+            git push -q --force origin "HEAD:refs/heads/$dist"
+            git rev-parse HEAD > "$RUNNER_TEMP/archive-commit"
+          )
+          git worktree remove --force "$RUNNER_TEMP/dist"
+          node .github/scripts/attach-runtime-archive.mjs "$(cat "$RUNNER_TEMP/archive-commit")" "$archive"
+          ls -l "$archive"
+      - name: Commit manifest
+        shell: bash
+        run: |
           git add dsh-tavern-runtime.json
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "chore: publish runtime manifest [skip ci]"
@@ -52,4 +75,7 @@ jobs:
           sleep 15
           served="$(curl -fsS "https://cdn.jsdelivr.net/gh/${repo}@${GITHUB_REF_NAME}/dsh-tavern-runtime.json" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{try{console.log(JSON.parse(s).revision)}catch{console.log('')}})" || true)"
           echo "CDN manifest revision=${served:-<none>} expected=${expected}"
+          # Let jsDelivr fetch the new archive once, so the first installer does not wait for it.
+          commit="$(node -p "(require('./dsh-tavern-runtime.json').archive || {}).commit || ''")"
+          if [ -n "$commit" ]; then curl -fsS -o /dev/null "https://cdn.jsdelivr.net/gh/${repo}@${commit}/runtime.zip" || echo "::warning::jsDelivr could not fetch the runtime archive yet"; fi
           if [ "$served" != "$expected" ]; then echo "::warning::jsDelivr still serves a stale manifest; purge manually at https://www.jsdelivr.com/tools/purge"; fi

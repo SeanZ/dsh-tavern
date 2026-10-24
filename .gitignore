@@ -20,6 +20,9 @@ output/
 # 本地代码分析资料、快照和缓存
 .ua/
 
+# 本机编辑器与 AI 助手配置（预览服务等）
+/.claude/
+
 # 用户数据（人物卡、聊天、剧本、素材、索引、设置、diff）
 data/
 
@@ -33,6 +36,8 @@ data/
 
 # Local installation context (host and isolated home)
 .dsh-tavern-local.json
+# Old dependency folders the installer sets aside when isolating tavern-plugin
+.legacy-node_modules-*/
 
 # The 大肥鱼 demo card (examples/dafeiyu-card): too big to ship with the program.
 /examples/dafeiyu-card/*.dshcard

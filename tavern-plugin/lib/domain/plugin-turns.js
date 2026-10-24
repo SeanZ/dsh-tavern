@@ -23,8 +23,7 @@ export function createPluginTurnReader(deps) {
     return { chatId: state.id, sessionId: state.sessionId || sessionId, state, from: recent ? recent.messagesFrom : 0 }
   }
 
-  async function currentTarget(sessionId, turn) {
-    const chat = await deps.sceneState(sessionId, [turn])
+  function targetFrom(chat, turn) {
     if (!chat) return null
     try { return sceneTarget(chat, turn) } catch (error) {
       if (error.code === 'SCENE_TARGET_UNAVAILABLE') return null
@@ -32,7 +31,15 @@ export function createPluginTurnReader(deps) {
     }
   }
 
+  async function currentTarget(sessionId, turn) { return targetFrom(await deps.sceneState(sessionId, [turn]), turn) }
   async function currentKey(sessionId, turn) { return (await currentTarget(sessionId, turn))?.key ?? null }
+
+  // Historical projections share one indexed read instead of reopening the game per turn.
+  async function currentKeys(sessionId, turnNumbers) {
+    if (!turnNumbers.length) return new Map()
+    const chat = await deps.sceneState(sessionId, turnNumbers)
+    return new Map(turnNumbers.map(turn => [turn, targetFrom(chat, turn)?.key ?? null]))
+  }
 
   // A turn is readable once written: an earlier turn always, the latest one
   // once no settlement is pending or running for it. An edit or a rollback
@@ -101,6 +108,7 @@ export function createPluginTurnReader(deps) {
       return game ? { chatId: game.chatId, sessionId: game.sessionId } : null
     },
     currentKey,
+    currentKeys,
     readTurn: (sessionId, turn) => material(sessionId, turn),
     readLatestSettledTurn: sessionId => material(sessionId, undefined, { requireLatest: true }),
     // The latest turn while its settlement is still to come (plugin tasks that run before it).

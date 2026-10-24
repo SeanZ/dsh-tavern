@@ -11,7 +11,6 @@ import { createUpdateState } from '../../bin/update-state.mjs'
 import { verifyInstallationProcessesStopped } from '../../bin/installation-process.mjs'
 import { readInstallationReceipt } from '../../bin/installation-receipt.mjs'
 import installationState from '../../bin/installation-state.cjs'
-import { createPackageManagedUpdater } from './domain/package-managed-update.js'
 
 const STATUS_FILE = 'update-status.json'
 const RELEASE_FILE = '.dsh-tavern-release.json'
@@ -285,13 +284,6 @@ export function createApplicationUpdater(options) {
       ...(!verified && runtimeMetadata?.releaseSequence ? { releaseSequenceFloor: runtimeMetadata.releaseSequence } : {}),
     }
   }
-  const packageUpdater = createPackageManagedUpdater({
-    pluginManager: options.pluginManager || (() => null),
-    currentVersion: async () => (await localIdentity()).currentVersion,
-    host: process.versions.electron ? 'desktop' : 'cli',
-    fetch: options.fetch,
-    now,
-  })
   let identitySnapshot = null
   let identityLoad = null
 
@@ -493,18 +485,10 @@ export function createApplicationUpdater(options) {
   }
 
   async function status() {
-    const plugin = await packageUpdater.status()
-    if (plugin) return plugin
-    const managed = await packageManagedStatus()
-    if (managed) return managed
     return await statusWithIdentity(await localIdentity())
   }
 
   async function check() {
-    const plugin = await packageUpdater.check()
-    if (plugin) return plugin
-    const managed = await packageManagedStatus()
-    if (managed) return managed
     const identity = await localIdentity(true)
     record('identity', identity)
     const current = await statusWithIdentity(identity)
@@ -537,29 +521,7 @@ export function createApplicationUpdater(options) {
     return await writeStatus(checked, { expectedAttemptId: current.attemptId })
   }
 
-  async function packageManagedStatus() {
-    // pnpm owns packages installed through `dsh plugin add`. The legacy updater
-    // replaces a source checkout and rewrites Profile dependencies to link: paths;
-    // running it here would corrupt the package store and change install channels.
-    try {
-      const manifest = JSON.parse(await readFile(profileManifest, 'utf8'))
-      if (manifest.dsh?.profile?.bundles?.includes('dsh-profile-tavern')) {
-        return {
-          phase: 'package-managed', host: await host(), ...await localIdentity(),
-          updateCommand: 'dsh plugin --profile tavern add @deepseek-ai/dsh-web-app github:flizzywine/dsh-tavern',
-        }
-      }
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
-    }
-    return null
-  }
-
   async function start() {
-    const plugin = await packageUpdater.start()
-    if (plugin) return plugin
-    const managed = await packageManagedStatus()
-    if (managed) throw new Error(`此酒馆由 DSH 插件管理器安装。请关闭酒馆后在终端运行：${managed.updateCommand}，然后重新启动 tavern Profile。`)
     // A Git checkout is the developer's: the updater would install a separate copy (or replace this one
     // and drop its .git), never update what is running. Checking for updates still works.
     // Android is the exception: android/setup.sh installs a Git checkout and android/update.sh fast-forwards it.

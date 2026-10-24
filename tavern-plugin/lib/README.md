@@ -25,4 +25,4 @@
 改动工具或 hooks 后运行相关行为测试及 `tests/plugin-startup.test.mjs`；
 后者在隔离 Profile 中调用真实 `apply()` 并检查各类工具已注册。
 HTTP 行为由 `tests/mvu-asset-route.test.mjs` 和 `tests/tavern-rpc-errors.test.mjs`
-等测试覆盖，打包资源由 `tests/plugin-package.test.mjs` 检查。
+等测试覆盖，cordis 补丁的入口由 `tests/tavern-plugin-patch.test.mjs` 检查。

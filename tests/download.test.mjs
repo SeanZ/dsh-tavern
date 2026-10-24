@@ -200,3 +200,60 @@ test('jsDelivr 运行清单：各节点取最新的发布序号；都比安装�
   assert.equal(exact.version, '3.0.0')
   assert.deepEqual(asked, [pinned], '指定的清单不换节点')
 })
+
+// A minimal zip writer for tests (stored or deflated entries, UTF-8 names).
+function zipOf(entries) {
+  const { deflateRawSync } = require('node:zlib')
+  const locals = [], centrals = []
+  let offset = 0
+  for (const [name, bytes, deflate] of entries) {
+    const data = deflate ? deflateRawSync(bytes) : bytes
+    const nameBytes = Buffer.from(name, 'utf8')
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(deflate ? 8 : 0, 8)
+    local.writeUInt32LE(data.length, 18); local.writeUInt32LE(bytes.length, 22); local.writeUInt16LE(nameBytes.length, 26)
+    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(deflate ? 8 : 0, 10)
+    central.writeUInt32LE(data.length, 20); central.writeUInt32LE(bytes.length, 24); central.writeUInt16LE(nameBytes.length, 28); central.writeUInt32LE(offset, 42)
+    locals.push(local, nameBytes, data); centrals.push(central, nameBytes)
+    offset += 30 + nameBytes.length + data.length
+  }
+  const directory = Buffer.concat(centrals)
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, directory, end])
+}
+
+test('运行时压缩包：只下一个文件，逐个核对后写出；压缩包坏了就退回逐个文件下载', async t => {
+  const { unzipEntries } = require('../bin/download.cjs')
+  const files = new Map([['bin/入口.js', Buffer.from('a'.repeat(5000))], ['tavern-plugin/lib/x.js', Buffer.from('small')]])
+  const zip = zipOf([...files].map(([name, bytes], index) => [name, bytes, index === 0]).concat([['tavern-plugin/', Buffer.alloc(0), false]]))
+  assert.deepEqual([...unzipEntries(zip)].map(([name, bytes]) => [name, bytes.toString()]), [...files].map(([name, bytes]) => [name, bytes.toString()]))
+
+  for (const broken of [false, true]) {
+    const root = await mkdtemp(path.join(tmpdir(), 'download-archive-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const revision = 'd'.repeat(40), commit = 'e'.repeat(40)
+    const served = broken ? Buffer.from(zip).fill(0, 0, 4) : zip
+    const metadata = { schemaVersion: 2, revision, files: [...files].map(([file, bytes]) => ({ path: file, sha256: sha(bytes), size: bytes.length })),
+      archive: { commit, path: 'runtime.zip', sha256: sha(zip), size: zip.length } }
+    const { base, hits } = await serve(t, {
+      '/manifest': (req, res) => res.end(JSON.stringify(metadata)),
+      [`/repo@${commit}/runtime.zip`]: (req, res) => res.end(served),
+      '*': (req, res) => {
+        const file = decodeURIComponent(req.url).slice(`/repo@${revision}/`.length)
+        if (!files.has(file)) { res.writeHead(404); res.end(); return }
+        res.end(files.get(file))
+      }
+    })
+    const status = []
+    await downloadRuntime({ metadataUrl: `${base}/manifest`, rootUrl: `${base}/repo`, destination: path.join(root, 'out'), attempts: 1, status: m => status.push(m) })
+    for (const [file, bytes] of files) assert.deepEqual(await readFile(path.join(root, 'out', file)), bytes)
+    const perFile = [...hits.keys()].filter(url => url.includes(`@${revision}/`)).length
+    if (broken) {
+      assert.equal(perFile, files.size, '压缩包坏了就逐个文件下载')
+      assert.ok(status.some(m => /代码压缩包不可用.*改为逐个文件下载/.test(m)))
+    } else {
+      assert.equal(perFile, 0, '有压缩包时不再逐个请求文件')
+      assert.match(status.at(-1), /代码已就绪：2 个文件/)
+    }
+  }
+})

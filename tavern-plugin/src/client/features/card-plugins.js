@@ -10,7 +10,11 @@
 				});
 				return loading;
 			}
-			if (typeof window.addEventListener === "function") window.addEventListener("dsh-tavern-card-plugins-changed", function () { void load(); });
+			if (typeof window.addEventListener === "function") {
+				window.addEventListener("dsh-tavern-card-plugins-changed", function () { void load(); });
+				// Importing or deleting a card moves its plugin's scope; a stale copy hides that plugin in the new card's games.
+				window.addEventListener("dsh-tavern-data-changed", function (event) { if (tavernDataChangeAffects(event, ["cards"])) void load(); });
+			}
 			return {
 				load: load,
 				subscribe: function (listener) { listeners.add(listener); if (!loaded) void load(); return function () { listeners.delete(listener); }; },

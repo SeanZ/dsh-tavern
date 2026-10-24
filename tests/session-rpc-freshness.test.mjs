@@ -6,14 +6,14 @@ import { deferred } from './fixtures/sync-clock.mjs'
 const source = fs.readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 function harness() {
   const reads = [], generations = []
-  const scope = vm.createContext({ window: {}, performance, Date, Math, AbortController,
+  const scope = vm.createContext({ window: { setTimeout: fn => setTimeout(fn, 0) }, performance, Date, Math, AbortController,
     performanceReportAt: Date.now(), pagePerformanceStarted: Date.now(), pagePerformance: {},
     performanceRequests: [], performanceActiveRequests: 0, historyFromSessions: new Map(), rememberHistoryWindow() {},
     tavernRuntimeGenerationMonitor: { observe(value) { generations.push(value) } },
     readTavernJsonResponse: response => response.json(),
     expandTavernOpeningWindow: view => view,
     fetch(url, request) { const task = deferred(); reads.push({ ...task, url, request,
-      reply(value) { task.resolve({ json: async () => value }) } }); return task.promise }
+      reply(value, status = 200) { task.resolve({ status, json: async () => value }) } }); return task.promise }
   })
   const modules = ['../tavern-plugin/lib/domain/indexed-array.js', '../tavern-plugin/src/client/modules/session-view-sync.js']
   vm.runInContext(modules.map(path => fs.readFileSync(new URL(path, import.meta.url), 'utf8').replace(/^export .*$/gm, '')).join('\n') + '\nconst beginSessionViewRead = createSessionViewReader(1);', scope)
@@ -63,4 +63,16 @@ test('abort releases a hung reader watermark even before its carrier settles', a
   h.reads[3].reply({ ok: true, viewCursor: 'A3', view: { fresh: true } }); await back
   h.reads[0].reply({ ok: true, viewCursor: 'A1', view: {} })
   await assert.rejects(old, error => error.name === 'AbortError')
+})
+
+// DSH accepts requests a moment before Tavern's routes are mounted after a restart (update).
+test('a request during the restart window waits for the routes instead of failing', async () => {
+  const h = harness(), task = h.rpc('listSessions', {})
+  h.reads[0].reply({}, 404)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  h.reads[1].reply({}, 401)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  h.reads[2].reply({ ok: true, sessions: [] })
+  assert.deepEqual((await task).sessions, [])
+  assert.equal(h.reads.length, 3)
 })

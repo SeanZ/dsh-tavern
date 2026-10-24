@@ -106,9 +106,8 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
             group("开局默认", "新游戏开局时继承，开局后可在本局设置中单独修改；已有游戏不受影响。",
                 state.settings ? h(GlobalPlayDefaults, { settings: state.settings }) : null,
                 h(TavernConversationWritingSkills, { globalDefaults: true })),
+            // 对话气泡 (castPresentation) lives in 舞台设置 › 基础设置 with the other stage switches.
             group("剧情", "所有游戏都按这些设置，下一轮生效。",
-                state.settings ? h(SettingSwitch, { settings: state.settings, name: "castPresentation", title: "对话头像",
-                    description: "后台结算时顺带标注每句台词的说话人和情绪，台词显示成带头像的一行。主角用人物卡头像，其他人物用首字头像。" }) : null,
                 h(ContextCompactionSettings)),
             group("显示与交互", "对所有游戏生效，只改界面，不影响正文和存档。",
                 state.settings ? h(SettingSwitch, { settings: state.settings, name: "autoOpenStatusPanel", title: "进入游戏时打开酒馆状态",
@@ -118,8 +117,10 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                 // Most players never need this; it sits last, folded.
                 h(HeaderItemsSettings)),
             group("高级", "",
-                state.settings ? h(SettingSwitch, { settings: state.settings, name: "storyToolCall", title: "正文走工具调用",
-                    description: "让模型通过工具调用提交正文，历史里的正文和玩家消息也以工具参数的形式回放；可缓解 Gemini 等模型在正文中途截断或拒答。需要模型支持工具调用；正文生成完成后一次性显示，存档和界面不变。" }) : null,
+                state.settings ? h(SettingSwitch, { settings: state.settings, name: "storyInputToolCall", title: "输入走工具调用",
+                    description: "把发给模型的历史（此前的玩家消息和正文）以 submit_story 工具参数的形式回放，而不是普通对话文字；可降低续写被拒答。只影响请求，本轮输入、存档和界面保持不变。需要模型支持工具调用。" }) : null,
+                state.settings ? h(SettingSwitch, { settings: state.settings, name: "storyOutputToolCall", title: "输出走工具调用",
+                    description: "让模型通过 submit_story 提交本轮正文，可缓解 Gemini 等模型在正文中途截断或拒答。需要模型支持工具调用；正文生成完成后一次性显示。" }) : null,
                 h(PromptTemplateSettingsEntry)),
             state.error ? React.createElement("div", { className: "dsh-tavern-settings-error", role: "alert" }, "保存失败：" + state.error) : null
         );

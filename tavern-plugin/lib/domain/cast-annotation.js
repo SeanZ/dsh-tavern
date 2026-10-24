@@ -91,6 +91,31 @@ export function normalizeCastSubmission(args, quotes) {
   return lines.sort((left, right) => left.n - right.n)
 }
 
+/**
+ * An edited reply keeps its speakers: a line whose quote is unchanged keeps its speaker and
+ * emotion; when the edit kept the number of quotes, a reworded quote keeps the speaker of the
+ * quote at its place. Quotes the edit added stay unannotated.
+ */
+export function carryCastLines(lines, oldQuoteCount, quotes) {
+  const old = [...(Array.isArray(lines) ? lines : [])].sort((left, right) => left.n - right.n)
+  const taken = new Map()
+  let cursor = 0
+  quotes.forEach((quote, index) => {
+    for (let at = cursor; at < old.length; at++) {
+      if (old[at].quote !== quote) continue
+      taken.set(index, old[at])
+      old[at] = null
+      cursor = at + 1
+      return
+    }
+  })
+  if (oldQuoteCount === quotes.length) {
+    for (const line of old) if (line && !taken.has(line.n - 1)) taken.set(line.n - 1, line)
+  }
+  return [...taken.entries()].sort((left, right) => left[0] - right[0])
+    .map(([index, line]) => ({ n: index + 1, quote: quotes[index], speaker: line.speaker, emotion: line.emotion }))
+}
+
 /** Distinct speakers, most recent first, for keeping names consistent across turns. */
 export function recentSpeakers(records, limit = 20) {
   const names = []

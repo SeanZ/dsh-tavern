@@ -33,6 +33,27 @@ test('全局写作 Skill 逐项保存，恢复开启不改动其他 Skill', () =
   assert.throws(() => applyTavernSettingsPatch(document, { defaultWritingSkill: { name: 'one', enabled: 'false' } }), /无效/)
 })
 
+test('BGM is one global stage switch (stageToggles.music), on by default, kept beside 舞台模式; only stage booleans are accepted', () => {
+  assert.deepEqual(presentTavernSettings({}, {}).stageToggles, { stage: true, music: true })
+  const off = applyTavernSettingsPatch({ castPresentation: true, stageToggles: { stage: false } }, { stageToggles: { music: false } })
+  assert.deepEqual([off.castPresentation, presentTavernSettings(off, {}).stageToggles], [true, { stage: false, music: false }])
+  assert.deepEqual(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { music: true } }), {}).stageToggles, { stage: false, music: true })
+  for (const bad of [{}, { music: 'on' }, { music: true, other: true }, null]) assert.throws(() => applyTavernSettingsPatch({}, { stageToggles: bad }), /舞台开关/)
+})
+
+test('舞台模式 › 可用演出 and 每轮上限 are global: every command on and 6 screen effects by default, a patch changes only what it names', () => {
+  assert.deepEqual(presentTavernSettings({}, {}).stageDimensions, { scene: true, cast: true, acts: true, screenEffects: true })
+  assert.deepEqual(presentTavernSettings({}, {}).stageActionCaps, { beat: 6 })
+  let document = applyTavernSettingsPatch({}, { stageDimensions: { acts: false } })
+  document = applyTavernSettingsPatch(document, { stageDimensions: { scene: false }, stageActionCaps: { beat: 2 } })
+  assert.deepEqual(presentTavernSettings(document, {}).stageDimensions, { scene: false, cast: true, acts: false, screenEffects: true })
+  assert.deepEqual(presentTavernSettings(document, {}).stageActionCaps, { beat: 2 })
+  for (const bad of [{}, { acts: 'off' }, { music: false }, null]) assert.throws(() => applyTavernSettingsPatch({}, { stageDimensions: bad }), /可用演出/)
+  for (const bad of [{}, { beat: 0 }, { beat: 257 }, { beat: 1.5 }, { act: 2 }]) assert.throws(() => applyTavernSettingsPatch({}, { stageActionCaps: bad }), /每轮上限/)
+  // A stored value out of range reads as the default.
+  assert.deepEqual(presentTavernSettings({ stageActionCaps: { beat: 999 } }, {}).stageActionCaps, { beat: 6 })
+})
+
 test('进入游戏时打开酒馆状态：默认开，可以关', () => {
   assert.equal(presentTavernSettings({}, {}).autoOpenStatusPanel, true)
   const off = applyTavernSettingsPatch({}, { autoOpenStatusPanel: false })
@@ -69,12 +90,54 @@ test('系统提示词方案：复制、重名加后缀、不能删除正在使�
   assert.equal(document.systemAppendEnabled, false)
 })
 
-test('正文与历史回放合成一个工具调用开关：旧存档任一开着都算开，改动后旧字段清掉', () => {
-  assert.equal(presentTavernSettings({}, {}).storyToolCall, false)
-  assert.equal(presentTavernSettings({ storyHistoryToolCall: true }, {}).storyToolCall, true)
-  assert.equal(presentTavernSettings({ storyToolCall: true }, {}).storyToolCall, true)
-  assert.equal(Object.hasOwn(presentTavernSettings({ storyHistoryToolCall: true }, {}), 'storyHistoryToolCall'), false)
-  const off = applyTavernSettingsPatch({ storyHistoryToolCall: true }, { storyToolCall: false })
-  assert.deepEqual(off, { storyToolCall: false })
-  assert.equal(presentTavernSettings(off, {}).storyToolCall, false)
+test('输入与输出走工具调用是两个独立开关：默认都关', () => {
+  const settings = presentTavernSettings({}, {})
+  assert.equal(settings.storyInputToolCall, false)
+  assert.equal(settings.storyOutputToolCall, false)
+  assert.equal(Object.hasOwn(settings, 'storyToolCall'), false)
+  assert.equal(Object.hasOwn(settings, 'storyHistoryToolCall'), false)
+})
+
+test('旧的合并开关拆成输入与输出：开启的旧存档两边都开', () => {
+  const merged = presentTavernSettings({ storyToolCall: true }, {})
+  assert.equal(merged.storyInputToolCall, true)
+  assert.equal(merged.storyOutputToolCall, true)
+  const off = presentTavernSettings({ storyToolCall: false }, {})
+  assert.equal(off.storyInputToolCall, false)
+  assert.equal(off.storyOutputToolCall, false)
+})
+
+test('更早的「历史正文也走工具调用」只恢复输入侧', () => {
+  const legacy = presentTavernSettings({ storyHistoryToolCall: true }, {})
+  assert.equal(legacy.storyInputToolCall, true)
+  assert.equal(legacy.storyOutputToolCall, false)
+  // 两个旧字段同时存在时各管各的：合并开关只决定输出侧。
+  const both = presentTavernSettings({ storyToolCall: false, storyHistoryToolCall: true }, {})
+  assert.equal(both.storyInputToolCall, true)
+  assert.equal(both.storyOutputToolCall, false)
+})
+
+test('改一边不会带上另一边；第一次改动就把旧字段折成明确的两项', () => {
+  const fromMerged = applyTavernSettingsPatch({ storyToolCall: true }, { storyOutputToolCall: false })
+  assert.deepEqual(fromMerged, { storyInputToolCall: true, storyOutputToolCall: false })
+  assert.equal(presentTavernSettings(fromMerged, {}).storyInputToolCall, true)
+
+  const fromHistory = applyTavernSettingsPatch({ storyHistoryToolCall: true }, { storyOutputToolCall: true })
+  assert.deepEqual(fromHistory, { storyInputToolCall: true, storyOutputToolCall: true })
+
+  const off = applyTavernSettingsPatch({ storyInputToolCall: true, storyOutputToolCall: true }, { storyInputToolCall: false })
+  assert.deepEqual(off, { storyInputToolCall: false, storyOutputToolCall: true })
+
+  const onlyInput = applyTavernSettingsPatch({}, { storyInputToolCall: true })
+  assert.deepEqual(onlyInput, { storyInputToolCall: true, storyOutputToolCall: false })
+  assert.throws(() => applyTavernSettingsPatch({}, { storyInputToolCall: 'yes' }), /输入走工具调用设置必须是布尔值/)
+  assert.throws(() => applyTavernSettingsPatch({}, { storyOutputToolCall: 1 }), /输出走工具调用设置必须是布尔值/)
+})
+
+test('舞台模式 is one global switch (stageToggles.stage), on by default; only stage booleans are accepted', () => {
+  assert.equal(presentTavernSettings({}, {}).stageToggles.stage, true)
+  const off = applyTavernSettingsPatch({ castPresentation: true }, { stageToggles: { stage: false } })
+  assert.deepEqual([off.castPresentation, presentTavernSettings(off, {}).stageToggles.stage], [true, false])
+  assert.equal(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { stage: true } }), {}).stageToggles.stage, true)
+  for (const bad of [{}, { stage: 'on' }, { stage: true, other: true }, null]) assert.throws(() => applyTavernSettingsPatch({}, { stageToggles: bad }), /舞台开关/)
 })

@@ -3,7 +3,6 @@
 - [阿芙拉 · 金麦穗酒馆](avra/README.md)：人物卡导入与修改、素材创作、剧本和展示正则，附完整产品演示流程。
 - [灯塔小镇](manual-demo/README.md)：使用文档的演示素材与截图工具，包含本地模拟模型服务。
 - [最小插件](tavern-plugin-hello/)：使用[插件接口](../docs/plugin-api.md)的完整插件文件夹。宿主侧（`index.mjs`）每轮在正文段落后挂图，浏览器侧（`client.js`）把正文标记显示成徽章。整个文件夹复制到 Tavern 数据目录的 `plugins/` 下即可加载。
-- [导演舞台插件](tavern-plugin-director/)：用演出接口把舞台换成 Galgame 式画面。宿主侧每轮结算后让后台 Agent 定下这一幕的地点、时间和气氛，浏览器侧用 `registerStageView` 按它画背景、立绘和对话框。
 - [大肥鱼 · DSH 人物卡](dafeiyu-card/)：Galgame 分支的示例卡做成的 `.dshcard`（经原作者同意作为演示卡），卡里自带插件，导入即可玩到 Galgame 式舞台（场景、服装、背景音乐由后台结算顺带导演）。卡文件太大，只在本地保留，不随程序分发。
 - [航空 MVU](airline-mvu/NOTES.md)：状态栏转 MVU 的适配实验与验证记录；使用范围见案例说明。
 

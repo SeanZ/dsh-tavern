@@ -1,17 +1,17 @@
 import { setAllFailedErrorVisibility, setFailedErrorVisibility } from '../domain/failed-error-visibility.js'
 import { sessionEvents } from '../domain/session-events.js'
-import { prepareTemplateHistory, synchronizeTemplateHistory } from '../domain/template-history.js'
+import { applyPolishEdits, buildPolishReviewRequest, parsePolishReview, polishReviewContext } from '../domain/polish-review.js'
 import { randomUUID } from 'node:crypto'
 
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, backgroundAgentRunner, backgroundCatalog, bodyEditor,
+  const { agentCompaction, agentRegistry, backgroundAgentRunner, backgroundCatalog, bodyEditor, callModel, polishRecords, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
-    ledgerEditor, liveCardUpdate, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
-    playCardSnapshots, pluginSettlementProgress, readBackgroundSuppression, readCard, readCardExtensions,
+    ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
+    pluginSettlementProgress, readBackgroundSuppression, readCard,
     reconcileStory, reconcileWhenIdle, regenBody, replayFailedTurn, requestPerformance, retrySettlement,
-    retryStyleReference, rollbackTurn, runtimeGeneration, sessionActivity, sessionOperation,
+    retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, runtimePrompt, sessionActivity, sessionOperation,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setPlayerName, stopBackground, str,
     templateHistoryFrom, undoRollbackTurn, updateChat, view, withCompactionSession } = deps
   return {
@@ -28,38 +28,11 @@ export function createPlayHandlers(deps) {
       if (!id.startsWith('background-')) return { turns: [] }
       return readBackgroundSuppression(id)
     },
+    // A legacy save's manual synchronization, or the retry after an automatic reload failed.
     async applyUpdatedCard(args) {
       const sessionId = str(args && args.sessionId)
-      if (typeof args.digest !== 'string' || !args.digest) throw new Error('请刷新后确认人物卡和世界书更新')
-      const conflict = new Error('游戏状态已变化，未应用更新，请稍后重试')
-      // Rebuild from the latest snapshot on a concurrent write. Never merge an
-      // old prepared save over new state, or skip the exact revision check.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const chat = await chatForSession(sessionId)
-        if (!chat || !['story', 'script'].includes(chat.mode || 'story') || chat.requestMode === 'sillytavern') throw new Error('仅支持当前游玩会话')
-        if ((await sessionActivity(sessionId))?.busy || agentRegistry.get(sessionId)?.phase?.kind === 'running') throw new Error('请等待当前生成和后台任务完成后再应用人物卡')
-        // Applying the card restarts the card scripts; a regeneration left in progress could then never be restored.
-        if (chat.regenInProgress) throw new Error('上一次正文重新生成尚未完成：请先点「重新生成正文」完成或恢复它，再应用人物卡')
-        const card = await readCard(chat.cardPath)
-        if (!card) throw new Error('人物卡不存在')
-        const patch = await playCardSnapshots.replacement(chat, card, args.digest)
-        const prepared = await liveCardUpdate.prepare({...chat,...patch}, card, chat)
-        const nativeSession = sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session
-        if (nativeSession) prepareTemplateHistory(nativeSession, chat, prepared)
-        prepared.tavernHelperLifecycleRevision = (Number(chat.tavernHelperLifecycleRevision) || 0) + 1
-        const extensions = await readCardExtensions(chat.cardPath, prepared)
-        await liveCardUpdate.project(prepared, card, {projections:[]}, {charName:card.name,macroState:chat.macroState,regexScripts:extensions.regexScripts})
-        await playCardSnapshots.replacement(chat, await readCard(chat.cardPath), args.digest)
-        try {
-          const saved = await updateChat(chat.id, current => {
-            if (current._storageRevision !== chat._storageRevision || agentRegistry.get(sessionId)?.phase?.kind === 'running' || ['pending','running','waiting-runtime'].includes(current.settleStatus)) throw conflict
-            return prepared
-          }, { source: 'card-context.apply-update' })
-          if (nativeSession) await synchronizeTemplateHistory(nativeSession, saved, session => sessionStore.flush(session))
-          return { view: await view(saved, card) }
-        } catch (error) { if (error !== conflict) throw error }
-      }
-      throw conflict
+      cardAutoReload.retry(sessionId)
+      return { view: await applyCardUpdate(sessionId, args && args.digest) }
     },
     async getSession(args) {
       // A save opened for the first time in this process is checked once, while nothing runs.
@@ -171,6 +144,44 @@ export function createPlayHandlers(deps) {
     async retryStyleReference(args) {
       return { styleReference: await retryStyleReference(args?.sessionId, { target: 'next', guidance: args?.guidance }) }
     },
+    // 精修: review the latest reply and apply every edit that still finds its text, as one body edit.
+    // The texts before and after come back so the page can show the comparison and undo it.
+    async polishBody(args) {
+      const sessionId = str(args?.sessionId), started = Date.now()
+      await reconcileStory(sessionId)
+      const edit = await bodyEditor.read(sessionId)
+      const texts = edit.parts.filter(part => part.kind === 'text').map(part => part.text)
+      // The header and the last few floors are all a review reads: this turn's input and the reply before.
+      const chat = await chatHeaderWithLatestFloors(sessionId, 4)
+      const card = await readCard(chat.cardPath).catch(() => undefined) || chat.cardDefinitionSnapshot?.raw?.data || chat.cardDefinitionSnapshot?.raw
+      const request = buildPolishReviewRequest({ principles: runtimePrompt('polish'), card, playerName: chat.macroState?.userName,
+        ...polishReviewContext(chat.messages), reply: texts.join('\n\n'), guidance: args?.guidance })
+      const review = parsePolishReview(await callModel({ sessionId, ...request }), texts)
+      const chosen = review.edits.filter(item => item.status === 'ok')
+      if (review.fallback || !chosen.length) return { edits: review.edits, guidance: review.fallback, view: null }
+      const polished = applyPolishEdits(texts, chosen)
+      const view = await bodyEditor.save(sessionId, { token: edit.token, texts: polished })
+      notifyPluginTimeline(sessionId, 'edit', { settled: true })
+      // The record backs the 精修对比 page and its undo; one that cannot be kept never fails the 精修.
+      await polishRecords.save(sessionId, edit.turn, { original: texts, edits: chosen, seconds: Math.round((Date.now() - started) / 1000) })
+        .catch(error => console.warn('dsh-tavern: 精修记录保存失败', error))
+      return { edits: review.edits, view }
+    },
+    async polishComparison(args) {
+      return { comparison: await polishRecords.latest(str(args?.sessionId)) }
+    },
+    // Undo the latest 精修, from the 精修对比 page: only while its turn still shows the polished text.
+    async undoPolish(args) {
+      const sessionId = str(args?.sessionId)
+      await reconcileStory(sessionId)
+      const record = await polishRecords.current(sessionId)
+      if (!record) throw new Error('这轮正文在精修后又改过了，无法撤销')
+      const edit = await bodyEditor.read(sessionId)
+      if (Number(edit.turn) !== Number(record.turn)) throw new Error('精修的那一轮已经不是最后一轮，无法撤销')
+      const view = await bodyEditor.save(sessionId, { token: edit.token, texts: record.original })
+      notifyPluginTimeline(sessionId, 'edit', { settled: true })
+      return { view }
+    },
     async regenBody(args) {
       if (args?.restyle === true) await retryStyleReference(args.sessionId, { target: 'regenerate', guidance: args.styleGuidance })
       await reconcileStory(args && args.sessionId)
@@ -221,6 +232,12 @@ export function createPlayHandlers(deps) {
       await reconcileStory(args && args.sessionId)
       const view = await rollbackTurn(args && args.sessionId, args && args.chatId, args && args.expectedTurn)
       notifyPluginTimeline(args && args.sessionId, 'rollback', { turn: args && args.expectedTurn })
+      return { view }
+    },
+    async rollbackToTurn(args) {
+      await reconcileStory(args && args.sessionId)
+      const view = await rollbackToTurn(args && args.sessionId, args && args.chatId, args && args.turn)
+      notifyPluginTimeline(args && args.sessionId, 'rollback', { turn: view?.rolledBackTo?.latest })
       return { view }
     },
     async getBackgroundProgress(args) {

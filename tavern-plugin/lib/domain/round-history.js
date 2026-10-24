@@ -85,7 +85,7 @@ function commitOfRound(commits, assistant, userText) {
   return key ? commits[key] : null
 }
 
-export function createRoundHistory({ chats, sessions, scripts, timeline, queueSettlement, cancelSettlement, present, diagnostics, sessionPatch, repairNative }) {
+export function createRoundHistory({ chats, sessions, scripts, timeline, queueSettlement, bodyCommitted, cancelSettlement, present, diagnostics, sessionPatch, repairNative }) {
   const { read: readChat, forSession: chatForSession, readCard: readChatCard,
     readRevision: readChatRevision, write: writeChat, update: updateChat } = chats
   const { read: readScript, continuity: scriptContinuity } = scripts
@@ -95,7 +95,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
   const pendingRollbacks = new Set()
   const pendingRegenerations = new Set()
   const pendingReplays = new Set()
-  const regenerationRecovery = createRegenerationRecovery({ chats, sessions, timeline, isActive: id => pendingRegenerations.has(id) })
+  const regenerationRecovery = createRegenerationRecovery({ chats, sessions, timeline, isActive: id => pendingRegenerations.has(id), repair: (sessionId, session) => repairSurface(sessionId, session) })
   // The save is the truth (docs/design/native-session-repair.md): when the native
   // surface no longer shows the round the save has, rewrite its tail from the save
   // instead of refusing. Repair reports its own failure and leaves a retry marker.
@@ -109,6 +109,16 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       await repairSurface(chat.sessionId, session)
       return selectRegenerationTarget(chat, session, observe)
     }
+  }
+
+  // The save adopts the new body even when the native surface cannot place it
+  // (ownership mismatch, old body gone): completion then repairs the native tail
+  // from the save instead of refusing the regeneration.
+  function placeRegeneration(session, oldAssistantSeq, eventStart, data, operationId) {
+    try {
+      const replacement = planRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes, oldAssistantSeq, eventStart })
+      return regenerationProjection(replacement, data, operationId)
+    } catch (error) { return { unplaced: str(error?.message || error) || '原生位置对不上' } }
   }
 
   async function regenerate(chatId, guidance, sessionId) {
@@ -284,9 +294,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       if (body === '') {
         throw new Error('重新生成失败：模型返回空文本')
       }
-      const replacement = planRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes,
-        oldAssistantSeq: oldSeq, eventStart })
-      const projection = regenerationProjection(replacement, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
+      const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
         role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
       // The persisted intent must only reference events already on disk.
       if (typeof sessions.flush === 'function') await sessions.flush(session)
@@ -321,6 +329,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       throw error
     }
     committedChat = await regenerationRecovery.complete({ chatId: chat.id, session, operationId }) || committedChat
+    bodyCommitted?.(committedChat.sessionId)
     let settledChat = committedChat
     try {
       await queueSettlement(committedChat.id)
@@ -464,8 +473,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       }
       body = str(newAssistant.text).trim()
       if (body === '') throw new Error('重新生成失败：模型返回空文本')
-      const replacement = planRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes, oldAssistantSeq: oldSeq, eventStart })
-      const projection = regenerationProjection(replacement, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
+      const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
         role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
@@ -505,6 +513,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       throw error
     }
     committedChat = await completeRecent(committedChat, session, operationId)
+    bodyCommitted?.(committedChat.sessionId)
     let settledChat = committedChat
     try {
       await queueSettlement(committedChat.id)
@@ -526,11 +535,16 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
   // marker with a header patch. A moved revision uses the complete completion.
   async function completeRecent(chat, session, operationId) {
     const saved = chat.regenRecovery
-    if (saved?.phase !== 'committed' || saved.id !== operationId || saved.sessionId !== session.id || !saved.projection) {
+    if (saved?.phase !== 'committed' || saved.id !== operationId || saved.sessionId !== session.id || !saved.projection || saved.projection.unplaced) {
       return await regenerationRecovery.complete({ chatId: chat.id, session, operationId }) || chat
     }
-    applyRegenerationProjection(session, saved.projection)
-    if (typeof sessions.flush === 'function') await sessions.flush(session)
+    try {
+      applyRegenerationProjection(session, saved.projection)
+      if (typeof sessions.flush === 'function') await sessions.flush(session)
+    } catch {
+      // The complete completion retries once, then ends the marker and repairs from the save.
+      return await regenerationRecovery.complete({ chatId: chat.id, session, operationId }) || chat
+    }
     const replacing = projectedReplacingTurns(chat)
     const head = await chats.patch(chat.id, chat._storageRevision, [{ op: 'delete', path: ['regenRecovery'] }, { op: 'delete', path: ['regenInProgress'] },
       replacing ? { op: 'set', path: ['replacingDshTurns'], value: replacing } : { op: 'delete', path: ['replacingDshTurns'] }], { source: 'foreground.regen-projected' })
@@ -551,7 +565,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     const chat = str(chatId) === '' ? await chatForSession(sessionId) : await readChat(chatId)
     if (chat === undefined || chat === null) throw new Error('聊天不存在: ' + chatId)
     if (pendingReplays.has(chat.id)) throw new Error('正在重放失败回合，请等待完成')
-    if (pendingRegenerations.has(chat.id) || chat.regenInProgress === true) throw new Error('正文正在重新生成，请等待完成')
+    await settleStaleRegeneration(chat)
     if (pendingRollbacks.has(chat.id)) throw new Error('正在回退本轮，请等待完成')
     const agent = sessions.get(chat.sessionId)
     if (agent === undefined || agent.session === undefined) throw new Error('无法访问 DSH 会话: ' + chat.sessionId)
@@ -635,7 +649,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     const chat = str(chatId) === '' ? await (chats.stateForSession || chatForSession)(sessionId) : await (chats.readState || readChat)(chatId)
     if (chat === undefined) throw new Error('聊天不存在: ' + chatId)
     if (pendingReplays.has(chat.id)) throw new Error('正在重放失败回合，请等待完成')
-    if (pendingRegenerations.has(chat.id) || chat.regenInProgress) throw new Error('正文正在重新生成，请先完成恢复或生成')
+    await settleStaleRegeneration(chat)
     if (pendingRollbacks.has(chat.id)) throw new Error('正在回退本轮，请等待完成')
     pendingRollbacks.add(chat.id)
     let restoredHandle
@@ -648,6 +662,84 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       try { await restoredHandle?.dispose?.() }
       finally { pendingRollbacks.delete(chat.id) }
     }
+  }
+
+  // 回退到某一轮：逐轮执行与「回退本轮」相同的回退，直到该轮成为最新一轮。
+  // 中途无法继续（如更早的轮次已被上下文压缩）时保留已退回的轮次并提示用分叉。
+  // 一次撤销恢复全部轮次：撤销点取第一步的回退前状态与最后一步的回退后状态。
+  // A marker no live regeneration owns is a leftover: recovery always ends it, so
+  // it can never keep rollback away. Only a regeneration still running refuses.
+  async function settleStaleRegeneration(chat) {
+    if (pendingRegenerations.has(chat.id)) throw new Error('正文正在重新生成，请先完成恢复或生成')
+    if (!chat.regenInProgress) return
+    await regenerationRecovery.recover(chat.id)
+    const state = chats.readState ? await chats.readState(chat.id) : await readChat(chat.id)
+    if (state?.regenInProgress) throw new Error('正文正在重新生成，请先完成恢复或生成')
+  }
+
+  async function rollbackToTurn(sessionId, chatId, targetTurn) {
+    const target = Number(targetTurn)
+    if (!Number.isSafeInteger(target) || target < 1) throw new Error('回退目标轮次无效')
+    if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
+    const state = str(chatId) === '' ? await (chats.stateForSession || chatForSession)(sessionId) : await (chats.readState || readChat)(chatId)
+    if (state === undefined) throw new Error('聊天不存在: ' + chatId)
+    if (pendingReplays.has(state.id)) throw new Error('正在重放失败回合，请等待完成')
+    await settleStaleRegeneration(state)
+    if (pendingRollbacks.has(state.id)) throw new Error('正在回退本轮，请等待完成')
+    pendingRollbacks.add(state.id)
+    let restoredHandle
+    try {
+      if (!sessions.get(state.sessionId)?.session && !sessions.getSession?.(state.sessionId) && typeof sessions.resume === 'function') {
+        restoredHandle = await sessions.resume(state.sessionId)
+      }
+      const recent = async () => chats.readRecent ? await chats.readRecent(state.id) : await readChat(state.id)
+      const latestOf = async () => latestStoryTurn(await recent())
+      let latest = await latestOf()
+      if (!(latest > target)) throw new Error('第 ' + target + ' 轮已经是最新一轮')
+      let result, first, removed = 0, stopped = ''
+      while (latest > target) {
+        try { result = await rollbackChat(state, null, restoredHandle?.agent) }
+        catch (error) { if (!removed) throw error; stopped = str(error?.message || error); break }
+        const next = await latestOf()
+        if (!result.clearedIncompleteTurns && !(next < latest)) { stopped = '回退没有前进'; break }
+        if (result.rolledBack) removed += 1
+        first ||= (await recent())?.rollbackUndo
+        latest = next
+      }
+      if (removed > 1 && first) result = await mergeRollbackUndo(state.id, first, recent) || result
+      if (stopped) result.rollbackWarning = [result.rollbackWarning, '已回退 ' + removed + ' 轮，停在第 ' + latest + ' 轮：更早的轮次已不在模型上下文中，不能原地回退（' + stopped + '）。想回到第 ' + target + ' 轮，请在那一轮的消息上点「从这一轮分叉」。'].filter(Boolean).join('；')
+      result.rolledBackTo = { target, latest, removed }
+      return result
+    } finally {
+      try { await restoredHandle?.dispose?.() }
+      finally { pendingRollbacks.delete(state.id) }
+    }
+  }
+
+  // The last step's undo point, widened to the state before the first step.
+  async function mergeRollbackUndo(chatId, first, recent) {
+    const chat = await recent()
+    const last = chat?.rollbackUndo
+    if (!first?.ready || !last?.ready) return undefined
+    const background = new Map()
+    for (const checkpoint of [...first.background, ...last.background]) {
+      const earlier = background.get(checkpoint.sessionId)
+      background.set(checkpoint.sessionId, earlier ? { ...earlier, afterCount: checkpoint.afterCount } : checkpoint)
+    }
+    const merged = { ...last, turn: first.turn, beforeRevision: first.beforeRevision,
+      foreground: { ...last.foreground, nodes: first.foreground.nodes }, background: [...background.values()] }
+    if (first.before) merged.before = first.before
+    else delete merged.before
+    const revision = Number(chat._storageRevision || 0)
+    const head = typeof chats.patch === 'function'
+      ? await chats.patch(chatId, revision, [{ op: 'set', path: ['rollbackUndo'], value: { ...merged, storageRevision: revision + 1 } }], { source: 'rollback.undo-point' })
+      : undefined
+    const saved = head ? { ...chat, ...head, messages: chat.messages } : await updateChat(chatId, current => {
+      if (!isDeepStrictEqual(current.rollbackUndo, last)) return current
+      current.rollbackUndo = { ...merged, storageRevision: Number(current._storageRevision || 0) + 1 }
+      return current
+    }, { source: 'rollback.undo-point' })
+    return await view(saved, await readChatCard(saved))
   }
 
   async function rollbackChat(chat, requestedTurn, restoredAgent) {
@@ -1117,5 +1209,5 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     }
   }
 
-  return Object.freeze({ regenerate, replayFailed: replayFailedTurn, recover: regenerationRecovery.recover, rollback: rollbackTurn, undoRollback })
+  return Object.freeze({ regenerate, replayFailed: replayFailedTurn, recover: regenerationRecovery.recover, rollback: rollbackTurn, rollbackTo: rollbackToTurn, undoRollback })
 }

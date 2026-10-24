@@ -168,10 +168,51 @@ function installFrameHostComposer(doc, ownsFrame, submit, report, fill, read) {
   };
 }
 
+// Chrome rejects compatibility proxies in WebIDL arguments ("parameter 1 is not
+// of type 'Node'"), which used to abort whole card scripts when they observed a
+// host node. Proxies publish their real node on this symbol; unwrap it. A target
+// with no real node is skipped with a warning: observing the document root instead
+// would flood the card with every host mutation (streaming text included).
+function installTavernNodeCompatibility(window) {
+  if (!window || !window.document) return;
+  const NODE = Symbol.for('dsh-tavern.hostNode');
+  function unwrap(value) {
+    if (!value || typeof value !== 'object') return null;
+    const target = value[NODE];
+    if (target && typeof target === 'object' && typeof target.nodeType === 'number') return target;
+    if (typeof value.nodeType === 'number') return value;
+    return null;
+  }
+  function readTargets(value) {
+    if (Array.isArray(value)) return value.map(unwrap).filter(Boolean);
+    if (value && typeof value.toArray === 'function') return Array.from(value.toArray() || []).map(unwrap).filter(Boolean);
+    const single = unwrap(value);
+    return single ? [single] : [];
+  }
+  for (const name of ['MutationObserver', 'IntersectionObserver', 'ResizeObserver']) {
+    const Native = window[name];
+    if (typeof Native !== 'function' || Native.__dshTavernNodeCompatible === true) continue;
+    function CompatibleObserver(callback, ...rest) {
+      const observer = new Native(callback, ...rest);
+      const observe = observer.observe.bind(observer);
+      observer.observe = function (target, options) {
+        const targets = readTargets(target);
+        if (!targets.length) { console.warn('dsh-tavern: 卡片脚本的 ' + name + ' 观察目标不是页面节点，已跳过'); return; }
+        for (const node of targets) observe(node, options);
+      };
+      return observer;
+    }
+    CompatibleObserver.prototype = Native.prototype;
+    CompatibleObserver.__dshTavernNodeCompatible = true;
+    window[name] = CompatibleObserver;
+  }
+}
+
 // Give each module a view of the host DOM whose standard ST composer controls
 // belong to that module's sandbox. Never install a shared, focus-routed sender.
 function createTavernComposerWindow(frame, host = frame.parent) {
   const ids = new Set(['send_textarea', 'send_but']);
+  const HOST_NODE = Symbol.for('dsh-tavern.hostNode');
   const documents = new WeakMap(), windows = new WeakMap();
   const roots = new WeakMap(), nativeRoots = new WeakMap();
   const unwrap = value => nativeRoots.get(value) || value;
@@ -181,6 +222,8 @@ function createTavernComposerWindow(frame, host = frame.parent) {
     const mutations = new Set(['insertAdjacentHTML', 'append', 'prepend', 'appendChild', 'insertBefore', 'replaceChildren']);
     const proxy = new Proxy(root, {
       get(target, key) {
+        // Observers and other WebIDL APIs need the node this proxy stands for.
+        if (key === HOST_NODE) return target;
         const value = Reflect.get(target, key, target);
         if (typeof value !== 'function') return value;
         return function (...args) {
@@ -197,6 +240,30 @@ function createTavernComposerWindow(frame, host = frame.parent) {
     });
     roots.set(root, proxy); nativeRoots.set(proxy, root);
     return proxy;
+  }
+  // A card may also build its observer from the host window
+  // (window.parent.MutationObserver, as 小手机v9 does) and hand it a host node.
+  // That constructor lives in the host realm, so it never meets the sandbox
+  // patch; wrap it here so the proxy is unwrapped on the way in too.
+  const OBSERVERS = new Set(['MutationObserver', 'IntersectionObserver', 'ResizeObserver']);
+  function compatibleObserver(Native, name) {
+    if (typeof Native !== 'function' || Native.__dshTavernNodeCompatible === true) return Native;
+    function CompatibleObserver(callback, ...rest) {
+      const observer = new Native(callback, ...rest);
+      const observe = observer.observe.bind(observer);
+      observer.observe = function (target, options) {
+        const nodes = (Array.isArray(target) ? target : [target]).map(unwrap)
+          .filter(node => node && typeof node === 'object' && typeof node.nodeType === 'number');
+        // An unusable target keeps the script alive without observing anything:
+        // the document root would flood the card with every host mutation.
+        if (!nodes.length) { console.warn('dsh-tavern: 卡片脚本的 ' + name + ' 观察目标不是页面节点，已跳过'); return; }
+        for (const node of nodes) observe(node, options);
+      };
+      return observer;
+    }
+    CompatibleObserver.prototype = Native.prototype;
+    CompatibleObserver.__dshTavernNodeCompatible = true;
+    return CompatibleObserver;
   }
   const jq = frame.jQuery;
   const anchors = new Map();
@@ -253,10 +320,38 @@ function createTavernComposerWindow(frame, host = frame.parent) {
     }
     return anchors.get(id);
   }
+  // A card panel mounts inside its own message frame, so an ID the card looks up
+  // from the host document only exists there. Stay inside this session: frames
+  // of other sessions, and frames silenced by display filtering, are invisible.
+  function messageFrameDocuments() {
+    const sessionId = frame.frameElement?.__dshTavernSessionId || '';
+    const hostDocument = host && host.document;
+    if (!sessionId || !hostDocument?.querySelectorAll) return [];
+    const found = [];
+    for (const node of hostDocument.querySelectorAll('iframe.dsh-tavern-message-frame')) {
+      if (node.__dshTavernSessionId !== sessionId || node.getAttribute('aria-hidden') === 'true') continue;
+      let content = null;
+      try { content = node.contentDocument; } catch (_) { content = null; }
+      if (content) found.push(content);
+    }
+    return found;
+  }
+  function frameQuery(selector) {
+    const nodes = [];
+    for (const frameDocument of messageFrameDocuments()) {
+      // An invalid selector stays a host-only miss instead of breaking the page.
+      try { nodes.push(...frameDocument.querySelectorAll(selector)); } catch (_) { /* ignore */ }
+    }
+    return nodes;
+  }
+  const frameIdQuery = id => '#' + String(id).replace(/([^\w-])/g, '\\$1');
   function lookup(doc, id) {
     if (ids.has(id)) return frame.document.getElementById(id);
     const artifacts = frame.frameElement?.__dshTavernHostArtifacts;
-    return (artifacts ? artifacts.findElementById(id) : doc.getElementById(id)) || layoutAnchor(id);
+    const found = artifacts ? artifacts.findElementById(id) : doc.getElementById(id);
+    if (found) return found;
+    const [inFrame] = frameQuery(frameIdQuery(id));
+    return inFrame || layoutAnchor(id);
   }
 
   function documentView(doc) {
@@ -269,10 +364,18 @@ function createTavernComposerWindow(frame, host = frame.parent) {
         return node;
       };
       if (key === 'getElementById') return id => lookup(doc, id);
-      if (key === 'querySelector' || key === 'querySelectorAll') return selector =>
-        (/^#(?:sheld|top-settings-holder)$/.test(selector) && !doc.querySelector(selector))
-          ? (key === 'querySelector' ? layoutAnchor(selector.slice(1)) : [layoutAnchor(selector.slice(1))].filter(Boolean))
-          : /^#(?:send_textarea|send_but)$/.test(selector) ? frame.document[key](selector) : doc[key](selector);
+      if (key === 'querySelector' || key === 'querySelectorAll') return selector => {
+        if (/^#(?:sheld|top-settings-holder)$/.test(selector) && !doc.querySelector(selector)) {
+          const anchor = layoutAnchor(selector.slice(1));
+          return key === 'querySelector' ? anchor : [anchor].filter(Boolean);
+        }
+        if (/^#(?:send_textarea|send_but)$/.test(selector)) return frame.document[key](selector);
+        // The host document owns the page; message frames are only a fallback.
+        const hostNodes = Array.from(doc.querySelectorAll(selector));
+        if (hostNodes.length) return key === 'querySelector' ? hostNodes[0] : hostNodes;
+        const frameNodes = frameQuery(selector);
+        return key === 'querySelector' ? (frameNodes[0] || null) : frameNodes;
+      };
       if (key === 'defaultView') return windowView(doc.defaultView);
       const value = doc[key];
       return typeof value === 'function' ? (...args) => value.apply(doc, args.map(unwrap)) : value;
@@ -301,6 +404,7 @@ function createTavernComposerWindow(frame, host = frame.parent) {
       if (key === 'parent' || key === 'top') return windowView(host);
       if (key === 'document') return target === frame ? frame.document : documentView(target.document);
       if ((key === '$' || key === 'jQuery') && jq) return new Proxy(jq, {apply(_, receiver, args) { return jquery(...args); }});
+      if (OBSERVERS.has(key)) return compatibleObserver(target[key], key);
       const value = target[key];
       return typeof value === 'function' && !value.prototype ? (...args) => value.apply(target, args.map(unwrap)) : value;
     }, set(_, key, value) { target[key] = value; return true; } });

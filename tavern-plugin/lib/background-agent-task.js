@@ -36,7 +36,7 @@ function backgroundPrompt(messages, turnContext, task, taskProtocol, input = {})
       : (message && message.role === 'assistant' ? '正文' : '用户')
     return '[' + role + ']\n' + messageText(message)
   }).filter(function (text) { return text.trim() !== '' }).join('\n\n')
-  const taskName = task === 'worldbook-filter' ? '世界书筛选' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
+  const taskName = task === 'stage-director' ? '舞台导演' : task === 'worldbook-filter' ? '世界书筛选' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
   sections.push('【最近剧情与本次任务】\n任务类型：' + taskName + '\n' + recent)
   const protocol = str(taskProtocol).trim()
   if (protocol !== '') sections.push('【任务要求】\n' + protocol)
@@ -124,6 +124,7 @@ export function createBackgroundAgentTask(options) {
   }
 
   function setupFor(state, descriptor, appendDescriptor) {
+    const isolated = state.input.task === 'stage-director'
     const backgroundPersona = state.input.task === 'phone'
       ? '你是与故事正文隔离的手机私聊 Agent。你只代表指定联系人回复当前手机消息，不推进正文、不修改状态，也不把私聊虚构成已经发生的现场剧情。'
       : state.input.task === 'plugin'
@@ -163,6 +164,7 @@ export function createBackgroundAgentTask(options) {
         // DSH restores complete sections after the assembly waterfall, so the
         // additional instruction must be part of this authoritative text.
         text: () => {
+          if (isolated) return state.input.system
           // Settlement and candidates share a Session: scope the fixed writing
           // instruction without changing its system prefix when the task switches.
           const fixed = sessionStablePrefixSections(state.session).flatMap(section => {
@@ -176,10 +178,10 @@ export function createBackgroundAgentTask(options) {
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search'] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search'] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
-        prependSystemInstruction(assembly, options.systemAppend?.())
+        if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
         if (state.input.task === 'phone') {
           assembly.sections = (assembly.sections || []).filter(function (section) {
             return !section || typeof section.name !== 'string' || !section.name.startsWith('tool:')
@@ -193,7 +195,7 @@ export function createBackgroundAgentTask(options) {
         return assembly
       })
       state.refreshConfiguredTools = function () {
-        if (state.stableToolDisposers) return
+        if (isolated || state.stableToolDisposers) return
         // Every task sharing this Session sees one fixed tool list: tool definitions sit in the
         // cached request prefix. What a task may call is enforced when the tool executes.
         // Plugin tools join the list when the Session is set up; a plugin loaded later
@@ -250,7 +252,7 @@ export function createBackgroundAgentTask(options) {
     let refusedCount = 0
     let removed = false
     const allowed = new Map(tools.map(function (tool) { return [tool.name, tool] }))
-    if (stableBackgroundTools.length > 0) {
+    if (stableBackgroundTools.length > 0 && input.task !== 'stage-director') {
       state.activeToolTask = {
         async execute(tool, args, execution) {
           const registeredShared = sharedByName.get(tool.name)
@@ -331,7 +333,7 @@ export function createBackgroundAgentTask(options) {
               }
             }
             const call = { name: tool.name, arguments: args }
-            const invoke = async function () { input.signal?.throwIfAborted(); return str(await input.onToolCall(call)) }
+            const invoke = async function () { input.signal?.throwIfAborted(); return str(await input.onToolCall(call, { signal: input.signal })) }
             const result = characterDesignStage
               ? str(await characterDesignStage.execute(tool.name, invoke))
               : await invoke()
@@ -370,6 +372,7 @@ export function createBackgroundAgentTask(options) {
     state.session = agent.session
     if (input.undoLastTask === true) return undoLastTask(agent.session, traceSessionId, agent)
     const runtimeInput = state.input
+    const isolated = input.task === 'stage-director'
     try { rewindBackgroundSurface(agent.session, input.rewindTo, agent, input.rewindFormatVersion || 3) }
     catch (error) {
       const failure = new Error('后台历史回退失败，本次任务已停止，未基于旧上下文继续执行。原因：' + str(error?.message || error), { cause: error })
@@ -393,7 +396,7 @@ export function createBackgroundAgentTask(options) {
         if (typeof options.flushSession === 'function') await options.flushSession(agent.session)
         await input.onPersistentSessionReady(traceSessionId)
       }
-      {
+      if (!isolated) {
         const existing = readSessionStablePrefix(agent.session)
         const revision = typeof options.resolveStablePrefixRevision === 'function' ? await options.resolveStablePrefixRevision(input) : 0
         const background = existing && revision <= existing.revision ? existing.text : typeof options.resolveStablePrefix === 'function'
@@ -404,10 +407,11 @@ export function createBackgroundAgentTask(options) {
         releaseOpeningTurn(agent.session, agent)
         if (prefix && prefix.event !== existing?.event && typeof options.flushSession === 'function') await options.flushSession(agent.session)
       }
+      else releaseOpeningTurn(agent.session, agent)
       // The filter reuses the last projection (or makes the first one after a restart) so the
       // shared system prefix stays byte-identical and the filter reads settlement's cache.
       const nextTurnPreparation = input.task === 'worldbook-filter' || input.task === 'style-reference'
-      const projectsWorldbook = !nextTurnPreparation || state.currentWorldbook === undefined
+      const projectsWorldbook = !isolated && (!nextTurnPreparation || state.currentWorldbook === undefined)
       const worldbook = projectsWorldbook && typeof options.resolveCurrentWorldbook === 'function'
         ? await options.resolveCurrentWorldbook(input) : undefined
       if (projectsWorldbook) state.currentWorldbook = worldbook && typeof worldbook === 'object' ? worldbook.prefixContext : worldbook
@@ -416,7 +420,7 @@ export function createBackgroundAgentTask(options) {
       const eventStart = sessionEvents(agent.session).length
       const filterContext = projectWorldbookFilterContext(agent.session, input)
       const scriptContext = projectCandidateScriptContext(agent.session, input)
-      const foregroundReads = typeof options.resolveForegroundWorldbookReads === 'function'
+      const foregroundReads = !isolated && typeof options.resolveForegroundWorldbookReads === 'function'
         ? await options.resolveForegroundWorldbookReads(input) : ''
       const snapshot = turnWorldbookSource && typeof turnWorldbookSource === 'object'
         ? worldbookSnapshot(agent.session, turnWorldbook) : null
@@ -429,7 +433,7 @@ export function createBackgroundAgentTask(options) {
         ? await options.pluginCandidate()?.sections(pluginContext).catch(() => []) || [] : []
       const candidateText = candidateNotes.length ? ['【插件附加的候选要求】', ...candidateNotes.map(note => note.text)].join('\n\n') : ''
       const taskText = [foregroundReads, snapshot?.rendered, systemUpdate?.rendered,
-        backgroundPrompt(filterContext?.messages || input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
+        backgroundPrompt(filterContext?.messages || input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
       agent.followup({
         id: randomUUID(),
         role: 'user',

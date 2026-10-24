@@ -14,9 +14,46 @@ export function projectedReplacingTurns(chat) {
   return kept.length ? kept : undefined
 }
 
-/** Recover an uncommitted replacement from its durable pre-rollback revision. */
-export function createRegenerationRecovery({ chats, sessions, timeline, isActive }) {
+/**
+ * Recover an uncommitted replacement from its durable pre-rollback revision.
+ * The save is the truth (docs/design/native-session-repair.md): whatever the
+ * native session does, recovery always ends the marker. A native step that
+ * fails leaves the save restored and the native tail stale for `repair`.
+ */
+export function createRegenerationRecovery({ chats, sessions, timeline, isActive, repair }) {
   const recovering = new Set()
+
+  function staleNative(chat, reason) {
+    chat.nativeSync = { status: 'stale', reason: '重新生成恢复：' + String(reason?.message || reason || ''), at: Date.now() }
+  }
+  function endMarker(chat) {
+    const kept = projectedReplacingTurns(chat)
+    if (kept) chat.replacingDshTurns = kept
+    else delete chat.replacingDshTurns
+    delete chat.regenInProgress
+    delete chat.regenRecovery
+  }
+  async function repairAfter(chatId, session, reason) {
+    console.warn('dsh-tavern: 重新生成恢复时模型上下文对不上，已按存档恢复，模型上下文稍后按存档修复：' + String(reason?.message || reason || ''))
+    if (session && typeof repair === 'function') {
+      try { await repair(session.id, session) } catch { /* nativeSync stays stale; the next reconcile retries. */ }
+    }
+  }
+  // Last resort: the recovery point or the native boundary is gone. Restore what
+  // the save still has (the original story when readable) and end the marker.
+  async function release({ chatId, operationId, before, session, reason }) {
+    const saved = await chats.update(chatId, current => {
+      if (!current || current.regenInProgress !== true || (operationId && current.regenRecovery?.id !== operationId)) return
+      const next = before && current.regenRecovery?.phase !== 'committed'
+        ? timeline.apply({ chat: current, intent: { kind: 'replacement.abort', restoreChat: before } }).chat : current
+      endMarker(next)
+      next.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
+      staleNative(next, reason)
+      return next
+    }, { source: 'foreground.regen-release' })
+    await repairAfter(chatId, session, reason)
+    return saved
+  }
 
   async function originalState(chat) {
     const saved = chat.regenRecovery
@@ -47,47 +84,58 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
   async function abort({ chatId, originalChat, session, eventStart, operationId }) {
     // Hold the Chat store transaction across projection cleanup and flush. A
     // concurrent observer must not invalidate restoration after cleanup succeeds.
-    return await chats.update(chatId, async current => {
+    let nativeError = null
+    const saved = await chats.update(chatId, async current => {
       if (!current || current.regenRecovery?.phase === 'committed' || current.regenInProgress !== true ||
           (operationId && current.regenRecovery?.id !== operationId) ||
           Number(current.tavernHelperLifecycleRevision || 0) > Number(originalChat.tavernHelperLifecycleRevision || 0) + 1) return
       const events = sessionEvents(session)
       // A send rejected while the marker was set failed its own turn; only real
-      // story after the attempt stops the cleanup, or recovery would never succeed.
+      // story after the attempt is kept: the save stays as it is, never overwritten.
       if (storyPlayerInputs(events, eventStart).length) {
-        throw new Error('重新生成后已有新的玩家输入，未清理或覆盖后续对话')
+        nativeError = new Error('重新生成后已有新的玩家输入，保留当前存档')
+        endMarker(current)
+        current.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
+        staleNative(current, nativeError)
+        return current
       }
-      const abortedTurns = regenerationAttemptTurns({ events, eventStart })
-      // Retain the durable recovery point if the native flush fails.
-      clearRegenerationAttemptSurface({ session, eventStart })
-      if (typeof sessions.flush === 'function') await sessions.flush(session)
+      let abortedTurns = []
+      try {
+        abortedTurns = regenerationAttemptTurns({ events, eventStart })
+        clearRegenerationAttemptSurface({ session, eventStart })
+        if (typeof sessions.flush === 'function') await sessions.flush(session)
+      } catch (error) { nativeError = error }
       const next = timeline.apply({ chat: current, intent: { kind: 'replacement.abort', restoreChat: originalChat } }).chat
       delete next.regenInProgress
       delete next.regenRecovery
       next.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
       next.suppressedDshTurns = [...new Set([...(next.suppressedDshTurns || []), ...abortedTurns])].sort((a, b) => a - b)
+      if (nativeError) staleNative(next, nativeError)
       return next
     }, { source: 'foreground.regen-abort' })
+    if (nativeError) await repairAfter(chatId, session, nativeError)
+    return saved
   }
 
   // Chat is already authoritative here. Never roll it back if projecting or
-  // flushing the native replacement fails; keep a durable, idempotent intent.
+  // flushing the native replacement fails; the native tail is repaired from it.
   async function complete({ chatId, session, operationId }) {
-    return await chats.update(chatId, async current => {
+    let nativeError = null
+    const saved = await chats.update(chatId, async current => {
       const saved = current?.regenRecovery
       if (!saved || saved.phase !== 'committed' || (operationId && saved.id !== operationId)) return
-      if (saved.sessionId !== session.id) throw new Error('重新生成恢复会话不匹配')
-      const projection = saved.projection
-      if (!projection) throw new Error('重新生成缺少已提交正文的投影记录')
-      applyRegenerationProjection(session, projection)
-      if (typeof sessions.flush === 'function') await sessions.flush(session)
-      const kept = projectedReplacingTurns(current)
-      if (kept) current.replacingDshTurns = kept
-      else delete current.replacingDshTurns
-      delete current.regenRecovery
-      delete current.regenInProgress
+      try {
+        if (saved.sessionId !== session.id) throw new Error('重新生成恢复会话不匹配')
+        if (!saved.projection || saved.projection.unplaced) throw new Error(saved.projection?.unplaced || '重新生成缺少已提交正文的投影记录')
+        applyRegenerationProjection(session, saved.projection)
+        if (typeof sessions.flush === 'function') await sessions.flush(session)
+      } catch (error) { nativeError = error }
+      endMarker(current)
+      if (nativeError) staleNative(current, nativeError)
       return current
     }, { source: 'foreground.regen-projected' })
+    if (nativeError) await repairAfter(chatId, session, nativeError)
+    return saved
   }
 
   async function recover(chatId) {
@@ -108,14 +156,25 @@ export function createRegenerationRecovery({ chats, sessions, timeline, isActive
         session = agent?.session
       }
       if (agent?.phase?.kind === 'running') return
-      if (!session) throw new Error('无法加载重新生成的原生会话，恢复点已保留')
-      if (chat.regenRecovery?.phase === 'committed') return await complete({ chatId, session, operationId: chat.regenRecovery.id })
-      const before = await originalState(chat)
-      const eventStart = chat.regenRecovery?.eventStart ?? legacyEventStart(before, session)
-      if (!Number.isSafeInteger(eventStart) || eventStart < 0 || eventStart > sessionEvents(session).length) {
-        throw new Error('重新生成的原生历史边界不匹配，恢复点已保留')
+      const operationId = chat.regenRecovery?.id
+      if (chat.regenRecovery?.phase === 'committed') {
+        if (!session) return await release({ chatId, operationId, session, reason: '无法加载重新生成的原生会话' })
+        return await complete({ chatId, session, operationId })
       }
-      return await abort({ chatId, originalChat: before, session, eventStart, operationId: chat.regenRecovery?.id })
+      let before
+      try { before = await originalState(chat) }
+      catch (error) { return await release({ chatId, operationId, session, reason: error }) }
+      if (!session) return await release({ chatId, operationId, before, reason: '无法加载重新生成的原生会话' })
+      let eventStart
+      try { eventStart = chat.regenRecovery?.eventStart ?? legacyEventStart(before, session) }
+      catch (error) { return await release({ chatId, operationId, before, session, reason: error }) }
+      if (!Number.isSafeInteger(eventStart) || eventStart < 0 || eventStart > sessionEvents(session).length) {
+        return await release({ chatId, operationId, before, session, reason: '重新生成的原生历史边界不匹配' })
+      }
+      const aborted = await abort({ chatId, originalChat: before, session, eventStart, operationId })
+      if (aborted !== undefined || (await chats.read(chatId))?.regenInProgress !== true) return aborted
+      // Abort declined (the story moved on since the attempt): keep the save as it is.
+      return await release({ chatId, operationId, session, reason: '重新生成后存档已有其他变化' })
     } finally {
       try { if (handle) await handle.dispose() }
       finally { recovering.delete(chatId) }

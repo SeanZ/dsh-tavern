@@ -58,32 +58,34 @@ test('abort serializes native cleanup with chat restoration and competing writer
  assert.equal(after.observation,'new')
 })
 
-test('failed native flush keeps recovery point and retry restores the original story',async t=>{
+test('failed native flush still restores the original story and marks the native tail stale',async t=>{
  const root=await mkdtemp(join(tmpdir(),'regen-flush-'));t.after(()=>rm(root,{recursive:true,force:true}))
  const chats=createChatPersistence({store:createChatJournalStore({dataRoot:root})})
  const before=await chats.write({id:'chat',messages:[{role:'user',text:'input'},{role:'assistant',text:'original-body'}]})
  await chats.update('chat',c=>({...c,regenInProgress:true,regenRecovery:{id:'op'},messages:[]}))
- const f=fixture(); let fail=true
- const recovery=createRegenerationRecovery({chats,timeline:createStoryTimeline(),isActive:()=>false,sessions:{flush:async()=>{if(fail)throw Error('flush failed')}}})
- const input={chatId:'chat',originalChat:before,session:f.session,eventStart:f.eventStart,operationId:'op'}
- await assert.rejects(recovery.abort(input),/flush failed/)
- assert.equal((await chats.read('chat')).regenInProgress,true)
- fail=false
- await recovery.abort(input)
- assert.equal((await chats.read('chat')).regenInProgress,undefined)
- assert.ok(f.session.surface.nodes.includes(f.body.seq))
+ const f=fixture();const repairs=[]
+ const recovery=createRegenerationRecovery({chats,timeline:createStoryTimeline(),isActive:()=>false,sessions:{flush:async()=>{throw Error('flush failed')}},repair:async id=>repairs.push(id)})
+ await recovery.abort({chatId:'chat',originalChat:before,session:f.session,eventStart:f.eventStart,operationId:'op'})
+ const after=await chats.read('chat')
+ assert.equal(after.regenInProgress,undefined)
+ assert.equal(after.messages.at(-1).text,'original-body')
+ assert.equal(after.nativeSync.status,'stale')
+ assert.deepEqual(repairs,[f.session.id])
 })
 
-test('stale recovery refuses to overwrite a later normal input before mutating either store',async t=>{
+test('a later normal input keeps the save as it is and only ends the marker',async t=>{
  const root=await mkdtemp(join(tmpdir(),'regen-later-'));t.after(()=>rm(root,{recursive:true,force:true}))
  const chats=createChatPersistence({store:createChatJournalStore({dataRoot:root})})
  const before=await chats.write({id:'chat',messages:[{role:'user',text:'input'},{role:'assistant',text:'original-body'}]})
  await chats.update('chat',c=>({...c,regenInProgress:true,regenRecovery:{id:'op'},messages:[{role:'user',text:'later'}]}))
- const f=fixture();f.user('later');const nodes=[...f.session.surface.nodes];const saved=await chats.read('chat')
+ const f=fixture();f.user('later');const nodes=[...f.session.surface.nodes]
  const recovery=createRegenerationRecovery({chats,timeline:createStoryTimeline(),isActive:()=>false,sessions:{}})
- await assert.rejects(recovery.abort({chatId:'chat',originalChat:before,session:f.session,eventStart:f.eventStart,operationId:'op'}),/已有新的玩家输入/)
+ await recovery.abort({chatId:'chat',originalChat:before,session:f.session,eventStart:f.eventStart,operationId:'op'})
  assert.deepEqual(f.session.surface.nodes,nodes)
- assert.deepEqual(await chats.read('chat'),saved)
+ const after=await chats.read('chat')
+ assert.deepEqual(after.messages.map(m=>m.text),['later'])
+ assert.equal(after.regenInProgress,undefined)
+ assert.equal(after.nativeSync.status,'stale')
 })
 
 // Native cancellation can finish before the host writes turn/end.

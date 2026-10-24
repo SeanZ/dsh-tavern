@@ -162,3 +162,75 @@
 						renderText(segment.text, "text")));
 			}));
 		}
+
+		// Cast material (sprites, avatars, voices) for the stage, edited in 舞台素材.
+		function readTavernFile(file) {
+			return new Promise(function (resolve, reject) {
+				const reader = new FileReader();
+				reader.onload = function () { resolve(String(reader.result).replace(/^data:[^,]*,/, "")); };
+				reader.onerror = function () { reject(reader.error || new Error("读取文件失败")); };
+				reader.readAsDataURL(file);
+			});
+		}
+
+		function TavernCastManager(props) {
+			const h = React.createElement;
+			const data = props.data;
+			const [busy, setBusy] = React.useState(false);
+			const [notice, setNotice] = React.useState("");
+			const [emotion, setEmotion] = React.useState("neutral");
+			const speakers = [];
+			function add(name) {
+				if (!name || name === data.player) return;
+				const character = tavernCastCharacter(data.cast, name);
+				const label = character ? character.name : name;
+				if (speakers.indexOf(label) < 0) speakers.push(label);
+			}
+			add(data.card.name);
+			(data.cast || []).forEach(function (character) { add(character.name); });
+			(data.turns || []).forEach(function (turn) { (turn.lines || []).forEach(function (line) { add(line.speaker); }); });
+			async function run(method, args, done) {
+				setBusy(true); setNotice("");
+				try { const result = await rpc(method, args, props.sessionId); props.onCast(result.cast); window.dispatchEvent(new CustomEvent("dsh-tavern-cast-assets-changed")); setNotice(done(result)); }
+				catch (error) { setNotice("失败：" + String(error.message || error)); }
+				finally { setBusy(false); }
+			}
+			function pick(accept, handle) {
+				const input = document.createElement("input");
+				input.type = "file"; input.accept = accept;
+				input.onchange = function () { const file = input.files && input.files[0]; if (file) void handle(file); };
+				input.click();
+			}
+			function upload(name, slot) {
+				pick("image/png,image/jpeg,image/webp,image/gif", async function (file) {
+					const data64 = await readTavernFile(file);
+					await run("castSetImage", { name: name, slot: slot, data: data64 }, function () { return "已保存 " + name + " 的" + (slot === "avatar" ? "头像" : TAVERN_CAST_EMOTIONS[slot] + "立绘"); });
+				});
+			}
+			function importPack() {
+				pick(".zip,application/zip", async function (file) {
+					const data64 = await readTavernFile(file);
+					await run("castImportSpritePack", { data: data64 }, function (result) { return "导入 " + result.imported + " 张立绘（" + result.characters.join("、") + "）" + (result.skipped ? "，跳过 " + result.skipped + " 个文件" : ""); });
+				});
+			}
+			return h("section", { className: "dsh-tavern-cast-manager" },
+				h("div", { className: "dsh-tavern-cast-manager-head" }, h("strong", null, "角色素材"),
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: importPack }, "导入 ST 立绘包")),
+				h("p", { className: "dsh-tavern-settings-desc" }, "立绘按情绪命名（joy.png、sadness.png…）。单人立绘包导入给「" + (data.card.name || "主角") + "」，多人立绘包按文件夹名对应人物。"),
+				h("label", { className: "dsh-tavern-cast-manager-emotion" }, "上传立绘的情绪",
+					h("select", { value: emotion, onChange: function (event) { setEmotion(event.target.value); } },
+						Object.keys(TAVERN_CAST_EMOTIONS).map(function (key) { return h("option", { key: key, value: key }, TAVERN_CAST_EMOTIONS[key] + " · " + key); }))),
+				h("ul", null, speakers.map(function (name) {
+					const character = tavernCastCharacter(data.cast, name);
+					const count = character ? Object.keys(character.sprites || {}).length : 0;
+					return h("li", { key: name, className: "dsh-tavern-cast-manager-row" },
+						h(TavernCastAvatar, { speaker: name, imageUrl: tavernCastImage(data, name, "neutral", true) }),
+						h("span", { className: "dsh-tavern-cast-manager-name" }, name, h("small", null, count ? count + " 张立绘" : "暂无立绘")),
+						h(TavernCastVoiceField, { sessionId: props.sessionId, name: name, character: character, busy: busy,
+							onSave: function (provider, voice) { void run("castSetVoice", { name: name, provider: provider, voice: voice }, function () { return voice ? "已保存 " + name + " 的声音" : "已清除 " + name + " 的声音"; }); } }),
+						h("button", { type: "button", disabled: busy, onClick: function () { upload(name, "avatar"); } }, "换头像"),
+						h("button", { type: "button", disabled: busy, onClick: function () { upload(name, emotion); } }, "加" + TAVERN_CAST_EMOTIONS[emotion] + "立绘"),
+						character && !character.plugin ? h("button", { type: "button", disabled: busy, onClick: function () { void run("castRemoveCharacter", { name: character.name }, function () { return "已清除 " + character.name + " 的素材"; }); } }, "清除") : null);
+				})),
+				notice ? h("p", { role: "status", className: "dsh-tavern-settings-desc" }, notice) : null);
+		}

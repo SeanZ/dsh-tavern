@@ -4,15 +4,15 @@
 
 - `plugin/`：卡内插件的源码，只用公开的[插件接口](../../docs/plugin-api.md)。宿主侧（`index.mjs`）在每轮后台结算里顺带"导演"，按正文选场景、时段、服装和背景音乐，并在本局设置里加「舞台导演」「导演换服装」两个开关；浏览器侧（`client.js`）用 `registerStageView` 画舞台：背景图、当前服装的情绪全身立绘（素材包里分层的立绘按配方拼好）、场景下方的对白框，背景音乐交给 Tavern 播放；并用 `castAssetSource` 把各表情头像交给 Tavern，正文头像随台词情绪变化。
 - `presets/`：推荐预设，开新局时默认使用。
-- `build.mjs`：从分支发布的卡包生成完整的 `大肥鱼.dshcard`（约 270 MB，含 Live2D）。
-- `compress.mjs`：生成分发版。PNG 转 WebP、音乐和音效转 Ogg Opus，`--drop-live2d` 去掉 Live2D 模型，卡内插件取 `plugin/` 里最新的；每个素材包里写一份 `credits/DSH-CARD-CHANGES.md` 说明改动。
+- `build.mjs`：从分支发布的卡包生成原料卡 `大肥鱼.source.dshcard`（约 270 MB，原始素材，含 Live2D）。只用来生成分发版，不直接导入。
+- `compress.mjs`：从原料卡生成分发版 `大肥鱼.dshcard`（约 90 MB），就是 Release 里给用户下载的那张。PNG 转 WebP、音乐和音效转 Ogg Opus，`--drop-live2d` 去掉 Live2D 模型，卡内插件取 `plugin/` 里最新的；每个素材包里写一份 `credits/DSH-CARD-CHANGES.md` 说明改动。
 - `RELEASE.md`：发布说明。
 
 两个 `.dshcard` 都太大，不进仓库（`.gitignore`）。改了插件或预设后重新生成：
 
 ```sh
-node examples/dafeiyu-card/build.mjs dafeiyu.card-bundle.zip examples/dafeiyu-card/大肥鱼.dshcard
-node examples/dafeiyu-card/compress.mjs examples/dafeiyu-card/大肥鱼.dshcard examples/dafeiyu-card/大肥鱼.min.dshcard --drop-live2d
+node examples/dafeiyu-card/build.mjs dafeiyu.card-bundle.zip examples/dafeiyu-card/大肥鱼.source.dshcard
+node examples/dafeiyu-card/compress.mjs examples/dafeiyu-card/大肥鱼.source.dshcard examples/dafeiyu-card/大肥鱼.dshcard --drop-live2d
 ```
 
 `compress.mjs` 需要 `cwebp` 和带 libopus 的 `ffmpeg`。
