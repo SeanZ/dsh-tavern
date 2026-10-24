@@ -1386,11 +1386,23 @@ function createRuntime(ctx, overrides, logger, deps) {
     const imageQueue = []
     let imageRunning = 0
     let imageDisposed = false
+    // 进行中的生图任务：中止后它们仍会在 finally 里落盘作业记录。
+    const imageTasks = new Set()
+    // 等进行中的生图任务和作业落盘都结束。卸载清理返回它，宿主（cordis）会 await 异步清理。
+    async function drainImageTasks() {
+      let written
+      do {
+        await Promise.all(imageTasks)
+        written = jobsWritePromise
+        await written
+      } while (imageTasks.size || written !== jobsWritePromise)
+    }
     if (typeof ctx.effect === 'function') ctx.effect(() => () => {
       imageDisposed = true
       for (const controller of settledTurnWaitControllers) controller.abort(new Error('插件已卸载'))
       settledTurnWaitControllers.clear()
       for (const job of jobs.values()) if (job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) job.controller?.abort()
+      return drainImageTasks()
     }, 'dsh-tavern-image: image channels')
 
     function drainImages() {
@@ -1401,7 +1413,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         job.state = 'running'
         job.requestStarted = true
         persistJobs()
-        ;(async () => {
+        const task = (async () => {
           try {
             const result = await generateImage(channel, {
               positive: compiled.positive, negative: compiled.negative, seed: compiled.seed, characters: compiled.characters,
@@ -1439,6 +1451,8 @@ function createRuntime(ctx, overrides, logger, deps) {
             drainImages()
           }
         })()
+        imageTasks.add(task)
+        task.finally(() => imageTasks.delete(task))
       }
     }
 
