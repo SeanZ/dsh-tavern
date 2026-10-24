@@ -25,6 +25,8 @@ function harness() {
     useTavernSessionMode: () => 'story', useTavernStoryViewMode: () => storyView, latestTavernAssistantMessageId: () => 'reply',
     useLiveTavernView: () => ({ view: { canRollback, undoRollbackTurn: undoTurn, ...extraView } }),
     useTavernCoordination: () => ({ view: { activity } }),
+    useScopedLiveTavernView: () => ({ view: { mode: 'story', canRollback, rollbackTargetTurn: 5, forkTurnsByMessageId: { reply: 3 } } }),
+    DshUi: { Tooltip: 'tooltip' },
     describeTavernActivity: value => value, isPlayMode: () => true,
     window: { confirm: () => { calls.push('confirm'); return true } },
     rpc: async () => { calls.push('rpc'); if (fail) throw new Error('本次回复未完成'); return { view: { rollbackWarning: warning } } },
@@ -35,13 +37,15 @@ function harness() {
     notifyTavernDataChanged: () => calls.push('notify'),
     tavernErrorHub: { report: (name, error) => calls.push(name + ': ' + error.message) },
     submitFailedTurnReplay: async sessionId => { calls.push('replay'); return { view: {} } },
-    TavernCompactionAction: function TavernCompactionAction() {}
+    TavernCompactionAction: function TavernCompactionAction() {},
+    TavernDebugButton: function TavernDebugButton() {}
   }
-  const actions = vm.runInNewContext(component + '; ({ CandidateAction, TavernRollbackAction, TavernUndoRollbackAction, TavernMoreActions })', context)
+  const actions = vm.runInNewContext(component + '; ({ CandidateAction, TavernRollbackAction, TavernUndoRollbackAction, TavernRollbackToAction, TavernMoreActions })', context)
   return {
     calls,
     view(value) { Object.assign(extraView, value) },
     undoTurn(value) { undoTurn = value },
+    rollbackTo() { cursor = 0; return actions.TavernRollbackToAction({ sessionId: 'session', messageId: 'reply' }) },
     undo() { cursor = 0; return actions.TavernUndoRollbackAction({ sessionId: 'session', useSession: select => select({ running }) }) },
     playerRound(value) { canRollback = value },
     storyView(value) { storyView = value },
@@ -99,7 +103,8 @@ test('实际回退组件在前台、后台和重生成期间禁用，完成后�
 })
 
 // 故事视图模式（C4 开关）下，重新生成、失败轮重放与撤回、编辑正文、回退本轮由楼层操作和输入框状态条承担。
-const labels = buttons => buttons.map(button => button.children[0])
+// 上游新增的「交给调试 Agent」是组件元素，按组件名标记；它不与故事视图入口重复，两种模式都保留。
+const labels = buttons => buttons.map(button => typeof button.type === 'function' ? button.type.name : button.children[0])
 function menuItems(more) {
   const menu = more.children[1]
   return menu.children.filter(Boolean).map(item => typeof item.type === 'function' ? item.type.name : item.children[0])
@@ -113,15 +118,22 @@ test('故事视图模式开启时 dock 只留生成候选项，关闭时照旧�
   h.storyView(true)
   assert.deepEqual(labels(h.buttons()), ['生成候选项'])
   h.view({ canReplayFailedTurn: true })
-  assert.deepEqual(labels(h.buttons()), ['生成候选项'], '失败轮重放与撤回归输入框状态条')
+  assert.deepEqual(labels(h.buttons()), ['生成候选项', 'TavernDebugButton'], '失败轮重放与撤回归输入框状态条')
   h.storyView(false)
-  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成本轮', '撤回这条输入'])
+  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成本轮', '撤回这条输入', 'TavernDebugButton'])
 })
 
 test('故事视图模式开启时「更多」不含编辑正文、回退本轮与恢复错误提示，其余照旧', () => {
   const h = harness()
-  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', '恢复全部错误提示', 'TavernCompactionAction']
+  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', '恢复全部错误提示', 'TavernDebugButton', 'TavernCompactionAction']
   assert.deepEqual(menuItems(h.more()), all)
   h.storyView(true)
-  assert.deepEqual(menuItems(h.more()), ['TavernStopBackgroundAction', 'TavernUndoRollbackAction', 'TavernCompactionAction'])
+  assert.deepEqual(menuItems(h.more()), ['TavernStopBackgroundAction', 'TavernUndoRollbackAction', 'TavernDebugButton', 'TavernCompactionAction'])
+})
+
+test('故事视图模式开启时消息上不显示上游的「回退到这一轮」，关闭时照旧', () => {
+  const h = harness()
+  assert.equal(h.rollbackTo().type, 'tooltip')
+  h.storyView(true)
+  assert.equal(h.rollbackTo(), null)
 })
