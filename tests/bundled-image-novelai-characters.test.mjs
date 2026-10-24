@@ -76,7 +76,16 @@ test('改写角色按 DSL 编号恢复 metadata，补回缺失编号且不改变
 
 test('真实 /redraw handler 接受显式空角色 DSL，并只对原始角色数据编译一次', async t => {
   const temp = await mkdtemp(join(tmpdir(), 'dsh-image-redraw-'))
-  t.after(() => rm(temp, { recursive: true, force: true }))
+  const disposers = []
+  const disposeHandlers = []
+  const oldFetch = globalThis.fetch
+  // t.after 按登记顺序执行，只登记一个：先卸载并等后台生图与作业落盘结束，再恢复 fetch、删目录。
+  t.after(async () => {
+    for (const dispose of disposeHandlers.splice(0).reverse()) await dispose()
+    for (const dispose of disposers.splice(0).reverse()) await dispose()
+    globalThis.fetch = oldFetch
+    await rm(temp, { recursive: true, force: true })
+  })
   const packageSource = new URL('../tavern-plugin/packages/dsh-tavern-image-bundled/', import.meta.url)
   const packagePath = join(temp, 'plugin')
   await cp(packageSource, packagePath, { recursive: true })
@@ -90,8 +99,6 @@ test('真实 /redraw handler 接受显式空角色 DSL，并只对原始角色�
   ], outfits: [], settings: [], props: [] }))
   const { apply: isolatedApply } = await import(pathToFileURL(join(packagePath, 'lib', 'index.js')).href)
   const routes = new Map()
-  const disposers = []
-  const disposeHandlers = []
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
     webServer: { register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path) } },
@@ -104,16 +111,13 @@ test('真实 /redraw handler 接受显式空角色 DSL，并只对原始角色�
     imageChannels: [{ id: 'test-nai', name: 'test', provider: 'novelai', enabled: true, baseUrl: 'https://image.test', apiKey: 'test-key', options: {} }],
     promptMode: 'tags', traitMode: 'default',
   })
-  t.after(() => { for (const dispose of disposeHandlers.splice(0).reverse()) dispose(); for (const dispose of disposers.splice(0).reverse()) dispose() })
   const handler = routes.get('/plugins/dsh-tavern-image/redraw')
   assert.equal(typeof handler, 'function')
-  const oldFetch = globalThis.fetch
   const payloads = []
   globalThis.fetch = async (_url, init) => {
     payloads.push(JSON.parse(init.body))
     return new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } })
   }
-  t.after(() => { globalThis.fetch = oldFetch })
   const request = (route, body, method = 'POST') => new Promise((resolve, reject) => {
     const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
     Object.assign(request, { url: route, method, headers: { host: 'localhost', 'content-type': 'application/json' } })

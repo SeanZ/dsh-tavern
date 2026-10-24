@@ -286,9 +286,14 @@ export function keptPlayerInputTurns(input = {}) {
   const bodies = new Map()
   let turn = null
   let lastInput = null
+  // 最近一条已画正文所回答的玩家输入。重新生成同一轮时，completed 边界已清空
+  // lastInput，但新尝试回答的仍是这句输入，所以由触发卡（或无正文的 openTurn）沿用它。
+  let roundInput = null
   let queued = []
   for (const event of events) {
     if (!event) continue
+    if (event.type === 'user/message' && event.surfaceOp === 'append' && turn !== null &&
+        isProducerSource(event.data?.source, 'dsh-tavern-regen')) { lastInput ??= roundInput; continue }
     if (event.type === 'turn/start') {
       turn = Number(event.data?.turn)
       // A message queued before its turn starts (the inbox splices it in) opens it.
@@ -314,12 +319,13 @@ export function keptPlayerInputTurns(input = {}) {
     const owner = Number(event.data?.turn)
     if (!Number.isSafeInteger(owner) || owner <= 0) continue
     bodies.set(owner, { seq: Number(event.seq), input: lastInput })
+    roundInput = lastInput
   }
   const kept = new Set()
   for (const reply of replyTurns) {
     const body = bodies.get(reply)
     const source = body ? body.input
-      : Number.isSafeInteger(openTurn) && openTurn > 0 && reply === openTurn ? lastInput : null
+      : Number.isSafeInteger(openTurn) && openTurn > 0 && reply === openTurn ? lastInput ?? roundInput : null
     if (source && suppressed.has(Number(source.turn))) kept.add(Number(source.turn))
   }
   return [...kept].sort((left, right) => left - right)
