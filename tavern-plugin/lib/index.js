@@ -1,4 +1,5 @@
 // Must stay first: it has to run before anything loads jsdom.
+import './domain/host-punycode-request.js'
 import { createSessionViewProjection } from './domain/session-view-projection.js'
 import { createConversationBackgroundSettings } from './domain/conversation-background-settings.js'
 import { createChatWrites } from './domain/chat-writes.js'

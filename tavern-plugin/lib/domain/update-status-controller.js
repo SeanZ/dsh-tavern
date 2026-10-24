@@ -100,7 +100,7 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
   async function checkUpdate() {
     const status = statusValue;
     if (!active) return;
-    if (action.pending || isUpdateBusy(status) || ["restart-required", "installed-restart-required"].includes(status.phase)) return;
+    if (action.pending || isUpdateBusy(status) || ["restart-required", "installed-restart-required", "package-managed"].includes(status.phase)) return;
     action.pending = true;
     action.generation += 1;
     publishUpdateStatus({ ...status, phase: "checking", host: status.host || "cli", checkedAt: now(), error: "" });

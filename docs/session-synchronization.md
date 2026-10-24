@@ -34,6 +34,7 @@
 
 ```sh
 node bin/build-tavern-client.mjs --check
+node bin/build-plugin-package.mjs --check
 node bin/test-tavern.mjs \
   tests/session-refresh-controller.test.mjs \
   tests/session-view-sync.test.mjs \
