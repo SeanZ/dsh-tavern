@@ -19,3 +19,11 @@ test('标准插件包里不再有指向 dsh-tavern-plugin 的裸包名', async (
   const names = patch.split('\n').filter(line => !line.trimStart().startsWith('#')).filter(line => /\bname:\s*dsh-tavern-plugin\b/.test(line))
   assert.deepEqual(names, [])
 })
+
+// guard 实际读取当前宿主：baseline 0.2.1-rc.3 必须通过（需 DSH_BOOT_MODULE 指向 rc.3 宿主时才有意义）。
+test('guard 对实际解析到的宿主判定为兼容', async () => {
+  const { readHostCompatibility } = await import('../tavern-plugin/lib/domain/host-compatibility.js')
+  const compatibility = readHostCompatibility()
+  if (!compatibility.version) return
+  assert.equal(isCompatibleHost(compatibility), true, compatibility.message)
+})

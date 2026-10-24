@@ -1,6 +1,6 @@
 {
   "adaptedDshVersion": "0.2.1-rc.2",
-  "allowedDshVersions": ["0.2.1-rc.2", "0.2.0-rc.2"],
+  "allowedDshVersions": ["0.2.1-rc.3", "0.2.1-rc.2", "0.2.0-rc.2"],
   "hostLinePackages": {
     "0.2.0": {
       "dsh-better-sidebar": { "version": "0.26.0", "patch": "patches/dsh-better-sidebar@0.26.0.patch" }
