@@ -1,23 +1,23 @@
-		// 顶部视图标签（对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比）：设置决定
-		// 显示哪些、按什么顺序。「对话」由宿主注册，始终保留在最前，不能移除。
+		// 顶部视图标签（全部已注册的 conversation.view 页签）：设置决定显示哪些、
+		// 按什么顺序；没保存过时按注册顺序全部显示。「对话」由宿主注册，始终保留在最前，不能移除。
 		// 标签行由宿主渲染，这里只给每个标签按钮设置 order / display。
 		const TAVERN_VIEW_TAB_RESIDENT = "chat";
 		const TAVERN_VIEW_TAB_ITEM_LIMIT = 24;
-		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "tavern-story", "trajectory", "dsh-tavern:full-context", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
 		// 槽位就绪前设置页也能列出这些标签；就绪后用槽位里的实际名称覆盖。
 		const TAVERN_VIEW_TAB_KNOWN = Object.freeze([
 			Object.freeze({ id: "chat", label: "对话", locked: true }),
 			Object.freeze({ id: "trajectory", label: "轨迹" }),
 			Object.freeze({ id: "dsh-tavern:full-context", label: "完整上下文" }),
 			Object.freeze({ id: "dsh-tavern:gallery", label: "画廊" }),
-			Object.freeze({ id: "dsh-tavern:polish", label: "精修对比" }),
-			Object.freeze({ id: "tavern-story", label: "故事" })
+			Object.freeze({ id: "dsh-tavern:polish", label: "精修对比" })
 		]);
 
 		// 读取统一的可见清单：「对话」缺失时补上，排在后面时挪回首位。
-		function tavernViewTabItems(value) {
-			const source = value && Array.isArray(value.items) ? value.items : null;
-			if (!source) return TAVERN_VIEW_TABS_DEFAULT.items.slice();
+		// 没保存过清单时从已注册条目派生：对话首位，其余按 order 升序（相等保持注册顺序）。
+		function tavernViewTabItems(value, entries) {
+			const saved = value && Array.isArray(value.items) ? value.items : null;
+			const source = saved || (Array.isArray(entries) ? entries : [])
+				.slice().sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0)).map(entry => entry.id);
 			const items = [];
 			for (const id of source) {
 				if (typeof id !== "string" || id === "" || items.includes(id)) continue;
@@ -44,7 +44,7 @@
 				const options = entry && entry.options;
 				const id = options && options.id;
 				if (!id || list.some(item => item.id === id)) continue;
-				list.push({ id: String(id), label: tavernViewTabLabel(options.label) || String(id).replace(/^[^:]+:/, "") });
+				list.push({ id: String(id), label: tavernViewTabLabel(options.label) || String(id).replace(/^[^:]+:/, ""), order: Number(options.order) || 0 });
 			}
 			return list;
 		}
@@ -72,9 +72,11 @@
 				if (withoutTrajectory.length === list.length - 1) pairs = byLabel(withoutTrajectory);
 			}
 			// 宿主改版、本地化取不到时按顺序兜底；数量对不上就不猜，免得隐藏错标签。
+			// 宿主渲染时把对话固定在第一位，兜底也先把它提到首位再按位置对齐。
 			if (!pairs) {
 				if (buttons.length !== list.length) return [];
-				pairs = buttons.map((button, index) => ({ button: button, entry: list[index] || null }));
+				const positional = list.filter(entry => entry.id === TAVERN_VIEW_TAB_RESIDENT).concat(list.filter(entry => entry.id !== TAVERN_VIEW_TAB_RESIDENT));
+				pairs = buttons.map((button, index) => ({ button: button, entry: positional[index] || null }));
 			}
 			return pairs.map(function (pair) {
 				const id = pair.entry ? pair.entry.id : "";
@@ -111,9 +113,9 @@
 			if (!Observer) return function () { };
 			const rows = new Map();
 			let frame = 0;
-			function items() {
+			function items(entries) {
 				const preferences = displayPreferences.snapshot();
-				return tavernViewTabItems(preferences && preferences.viewTabs);
+				return tavernViewTabItems(preferences && preferences.viewTabs, entries);
 			}
 			function apply() {
 				frame = 0;
@@ -123,7 +125,7 @@
 					rows.delete(row);
 				}
 				if (!rows.size) return;
-				const entries = tavernViewTabEntries(slots), current = items();
+				const entries = tavernViewTabEntries(slots), current = items(entries);
 				rows.forEach(function (_observer, row) { applyTavernViewTabRow(row, entries, current); });
 			}
 			function schedule() {
@@ -178,14 +180,19 @@
 				subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
 				snapshot() { return entries; },
 				publish(next) {
-					const list = (Array.isArray(next) ? next : []).map(entry => ({ id: entry.id, label: entry.label, locked: entry.id === TAVERN_VIEW_TAB_RESIDENT }));
-					if (list.length === entries.length && list.every((entry, index) => entry.id === entries[index].id && entry.label === entries[index].label)) return;
+					const list = (Array.isArray(next) ? next : []).map(entry => ({ id: entry.id, label: entry.label, order: Number(entry.order) || 0, locked: entry.id === TAVERN_VIEW_TAB_RESIDENT }));
+					if (list.length === entries.length && list.every((entry, index) => entry.id === entries[index].id && entry.label === entries[index].label && entry.order === entries[index].order)) return;
 					entries = list;
 					listeners.forEach(listener => listener());
 				}
 			};
 		}
 		const tavernViewTabCatalog = createTavernViewTabCatalog();
+
+		// 设置页的可见清单：未保存时按目录派生，目录还没就绪时用内置标签派生。
+		function tavernViewTabSettingsItems(value, catalog) {
+			return tavernViewTabItems(value, catalog && catalog.length ? catalog : TAVERN_VIEW_TAB_KNOWN);
+		}
 
 		function TavernViewTabsSettings() {
 			const h = React.createElement;
@@ -194,7 +201,7 @@
 			const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState("");
 			const [dragging, setDragging] = React.useState("");
 			const dragRef = React.useRef("");
-			const items = tavernViewTabItems(preferences && preferences.viewTabs);
+			const items = tavernViewTabSettingsItems(preferences && preferences.viewTabs, catalog);
 			const known = React.useMemo(function () {
 				const list = [], seen = new Set();
 				function push(entry) {
@@ -213,7 +220,8 @@
 			async function save(next) {
 				setBusy(true); setNotice("");
 				try {
-					await displayPreferences.save({ viewTabs: { items: next } });
+					// null 表示删除已保存清单，回到按已注册页签派生的默认。
+					await displayPreferences.save({ viewTabs: next ? { items: next } : null });
 					setNotice("已保存，对所有对话立即生效");
 				} catch (error) { setNotice("保存失败：" + String(error.message || error)); }
 				finally { setBusy(false); }
@@ -276,11 +284,11 @@
 			return h("section", { className: "dsh-tavern-view-tabs", "aria-label": "顶部标签" },
 				h("div", { className: "dsh-tavern-settings-copy" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "顶部标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方「对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比」这排标签显示哪些、按什么顺序。「对话」始终显示并排在最前，不能移除。")),
+					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方这排标签显示哪些、按什么顺序；默认按注册顺序全部显示。「对话」始终显示并排在最前，不能移除。")),
 				h("ul", { className: "dsh-tavern-view-tab-list" }, items.map(row)),
 				h("div", { className: "dsh-tavern-view-tab-catalog" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "可添加的标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；默认显示的标签在手机上，放不下时可左右滑动。"),
+					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；手机上放不下时可左右滑动。"),
 					h("div", { className: "dsh-tavern-view-tab-chips" },
 						addable.length
 							? addable.map(entry => h("button", { key: entry.id, type: "button", className: "dsh-tavern-view-tab-chip", disabled: busy, onClick: function () { void toggle(entry.id); } },
@@ -288,6 +296,6 @@
 							: h("span", { className: "dsh-tavern-settings-desc" }, "所有标签都已显示。"))),
 				h("div", { className: "dsh-tavern-view-tab-foot" },
 					h("p", { className: "dsh-tavern-settings-desc" }, "改动立即保存，对所有对话生效。"),
-					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void save(TAVERN_VIEW_TABS_DEFAULT.items.slice()); } }, "恢复默认标签")),
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void save(null); } }, "恢复默认标签")),
 				notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null);
 		}

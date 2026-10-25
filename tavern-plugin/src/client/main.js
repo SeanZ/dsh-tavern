@@ -941,8 +941,8 @@ window.__ModuleLoader__.load({
                 name: "conversation.view", id: "dsh-tavern:polish", order: 13,
                 label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
             }, PolishComparisonView)), "dsh-tavern: polish comparison");
-            // 顶部标签（对话/轨迹/完整上下文/画廊/精修对比）的设置：设置页读这份
-            // 目录，标签行由 installTavernViewTabLayout 按保存的顺序显示或隐藏。
+            // 顶部标签（全部已注册的 conversation.view）的设置：设置页读这份目录，标签行由
+            // installTavernViewTabLayout 按保存的顺序显示或隐藏，没保存过时按注册顺序全部显示。
             ctx.effect(function () {
                 const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };
                 const dispose = typeof slots.subscribe === "function" ? slots.subscribe("conversation.view", publish) : function () { };

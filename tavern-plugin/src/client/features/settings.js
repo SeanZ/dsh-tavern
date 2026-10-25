@@ -151,9 +151,10 @@
                 return { display: input.display === "icon" ? "icon" : "icon-text", items: input.items.filter(item => typeof item === "string").slice(0, 24) };
             }
             // 对话始终在首位；旧配置或手改配置里缺了它、或排到后面，都在读取时纠正。
+            // 没保存过时保持 null，由用到的地方按已注册页签派生。
             function viewTabsOf(settings) {
                 const input = settings && settings.viewTabs;
-                return { items: tavernViewTabItems(input && typeof input === "object" && Array.isArray(input.items) ? input : null) };
+                return input && typeof input === "object" && Array.isArray(input.items) ? { items: tavernViewTabItems(input) } : null;
             }
             function apply(settings) {
                 value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
@@ -213,6 +214,7 @@
             // title that repeats the dialog's own heading.
             const collapsible = !(props && props.collapsible === false);
             const preferences = React.useSyncExternalStore(displayPreferences.subscribe, displayPreferences.snapshot, displayPreferences.snapshot);
+            const viewTabCatalog = React.useSyncExternalStore(tavernViewTabCatalog.subscribe, tavernViewTabCatalog.snapshot, tavernViewTabCatalog.snapshot);
             const catalog = React.useSyncExternalStore(tavernHeaderCatalog.subscribe, tavernHeaderCatalog.snapshot, tavernHeaderCatalog.snapshot);
             const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState("");
             const [dragging, setDragging] = React.useState("");
@@ -276,7 +278,7 @@
                     option.label,
                     h("span", { className: "dsh-tavern-header-chip-state", "aria-hidden": true }, on ? "✓" : "＋"));
             };
-            const headerSummary = (config.display === "icon" ? "只显示图标" : "图标 + 文字") + " · " + items.length + " 个按钮 · " + tavernViewTabItems(preferences && preferences.viewTabs).length + " 个标签";
+            const headerSummary = (config.display === "icon" ? "只显示图标" : "图标 + 文字") + " · " + items.length + " 个按钮 · " + tavernViewTabSettingsItems(preferences && preferences.viewTabs, viewTabCatalog).length + " 个标签";
             const heading = h("strong", { className: "dsh-tavern-settings-title", key: "title" }, "自定义顶栏");
             return h(collapsible ? "details" : "section", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" + (collapsible ? "" : " is-expanded") },
                 collapsible ? h("summary", { className: "dsh-tavern-header-summary" },

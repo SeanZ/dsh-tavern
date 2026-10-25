@@ -89,11 +89,10 @@ export function readHeaderItems(value) {
   }
 }
 
-// Conversation view tabs: { items }, the row below the title (对话 / 轨迹 /
-// 完整上下文 / 画廊 / 精修对比). The host owns the chat view, so it is always
-// kept first and cannot be removed; the rest are an ordered visible list.
+// 顶部视图标签：{ items }，标题下方那排已注册的 conversation.view 页签。
+// 对话由宿主提供，始终在首位且不能移除；其余是有序的可见清单。
+// 未设置时由客户端按已注册页签派生：对话首位，其余按 order 升序。
 export const VIEW_TAB_RESIDENT = 'chat'
-export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'tavern-story', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish']) })
 
 export function viewTabs(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的顶部标签设置')
@@ -110,12 +109,13 @@ export function viewTabs(value) {
   return { items: items.slice(0, HEADER_ITEM_LIMIT) }
 }
 
+// 未设置或无法读取时返回 null，由客户端派生默认清单。
 export function readViewTabs(value) {
-  if (value === null || value === undefined) return { items: [...DEFAULT_VIEW_TABS.items] }
+  if (value === null || value === undefined) return null
   try {
     return viewTabs(value)
   } catch (_) {
-    return { items: [...DEFAULT_VIEW_TABS.items] }
+    return null
   }
 }
 
@@ -304,7 +304,7 @@ export function applyTavernSettingsPatch(current, patch) {
     next.storyViewMode = input.storyViewMode
   }
   if (Object.hasOwn(input, 'viewTabs')) {
-    // null restores the shipped tab row (all five tabs, 对话 first).
+    // null 恢复派生的默认清单（全部已注册页签，对话首位）。
     if (input.viewTabs === null) delete next.viewTabs
     else next.viewTabs = viewTabs(input.viewTabs)
   }
