@@ -22,7 +22,7 @@ const TAB_ENTRIES = [
 ]
 
 test('顶部标签默认包含故事，对话固定首位；保存、读取与恢复默认都守住这条', () => {
-  assert.deepEqual([...DEFAULT_VIEW_TABS.items], ['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish', 'tavern-story'])
+  assert.deepEqual([...DEFAULT_VIEW_TABS.items], ['chat', 'tavern-story', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish'])
   assert.equal(VIEW_TAB_RESIDENT, 'chat')
   assert.deepEqual(presentTavernSettings({}, {}).viewTabs, { items: [...DEFAULT_VIEW_TABS.items] })
 
@@ -80,7 +80,7 @@ test('客户端标签行按设置的清单显示与排序，隐藏当前标签�
     let row = tabRow(dom)
     assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, [...DEFAULT_VIEW_TABS.items]), 5)
     assert.deepEqual(styleOf(row).map(item => [item.id, item.display, item.order]), [
-      ['chat', '', '0'], ['trajectory', '', '1'], ['dsh-tavern:full-context', '', '2'], ['dsh-tavern:gallery', '', '3'], ['dsh-tavern:polish', '', '4']
+      ['chat', '', '0'], ['trajectory', '', '2'], ['dsh-tavern:full-context', '', '3'], ['dsh-tavern:gallery', '', '4'], ['dsh-tavern:polish', '', '5']
     ])
 
     // 只留对话 + 完整上下文，并把画廊藏起来（它正被选中）。
@@ -151,7 +151,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   const press = node => act(async () => { node.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
 
   const rows = () => [...dom.window.document.querySelectorAll('.dsh-tavern-view-tab-row')]
-  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '画廊', '精修对比', '故事'])
+  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '故事', '轨迹', '完整上下文', '画廊', '精修对比'])
   // 对话：固定标记，没有上移/下移/移除。
   assert.equal(rows()[0].querySelector('.dsh-tavern-view-tab-lock').textContent, '固定')
   assert.equal(rows()[0].querySelectorAll('button').length, 0)
@@ -159,20 +159,20 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   assert.equal(rows()[1].querySelector('[aria-label="上移"]').disabled, true)
 
   // 移除「画廊」。
-  const remove = rows()[3].querySelector('[aria-label="移除"]')
+  const remove = rows()[4].querySelector('[aria-label="移除"]')
   await press(remove)
-  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:polish', 'tavern-story'] } })
-  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '精修对比', '故事'])
+  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'tavern-story', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:polish'] } })
+  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '故事', '轨迹', '完整上下文', '精修对比'])
   const chip = [...dom.window.document.querySelectorAll('.dsh-tavern-view-tab-chip')].find(node => node.textContent.includes('画廊'))
   assert.ok(chip, '移除的标签出现在「可添加的标签」里')
 
   // 加回「画廊」到末尾。
   await press(chip)
-  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:polish', 'tavern-story', 'dsh-tavern:gallery'] } })
+  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'tavern-story', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:polish', 'dsh-tavern:gallery'] } })
 
   // 上移「完整上下文」到「轨迹」前面。
-  await press(rows()[2].querySelector('[aria-label="上移"]'))
-  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'dsh-tavern:full-context', 'trajectory', 'dsh-tavern:polish', 'tavern-story', 'dsh-tavern:gallery'] } })
+  await press(rows()[3].querySelector('[aria-label="上移"]'))
+  assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'tavern-story', 'dsh-tavern:full-context', 'trajectory', 'dsh-tavern:polish', 'dsh-tavern:gallery'] } })
 
   // 恢复默认标签。
   const reset = [...dom.window.document.querySelectorAll('button')].find(node => node.textContent === '恢复默认标签')
@@ -201,6 +201,7 @@ test('独立故事页签注册后默认保持可见，布局更新不切回对�
     const settings = presentTavernSettings({ storyViewMode: true }, {})
     assert.equal(api.applyTavernViewTabRow(row, entries, settings.viewTabs.items), 6)
     assert.equal(styleOf(row).find(item => item.id === 'tavern-story').display, '')
+    assert.equal(styleOf(row).find(item => item.id === 'tavern-story').order, '1')
     assert.equal(fallbackClicks, 0)
   } finally { dom.window.close() }
 })

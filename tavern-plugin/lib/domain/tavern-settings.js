@@ -93,7 +93,7 @@ export function readHeaderItems(value) {
 // 完整上下文 / 画廊 / 精修对比). The host owns the chat view, so it is always
 // kept first and cannot be removed; the rest are an ordered visible list.
 export const VIEW_TAB_RESIDENT = 'chat'
-export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish', 'tavern-story']) })
+export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'tavern-story', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish']) })
 
 export function viewTabs(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的顶部标签设置')

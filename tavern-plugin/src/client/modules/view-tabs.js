@@ -3,7 +3,7 @@
 		// 标签行由宿主渲染，这里只给每个标签按钮设置 order / display。
 		const TAVERN_VIEW_TAB_RESIDENT = "chat";
 		const TAVERN_VIEW_TAB_ITEM_LIMIT = 24;
-		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "trajectory", "dsh-tavern:full-context", "dsh-tavern:gallery", "dsh-tavern:polish", "tavern-story"]) });
+		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "tavern-story", "trajectory", "dsh-tavern:full-context", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
 		// 槽位就绪前设置页也能列出这些标签；就绪后用槽位里的实际名称覆盖。
 		const TAVERN_VIEW_TAB_KNOWN = Object.freeze([
 			Object.freeze({ id: "chat", label: "对话", locked: true }),
