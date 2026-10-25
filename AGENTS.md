@@ -40,5 +40,7 @@ curl -s https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@$b/dsh-tavern-runtime.
 
 ## 测试
 
+静态检查对新增或修改的 JS/MJS 执行 `node --check`；本仓库沿用各文件原有格式，未配置统一格式化器，以 `git diff --check` 检查变更格式，避免整库重排。客户端、插件清单和文档生成物分别运行对应构建脚本与 `--check`。功能变更补充单元测试及真实格式或真实宿主的集成回归；浏览器测试必须实际启动浏览器，跳过或替身不算浏览器验收。
+
 测试已有几千条，全量跑一次约 3 分钟。除非做版本发布，否则不要跑全量 `node bin/test-tavern.mjs`；只跑与改动相关的测试文件：
 `node bin/test-tavern.mjs tests/<相关>.test.mjs [更多文件…]`

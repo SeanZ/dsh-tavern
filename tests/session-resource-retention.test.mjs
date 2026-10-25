@@ -37,3 +37,27 @@ test('原生 insertAdjacentHTML 悬浮窗随对话隐藏，恢复同一节点与
     assert.equal(dom.window.document.getElementById('retired-native'),null)
   } finally {dom.window.close()}
 })
+
+test('隐藏期间卡片把悬浮窗挂回 body 时不再抢回，页面不会卡死', async () => {
+  const {JSDOM}=await import('jsdom')
+  const dom=new JSDOM('<body><main id="app"></main></body>',{runScripts:'outside-only'})
+  try {
+    dom.window.eval(scopeSource+';window.makeScope=createTavernHostArtifactScope')
+    const document=dom.window.document, artifacts=dom.window.makeScope({document})
+    const panel=artifacts.trackNode(document.createElement('div'));panel.id='card-panel'
+    document.body.append(panel)
+    await new Promise(resolve=>setTimeout(resolve))
+    // The card's own guard: whenever its panel leaves the document, put it back.
+    let reattached=0
+    new dom.window.MutationObserver(()=>{ if(!panel.isConnected&&reattached<50){reattached++;document.body.append(panel)} }).observe(document.body,{childList:true})
+    artifacts.setVisible(false)
+    await new Promise(resolve=>setTimeout(resolve,20))
+    assert.equal(reattached,1)
+    assert.equal(panel.parentNode,document.body)
+    assert.equal(panel.hidden,true)
+    artifacts.setVisible(true)
+    assert.equal(panel.parentNode,document.body)
+    assert.equal(panel.hidden,false)
+    assert.equal(document.querySelectorAll('#card-panel').length,1)
+  } finally {dom.window.close()}
+})

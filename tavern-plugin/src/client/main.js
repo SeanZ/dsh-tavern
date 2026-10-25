@@ -845,13 +845,17 @@ window.__ModuleLoader__.load({
 // @include-domain cast-stage-state.js
 // @include-domain stage-performance-playback.js
 // @include-domain stage-skin.js
+// @include-domain stage-entrance.js
 // @include features/stage-skin.js
 // @include modules/stage-runtime.js
+// @include features/stage-entrance.js
 // @include features/stage-runtime.js
 // @include features/stage-assets.js
+// @include features/stage-skins.js
 // @include features/stage-mode.js
 // @include features/stage-settings.js
 // @include modules/stage-music.js
+// @include modules/stage-sfx.js
 // @include modules/stage-bgm.js
 // @include features/stage-bgm.js
 
@@ -866,6 +870,7 @@ window.__ModuleLoader__.load({
 // @include features/sidebar.js
 
 // @include features/scene-images.js
+// @include modules/view-tabs.js
 // @include features/settings.js
 
 // @include features/text-layout.js
@@ -936,6 +941,15 @@ window.__ModuleLoader__.load({
                 name: "conversation.view", id: "dsh-tavern:polish", order: 13,
                 label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
             }, PolishComparisonView)), "dsh-tavern: polish comparison");
+            // 顶部标签（对话/轨迹/完整上下文/画廊/精修对比）的设置：设置页读这份
+            // 目录，标签行由 installTavernViewTabLayout 按保存的顺序显示或隐藏。
+            ctx.effect(function () {
+                const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };
+                const dispose = typeof slots.subscribe === "function" ? slots.subscribe("conversation.view", publish) : function () { };
+                publish();
+                return dispose;
+            }, "dsh-tavern: view tab catalog");
+            ctx.effect(function () { return installTavernViewTabLayout({ document: document, slots: slots }); }, "dsh-tavern: view tab layout");
 			// Public browser API for third-party plugins (docs/plugin-api.md).
 			tavernUiExtensions.service.ctx = ctx;
 			tavernUiExtensions.attachHost(ctx);

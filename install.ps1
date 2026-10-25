@@ -1363,9 +1363,10 @@ try {
           [IO.File]::AppendAllText($OutputFile, "$Line`n")
           if ($FriendlyOutput -and $Line -like 'DSH_STATUS *') { Write-InstallStatus $Line.Substring(11) }
           elseif ($Quiet) {
+            # pnpm skips resolution with a lockfile, so resolved stays 0: no total to show.
             if ($Line -match '^Progress: resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)' -and ($Line -like '*, done*' -or ([DateTime]::Now - $ShownAt).TotalSeconds -ge 5)) {
               $ShownAt = [DateTime]::Now
-              Write-InstallStatus ("$PackageLabel：已就绪 $($Matches[4])/$($Matches[1]) 个包（本地复用 $($Matches[2])，新下载 $($Matches[3])）")
+              Write-InstallStatus ("$PackageLabel：已装 $($Matches[4]) 个包（本地复用 $($Matches[2])，新下载 $($Matches[3])）")
             }
           }
           elseif (-not $CaptureOutput) { Write-Host $Line }

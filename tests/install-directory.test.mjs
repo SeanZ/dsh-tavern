@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
-import { allowedDshVersions } from '../bin/dsh-compatibility.mjs'
+import { adaptedDshVersion } from '../bin/dsh-compatibility.mjs'
 
 const source = readFileSync(new URL('../install.sh', import.meta.url), 'utf8')
 const selection = source.slice(source.indexOf('  # CLI directory selection:'), source.indexOf('  DSH_TAVERN_CLI_HOME=${DSH_ROOT}'))
@@ -37,8 +37,8 @@ test('Desktop 宿主版本不兼容时在覆盖旧安装前停止', { skip: proc
   assert.ok(start > 0 && end > start)
   assert.ok(end < source.indexOf('cp -R "${SOURCE_DIR}/."'))
   const preflight = source.slice(start, end)
-  // The first allowed version passes; anything else (including DSH 0.1.5, now the stable branch's host) stops.
-  const allowed = allowedDshVersions[0]
+  // The adapted version passes; anything outside the range (including DSH 0.1.5, now the stable branch's host) stops.
+  const allowed = adaptedDshVersion
   for (const version of ['0.1.2-rc.1', 'unknown', '0.1.5-rc.2', allowed]) {
     const script = 'dsh() { echo "$TEST_VERSION"; }\nrun_install() { shift 2; "$@"; }\n' + preflight + '\nprintf replaced > "$SENTINEL"\n'
     const result = spawnSync('sh', ['-ec', script], { encoding: 'utf8', env: {

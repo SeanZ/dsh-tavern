@@ -1,4 +1,5 @@
 import { createMvuSettlementTransactions, mutationIsCurrent } from './mvu-settlement-transactions.js'
+import { applyRegexOverrides } from './regex-manager.js'
 import { templateStateFields } from './template-window-reader.js'
 import { createScopedMessages } from './scoped-messages.js'
 import { diffJson } from './json-mutation.js'
@@ -483,7 +484,7 @@ export function createTavernScriptHostAdapter(options = {}) {
         this_chid: '0', extension_settings: extensionSettings,
         world_names: worldName ? [worldName] : [], selected_world_info: [],
         worldbooks,
-        dsh: { settling: settlement.has(str(sessionId)) || ['pending', 'running'].includes(chat.settleStatus), cardPath: chat.cardPath, model: options.modelFor ? await options.modelFor(chat) : chat.model?.model || chat.model || '', regexScripts: [...(await options.presetRegexScripts?.(chat) || []), ...(card.extensions?.regex_scripts || [])] } }
+        dsh: { settling: settlement.has(str(sessionId)) || ['pending', 'running'].includes(chat.settleStatus), cardPath: chat.cardPath, model: options.modelFor ? await options.modelFor(chat) : chat.model?.model || chat.model || '', regexScripts: [...applyRegexOverrides(await options.presetRegexScripts?.(chat) || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), ...applyRegexOverrides(card.extensions?.regex_scripts || [], chat.regexOverrides && chat.regexOverrides.card, 'card')] } }
     }
     if (window) return {...snapshot,historyWindow:window.historyWindow}
     if (changed) {

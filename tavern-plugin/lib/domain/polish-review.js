@@ -22,23 +22,36 @@ export function polishReviewContext(messages) {
   return { input, previous }
 }
 
-export function buildPolishReviewRequest({ principles, card, playerName, input, previous, reply, guidance }) {
-  const rules = str(principles).trim()
-  if (rules === '') throw new Error('正文精修原则为空，请在系统提示词里填写')
+// The card, the player, the reply before and this turn's input: what a review or a guided edit reads.
+function materialSections({ card, playerName, input, previous, reply }) {
   const body = str(reply).trim()
   if (body === '') throw new Error('这轮没有可精修的正文')
   const setting = ['description', 'personality', 'scenario'].map(key => str(card?.[key]).trim()).filter(Boolean).join('\n\n')
-  const sections = [
+  return [
     '【人物卡：' + (str(card?.name).trim() || '未命名') + '】\n' + (head(setting, CARD_LIMIT) || '（无）'),
     '【玩家角色】' + (str(playerName).trim() || '你'),
-    previous.trim() ? '【上一轮正文】\n' + tail(previous, PREVIOUS_LIMIT) : '',
-    input.trim() ? '【本轮玩家输入】\n' + head(input, INPUT_LIMIT) : '',
-    '【本轮正文】\n' + body,
-    // The player's guidance from the regeneration box rides along: it comes first, inside the same edit-list rules.
-    str(guidance).trim() ? '【玩家的修改意见】\n' + head(guidance, GUIDANCE_LIMIT) + '\n\n先按这条意见改，再按审稿标准找其他问题；意见同样写成修改清单，情节走向和事件结果仍保持原样，除非意见明确要求改动。' : '',
-    '请按审稿标准写出修改清单。'
+    str(previous).trim() ? '【上一轮正文】\n' + tail(previous, PREVIOUS_LIMIT) : '',
+    str(input).trim() ? '【本轮玩家输入】\n' + head(input, INPUT_LIMIT) : '',
+    '【本轮正文】\n' + body
   ].filter(Boolean)
-  return { system: rules, messages: [{ role: 'user', content: [{ type: 'text', text: sections.join('\n\n') }] }] }
+}
+
+function request(system, sections) {
+  return { system, messages: [{ role: 'user', content: [{ type: 'text', text: sections.join('\n\n') }] }] }
+}
+
+export function buildPolishReviewRequest({ principles, ...material }) {
+  const rules = str(principles).trim()
+  if (rules === '') throw new Error('正文精修原则为空，请在系统提示词里填写')
+  return request(rules, [...materialSections(material), '请按审稿标准写出修改清单。'])
+}
+
+/** The player's guidance on an already reviewed reply: only that guidance, without the principles. */
+export function buildPolishGuidanceRequest({ instructions, guidance, ...material }) {
+  const rules = str(instructions).trim()
+  if (rules === '') throw new Error('精修按意见修改的提示词为空，请在系统提示词里填写')
+  if (!str(guidance).trim()) throw new Error('没有修改意见')
+  return request(rules, [...materialSections(material), '【玩家的修改意见】\n' + head(guidance, GUIDANCE_LIMIT), '请按这条意见写出修改清单。'])
 }
 
 function occurrences(texts, find) {
@@ -82,4 +95,56 @@ export function applyPolishEdits(texts, edits) {
     next[part] = next[part].slice(0, at) + str(edit.replace) + next[part].slice(at + find.length)
   }
   return next
+}
+
+/**
+ * The record of a 精修 in two passes, as edits of the original: the review's edits apply to the
+ * original, the guidance's to the reviewed text. Each guidance edit is mapped back onto the
+ * original; one that touches a review's change merges with it into a single change, reasons kept.
+ */
+export function composePolishEdits(original, reviewEdits, guidanceEdits) {
+  const text = str(original)
+  // The review's changes in reading order, with where each sits in the original and in the reviewed text.
+  const placed = reviewEdits.map(edit => ({ find: str(edit.find), replace: str(edit.replace), reasons: [str(edit.reason)], at: text.indexOf(str(edit.find)) }))
+    .filter(edit => edit.at >= 0).sort((left, right) => left.at - right.at)
+  let shift = 0
+  for (const edit of placed) { edit.start = edit.at + shift; shift += edit.replace.length - edit.find.length; edit.end = edit.start + edit.replace.length }
+  let reviewed = '', cursor = 0
+  for (const edit of placed) { reviewed += text.slice(cursor, edit.at) + edit.replace; cursor = edit.at + edit.find.length }
+  reviewed += text.slice(cursor)
+  // A reviewed-text position back in the original; inside a review change it widens to that change.
+  function back(position, side) {
+    let delta = 0
+    for (const edit of placed) {
+      const inside = side === 'start' ? edit.start <= position && position < edit.end : edit.start < position && position <= edit.end
+      if (inside) return side === 'start' ? edit.at : edit.at + edit.find.length
+      if (side === 'start' ? position < edit.end : position <= edit.start) break
+      delta = edit.end - (edit.at + edit.find.length)
+    }
+    return position - delta
+  }
+  const groups = placed.map(edit => ({ from: edit.at, to: edit.at + edit.find.length, reasons: edit.reasons.slice(), guided: [] }))
+  for (const guided of guidanceEdits) {
+    const find = str(guided.find), at = reviewed.indexOf(find)
+    if (!find || at < 0) continue
+    groups.push({ from: back(at, 'start'), to: back(at + find.length, 'end'), reasons: ['按意见：' + str(guided.reason)], guided: [guided] })
+  }
+  groups.sort((left, right) => left.from - right.from || left.to - right.to)
+  const merged = []
+  for (const group of groups) {
+    const last = merged.at(-1)
+    if (last && group.from < last.to) { last.to = Math.max(last.to, group.to); last.reasons.push(...group.reasons); last.guided.push(...group.guided) }
+    else merged.push({ ...group, reasons: group.reasons.slice(), guided: group.guided.slice() })
+  }
+  return merged.map(group => {
+    let replace = text.slice(group.from, group.to)
+    for (const edit of placed.filter(edit => edit.at >= group.from && edit.at + edit.find.length <= group.to).reverse()) {
+      const at = edit.at - group.from
+      replace = replace.slice(0, at) + edit.replace + replace.slice(at + edit.find.length)
+    }
+    for (const guided of group.guided) replace = replace.replace(str(guided.find), () => str(guided.replace))
+    // The review's reasons first, then the guidance's.
+    const reasons = group.reasons.filter(Boolean), guidedReason = reason => reason.startsWith('按意见：')
+    return { reason: [...reasons.filter(reason => !guidedReason(reason)), ...reasons.filter(guidedReason)].join('；'), find: text.slice(group.from, group.to), replace }
+  })
 }

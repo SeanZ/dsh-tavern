@@ -12,9 +12,11 @@ test('Foreground Turn 完成后立即排队待处理的后台结算', async () =
     store: { async chatForSession() { return chat } },
     tasks: { activity() { return { phase: 'pending', busy: true, role: 'settlement' } } },
     async queueBackground(chatId) { queued.push(chatId) },
+    afterReply(sessionId) { reviewed.push(sessionId) },
     defer(run) { deferred.push(run) },
     logger: { error() {} }
   })
+  const reviewed = []
 
   await handoff.finalize({ sessionId: 'session-1', turn: 1, userText: '向前走', assistantText: '雨夜。' })
   assert.equal(handoff.end({ sessionId: 'session-1', turn: 1, reason: 'completed' }), true)
@@ -23,6 +25,8 @@ test('Foreground Turn 完成后立即排队待处理的后台结算', async () =
   deferred[0]()
   await new Promise(function (resolve) { setImmediate(resolve) })
   assert.deepEqual(queued, ['chat-1'])
+  // The 精修 pre-review starts with the reply, beside settlement.
+  assert.deepEqual(reviewed, ['session-1'])
 })
 
 test('发送前先清掉遗留的失败回合，再准备本轮（#193）', async () => {

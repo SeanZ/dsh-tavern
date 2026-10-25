@@ -269,7 +269,7 @@ function presetFrontSections(snapshot) {
   // system-prompt variable scanner would reject any residual {{...}} as a malformed variable, so the
   // section must be non-interpolating to keep those macros verbatim instead of failing the turn.
   return entries.filter(entry => str(entry?.content).trim() !== '')
-    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content), interpolate: false }))
+    .map(entry => ({ name: 'tavern:runtime-preset-front', text: str(entry.content) }))
 }
 
 export function createNativePlayOrchestrationStrategy(options) {

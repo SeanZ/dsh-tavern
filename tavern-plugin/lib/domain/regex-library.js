@@ -14,14 +14,18 @@ export function regexScriptsFromImport(text, fileName = '') {
   })
 }
 
-/** Inert storage: regexes here never run until an agent copies them into a card or preset. */
+/**
+ * The retired inert library. New imports go straight into the active global
+ * list; this store survives only so the first visit to the regex manager can
+ * move old imports into global rules (disabled) without losing them.
+ */
 export function createRegexLibrary({ store, now = Date.now }) {
   async function list() { return (await store.readJson(PATH))?.items || [] }
   async function importFile(text, fileName) {
     const items = regexScriptsFromImport(text, fileName).map(script => ({
       id: randomUUID(), name: String(script.scriptName || script.name || fileName || '未命名正则').trim().slice(0, 120), script, importedAt: now()
     }))
-    await store.updateJson(PATH, value => ({ version: 1, items: [...(value?.items || []), ...items] }))
+    await store.updateJson(PATH, value => ({ ...(object(value) ? value : {}), version: 2, items: [...(value?.items || []), ...items] }))
     return items
   }
   async function remove(input) {
@@ -33,5 +37,17 @@ export function createRegexLibrary({ store, now = Date.now }) {
       return { ...value, items: items.filter(other => other !== item) }
     })
   }
-  return { list, importFile, remove }
+  /** Items are returned exactly once; the marker is written only after migration succeeds. */
+  async function legacyForMigration() {
+    const value = await store.readJson(PATH)
+    if (!object(value) || value.migratedTo === 'global') return []
+    return Array.isArray(value.items) ? JSON.parse(JSON.stringify(value.items)) : []
+  }
+  async function markMigrated() {
+    await store.updateJson(PATH, value => {
+      if (object(value) && value.migratedTo === 'global') return undefined
+      return { version: 2, ...(object(value) ? value : { items: [] }), migratedTo: 'global', migratedAt: now() }
+    })
+  }
+  return { list, importFile, remove, legacyForMigration, markMigrated }
 }

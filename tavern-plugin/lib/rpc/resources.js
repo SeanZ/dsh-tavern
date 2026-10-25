@@ -7,7 +7,7 @@ export function createResourceHandlers(deps) {
   const { agentRegistry, bindScript, chatForSession, chatHeaderForSession, dataRoot, deletePreset,
     deleteResource, deleteScript, exportSettingsBundle, fileResources, groupOfMode, guideLibrary,
     importPreset, importScript, importSettingsBundle, importSource, listTavernResources, presetLibrary,
-    previewPreset, readScript, readTavernSettings, regexLibrary, renameResource, runtimePresets,
+    previewPreset, readScript, readTavernSettings, renameResource, runtimePresets,
     scriptContinuity, scriptNavigation, sessionActivity, skillImportFiles, str, tavernSkills, updateChat,
     updateTavernSettings, worldBooks } = deps
   return {
@@ -191,16 +191,6 @@ export function createResourceHandlers(deps) {
     },
     async deleteGuideLibrary(args) {
       await guideLibrary.remove(args)
-      return { ok: true }
-    },
-    async listRegexLibrary(args) {
-      return { items: await regexLibrary.list() }
-    },
-    async importRegexLibrary(args) {
-      return { items: await regexLibrary.importFile(args?.text, args?.fileName) }
-    },
-    async deleteRegexLibrary(args) {
-      await regexLibrary.remove(args)
       return { ok: true }
     },
     async listGuideLibrary(args) {

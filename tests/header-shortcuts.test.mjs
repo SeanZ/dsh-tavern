@@ -48,10 +48,10 @@ test('传 null 恢复默认顶栏', () => {
   assert.deepEqual(presentTavernSettings({ headerItems: { display: 'nope', items: ['bad id'] } }, {}).headerItems, { display: 'icon-text', items: ['dsh-tavern:status', 'header:export'] })
 })
 
-test('getDisplayPreferences 一并返回顶栏设置', async () => {
-  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] } }) })
+test('getDisplayPreferences 一并返回顶栏设置与顶部标签', async () => {
+  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } }) })
   const preferences = await handlers.getDisplayPreferences({})
-  assert.deepEqual(preferences, { hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] } })
+  assert.deepEqual(preferences, { hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } })
 })
 
 test('客户端顶栏默认值与服务端一致，设置在首次读取前就用默认值', async () => {
@@ -65,12 +65,14 @@ test('客户端顶栏默认值与服务端一致，设置在首次读取前就�
   const store = vm.runInNewContext(source, {
     document: dom.window.document,
     window: dom.window,
-    rpc: async () => ({ hideContextAndReasoning: true, headerItems: { display: 'icon', items: ['dsh-tavern:cards'] } })
+    tavernViewTabItems: value => value && Array.isArray(value.items) ? ['chat'].concat(value.items.filter(id => id !== 'chat')) : ['chat'],
+    rpc: async () => ({ hideContextAndReasoning: true, headerItems: { display: 'icon', items: ['dsh-tavern:cards'] }, viewTabs: { items: ['chat', 'dsh-tavern:gallery'] } })
   })
   assert.equal(store.snapshot(), null, '第一次读取前没有快照，顶栏回落到默认值')
   const stop = store.start()
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(JSON.parse(JSON.stringify(store.snapshot().headerItems)), { display: 'icon', items: ['dsh-tavern:cards'] })
+  assert.deepEqual(JSON.parse(JSON.stringify(store.snapshot().viewTabs)), { items: ['chat', 'dsh-tavern:gallery'] })
   stop()
   dom.window.close()
 })

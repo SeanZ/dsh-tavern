@@ -2,12 +2,13 @@ import { compactionPolicy } from './auto-compaction.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
 import { readJudgeConfig, validateJudgeConfig } from './engine-judge.js'
+import { validateStageSkinSelection } from './stage-skin-choice.js'
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 // Global stage switches a patch may set.
-const STAGE_TOGGLES = Object.freeze(['stage', 'music'])
+const STAGE_TOGGLES = Object.freeze(['stage', 'music', 'sfx', 'ambience', 'items', 'entrance'])
 // 舞台模式 › 可用演出: the director commands the director may use, every one on by default (stage-director.js).
 export const STAGE_DIMENSIONS = Object.freeze(['scene', 'cast', 'acts', 'screenEffects'])
 // 舞台模式 › 每轮上限: how many screen effects (`beat`) one reply may use.
@@ -85,6 +86,36 @@ export function readHeaderItems(value) {
     return headerItems(value)
   } catch (_) {
     return { display: DEFAULT_HEADER_ITEMS.display, items: [...DEFAULT_HEADER_ITEMS.items] }
+  }
+}
+
+// Conversation view tabs: { items }, the row below the title (对话 / 轨迹 /
+// 完整上下文 / 画廊 / 精修对比). The host owns the chat view, so it is always
+// kept first and cannot be removed; the rest are an ordered visible list.
+export const VIEW_TAB_RESIDENT = 'chat'
+export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish', 'tavern-story']) })
+
+export function viewTabs(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的顶部标签设置')
+  const source = value.items === undefined ? [] : value.items
+  if (!Array.isArray(source)) throw new Error('无效的顶部标签设置')
+  const items = []
+  for (const item of source) {
+    if (typeof item !== 'string' || !HEADER_ITEM_PATTERN.test(item)) throw new Error('无效的顶部标签设置')
+    if (!items.includes(item)) items.push(item)
+  }
+  const resident = items.indexOf(VIEW_TAB_RESIDENT)
+  if (resident > 0) items.splice(resident, 1)
+  if (resident !== 0) items.unshift(VIEW_TAB_RESIDENT)
+  return { items: items.slice(0, HEADER_ITEM_LIMIT) }
+}
+
+export function readViewTabs(value) {
+  if (value === null || value === undefined) return { items: [...DEFAULT_VIEW_TABS.items] }
+  try {
+    return viewTabs(value)
+  } catch (_) {
+    return { items: [...DEFAULT_VIEW_TABS.items] }
   }
 }
 
@@ -220,6 +251,10 @@ export function applyTavernSettingsPatch(current, patch) {
     if (typeof input.hideContextAndReasoning !== 'boolean') throw new Error('无效的对话显示设置')
     next.hideContextAndReasoning = input.hideContextAndReasoning
   }
+  if (Object.hasOwn(input, 'polishPrereview')) {
+    if (typeof input.polishPrereview !== 'boolean') throw new Error('无效的精修预审设置')
+    next.polishPrereview = input.polishPrereview
+  }
   if (Object.hasOwn(input, 'candidateDismissMode')) {
     if (!['after-fill', 'after-send'].includes(input.candidateDismissMode)) throw new Error('无效的候选项收起方式')
     next.candidateDismissMode = input.candidateDismissMode
@@ -268,11 +303,17 @@ export function applyTavernSettingsPatch(current, patch) {
     if (typeof input.storyViewMode !== 'boolean') throw new Error('故事视图模式设置必须是布尔值')
     next.storyViewMode = input.storyViewMode
   }
+  if (Object.hasOwn(input, 'viewTabs')) {
+    // null restores the shipped tab row (all five tabs, 对话 first).
+    if (input.viewTabs === null) delete next.viewTabs
+    else next.viewTabs = viewTabs(input.viewTabs)
+  }
   if (Object.hasOwn(input, 'castPresentation')) {
     if (typeof input.castPresentation !== 'boolean') throw new Error('对话气泡设置必须是布尔值')
     next.castPresentation = input.castPresentation
   }
-  // The stage's global switches (舞台设置 › 基础设置); 舞台模式 is stageToggles.stage, BGM stageToggles.music.
+  // The stage's global switches (舞台设置 › 基础设置); 舞台模式 is stageToggles.stage, BGM stageToggles.music, 音效 stageToggles.sfx,
+  // 环境音 stageToggles.ambience, 物品 stageToggles.items, 入场演出 stageToggles.entrance.
   if (Object.hasOwn(input, 'stageToggles')) {
     const toggles = object(input.stageToggles)
     if (!Object.keys(toggles).length || Object.entries(toggles).some(([key, value]) => !STAGE_TOGGLES.includes(key) || typeof value !== 'boolean')) throw new Error('舞台开关只能是 ' + STAGE_TOGGLES.join('、') + '，且必须是布尔值')
@@ -292,6 +333,10 @@ export function applyTavernSettingsPatch(current, patch) {
   // 舞台模式 › 判断模型 (engine-judge.js): the whole config; an omitted field takes its default or the provider's preset.
   // The API Key itself is never a setting (rpc setJudgeKey stores it in the host credential store).
   if (Object.hasOwn(input, 'stageJudge')) next.stageJudge = validateJudgeConfig(input.stageJudge)
+  // 舞台设置 › 默认皮肤: a built-in skin's id or a pack skin; a missing one is passed over when drawn (stage-skin-choice.js).
+  if (Object.hasOwn(input, 'stageSkin')) {
+    try { next.stageSkin = structuredClone(validateStageSkinSelection(input.stageSkin)) } catch { throw new Error('无效的默认皮肤') }
+  }
   // A pack the player turns on for every card (全局) or off again: one pack per change, applied to the stored list.
   if (Object.hasOwn(input, 'globalPack')) {
     const { packId, enabled } = object(input.globalPack)
@@ -373,18 +418,23 @@ export function presentTavernSettings(document, defaults) {
     contextCompaction: compactionPolicy(object(document).contextCompaction),
     hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
     headerItems: readHeaderItems(object(document).headerItems),
+    viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
+    // 精修预审: off by default, since it reviews every reply whether or not 精修 is pressed.
+    polishPrereview: object(document).polishPrereview === true,
     storyInputToolCall: storyToolCalls.input,
     storyOutputToolCall: storyToolCalls.output,
     castPresentation: object(document).castPresentation === true,
     // Story view (fork contract): off keeps the upstream chat and failed-turn behaviour.
     storyViewMode: object(document).storyViewMode === true,
-    // 舞台模式 and BGM: one switch each for every card, on by default; the stage also needs 对话气泡 (castPresentation).
-    stageToggles: { stage: object(object(document).stageToggles).stage !== false, music: object(object(document).stageToggles).music !== false },
+    // 舞台模式, BGM, 音效, 环境音, 物品 and 入场演出: one switch each for every card, on by default; the stage also needs 对话气泡 (castPresentation).
+    stageToggles: Object.fromEntries(STAGE_TOGGLES.map(key => [key, object(object(document).stageToggles)[key] !== false])),
     stageDimensions: stageDimensions(document),
     stageActionCaps: stageActionCaps(document),
     // Unset by default: no judge stage, green entries follow their triggers.
     stageJudge: readJudgeConfig(object(document).stageJudge),
+    // 默认皮肤: 经典 until the player picks another; stored selections were checked when written.
+    stageSkin: (skin => typeof skin === 'string' || skin && object(skin) === skin ? structuredClone(skin) : 'classic')(object(document).stageSkin),
     // Asset packs on for every card (全局); a card adds its own (本卡) in its cast manifest.
     globalEnabledPackIds: globalPackIds(document),
     // Only the latest floors run a card's HTML interface; 0 renders every floor.

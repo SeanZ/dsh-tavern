@@ -3,6 +3,7 @@ import { inputEventForTurn } from '../domain/session-turn-input.js'
 import { roundAnchor } from '../domain/round-anchor.js'
 import { inputAttachments } from '../domain/player-input-content.js'
 import { prependSystemInstruction } from '../domain/system-append.js'
+import { markTavernSectionsLiteral } from '../domain/literal-sections.js'
 import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/session-stable-prefix.js'
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
@@ -125,6 +126,6 @@ export function registerTurnLifecycleHooks({
     // the one contract that must be the last thing the model reads.
     const hasSubmission = (assembled.sections || []).some(section => section.name === 'tavern:story-tool-submission')
     const outputToolCall = hasSubmission && typeof storyOutputToolCall === 'function' ? (await storyOutputToolCall()) === true : false
-    return prependSystemInstruction(appendStorySubmissionReminder(assembled, outputToolCall), chat ? runtimePrompt('system-append') : '')
+    return markTavernSectionsLiteral(prependSystemInstruction(appendStorySubmissionReminder(assembled, outputToolCall), chat ? runtimePrompt('system-append') : ''))
   })
 }

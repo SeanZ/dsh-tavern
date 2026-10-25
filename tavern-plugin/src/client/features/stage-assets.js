@@ -1,8 +1,10 @@
 // 舞台素材: the asset library's editor (docs/design/asset-library.md「编辑界面」). The library panel lists every pack
 // with its 全局 / 本卡 / 关闭 state; a pack opens one window (entries on the left, the chosen entry on the right); 舞台设置
 // › 素材包 lists this card's packs. Every write goes to the host's store (CAS revisions); nothing is kept on the page.
-const TAVERN_ASSET_KINDS = Object.freeze({ backgrounds: "背景", music: "音乐" });
-const TAVERN_ASSET_KIND_ORDER = Object.freeze(["backgrounds", "music"]);
+const TAVERN_ASSET_KINDS = Object.freeze({ backgrounds: "背景", music: "音乐", sfx: "音效", ambience: "环境音", props: "物品", skins: "皮肤", entrances: "入场演出" });
+const TAVERN_ASSET_KIND_ORDER = Object.freeze(["backgrounds", "music", "sfx", "ambience", "props", "skins", "entrances"]);
+// Kinds whose entries are audio: a play button in the list, the player with its 音量 on the entry page.
+const tavernAssetAudible = kind => kind === "music" || kind === "sfx" || kind === "ambience";
 const TAVERN_ASSET_EVENT = "dsh-tavern-asset-packs-changed";
 const TAVERN_PACK_STATES = Object.freeze({ global: "全局", card: "本卡", off: "关闭" });
 const TAVERN_PACK_STATE_ORDER = Object.freeze(["global", "card", "off"]);
@@ -12,13 +14,19 @@ const TAVERN_ASSET_HELP = Object.freeze({
 	lamp: "同 SillyTavern 世界书：蓝灯始终可选，绿灯在名称或触发词命中时才选。关闭：这一条不再用于舞台。",
 	lampBackground: "背景目前只用蓝灯。",
 	triggers: "名称本身也算触发词。不填，或填 3–6 个正文里真会出现的短词。",
-	notes: { backgrounds: "会和名称一起发给导演，用来判断这一幕用哪个背景。只写适用情景，最多 300 字。", music: "会和名称一起发给导演，用来判断什么时候放这首曲子。只写适用情景，最多 300 字。" },
+	notes: { backgrounds: "会和名称一起发给导演，用来判断这一幕用哪个背景。只写适用情景，最多 300 字。", music: "会和名称一起发给导演，用来判断什么时候放这首曲子。只写适用情景，最多 300 字。",
+		sfx: "会和名称一起发给导演，用来判断哪一页播放这个声音。只写适用情景，最多 300 字。",
+		ambience: "会和名称一起发给导演，用来判断什么地点或天气配这段环境音。只写适用情景，最多 300 字。",
+		props: "会和名称一起发给导演，用来选择要展示的物品。只写适用情景，最多 300 字。" },
 	remark: "只给你和改卡 AI 看，导演看不到",
 	usage: "这首曲子的用途笔记，不发给导演。",
 	volume: "这条素材在游戏里播放时的响度，试听也按它播放。",
-	packs: "这张卡用到的素材包。「管理」给这张卡开启或关闭其它素材包。"
+	packs: "这张卡用到的素材包。「管理」给这张卡开启或关闭其它素材包。",
+	skin: "舞台的样子：文字框、名牌、字色和控件。皮肤没有触发策略，导演不会用它；在「舞台设置」里选用。",
+	packSkin: "用到这个素材包、又没有自己皮肤的卡，默认用这套皮肤。",
+	entrance: "打开舞台时先播的一段演出，点一下或按回车可以跳过。只用卡自己的素材包里第一条开着的；导演不会用它。只有蓝灯和关闭。"
 });
-const TAVERN_ASSET_ACCEPT = Object.freeze({ backgrounds: "image/png,image/webp,image/jpeg", music: "audio/*,.mp3,.ogg,.wav,.m4a,.flac" });
+const TAVERN_ASSET_ACCEPT = Object.freeze({ backgrounds: "image/png,image/webp,image/jpeg", music: "audio/*,.mp3,.ogg,.wav,.m4a,.flac", sfx: "audio/*,.mp3,.ogg,.wav,.m4a,.flac", ambience: "audio/*,.mp3,.ogg,.wav,.m4a,.flac", props: "image/png,image/webp,image/jpeg", entrances: "application/json,.json" });
 const TAVERN_ASSET_GLYPHS = Object.freeze({
 	back: "M10 3.5 5.5 8l4.5 4.5", close: "M4 4l8 8M12 4l-8 8", more: "M3.5 8h.01M8 8h.01M12.5 8h.01", plus: "M8 3v10M3 8h10",
 	upload: "M8 10.5V3M5 6l3-3 3 3M3 10.5v2.5h10v-2.5", search: "M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zM10.3 10.3 13.5 13.5",
@@ -26,7 +34,11 @@ const TAVERN_ASSET_GLYPHS = Object.freeze({
 	chevDown: "M5 6.5 8 9.5l3-3", chevRight: "M6 4l4 4-4 4", warning: "M8 2.5 14 13H2zM8 6.5v3M8 11.4v.1",
 	voice: "M2.5 6h2.5l3-2.5v9L5 10H2.5zM10.5 5.5a3.5 3.5 0 0 1 0 5M12.2 3.8a6 6 0 0 1 0 8.4", voiceOff: "M2.5 6h2.5l3-2.5v9L5 10H2.5zM10.5 6l3 4M13.5 6l-3 4",
 	backgrounds: "M2.5 3.5h11v9h-11zM2.5 10.5l3-3 3 3 2-2 3 3", music: "M6 12.5V4l7-1.5V11M6 12.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM13 11a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z",
-	tray: "M2.5 9.5h3l1 2h3l1-2h3M2.5 9.5 4 3.5h8l1.5 6v3h-11z"
+	sfx: "M2.5 8h1.5M5.5 5.5v5M8 3v10M10.5 5v6M13 7v2",
+	ambience: "M3.5 9.5a2.5 2.5 0 0 1 .3-5 3.5 3.5 0 0 1 6.7-.6 2.5 2.5 0 0 1 1.5 5.6zM5.5 11.5l-.75 2M8.5 11.5l-.75 2M11.5 11.5l-.75 2",
+	props: "M3.5 5.5h9l-.8 8h-7.4zM6 5.5v-1a2 2 0 0 1 4 0v1",
+	tray: "M2.5 9.5h3l1 2h3l1-2h3M2.5 9.5 4 3.5h8l1.5 6v3h-11z", skins: "M2.5 3.5h11v9h-11zM2.5 9h11M4.5 10.75h4",
+	entrances: "M8 6.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4"
 });
 function TavernAssetGlyph(props) {
 	return React.createElement("svg", { className: "dsh-tavern-asset-glyph", width: 16, height: 16, viewBox: "0 0 16 16", fill: "none", "aria-hidden": true },
@@ -477,15 +489,19 @@ function TavernLampMenu(props) {
 		trigger: menu => h("button", { type: "button", className: props.named ? "dsh-tavern-asset-lamp-named" : "dsh-tavern-asset-lamp-button", "data-mode": props.mode, "aria-haspopup": "menu", "aria-expanded": menu.open,
 			"aria-busy": busy || undefined, "aria-label": props.label + "：" + name + (props.named ? "" : "，更改"), title: props.named ? undefined : name, disabled: busy, onClick: menu.toggle },
 			h("span", { className: "dsh-tavern-asset-lamp", "data-mode": props.mode }), props.named ? h("span", null, name) : null, props.named ? h(TavernAssetGlyph, { name: "chevDown" }) : null),
-		content: close => ["constant", "keyword", "off"].map(mode => h(TavernAssetMenuItem, { key: mode, lamp: mode, checked: props.mode === mode, onClick: () => { close(); pick(mode); } }, TAVERN_ENTRY_LAMPS[mode])) });
+		content: close => (props.modes || ["constant", "keyword", "off"]).map(mode => h(TavernAssetMenuItem, { key: mode, lamp: mode, checked: props.mode === mode, onClick: () => { close(); pick(mode); } }, TAVERN_ENTRY_LAMPS[mode])) });
 }
 // A list row: the picture or the play button · the name · the lamp (a quick menu; choosing never selects the row).
 function TavernEntryItem(props) {
 	const h = React.createElement, item = props.item;
 	return h("li", { role: "option", "aria-selected": props.focused, className: "dsh-tavern-entry-item", "data-disabled": item.enabled === false || undefined, onClick: props.onSelect },
-		item.kind === "music" ? h(TavernAssetPlay, { audio: props.audio, asset: item }) : h(TavernPackPicture, { packId: props.packId, hash: item.media, className: "dsh-tavern-entry-thumb" }),
+		tavernAssetAudible(item.kind) ? h(TavernAssetPlay, { audio: props.audio, asset: item }) : item.kind === "skins" ? h(TavernSkinArt, { document: props.skins && props.skins[item.id] })
+			: item.kind === "entrances" ? h(TavernEntranceSwatch, { document: item.entrance })
+			: h(TavernPackPicture, { packId: props.packId, hash: item.media, className: "dsh-tavern-entry-thumb" }),
 		h("button", { type: "button", className: "dsh-tavern-entry-main", onClick: event => { event.stopPropagation(); props.onSelect(); } }, h("span", { className: "dsh-tavern-entry-name" }, item.name)),
-		h(TavernLampMenu, { mode: tavernEntryLamp(item), label: item.name + " 的触发策略", onChange: props.onLamp }));
+		// A skin has no lamp; the pack's default skin is marked instead.
+		item.kind === "skins" ? (props.packSkin ? h("span", { className: "dsh-tavern-skin-default" }, "包默认") : null)
+			: h(TavernLampMenu, { mode: tavernEntryLamp(item), modes: item.kind === "entrances" ? TAVERN_ENTRANCE_LAMPS : undefined, label: item.name + " 的触发策略", onChange: props.onLamp }));
 }
 // Text that reads as text until it is edited: Enter or leaving saves, Esc restores; an invalid draft stays with its message.
 function TavernAssetText(props) {
@@ -556,6 +572,8 @@ function TavernAssetField(props) {
 // The chosen entry: its name (the page title), the picture or the player, then one column of 「label value」 rows.
 // Empty optional rows are not shown; they wait as 「＋ 名称」 chips at the end and come back in place when chosen.
 function TavernEntryDetail(props) {
+	if (props.asset.kind === "skins") return React.createElement(TavernSkinDetail, props);
+	if (props.asset.kind === "entrances") return React.createElement(TavernEntranceDetail, props);
 	const h = React.createElement, asset = props.asset, kind = asset.kind, packId = props.pack.manifest.id;
 	const [error, setError] = React.useState(""), [opened, setOpened] = React.useState(() => new Set()), [confirm, setConfirm] = React.useState(false), picker = React.useRef(null);
 	const write = update => { setError(""); return props.commit(kind, asset.id, update).catch(err => { setError(tavernAssetErrorText(err)); }); };
@@ -564,7 +582,7 @@ function TavernEntryDetail(props) {
 	const shows = (key, value) => !!(Array.isArray(value) ? value.length : value) || opened.has(key);
 	const status = props.audio.state && props.audio.state.id === kind + "/" + asset.id ? props.audio.state : null, pct = status && status.duration ? Math.min(100, 100 * status.time / status.duration) : 0;
 	const volume = typeof asset.volume === "number" ? Math.min(1, Math.max(0, asset.volume)) : 1;
-	const hero = kind === "music" ? h("div", { className: "dsh-tavern-asset-player", "data-playing": status && status.status === "playing" || undefined },
+	const hero = tavernAssetAudible(kind) ? h("div", { className: "dsh-tavern-asset-player", "data-playing": status && status.status === "playing" || undefined },
 		h(TavernAssetPlay, { audio: props.audio, asset, big: true }),
 		h("div", { className: "dsh-tavern-asset-player-main" },
 			h("div", { className: "dsh-tavern-asset-progress", role: "progressbar", "aria-label": "播放进度", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(pct) }, h("span", { style: { width: pct + "%" } })),
@@ -628,7 +646,8 @@ function TavernAddFilesMenu(props) {
 		content: close => TAVERN_ASSET_KIND_ORDER.map(kind => h("label", { key: kind, className: "dsh-tavern-asset-menu-item", tabIndex: -1, "data-kind": kind,
 			onKeyDown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.querySelector("input").click(); } } },
 			h(TavernAssetGlyph, { name: kind }), h("span", { className: "dsh-tavern-asset-menu-text" }, TAVERN_ASSET_KINDS[kind]),
-			h("input", { type: "file", multiple: true, accept: TAVERN_ASSET_ACCEPT[kind], "aria-label": "添加" + TAVERN_ASSET_KINDS[kind],
+			// 皮肤 is a folder (skin.json and its files); the others one entry per file.
+			h("input", { type: "file", multiple: true, ...(kind === "skins" ? { webkitdirectory: "" } : { accept: TAVERN_ASSET_ACCEPT[kind] }), "aria-label": "添加" + TAVERN_ASSET_KINDS[kind],
 				onChange: event => { const files = Array.from(event.target.files || []); event.target.value = ""; close(); if (files.length) props.onFiles(kind, files); } }))) });
 }
 // The kinds a pack holds, as tabs (none for a pack of one kind): ←→ Home End switch.
@@ -680,7 +699,7 @@ function TavernPackWindow(props) {
 		setBusy(true); setError("");
 		try { return await job(); } catch (err) { setError(tavernAssetErrorText(err)); return undefined; } finally { setBusy(false); }
 	}
-	const addFiles = (fileKind, files) => task(async () => {
+	const addFiles = (fileKind, files) => fileKind === "skins" ? addSkin(files) : fileKind === "entrances" ? addEntrances(files) : task(async () => {
 		audio.stop();
 		const uploads = [];
 		for (const file of files) uploads.push(await tavernAssetUpload(file));
@@ -689,8 +708,28 @@ function TavernPackWindow(props) {
 		if (result.added.length) { setSelected(result.added[0]); if (narrow) setDetail(true); }
 		const refused = result.rejected.map(row => row.name).join("、");
 		setNotice(result.added.length ? "已添加 " + result.added.length + " 项" + (refused ? "；没能添加：" + refused : "") : "");
-		if (!result.added.length) setError("没能添加：" + refused + "（" + (fileKind === "music" ? "请选择 MP3、OGG、WAV、M4A 或 FLAC 音频" : "请选择 4 MB 以内的 PNG、WebP 或 JPEG 图片") + "）");
+		if (!result.added.length) setError("没能添加：" + refused + "（" + (tavernAssetAudible(fileKind) ? "请选择 MP3、OGG、WAV、M4A 或 FLAC 音频" : "请选择 4 MB 以内的 PNG、WebP 或 JPEG 图片") + "）");
 	});
+	const addSkin = files => task(async () => {
+		try {
+			const result = await enqueue(() => tavernSkinFolderUpload(packId, files));
+			setKind("skins"); setQuery(""); setFilter("all"); setSelected(result.id); if (narrow) setDetail(true);
+			setNotice("已添加皮肤「" + result.pack.manifest.assets.find(asset => asset.kind === "skins" && asset.id === result.id).name + "」");
+		} catch (err) { setError(tavernSkinErrorText(err)); }
+	});
+	// 入场演出: one dsh.entrance/1 JSON file per entry, checked by the host as it is written.
+	const addEntrances = files => task(async () => {
+		const added = [], refused = [];
+		for (const file of files) {
+			try { const upload = await tavernAssetUpload(file); added.push((await enqueue(() => rpc("addAssetPackEntrance", { packId, name: file.name, uploadId: upload.uploadId }))).id); }
+			catch (err) { refused.push(file.name + "（" + tavernAssetErrorText(err) + "）"); }
+		}
+		setKind("entrances"); setQuery(""); setFilter("all");
+		if (added.length) { setSelected(added[0]); if (narrow) setDetail(true); setNotice("已添加 " + added.length + " 项入场演出"); }
+		if (refused.length) setError("没能添加：" + refused.join("、"));
+	});
+	// 设为包默认 / 取消: the pack's default skin (manifest.stageSkin).
+	const setPackSkin = id => enqueue(current => rpc("setAssetPackStageSkin", { packId, expectedRevision: current.revision, skin: id }));
 	const replace = async (asset, file) => {
 		audio.stop();
 		const upload = await tavernAssetUpload(file);
@@ -712,7 +751,7 @@ function TavernPackWindow(props) {
 	const present = pack ? TAVERN_ASSET_KIND_ORDER.filter(entryKind => tavernPackCount(pack, entryKind) > 0) : [];
 	const current = kind && present.includes(kind) ? kind : present[0] || null;
 	const all = pack && current ? tavernPackItems(pack, current) : [], needle = query.trim().toLowerCase();
-	const shown = all.filter(asset => (filter === "all" || tavernEntryLamp(asset) === filter) && (!needle || [asset.name, asset.directorNote, ...(asset.recall.keywords || [])].some(value => String(value || "").toLowerCase().includes(needle))));
+	const shown = all.filter(asset => (filter === "all" || current === "skins" || tavernEntryLamp(asset) === filter) && (!needle || [asset.name, asset.directorNote, ...(asset.recall.keywords || [])].some(value => String(value || "").toLowerCase().includes(needle))));
 	const chosen = all.find(asset => asset.id === selected) || shown[0] || null;
 	const switchKind = next => { audio.stop(); setKind(next); setSelected(null); setQuery(""); setDetail(false); };
 	const back = props.initial && props.initial.back;
@@ -728,12 +767,13 @@ function TavernPackWindow(props) {
 			onClick: () => { closeMenu(); setFilter(mode); } }, mode === "all" ? "全部" : TAVERN_ENTRY_LAMPS[mode])) });
 	const left = pack && present.length ? h("aside", { className: "dsh-tavern-pack-left" },
 		h(TavernPackKindNav, { present, current, onSwitch: switchKind }),
-		h("div", { className: "dsh-tavern-pack-tools" }, h(TavernAssetSearch, { label: "搜索条目", value: query, onChange: setQuery }), filterMenu, h(TavernAddFilesMenu, { disabled: busy, onFiles: addFiles })),
+		h("div", { className: "dsh-tavern-pack-tools" }, h(TavernAssetSearch, { label: "搜索条目", value: query, onChange: setQuery }), current === "skins" ? null : filterMenu, h(TavernAddFilesMenu, { disabled: busy, onFiles: addFiles })),
 		shown.length ? h("ul", { className: "dsh-tavern-entry-list", role: "listbox", "aria-label": TAVERN_ASSET_KINDS[current] }, shown.map(item => h(TavernEntryItem, { key: item.id, item, packId, audio, focused: !!chosen && chosen.id === item.id,
+			skins: pack.skins, packSkin: item.kind === "skins" && pack.manifest.stageSkin === item.id,
 			onSelect: () => { setSelected(item.id); if (narrow) setDetail(true); }, onLamp: mode => commit(current, item.id, asset => tavernSetEntryLamp(asset, mode)).catch(err => setError(tavernAssetErrorText(err))) })))
 			: h(TavernAssetEmpty, { noun: TAVERN_ASSET_KINDS[current], icon: current, query, filter: filter !== "all" ? TAVERN_ENTRY_LAMPS[filter] : "", onClear: () => { setQuery(""); setFilter("all"); } })) : null;
 	const right = pack && chosen ? h("section", { className: "dsh-tavern-pack-right", "aria-label": chosen.name },
-		h(TavernEntryDetail, { key: current + "/" + chosen.id, pack, asset: chosen, audio, busy, commit, replace, remove: removeEntry,
+		h(TavernEntryDetail, { key: current + "/" + chosen.id, pack, asset: chosen, audio, busy, commit, replace, remove: removeEntry, setPackSkin,
 			back: narrow ? { parent: TAVERN_ASSET_KINDS[current], onBack: () => setDetail(false) } : null })) : null;
 	const empty = pack && !present.length ? h(TavernAssetEmpty, { text: "还没有内容", action: h(TavernAddFilesMenu, { label: "添加文件", disabled: busy, onFiles: addFiles }) }) : null;
 	const foot = busy || notice || error ? h("div", { className: "dsh-tavern-asset-modal-foot" },
@@ -771,10 +811,11 @@ function TavernStagePacks(props) {
 			: effective.length ? h("ul", { className: "dsh-tavern-pack-list is-current", "aria-label": "当前素材包" }, effective.map(row)) : h(TavernAssetEmpty, { compact: true, text: "未使用素材包" }),
 		open ? h(TavernPackWindow, { key: open.packId, packId: open.packId, initial: open, scope, onClose: () => setOpen(null) }) : null);
 }
-// The packs this card uses that hold `kind` (全局 first, then 本卡): what a 基础设置 「›」 opens.
-function useTavernKindPacks(path, kind) {
+// The packs this card uses that hold `kind` (全局 first, then 本卡): what a 基础设置 「›」 opens. `own`: only the card's own
+// packs (入场演出 never comes from a global pack).
+function useTavernKindPacks(path, kind, own) {
 	const list = useTavernAssetPacks(), scope = useTavernPackScope(path);
-	const used = (list.packs || []).filter(pack => !pack.error && (scope.global.includes(pack.manifest.id) || scope.bound.includes(pack.manifest.id)) && tavernPackCount(pack, kind) > 0);
+	const used = (list.packs || []).filter(pack => !pack.error && (!own && scope.global.includes(pack.manifest.id) || scope.bound.includes(pack.manifest.id)) && tavernPackCount(pack, kind) > 0);
 	return [...used.filter(pack => scope.global.includes(pack.manifest.id)), ...used.filter(pack => !scope.global.includes(pack.manifest.id))];
 }
 // The quiet 「›」 of a 基础设置 row: one pack opens directly in 舞台素材 at that kind; several list their names.

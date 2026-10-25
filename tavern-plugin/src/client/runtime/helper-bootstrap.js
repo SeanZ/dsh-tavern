@@ -45,9 +45,16 @@
         }
 
 		function tavernHelperScriptBootstrap(metadata, initialContext, modules) {
+            // Every page switch tears the frame down, and a detached frame loses
+            // window.parent; a report from then on has no reader and must not throw.
+            function postToHost(message, target) {
+                const host = window.parent;
+                if (!host || typeof host.postMessage !== "function") return false;
+                try { host.postMessage(message, target || "*"); return true; } catch (_) { return false; }
+            }
             modules.applyVariableReceipt.indexApi = modules.createIndexedArrayApi({valid: row => Boolean(row && !row.stub), eligible: row => Boolean(row?.variables?.stat_data !== undefined && row?.variables?.schema !== undefined)});
             modules.applyVariableReceipt.turnFields = modules.createTurnFieldIndex({createIndex:modules.createOrderedNumericIndex,visit:function(){}});
-            const initializationTiming = modules.createInitializationTiming({ report: function (timings) { parent.postMessage({ type: "dsh-tavern-mvu-load-diagnostic", token: metadata.token, diagnostic: { phase: "initialization-timing", timings: timings } }, "*"); } });
+            const initializationTiming = modules.createInitializationTiming({ report: function (timings) { postToHost({ type: "dsh-tavern-mvu-load-diagnostic", token: metadata.token, diagnostic: { phase: "initialization-timing", timings: timings } }, "*"); } });
             window.__dshTavernInitializationTiming = initializationTiming;
             window.addEventListener("pagehide", initializationTiming.dispose, { once: true });
 			try { void window.localStorage; }
@@ -138,14 +145,14 @@
                         if (known && known.receipt) { known.receipt = null; known.phase = "acknowledged"; }
                         return;
                     }
-                    function status() { parent.postMessage({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: hostEvents.get(eventId).phase }, "*"); }
+                    function status() { postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: hostEvents.get(eventId).phase }, "*"); }
                     if (known) {
                         status();
-                        if (known.receipt) parent.postMessage(known.receipt, "*");
+                        if (known.receipt) postToHost(known.receipt, "*");
                         return;
                     }
                     if (data.type === "dsh-tavern-helper-event-query") {
-                        parent.postMessage({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: "unknown" }, "*");
+                        postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: "unknown" }, "*");
                         return;
                     }
                     const entry = { phase: "queued", receipt: null };
@@ -154,7 +161,7 @@
                     function complete(receipt) {
                         entry.phase = "completed";
                         entry.receipt = Object.assign({ type: "dsh-tavern-helper-event-complete", token: token, eventId: eventId }, receipt);
-                        parent.postMessage(entry.receipt, "*");
+                        postToHost(entry.receipt, "*");
                     }
 					diagnosticCount = 0;
 					const suppliedArgs = copy(data.args || []);
@@ -303,7 +310,7 @@
 			}
 			function buttonEvent(name, scriptId) { return String(scriptId || currentScript().id) + "_" + stringHash(String(name || "")); }
 			function reportSubscriptions() {
-				parent.postMessage({
+				postToHost({
 					type: "dsh-tavern-helper-subscriptions",
 					token: token,
 					names: events.names(),
@@ -720,7 +727,7 @@
 			window.__dshTavernHelperSubscriptionsFailed = function (scriptId, error) {
 				const script = scriptsById[String(scriptId || currentScript().id)];
 				if (script) script.failed = true;
-				parent.postMessage({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: script && script.id || currentScript().id, level: "error", message: String(error && error.message || error || "人物卡脚本初始化失败"), moduleFailure: error && error.dshTavernModuleFailure || null }, "*");
+				postToHost({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: script && script.id || currentScript().id, level: "error", message: String(error && error.message || error || "人物卡脚本初始化失败"), moduleFailure: error && error.dshTavernModuleFailure || null }, "*");
 				reportSubscriptions();
 			};
 			window.tavern_events = {
@@ -839,7 +846,7 @@
 					try {
 						const message = Array.from(arguments).map(function (value) { return typeof value === "string" ? value : value && value.message || "[structured diagnostic omitted]"; }).join(" ").slice(0, 4000);
 						const failure = Array.from(arguments).find(value => value && value.dshTavernScriptId !== undefined);
-						parent.postMessage({ type: "dsh-tavern-helper-diagnostic", token: token, eventId: failure ? failure.dshTavernEventId : activeHostEventId, scriptId: failure ? failure.dshTavernScriptId : errorScriptId(Array.from(arguments).find(value => value && value.stack) || new Error()) || synchronousScriptId, level: level, message: message }, "*");
+						postToHost({ type: "dsh-tavern-helper-diagnostic", token: token, eventId: failure ? failure.dshTavernEventId : activeHostEventId, scriptId: failure ? failure.dshTavernScriptId : errorScriptId(Array.from(arguments).find(value => value && value.stack) || new Error()) || synchronousScriptId, level: level, message: message }, "*");
 					} catch (_) {}
 				};
 			}
@@ -851,16 +858,16 @@
 			]).then(function (modules) { window.z = modules[0]; window.YAML = modules[1]; return true; });
 			window.__dshTavernHelperReady = ready;
 			void ready.catch(function (error) {
-				parent.postMessage({ type: "dsh-tavern-helper-bootstrap-failed", token: token, message: String(error && error.message || error || "人物卡脚本依赖加载失败") }, "*");
+				postToHost({ type: "dsh-tavern-helper-bootstrap-failed", token: token, message: String(error && error.message || error || "人物卡脚本依赖加载失败") }, "*");
 			});
 			addEventListener("error", function (event) {
 				const target = event && event.target;
 				const resource = target && target !== window ? String(target.src || target.href || "") : "";
 				const message = event && event.message ? String(event.message) : (resource ? "资源加载失败: " + resource : "人物卡脚本加载失败");
-				parent.postMessage({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: errorScriptId(event.error, event.filename), level: "error", message: message }, "*");
+				postToHost({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: errorScriptId(event.error, event.filename), level: "error", message: message }, "*");
 			});
 			addEventListener("unhandledrejection", function (event) {
-				parent.postMessage({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: errorScriptId(event.reason), eventId: event.reason && event.reason.dshTavernEventId || "", method: event.reason && event.reason.dshTavernMethod || "", level: "error", message: String(event.reason && event.reason.message || event.reason || "人物卡脚本 Promise 失败") }, "*");
+				postToHost({ type: "dsh-tavern-helper-script-runtime", token: token, scriptId: errorScriptId(event.reason), eventId: event.reason && event.reason.dshTavernEventId || "", method: event.reason && event.reason.dshTavernMethod || "", level: "error", message: String(event.reason && event.reason.message || event.reason || "人物卡脚本 Promise 失败") }, "*");
 			});
-			parent.postMessage({ type: "dsh-tavern-helper-script-ready", token: token }, "*");
+			postToHost({ type: "dsh-tavern-helper-script-ready", token: token }, "*");
 		}

@@ -1268,6 +1268,13 @@ body.dsh-tavern-shell-active [data-dsh-panel-host] { overflow: clip; }
 .dsh-tavern-background-task input[role="switch"]:checked::after, .dsh-tavern-switch-row input[role="switch"]:checked::after { transform: translateX(16px); }
 .dsh-tavern-background-task input[role="switch"]:focus-visible, .dsh-tavern-switch-row input[role="switch"]:focus-visible { outline: 2px solid #16766b; outline-offset: 3px; }
 .dsh-tavern-background-task input[role="switch"]:disabled, .dsh-tavern-switch-row input[role="switch"]:disabled { opacity: .6; cursor: not-allowed; }
+/* 包默认 (a skin entry in its pack's window) is the same switch. */
+.dsh-tavern-asset-field input[role="switch"] { appearance: none; -webkit-appearance: none; position: relative; flex: 0 0 36px; width: 36px; height: 20px; margin: 0; padding: 0; border: 0; border-radius: 10px; background: #64748b; cursor: pointer; transition: background .15s cubic-bezier(0.23, 1, 0.32, 1); }
+.dsh-tavern-asset-field input[role="switch"]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s cubic-bezier(0.23, 1, 0.32, 1); }
+.dsh-tavern-asset-field input[role="switch"]:checked { background: #16766b; }
+.dsh-tavern-asset-field input[role="switch"]:checked::after { transform: translateX(16px); }
+.dsh-tavern-asset-field input[role="switch"]:focus-visible { outline: 2px solid #16766b; outline-offset: 3px; }
+.dsh-tavern-asset-field input[role="switch"]:disabled { opacity: .6; cursor: not-allowed; }
 .dsh-tavern-conversation-basics { display: grid; gap: 16px; margin-bottom: 24px; }
 .dsh-tavern-conversation-basics h3 { margin: 0; }
 .dsh-tavern-conversation-basics label { display: grid; gap: 8px; }
@@ -2390,6 +2397,35 @@ details.dsh-tavern-header-settings-group:not([open]) > :not(summary) { display: 
 .dsh-tavern-header-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 12px 0 14px; }
 .dsh-tavern-header-foot .dsh-tavern-settings-desc { max-width: 62%; }
 
+/* 自定义顶栏 › 顶部标签（对话/轨迹/完整上下文/画廊/精修对比） */
+.dsh-tavern-view-tabs { margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dsh-tavern-view-tabs > .dsh-tavern-settings-copy { padding: 0 0 10px; }
+.dsh-tavern-view-tab-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0 0 12px; }
+.dsh-tavern-view-tab-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-base); }
+.dsh-tavern-view-tab-row.is-dragging { opacity: .45; }
+.dsh-tavern-view-tab-grip { color: var(--dsw-alias-label-tertiary); letter-spacing: -1px; font-size: 13px; cursor: grab; user-select: none; }
+.dsh-tavern-view-tab-grip.is-locked { cursor: default; }
+.dsh-tavern-view-tab-name { flex: 1; min-width: 0; font-size: 13px; }
+.dsh-tavern-view-tab-name strong { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tavern-view-tab-name small { display: block; font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+.dsh-tavern-view-tab-lock { flex: none; padding: 3px 8px; border-radius: 999px; background: var(--dsh-tavern-accent-soft); color: var(--dsh-tavern-accent); font-size: 11px; }
+.dsh-tavern-view-tab-ops { display: flex; gap: 2px; }
+.dsh-tavern-view-tab-op { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+.dsh-tavern-view-tab-op:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dsh-tavern-view-tab-op:disabled { opacity: .3; cursor: default; }
+.dsh-tavern-view-tab-op.is-danger:hover:not(:disabled) { color: var(--dsh-tavern-accent-error); background: color-mix(in srgb, var(--dsh-tavern-accent-error) 12%, transparent); }
+.dsh-tavern-view-tab-catalog { padding: 12px 0 4px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dsh-tavern-view-tab-catalog > .dsh-tavern-settings-desc { margin-bottom: 10px; }
+.dsh-tavern-view-tab-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dsh-tavern-view-tab-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px 5px 8px; border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.dsh-tavern-view-tab-chip:hover:not(:disabled) { border-color: var(--dsh-tavern-accent-border); color: var(--dsh-tavern-accent); }
+.dsh-tavern-view-tab-chip-plus { color: var(--dsw-alias-label-tertiary); }
+.dsh-tavern-view-tab-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 12px 0 14px; }
+.dsh-tavern-view-tab-foot .dsh-tavern-settings-desc { max-width: 62%; }
+
 /* Scene image API card. */
 .dsh-tavern-global-settings .dsh-tavern-image-settings { gap: 12px; padding: 4px 0 16px; }
 .dsh-tavern-global-settings .dsh-tavern-image-settings label { font-size: 13px; }
@@ -3025,6 +3061,14 @@ body.dsh-tavern-shell-active [class*="_headerUtilities"]:has(.dsh-tavern-header-
 
 }
 
+/* 窄屏手机上默认的 5 个视图标签要放得下：收紧标签间距，仍可左右滑动。 */
+@media (max-width: 430px) {
+  body.dsh-tavern-shell-active :is([data-phase] > header, [data-slot="conversation.header"] > header) [class*="_tabs"] { gap: 12px; }
+}
+@media (max-width: 380px) {
+  body.dsh-tavern-shell-active :is([data-phase] > header, [data-slot="conversation.header"] > header) [class*="_tabs"] { gap: 10px; }
+}
+
 @media (min-width: 1024px) and (pointer: coarse) {
   html.dsh-tavern-viewport-pinned .dsh-tavern-candidate-question:not(.collapsed) {
     left: calc(var(--dsh-composer-left, 0px) + 8px); right: auto;
@@ -3099,6 +3143,16 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
 .dsh-tavern-stage-figure img { height: 100%; width: auto; max-width: 100%; object-fit: contain; object-position: bottom; }
 .dsh-tavern-stage-figure.is-dim { filter: brightness(.55) saturate(.8); }
 .dsh-tavern-stage-figure-letter { margin-bottom: 8%; width: min(46%, 120px); aspect-ratio: 1; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: clamp(20px, 5vw, 48px); font-weight: 600; color: #fff; background: hsl(var(--dsh-cast-hue, 210) 45% 52%); box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+/* 物品 (TavernStageItem): the page's item stands above the text box, below the faces, unseen until the page plays it; clicks pass. */
+.dsh-tavern-stage-item { position: absolute; left: 50%; bottom: 280px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: min(420px, 80vw); isolation: isolate; opacity: 0; pointer-events: none; }
+.dsh-tavern-stage-item::before { content: ""; position: absolute; inset: -20% -35%; z-index: -1; background: radial-gradient(closest-side, rgba(0,0,0,.5), transparent); }
+.dsh-tavern-stage-item img { max-width: 100%; max-height: min(28vh, 240px); object-fit: contain; filter: drop-shadow(0 8px 22px rgba(0,0,0,.55)); }
+.dsh-tavern-stage-item strong { font-size: 18px; font-weight: 600; letter-spacing: .12em; color: #fff; text-align: center; overflow-wrap: anywhere; text-shadow: 0 1px 6px rgba(0,0,0,.75); }
+@media (max-width: 640px) { .dsh-tavern-stage-item { bottom: auto; top: 16%; } .dsh-tavern-stage-item img { max-height: 24vh; } }
+/* 入场演出 (stage-entrance.js): over the whole stage while it opens; a click skips it, after the cover it takes none. */
+.dsh-tavern-stage-entrance { position: absolute; inset: 0; z-index: 30; cursor: pointer; overflow: hidden; }
+.dsh-tavern-stage-entrance[data-covered] { pointer-events: none; cursor: auto; }
+.dsh-tavern-stage-entrance-canvas { display: block; width: 100%; height: 100%; }
 /* The stage's look is its skin (stage-skin.js): the text box, name plate, reading text, control row and input read only
    the skin tokens on the stage root, the built-in 经典 included. */
 .dsh-tavern-stage-textbox { position: absolute; box-sizing: border-box; left: 50%; width: min(960px, 92vw); transform: translateX(-50%); bottom: 88px; height: 168px; padding: 16px 22px; display: flex; flex-direction: column; gap: 4px;
@@ -3115,6 +3169,8 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
 .dsh-tavern-stage-controls button:disabled { opacity: .35; cursor: default; }
 .dsh-tavern-stage-controls button.is-on { background: var(--gal-skin-qm-active); color: var(--gal-skin-qm-on); }
 .dsh-tavern-stage-overlay { position: fixed; inset: 0; z-index: 2147483000; background: #111318; }
+/* the stage fills the screen: the host's narrow-screen inset for modal dialogs (an !important max-width 100vw - 32px) is not for it */
+html body .dsh-tavern-stage-overlay[role="dialog"][aria-modal="true"] { max-width: none !important; }
 .dsh-tavern-stage-input { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(960px, 92vw); display: flex; gap: 8px; }
 .dsh-tavern-stage-input input { flex: 1; min-width: 0; height: 44px; padding: 0 14px; border-radius: var(--gal-ui-radius); border: 1px solid var(--gal-ui-line); background: var(--gal-ui-surface); color: var(--gal-ui-ink); font-size: 16px; }
 .dsh-tavern-stage-input input::placeholder { color: var(--gal-ui-muted); }
@@ -3122,6 +3178,269 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
 .dsh-tavern-stage-input button:disabled { opacity: .5; cursor: default; }
 @keyframes dsh-tavern-stage-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .dsh-tavern-stage-figure, .dsh-tavern-stage-figure-body, .dsh-tavern-stage-figure img, .dsh-tavern-stage-text { animation: none !important; transition: none !important; } }
+.dsh-tavern-stage-name b { font-weight: inherit; }
+.dsh-tavern-stage-next, .dsh-tavern-stage-lamp { display: none; }
+/* ==== stage skin: art ====
+   A skin's own images as the text box, its name plate, the page cue and the auto lamp (stageSkinArt in stage-skin.js writes the
+   marks and --art-* tokens, numbers in px of the skin's design screen). One art px is --art-u: the stage's height over the
+   design screen's height, bounded by its width over the design width and by the box image taking at most --art-fit (96%) of
+   the width. The box (.dsh-tavern-stage-textbox) is the image's body rect, centred; the image is its ::before, offset by
+   the body's place in it. The controls row is the box's own, in its bottom-right corner; the input docks above the image. */
+.dsh-tavern-stage-overlay[data-fk-skin-art] { --art-u: min(calc(100vh / var(--art-screen)), calc(100vw / var(--art-screen-w)), calc(var(--art-fit, .96) * 100vw / var(--art-img-w))); }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox {
+  --art-fs: calc(var(--art-font) * var(--art-u)); --art-lh: var(--gal-skin-line-height);
+  --art-shift: calc((var(--art-text-y) * 2 - var(--art-body-y) * 2 - var(--art-body-h)) * var(--art-u));
+  isolation: isolate; justify-content: center; gap: 0; width: calc(var(--art-body-w) * var(--art-u)); height: calc(var(--art-body-h) * var(--art-u));
+  bottom: calc((var(--art-bottom) + var(--art-img-h) - var(--art-body-y) - var(--art-body-h)) * var(--art-u));
+  padding: max(0px, var(--art-shift)) calc((var(--art-body-x) + var(--art-body-w) - var(--art-text-r)) * var(--art-u)) max(0px, calc(var(--art-shift) * -1)) calc((var(--art-text-l) - var(--art-body-x)) * var(--art-u));
+  background: none; border: 0; border-radius: 0; box-shadow: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none; left: calc(var(--art-body-x) * var(--art-u) * -1); top: calc(var(--art-body-y) * var(--art-u) * -1);
+  width: calc(var(--art-img-w) * var(--art-u)); height: calc(var(--art-img-h) * var(--art-u)); background: var(--art-plain) 0 0 / 100% 100% no-repeat; will-change: transform; }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox.is-narration::before { background-image: var(--art-narration, var(--art-plain)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-text { flex: none; font-size: var(--art-fs); line-height: var(--art-lh); max-height: calc(var(--art-fs) * var(--art-lh) * var(--art-lines)); }
+/* art.textbox.pitch: the line pitch; align top: the first line starts at text[2] */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-pitch] .dsh-tavern-stage-textbox { --art-lh: calc(var(--art-pitch) / var(--art-font)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-align="top"] .dsh-tavern-stage-textbox { justify-content: flex-start; padding-top: calc((var(--art-text-y) - var(--art-body-y)) * var(--art-u)); padding-bottom: 0; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-stroke] .dsh-tavern-stage-text { -webkit-text-stroke: calc(var(--art-text-stroke-w) * 2 * var(--art-u)) var(--art-text-stroke); paint-order: stroke fill; }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-controls { position: absolute; margin: 0; right: 14px; bottom: 8px; }
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox > .dsh-tavern-stage-input { bottom: calc(100% + max(var(--art-dock-over, calc(var(--art-body-y) * var(--art-u))), var(--art-dock-min, 0px)) + 12px); }
+/* the name on the box: the layout's plate at x / y, outlined --art-np-stroke px */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name] .dsh-tavern-stage-name {
+  position: absolute; box-sizing: border-box; align-items: center; margin: 0; max-width: none; left: calc((var(--art-np-x) - var(--art-body-x)) * var(--art-u)); top: calc((var(--art-np-y) - var(--art-body-y)) * var(--art-u));
+  height: calc(var(--art-np-h) * var(--art-u)); min-width: calc(var(--art-np-w) * var(--art-u)); font-size: calc(var(--art-np-font) * var(--art-u)); font-weight: var(--art-np-weight); letter-spacing: var(--art-np-spacing, normal);
+  -webkit-text-stroke: calc(var(--art-np-stroke) * 2 * var(--art-u)) var(--gal-skin-border); paint-order: stroke fill; white-space: nowrap; }
+/* a plate from the skin's own image: its natural size, the name `text` px in; center: the name centred on that x */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"] .dsh-tavern-stage-name {
+  width: calc(var(--art-np-w) * var(--art-u)); padding: 0 0 0 calc(var(--art-np-text) * var(--art-u)); overflow: hidden; rotate: none; border: 0; border-radius: 0;
+  background: var(--art-np-img) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"] .dsh-tavern-stage-name b { min-width: 0; overflow: clip visible; text-overflow: ellipsis; padding-inline: .12em; margin-inline: -.12em; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"][data-fk-skin-art-np-center] .dsh-tavern-stage-name {
+  justify-content: center; padding-left: calc((var(--art-np-text) + max(0, 2 * var(--art-np-center) - var(--art-np-w))) * var(--art-u)); padding-right: calc((var(--art-np-text) + max(0, var(--art-np-w) - 2 * var(--art-np-center))) * var(--art-u)); }
+/* a vertical plate: the name set down its height, text / center along it */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name][data-fk-skin-art-name-vertical] .dsh-tavern-stage-name {
+  justify-content: center; align-items: center; overflow: visible; width: max(calc(var(--art-np-w) * var(--art-u)), 1.5em); padding: calc(var(--art-np-text, 0) * var(--art-u)) 0; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name][data-fk-skin-art-name-vertical][data-fk-skin-art-np-center] .dsh-tavern-stage-name {
+  padding-top: calc((var(--art-np-text) + max(0, 2 * var(--art-np-center) - var(--art-np-h))) * var(--art-u)); padding-bottom: calc((var(--art-np-text) + max(0, var(--art-np-h) - 2 * var(--art-np-center))) * var(--art-u)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name][data-fk-skin-art-name-vertical] .dsh-tavern-stage-name b {
+  writing-mode: vertical-rl; text-orientation: upright; text-align: center; white-space: nowrap; height: 100%; min-height: 0; flex: none; overflow: visible; text-overflow: clip; padding: 0; margin: 0; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name][data-fk-skin-art-name-vertical] .dsh-tavern-stage-name .dsh-tavern-cast-emotion { position: absolute; left: calc(100% + 8px); bottom: 0; }
+/* nameplate.slice: the image plate 9-sliced (--art-np-sl in image px, widths in design px), growing along the name up to
+   grow design px between its pads */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"][data-fk-skin-art-np-slice] .dsh-tavern-stage-name {
+  justify-content: center; width: auto; min-width: calc(var(--art-np-w) * var(--art-u)); padding: 0 calc(var(--art-np-pad-b) * var(--art-u)) 0 calc(var(--art-np-pad-a) * var(--art-u)); background: none;
+  border: 0 solid transparent; border-image: var(--art-np-img) var(--art-np-sl) fill / calc(var(--art-np-sl-t) * var(--art-u)) calc(var(--art-np-sl-r) * var(--art-u)) calc(var(--art-np-sl-b) * var(--art-u)) calc(var(--art-np-sl-l) * var(--art-u)) / 0 stretch; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"][data-fk-skin-art-np-slice] .dsh-tavern-stage-name b { max-width: calc((var(--art-np-w) + var(--art-np-grow) - var(--art-np-pad-a) - var(--art-np-pad-b)) * var(--art-u)); }
+/* a vertical sliced plate grows down from its drawn height (the cords and tassels in its top slice never stretch) */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"][data-fk-skin-art-name-vertical][data-fk-skin-art-np-slice] .dsh-tavern-stage-name {
+  width: max(calc(var(--art-np-w) * var(--art-u)), 1.5em); min-width: 0; height: auto; min-height: calc(var(--art-np-h) * var(--art-u));
+  padding: calc(var(--art-np-pad-a) * var(--art-u)) 0 calc(var(--art-np-pad-b) * var(--art-u)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name="image"][data-fk-skin-art-name-vertical][data-fk-skin-art-np-slice] .dsh-tavern-stage-name b {
+  height: auto; max-width: none; max-height: calc((var(--art-np-h) + var(--art-np-grow) - var(--art-np-pad-a) - var(--art-np-pad-b)) * var(--art-u)); }
+/* a name longer than an image plate's room is set smaller to fit (--stage-name-fit, down to .6; useTavernStageNameFit) */
+.dsh-tavern-stage-overlay[data-fk-skin-art]:is([data-fk-skin-art-name="image"], [data-fk-skin-art-name-vertical]) .dsh-tavern-stage-name b { font-size: calc(1em * var(--stage-name-fit, 1)); }
+/* nameplate.fill: the name in a two-band ink under its outline (an outline copy behind it, dropped by shadow) */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-fill][data-fk-skin-art-name] .dsh-tavern-stage-name { -webkit-text-stroke: 0; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-fill][data-fk-skin-art-name] .dsh-tavern-stage-name b {
+  position: relative; overflow: visible; padding-inline: 0; margin-inline: 0; color: transparent; -webkit-text-fill-color: transparent;
+  background: linear-gradient(180deg, var(--art-np-fill-a) 50%, var(--art-np-fill-b) 50%); -webkit-background-clip: text; background-clip: text; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-fill][data-fk-skin-art-name] .dsh-tavern-stage-name b::before {
+  content: attr(data-text); position: absolute; inset: 0; z-index: -1; pointer-events: none; white-space: nowrap; color: var(--gal-skin-border); -webkit-text-fill-color: var(--gal-skin-border);
+  -webkit-text-stroke: calc(var(--art-np-stroke) * 2 * var(--art-u)) var(--gal-skin-border); filter: drop-shadow(calc(var(--art-np-sx, 0) * var(--art-u)) calc(var(--art-np-sy, 0) * var(--art-u)) 0 var(--gal-skin-border)); }
+/* the page cue: centred on cue[0], resting on cue[1], cue[2] tall; the skin's image there (frames: one cell of its sheet),
+   or the engine's mark in the box ink; none when the original has none. It bobs --art-rise px (dip: down, blink). */
+.dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-next {
+  --art-cue: calc(var(--art-cue-h) * var(--art-u)); display: block; position: absolute; pointer-events: none; width: var(--art-cue); height: var(--art-cue);
+  left: calc((var(--art-cue-x) - var(--art-body-x)) * var(--art-u) - var(--art-cue) / 2); bottom: calc((var(--art-body-y) + var(--art-body-h) - var(--art-cue-y)) * var(--art-u));
+  background: linear-gradient(to bottom right, var(--gal-skin-fg) 50%, transparent 50%) center / 50% 50% no-repeat; rotate: 45deg; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue="none"] .dsh-tavern-stage-next { display: none; }
+/* cue inline: the mark at the end of the lines, .9em tall (the image's cell aspect with frames) */
+.dsh-tavern-stage-overlay[data-fk-skin-art]:is([data-fk-skin-art-cue="inline"], [data-fk-skin-art-cue="inline-image"]) .dsh-tavern-stage-next {
+  position: relative; left: auto; bottom: auto; display: inline-block; width: .7em; height: .9em; margin: 0 -.9em 0 .25em; vertical-align: -.12em; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue="inline-image"] .dsh-tavern-stage-next { background: var(--art-next) center / contain no-repeat; rotate: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue="inline-image"][data-fk-skin-art-cue-frames] .dsh-tavern-stage-next { width: calc(.9em * var(--art-next-w) / var(--art-next-h)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue="image"] .dsh-tavern-stage-next {
+  width: calc(var(--art-next-w) * var(--art-u)); height: calc(var(--art-next-h) * var(--art-u)); left: calc((var(--art-cue-x) - var(--art-body-x) - var(--art-next-w) / 2) * var(--art-u));
+  background: var(--art-next) 0 0 / 100% 100% no-repeat; rotate: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue-frames] .dsh-tavern-stage-next { background-size: var(--art-next-sheet); background-position: var(--art-next-rest); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-lamp-swap][data-stage-auto] .dsh-tavern-stage-next { visibility: hidden; }
+/* the lamp: the original's AUTO image at lamp x / y while auto paging runs */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-stage-auto] .dsh-tavern-stage-lamp {
+  display: block; position: absolute; pointer-events: none; left: calc((var(--art-lamp-x) - var(--art-body-x)) * var(--art-u)); top: calc((var(--art-lamp-y) - var(--art-body-y)) * var(--art-u));
+  width: calc(var(--art-lamp-w) * var(--art-u)); height: calc(var(--art-lamp-h) * var(--art-u)); background: var(--art-lamp) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art]:not([data-fk-skin-art-lamp]) .dsh-tavern-stage-lamp { display: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-lamp="frames"] .dsh-tavern-stage-lamp { background-size: var(--art-lamp-sheet); background-position: var(--art-lamp-rest); }
+@media (prefers-reduced-motion: no-preference) {
+  .dsh-tavern-stage-overlay[data-fk-skin-art]:is([data-fk-skin-art-cue="image"], [data-fk-skin-art-cue="glyph"]):not([data-fk-skin-art-cue-frames]) .dsh-tavern-stage-next { animation: dsh-art-cue-bob .933s .18s infinite; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-cue="inline-image"]:not([data-fk-skin-art-cue-frames]) .dsh-tavern-stage-next { animation: dsh-art-cue-bob 1.4s .18s infinite; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-bob="dip"]:not([data-fk-skin-art-cue-frames]) .dsh-tavern-stage-next { animation: dsh-art-cue-dip .917s .18s infinite; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-bob="blink"]:not([data-fk-skin-art-cue-frames]) .dsh-tavern-stage-next { animation: dsh-art-cue-blink .5s .18s infinite step-end; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-lamp="blink"] .dsh-tavern-stage-lamp { animation: dsh-art-lamp-blink var(--art-lamp-t) step-end infinite; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-lamp="spin"] .dsh-tavern-stage-lamp { animation: dsh-art-lamp-spin var(--art-lamp-t) cubic-bezier(.3333, 0, .6667, 1) infinite; }
+}
+@keyframes dsh-art-cue-bob {
+  0%, 10.7% { transform: translateY(0); animation-timing-function: cubic-bezier(.35, 0, .75, 1); }
+  85.7% { transform: translateY(calc(var(--art-rise) * var(--art-u) * -1)); animation-timing-function: cubic-bezier(.25, .6, .45, 1); }
+  100% { transform: translateY(0); } }
+@keyframes dsh-art-cue-dip {
+  0% { transform: translateY(0); animation-timing-function: cubic-bezier(.3333, 0, .6667, 1); }
+  21.8% { transform: translateY(calc(var(--art-rise) * var(--art-u))); animation-timing-function: cubic-bezier(.3333, 0, .6667, 1); }
+  41.8%, 100% { transform: translateY(0); } }
+@keyframes dsh-art-cue-blink { 50% { visibility: hidden; } }
+@keyframes dsh-art-lamp-blink { 0% { visibility: visible; } 51.6% { visibility: hidden; } }
+@keyframes dsh-art-lamp-spin { from { rotate: 0deg; } to { rotate: -360deg; } }
+/* art on phones: the image box keeps fitting the width, but its words keep the phone reading size (body 17px, name 14px).
+   The box grows to the lines it needs and its image is 9-sliced to that height (--art-sl: art.textbox.slice, by default
+   everything outside the text block) - frame, corners and ornaments as drawn, only the middle stretches. */
+@media (max-width: 640px) {
+  .dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox {
+    --art-fs: max(17px, calc(var(--art-font) * var(--art-u))); --art-lh: var(--gal-skin-line-height);
+    --art-pad-t: max(8px, calc((var(--art-sl-t) - var(--art-body-y)) * var(--art-u))); --art-pad-b: max(8px, calc((var(--art-sl-b) - var(--art-img-h) + var(--art-body-y) + var(--art-body-h)) * var(--art-u)));
+    justify-content: flex-start; height: auto; min-height: calc(var(--art-body-h) * var(--art-u)); padding-top: var(--art-pad-t); padding-bottom: var(--art-pad-b);
+    padding-left: max(.6em, calc((var(--art-sl-l) - var(--art-body-x)) * var(--art-u))); padding-right: max(.6em, calc((var(--art-sl-r) - var(--art-img-w) + var(--art-body-x) + var(--art-body-w)) * var(--art-u))); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox::before {
+    height: calc(100% + (var(--art-img-h) - var(--art-body-h)) * var(--art-u)); background: none; border: 0 solid transparent;
+    border-image: var(--art-plain) var(--art-sl) fill / calc(var(--art-sl-t) * var(--art-u)) calc(var(--art-sl-r) * var(--art-u)) calc(var(--art-sl-b) * var(--art-u)) calc(var(--art-sl-l) * var(--art-u)) / 0 stretch; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-textbox.is-narration::before { background: none; border-image-source: var(--art-narration, var(--art-plain)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name] .dsh-tavern-stage-name { font-size: max(14px, calc(var(--art-np-font) * var(--art-u))); }
+  /* the controls row gets its own strip under the lines, right-aligned */
+  .dsh-tavern-stage-overlay[data-fk-skin-art] .dsh-tavern-stage-controls { position: static; justify-content: flex-end; margin-top: 6px; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-name] .dsh-tavern-stage-text { margin-top: max(0px, calc((var(--art-np-y) + var(--art-np-h) - var(--art-sl-t)) * var(--art-u))); }
+}
+/* ==== stage skin: art portrait ====
+   art.portrait (stageSkinPortraitArt in stage-skin.js): the speaker's avatar in a face window on the box (.dsh-tavern-stage-side),
+   placed on the design screen - centred like the box, standing --art-face-y0 up - so it scales with the art. Only while a
+   face shows (.is-on) is anything drawn: narration and a speaker without an avatar leave no empty frame, and the lines never
+   move (the side is out of flow). The input docked above the box clears the window's top. */
+.dsh-tavern-stage-side { position: absolute; pointer-events: none; }
+.dsh-tavern-stage-side-img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; -webkit-user-drag: none; }
+.dsh-tavern-stage-side-name, .dsh-tavern-stage-side-caption { display: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"] .dsh-tavern-stage-textbox {
+  --art-face-x0: calc((var(--art-screen-w) - var(--art-body-w)) / 2); --art-face-y0: calc(var(--art-bottom) + var(--art-img-h) - var(--art-body-y) - var(--art-body-h));
+  --art-dock-over: calc(max(var(--art-body-y), var(--art-face-b) + var(--art-face-s) - var(--art-face-y0) - var(--art-body-h)) * var(--art-u)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"] .dsh-tavern-stage-textbox .dsh-tavern-stage-side {
+  left: calc((var(--art-face-l) - var(--art-face-x0)) * var(--art-u)); bottom: calc((var(--art-face-b) - var(--art-face-y0)) * var(--art-u));
+  width: calc(var(--art-face-s) * var(--art-u)); height: calc(var(--art-face-s) * var(--art-u)); }
+/* frame: the side is the frame image (behind the box image: the box draws over the face where they meet), the face square in it
+   clipped to the window. A cut on a new speaker, as the original: no slide or fade. */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame] .dsh-tavern-stage-textbox {
+  --art-dock-over: calc(max(var(--art-body-y), var(--art-face-fb) + var(--art-face-fh) - var(--art-face-y0) - var(--art-body-h)) * var(--art-u)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame] .dsh-tavern-stage-textbox .dsh-tavern-stage-side {
+  z-index: -2; left: calc((var(--art-face-fl) - var(--art-face-x0)) * var(--art-u)); bottom: calc((var(--art-face-fb) - var(--art-face-y0)) * var(--art-u));
+  width: calc(var(--art-face-fw) * var(--art-u)); height: calc(var(--art-face-fh) * var(--art-u));
+  --face-glass-at: calc((var(--art-face-wl) - var(--art-face-fl)) * var(--art-u)) calc((var(--art-face-fb) + var(--art-face-fh) - var(--art-face-wb) - var(--art-face-wh)) * var(--art-u));
+  --face-glass-size: calc(var(--art-face-ww) * var(--art-u)) calc(var(--art-face-wh) * var(--art-u)); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on { background: var(--art-face-frame) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame] .dsh-tavern-stage-side > .dsh-tavern-stage-side-img {
+  inset: auto; left: calc((var(--art-face-l) - var(--art-face-fl)) * var(--art-u)); bottom: calc((var(--art-face-b) - var(--art-face-fb)) * var(--art-u));
+  width: calc(var(--art-face-s) * var(--art-u)); height: calc(var(--art-face-s) * var(--art-u));
+  clip-path: inset(calc((var(--art-face-b) + var(--art-face-s) - var(--art-face-wb) - var(--art-face-wh)) * var(--art-u)) calc((var(--art-face-l) + var(--art-face-s) - var(--art-face-wl) - var(--art-face-ww)) * var(--art-u))
+    calc((var(--art-face-wb) - var(--art-face-b)) * var(--art-u)) calc((var(--art-face-wl) - var(--art-face-l)) * var(--art-u))); }
+/* round = the face clipped to the window's ellipse; front = the side over the box image with the frame in front of the face
+   (::after), not behind it; glass = a sheen over the face across the window; speaking = the frame while the line is read aloud
+   (.is-speaking), faded in over the frame (::before); back = the window's own background under the face; fill = the window's
+   opaque face (a colour or a radial gradient) under the back and the face, so a cut-out avatar never shows the stage through. */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-round] .dsh-tavern-stage-side > .dsh-tavern-stage-side-img {
+  clip-path: ellipse(calc(var(--art-face-ww) / 2 * var(--art-u)) calc(var(--art-face-wh) / 2 * var(--art-u))
+    at calc((var(--art-face-wl) + var(--art-face-ww) / 2 - var(--art-face-l)) * var(--art-u)) calc((var(--art-face-b) + var(--art-face-s) - var(--art-face-wb) - var(--art-face-wh) / 2) * var(--art-u))); }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side { z-index: 1; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on { background: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame]:is([data-fk-skin-portrait-front], [data-fk-skin-portrait-glass]) .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on::after {
+  content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; background: var(--art-face-glass, none) var(--face-glass-at) / var(--face-glass-size) no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on::after {
+  background: var(--art-face-frame) 0 0 / 100% 100% no-repeat, var(--art-face-glass, none) var(--face-glass-at) / var(--face-glass-size) no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-speaking] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0; transition: opacity .35s ease-out; background: var(--art-face-speaking) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-speaking][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on::before { z-index: 3; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-speaking] .dsh-tavern-stage-textbox.is-speaking .dsh-tavern-stage-side.is-on::before { opacity: 1; transition-duration: .2s; }
+@media (prefers-reduced-motion: reduce) { .dsh-tavern-stage-overlay[data-fk-skin-portrait-speaking] .dsh-tavern-stage-side.is-on::before { transition: none; } }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-back] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on {
+  background: var(--art-face-back) var(--face-glass-at) / var(--face-glass-size) no-repeat, var(--art-face-frame) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-back][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on { background: var(--art-face-back) var(--face-glass-at) / var(--face-glass-size) no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-fill] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on {
+  background: var(--art-face-back, none) var(--face-glass-at) / var(--face-glass-size) no-repeat, var(--art-face-fill) var(--face-glass-at) / var(--face-glass-size) no-repeat, var(--art-face-frame) 0 0 / 100% 100% no-repeat; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-fill][data-fk-skin-portrait-front] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.is-on {
+  background: var(--art-face-back, none) var(--face-glass-at) / var(--face-glass-size) no-repeat, var(--art-face-fill) var(--face-glass-at) / var(--face-glass-size) no-repeat; }
+/* frame.name: the speaker's name along the frame's circle (TavernStageSideName: an svg in the frame's own px over the whole side,
+   above the frame, the sheen and the speaking frame). While it shows, the box's plate steps aside: its name stays for screen
+   readers only. A speaker without a face keeps the plate as drawn. */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-frame][data-fk-skin-portrait-name] .dsh-tavern-stage-side > .dsh-tavern-stage-side-name {
+  position: absolute; inset: 0; z-index: 4; display: block; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait-name] .dsh-tavern-stage-textbox.dsh-tavern-stage-textbox:has(> .dsh-tavern-stage-side.is-on) > .dsh-tavern-stage-name {
+  position: absolute; width: 1px; min-width: 0; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* narrow: on a phone the side stands at its own place - --art-face-nw CSS px wide, --art-face-nx / -ny px from the box's top-left
+   corner (over the box image's top edge when negative) - and everything in it keeps the frame's proportions (its own --art-u is
+   its width over the frame's). The lines clear it on every page, a face or none: beside (its column), wrap (beside it down to
+   its bottom, then the full width) or below (under it), from --art-face-nleft px. name below: the frame's name as one line
+   centred under the side (an arc that small does not read), down to 11px for a long name, rimmed in the name's outline. */
+@media (max-width: 640px) {
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow] .dsh-tavern-stage-textbox .dsh-tavern-stage-side.dsh-tavern-stage-side {
+    --art-u: calc(var(--art-face-nw) * 1px / var(--art-face-nsw)); inset: auto; left: calc(var(--art-face-nx) * 1px); top: calc(var(--art-face-ny) * 1px);
+    width: calc(var(--art-face-nw) * 1px); height: calc(var(--art-face-nh) * 1px); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow] .dsh-tavern-stage-textbox.dsh-tavern-stage-textbox {
+    --art-dock-over: max(calc(var(--art-body-y) * var(--art-u)), calc(var(--art-face-ny) * -1px));
+    padding-left: max(.6em, calc((var(--art-face-nx) + var(--art-face-nw)) * 1px + .5em)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow]:is([data-fk-skin-portrait-flow="wrap"], [data-fk-skin-portrait-flow="below"]) .dsh-tavern-stage-textbox.dsh-tavern-stage-textbox {
+    padding-left: calc(var(--art-face-nleft) * 1px); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow][data-fk-skin-portrait-flow="wrap"] .dsh-tavern-stage-textbox .dsh-tavern-stage-text::before {
+    content: ""; float: left; width: calc((var(--art-face-nx) + var(--art-face-nw) - var(--art-face-nleft)) * 1px + .4em); height: max(0px, calc((var(--art-face-ny) + var(--art-face-nh)) * 1px - var(--art-pad-t) + 2px)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow][data-fk-skin-portrait-flow="below"] .dsh-tavern-stage-textbox.dsh-tavern-stage-textbox {
+    padding-top: max(var(--art-pad-t), calc((var(--art-face-ny) + var(--art-face-nh)) * 1px + 6px)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow][data-fk-skin-portrait-flow="below"] .dsh-tavern-stage-text { margin-top: 0; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow="below"] .dsh-tavern-stage-side > .dsh-tavern-stage-side-name.dsh-tavern-stage-side-name { display: none; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow="below"] .dsh-tavern-stage-side > .dsh-tavern-stage-side-caption {
+    display: block; position: absolute; left: 50%; top: calc(100% + 1px); z-index: 4; translate: -50% 0; margin: 0; padding: 0; white-space: nowrap; pointer-events: none;
+    font-weight: var(--art-face-nweight); font-size: clamp(11px, calc((var(--art-face-nw) * 1px + 14px) / (var(--name-len, 2) * 1.15)), 14px); line-height: 1.25;
+    letter-spacing: var(--art-face-nspacing); color: var(--art-face-nink); text-shadow: 0 -1px 0 var(--art-face-ndark, transparent), 0 1px 0 var(--art-face-nlight, transparent); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow="below"][data-fk-skin-portrait-name-stroke] .dsh-tavern-stage-side > .dsh-tavern-stage-side-caption {
+    -webkit-text-stroke: 2.5px var(--art-face-nstroke); paint-order: stroke fill; text-shadow: none; }
+}
+/* ==== stage skin: box controls ====
+   The control row is the box's own. quickMenu.place puts it in the art box's top-right or bottom-right corner; art.textbox
+   .controls places it on the box image in design px on wide stages (its right end at x, its top at y), the row's other
+   controls wrapping beside the text column. quickMenu.icons draws a control as the skin's image (its `on` image while auto
+   runs) on the skin's button body (quickMenu.button, by state, the hover image under the pointer and keyboard focus); a
+   control without an icon keeps its words. Phones: the row's own strip under the lines (narrow bottom), at the box's top
+   (narrow top) or centred on its top edge taking no room (narrow edge); drawn controls are 44px targets. */
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-place] .dsh-tavern-stage-controls { top: auto; right: 10px; bottom: 8px; gap: 4px; justify-content: flex-end; }
+.dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-place="box-top-right"] .dsh-tavern-stage-controls { top: 8px; bottom: auto; }
+.dsh-tavern-stage-control-icon { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon { position: relative; box-sizing: border-box; width: 40px; height: 40px; padding: 2px; border: 0; border-radius: 0; background: none; box-shadow: none; opacity: 1; }
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon:is(:hover, :focus-visible) .dsh-tavern-stage-control-icon { filter: brightness(1.3) drop-shadow(0 0 .3em var(--gal-skin-qm-on)); }
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon:disabled .dsh-tavern-stage-control-icon { filter: saturate(0) brightness(.6); }
+.dsh-tavern-stage-controls button:has(> .dsh-tavern-stage-control-art) { container-type: size; overflow: visible; }
+.dsh-tavern-stage-control-art { position: absolute; inset: 0; margin: auto; display: block; pointer-events: none; width: min(100cqw, 100cqh * var(--qm-aspect)); height: min(100cqh, 100cqw / var(--qm-aspect)); }
+.dsh-tavern-stage-control-art > img { position: absolute; display: block; margin: 0; padding: 0; pointer-events: none; }
+.dsh-tavern-stage-control-art > .dsh-tavern-stage-control-body { inset: 0; width: 100%; height: 100%; }
+.dsh-tavern-stage-control-art > .dsh-tavern-stage-control-body.is-hover { opacity: 0; }
+.dsh-tavern-stage-controls button:is(:hover, :focus-visible):not(:disabled) .dsh-tavern-stage-control-art > .dsh-tavern-stage-control-body.is-hover { opacity: 1; }
+.dsh-tavern-stage-control-art > .dsh-tavern-stage-control-icon { left: calc(var(--qm-gx) * 100%); top: calc(var(--qm-gy) * 100%); width: calc(var(--qm-gw) * 100%); height: calc(var(--qm-gh) * 100%); }
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon:is(:hover, :focus-visible, :disabled) .dsh-tavern-stage-control-art > .dsh-tavern-stage-control-icon { filter: none; }
+/* (a body without its hover / disabled image keeps the icon's lift and greying, on the whole body) */
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon:is(:hover, :focus-visible):not(:disabled) .dsh-tavern-stage-control-art:not([data-hover]) { filter: brightness(1.3) drop-shadow(0 0 .3em var(--gal-skin-qm-on)); }
+.dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon:disabled .dsh-tavern-stage-control-art:not([data-disabled]) { filter: saturate(0) brightness(.6); }
+@media (min-width: 641px) {
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-controls] .dsh-tavern-stage-controls { inset: auto; justify-content: flex-end; gap: calc(var(--art-qc-gap) * var(--art-u));
+    top: calc((var(--art-qc-y) - var(--art-body-y)) * var(--art-u)); right: calc((var(--art-body-x) + var(--art-body-w) - var(--art-qc-x)) * var(--art-u));
+    max-width: calc((var(--art-qc-x) - var(--art-text-r)) * var(--art-u)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-art-controls] .dsh-tavern-stage-controls button.has-icon { width: max(30px, calc(var(--art-qc-w) * var(--art-u))); height: max(30px, calc(var(--art-qc-size) * var(--art-u))); padding: 0; }
+}
+@media (max-width: 640px) {
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-place] .dsh-tavern-stage-controls { gap: 0 4px; }
+  .dsh-tavern-stage-overlay[data-fk-skin-controls-icons] .dsh-tavern-stage-controls button.has-icon { width: 44px; height: 44px; padding: 5px; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-narrow="top"] .dsh-tavern-stage-controls { order: -1; margin: 0 0 6px; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-narrow="edge"] .dsh-tavern-stage-controls { position: absolute; top: auto; right: 6px; bottom: calc(100% - 22px); margin: 0;
+    flex-wrap: wrap-reverse; max-width: calc(100% - 6px - var(--art-edge-clear, 6px)); }
+  /* on the edge the row stands partly over the scene: its first line on the edge, what does not fit above it (never under a
+     phone face: it stops short of the side); the words keep the box's paper under them; the input docks above two lines */
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-portrait="avatar"][data-fk-skin-portrait-narrow][data-fk-skin-controls-narrow="edge"] .dsh-tavern-stage-controls {
+    --art-edge-clear: max(6px, calc((var(--art-face-nx) + var(--art-face-nw)) * 1px + 6px)); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-narrow="edge"] .dsh-tavern-stage-controls > :is(button:not(.has-icon), .dsh-tavern-bgm-anchor > button, .dsh-tavern-stage-progress):not(:hover, .is-on) {
+    background: var(--gal-skin-bg); }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-narrow="edge"] .dsh-tavern-stage-controls > .dsh-tavern-stage-progress { padding: 3px 6px; border-radius: 6px; }
+  .dsh-tavern-stage-overlay[data-fk-skin-art][data-fk-skin-controls-narrow="edge"] .dsh-tavern-stage-textbox { --art-dock-min: 70px; }
+}
+/* ==== end stage skin: art ==== */
 /* BGM 播放器：一个面板两处摆放。组件只读 --bgm-*，舞台映射到全屏舞台的暗色，聊天映射到宿主主题；面板底色不透明。 */
 .dsh-tavern-bgm-panel { --bgm-surface: #1b1e26; --bgm-text: #f4f1ea; --bgm-muted: rgba(244,241,234,.66); --bgm-line: rgba(255,255,255,.14); --bgm-hover: rgba(255,255,255,.08); --bgm-accent: var(--dsh-tavern-accent, #c96442); --bgm-on-accent: #fff; }
 .dsh-tavern-bgm-panel.is-chat { --bgm-surface: var(--dsw-alias-bg-base, #fff); --bgm-text: var(--dsw-alias-label-primary); --bgm-muted: var(--dsw-alias-label-secondary); --bgm-line: var(--dsw-alias-border-l2); --bgm-hover: var(--dsh-tavern-accent-soft); }
@@ -3393,6 +3712,37 @@ button.dsh-tavern-pack-state[data-state="global"]:hover { background: color-mix(
 .dsh-tavern-entry-thumb { position: relative; display: block; flex: none; width: 64px; height: 36px; overflow: hidden; border-radius: 6px; background: var(--asset-hover); }
 :is(.dsh-tavern-entry-thumb, .dsh-tavern-asset-hero-picture) img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .18s ease; }
 :is(.dsh-tavern-entry-thumb, .dsh-tavern-asset-hero-picture) img[data-shown] { opacity: 1; }
+/* A skin in small (stage-skins.js TavernSkinArt): a dim stage with the skin's own text box, name plate and line. */
+.dsh-tavern-skin-art { position: relative; display: block; flex: none; box-sizing: border-box; width: 64px; height: 36px; overflow: hidden; border-radius: 6px; background: linear-gradient(160deg, #3a4354, #1c2230); }
+.dsh-tavern-skin-art.is-missing { background: var(--asset-hover); border: 1px dashed var(--dsw-alias-border-l2); }
+.dsh-tavern-skin-art-box { position: absolute; left: 5px; right: 5px; bottom: 4px; height: 14px; box-sizing: border-box; border: 1px solid var(--skin-line); border-radius: var(--skin-radius); background: var(--skin-bg); }
+.dsh-tavern-skin-art-name { position: absolute; left: 4px; top: -5px; min-width: 14px; height: 6px; border-radius: 2px; background: var(--skin-name-bg); color: var(--skin-name-fg); }
+.dsh-tavern-skin-art-bar { position: absolute; left: 5px; right: 14px; top: 6px; height: 2px; border-radius: 1px; background: var(--skin-fg); }
+.dsh-tavern-skin-art.is-big { width: 100%; max-width: 640px; height: auto; aspect-ratio: 16 / 7; border-radius: 10px; }
+.dsh-tavern-skin-art.is-big .dsh-tavern-skin-art-box { left: 5%; right: 5%; bottom: 7%; height: 38%; padding: 14px 18px 0; border-radius: var(--skin-radius); color: var(--skin-fg); font-size: 15px; line-height: 1.6; }
+.dsh-tavern-skin-art.is-big .dsh-tavern-skin-art-name { left: 14px; top: -13px; height: auto; padding: 2px 10px; font-size: 12px; line-height: 1.4; }
+.dsh-tavern-skin-art-line em { font-style: normal; color: var(--skin-accent); }
+.dsh-tavern-skin-hero { padding: 4px 0 12px; }
+.dsh-tavern-entrance-art { display: block; flex: none; width: 64px; height: 36px; border-radius: 6px; background: var(--asset-hover); }
+.dsh-tavern-entrance-hero { padding: 4px 0 12px; }
+.dsh-tavern-entrance-still { display: block; width: 100%; max-width: 640px; height: auto; aspect-ratio: 16 / 9; border-radius: 10px; }
+.dsh-tavern-skin-default { flex: none; padding: 1px 6px; border-radius: 4px; background: var(--dsh-tavern-accent-soft); color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-tavern-skin-id { color: var(--dsw-alias-label-secondary); font-size: 13px; overflow-wrap: anywhere; }
+/* The skin select (默认皮肤 / 本卡皮肤): its trigger is the row's value; the menu lists each skin with its small stage. */
+.dsh-tavern-skin-row .dsh-tavern-switch-main { cursor: default; }
+.dsh-tavern-skin-row .dsh-tavern-skin-anchor { order: 3; min-width: 0; }
+.dsh-tavern-skin-trigger { display: inline-flex; align-items: center; gap: 8px; max-width: 220px; min-height: 32px; padding: 2px 6px 2px 2px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: none; color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; cursor: pointer; }
+.dsh-tavern-skin-trigger .dsh-tavern-skin-art { width: 44px; height: 26px; border-radius: 5px; }
+.dsh-tavern-skin-trigger .dsh-tavern-skin-art-box { left: 4px; right: 4px; bottom: 3px; height: 10px; }
+.dsh-tavern-skin-trigger .dsh-tavern-skin-art-bar { top: 4px; }
+.dsh-tavern-skin-trigger:hover:not(:disabled) { background: var(--dsh-tavern-accent-soft); }
+.dsh-tavern-skin-trigger:focus-visible { outline: 2px solid #16766b; outline-offset: 2px; }
+.dsh-tavern-skin-trigger:disabled { opacity: .6; cursor: default; }
+.dsh-tavern-skin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tavern-skin-option { height: 44px; }
+.dsh-tavern-skin-option .dsh-tavern-skin-art { width: 52px; height: 30px; }
+.dsh-tavern-skin-hint { margin: 4px 0 0 24px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+@media (max-width: 480px) { .dsh-tavern-skin-trigger { max-width: 160px; } }
 :is(.dsh-tavern-entry-thumb, .dsh-tavern-asset-hero-picture)[data-failed] { background: color-mix(in srgb, var(--asset-error) 12%, transparent); }
 .dsh-tavern-asset-play { display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: var(--asset-hover); color: var(--dsh-tavern-accent); cursor: pointer; }
 .dsh-tavern-asset-play.is-big { width: 48px; height: 48px; background: var(--dsh-tavern-accent); color: var(--dsw-alias-label-primary-foreground, #fff); }
@@ -3644,3 +3994,135 @@ body :is(
   html.dsh-tavern-short-viewport .dsh-tavern-candidate-question .dsh-tavern-question-head
 ) { background: var(--dsh-tavern-solid); }
 body .dsh-tavern-picker-error { background: linear-gradient(color-mix(in srgb, var(--dsw-specific-sidebar-fill) 88%, #c45f5f 12%) 0 0) Canvas; }
+/* ---------- 正则库：全局 + 本局预设/人物卡 ---------- */
+.dsh-tavern-btn.dsh-tavern-rx-small { min-height: 28px; padding: 3px 9px; font-size: 11px; }
+.dsh-tavern-rx-body { display: flex; flex-direction: column; gap: 9px; }
+.dsh-tavern-rx-body > * { flex: none; }
+.dsh-tavern-rx-stats { display: flex; flex-wrap: wrap; gap: 3px 12px; color: var(--dsw-alias-label-tertiary); font-size: 10px; line-height: 1.5; }
+.dsh-tavern-rx-stats span { white-space: nowrap; }
+.dsh-tavern-rx-notice { margin: 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, #2f8a4c 28%, var(--dsw-alias-border-l2)); border-radius: 7px; background: color-mix(in srgb, #2f8a4c 7%, transparent); color: #2f7a44; font-size: 10px; line-height: 1.55; }
+.dsh-tavern-rx-error { margin: 0; color: #b4473a; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
+
+.dsh-tavern-rx-toolbar { display: flex; flex-direction: column; gap: 7px; }
+.dsh-tavern-rx-search { box-sizing: border-box; width: 100%; height: 30px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; background: var(--dsw-specific-input-major); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; outline: none; }
+.dsh-tavern-rx-search:focus { border-color: var(--dsh-tavern-accent-border); box-shadow: 0 0 0 2px var(--dsh-tavern-accent-soft); }
+.dsh-tavern-rx-filters { display: flex; flex-wrap: wrap; gap: 5px; }
+.dsh-tavern-rx-filter { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: transparent; color: var(--dsw-alias-label-secondary); font: 600 10px/1 var(--dsh-tavern-font-sans); cursor: pointer; }
+.dsh-tavern-rx-filter:hover { border-color: var(--dsh-tavern-accent-border); color: var(--dsh-tavern-accent); }
+.dsh-tavern-rx-filter.is-on { border-color: var(--dsh-tavern-accent); background: var(--dsh-tavern-accent); color: var(--dsw-alias-label-primary-foreground, #fff); }
+.dsh-tavern-rx-filter-count { color: inherit; font-weight: 500; opacity: .62; font-variant-numeric: tabular-nums; }
+
+.dsh-tavern-rx-chain { border: 1px solid var(--dsw-alias-border-l2); border-radius: 9px; background: var(--dsw-specific-input-major); overflow: hidden; }
+.dsh-tavern-rx-chain > summary { display: flex; align-items: center; gap: 8px; padding: 8px 10px; color: var(--dsw-alias-label-primary); font-size: 11px; font-weight: 700; cursor: pointer; list-style: none; }
+.dsh-tavern-rx-chain > summary::-webkit-details-marker { display: none; }
+.dsh-tavern-rx-chain > summary .dsh-tavern-rx-hint { margin-left: auto; }
+.dsh-tavern-rx-chain-body { display: grid; gap: 8px; padding: 0 10px 10px; }
+.dsh-tavern-rx-chain-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.dsh-tavern-rx-chain-tools select { height: 27px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-specific-input-minor); color: inherit; font: inherit; font-size: 10px; }
+.dsh-tavern-rx-steps { display: grid; gap: 2px; }
+.dsh-tavern-rx-step { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--dsw-alias-label-secondary); font: 9.5px/1.6 ui-monospace, monospace; }
+.dsh-tavern-rx-step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tavern-rx-step-n { margin-left: auto; flex: none; color: var(--dsw-alias-label-tertiary); }
+
+.dsh-tavern-rx-group { display: flex; flex-direction: column; gap: 6px; }
+.dsh-tavern-rx-group + .dsh-tavern-rx-group { margin-top: 6px; }
+.dsh-tavern-rx-group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 2px 1px 6px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.dsh-tavern-rx-group-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; font-size: 11.5px; }
+.dsh-tavern-rx-group-title b { font-weight: 700; }
+.dsh-tavern-rx-count { padding: 0 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; color: var(--dsw-alias-label-secondary); font-size: 9px; font-weight: 600; line-height: 16px; font-variant-numeric: tabular-nums; }
+.dsh-tavern-rx-group-sub { flex: 1 0 100%; overflow: hidden; color: var(--dsw-alias-label-tertiary); font: 9px/1.5 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tavern-rx-group-actions { display: flex; flex: none; gap: 4px; margin-left: auto; }
+.dsh-tavern-rx-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+.dsh-tavern-rx-dot.global { background: #d98324; }
+.dsh-tavern-rx-dot.preset { background: #6f61c9; }
+.dsh-tavern-rx-dot.card { background: #2f8a6f; }
+
+.dsh-tavern-rx-row { border: 1px solid var(--dsw-alias-border-l2); border-left: 3px solid #d98324; border-radius: 9px; background: var(--dsw-specific-input-major); overflow: hidden; }
+.dsh-tavern-rx-row.src-preset { border-left-color: #6f61c9; }
+.dsh-tavern-rx-row.src-card { border-left-color: #2f8a6f; }
+.dsh-tavern-rx-row.is-open { box-shadow: 0 3px 12px color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent); }
+.dsh-tavern-rx-row.is-disabled .dsh-tavern-rx-row-main { opacity: .62; }
+.dsh-tavern-rx-row.is-new { border-left-color: var(--dsh-tavern-accent); }
+.dsh-tavern-rx-row-head { display: flex; align-items: center; gap: 8px; padding: 8px 9px; cursor: pointer; }
+.dsh-tavern-rx-row-head:focus-visible { outline: 2px solid var(--dsh-tavern-accent); outline-offset: -2px; }
+.dsh-tavern-rx-row-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.dsh-tavern-rx-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dsh-tavern-rx-row-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 650; }
+.dsh-tavern-rx-row-preview { overflow: hidden; color: var(--dsw-alias-label-tertiary); font: 9.5px/1.5 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tavern-rx-row-preview code { color: inherit; font: inherit; }
+.dsh-tavern-rx-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
+.dsh-tavern-rx-tag { padding: 0 5px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 4px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-tertiary); font-size: 8.5px; line-height: 15px; white-space: nowrap; }
+.dsh-tavern-rx-tag.layer { color: #b06d10; border-color: color-mix(in srgb, #d98324 30%, transparent); background: color-mix(in srgb, #d98324 9%, transparent); }
+.dsh-tavern-rx-tag.override { color: #16766b; border-color: color-mix(in srgb, #16766b 30%, transparent); background: color-mix(in srgb, #16766b 8%, transparent); }
+.dsh-tavern-rx-tag.off { opacity: .75; }
+.dsh-tavern-rx-tag.dirty { color: var(--dsh-tavern-accent); border-color: var(--dsh-tavern-accent-border); background: var(--dsh-tavern-accent-soft); }
+.dsh-tavern-rx-caret { flex: none; width: 7px; height: 7px; margin-right: 2px; border-right: 1.5px solid var(--dsw-alias-label-tertiary); border-bottom: 1.5px solid var(--dsw-alias-label-tertiary); transform: rotate(45deg); transition: transform .15s; }
+.dsh-tavern-rx-row.is-open .dsh-tavern-rx-caret { transform: rotate(225deg); }
+.dsh-tavern-rx-switch { position: relative; flex: none; width: 34px; height: 19px; margin: 0; padding: 0; border: 0; border-radius: 999px; background: #97a3b1; cursor: pointer; transition: background .15s; }
+.dsh-tavern-rx-switch::after { position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); content: ""; transition: transform .15s; }
+.dsh-tavern-rx-switch[aria-checked="true"] { background: #16766b; }
+.dsh-tavern-rx-switch[aria-checked="true"]::after { transform: translateX(15px); }
+.dsh-tavern-rx-switch:disabled { opacity: .5; cursor: default; }
+.dsh-tavern-rx-switch:focus-visible { outline: 2px solid #16766b; outline-offset: 2px; }
+
+.dsh-tavern-rx-editor { display: grid; gap: 9px; padding: 10px 10px 11px; border-top: 1px solid var(--dsw-alias-border-l2); background: color-mix(in srgb, var(--dsw-alias-label-primary) 1.5%, transparent); }
+.dsh-tavern-rx-note { margin: 0; padding: 7px 9px; border-left: 3px solid var(--dsh-tavern-accent); border-radius: 6px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 1.55; }
+.dsh-tavern-rx-field { display: grid; gap: 4px; min-width: 0; }
+.dsh-tavern-rx-label { color: var(--dsw-alias-label-secondary); font-size: 10px; font-weight: 650; }
+.dsh-tavern-rx-field input[type="text"], .dsh-tavern-rx-field input[type="number"], .dsh-tavern-rx-field textarea, .dsh-tavern-rx-search { box-sizing: border-box; }
+.dsh-tavern-rx-field input[type="text"], .dsh-tavern-rx-field input[type="number"], .dsh-tavern-rx-field textarea { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-specific-input-major); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; }
+.dsh-tavern-rx-field textarea.dsh-tavern-rx-code { font: 10px/1.55 ui-monospace, monospace; resize: vertical; }
+.dsh-tavern-rx-field pre.dsh-tavern-rx-code { margin: 0; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font: 10px/1.55 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+.dsh-tavern-rx-field input:focus, .dsh-tavern-rx-field textarea:focus { border-color: var(--dsh-tavern-accent-border); outline: none; box-shadow: 0 0 0 2px var(--dsh-tavern-accent-soft); }
+.dsh-tavern-rx-hint { color: var(--dsw-alias-label-tertiary); font-size: 9px; line-height: 1.5; }
+.dsh-tavern-rx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.dsh-tavern-rx-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.dsh-tavern-rx-chip { position: relative; display: inline-flex; align-items: center; padding: 2px 7px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; color: var(--dsw-alias-label-secondary); font-size: 9.5px; line-height: 16px; cursor: pointer; user-select: none; }
+.dsh-tavern-rx-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dsh-tavern-rx-chip.is-on { border-color: var(--dsh-tavern-accent-border); background: var(--dsh-tavern-accent-soft); color: var(--dsh-tavern-accent); font-weight: 600; }
+.dsh-tavern-rx-layers { display: grid; gap: 5px; padding: 7px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-tavern-rx-check { display: inline-flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 10px; cursor: pointer; }
+.dsh-tavern-rx-check b { color: var(--dsw-alias-label-primary); font-weight: 650; }
+.dsh-tavern-rx-check input { width: 13px; height: 13px; margin: 0; accent-color: var(--dsh-tavern-accent); }
+.dsh-tavern-rx-range { display: flex; align-items: center; gap: 5px; }
+.dsh-tavern-rx-field .dsh-tavern-rx-range input { width: 72px; }
+.dsh-tavern-rx-range span { color: var(--dsw-alias-label-tertiary); font-size: 9px; }
+.dsh-tavern-rx-advanced, .dsh-tavern-rx-test { border: 1px solid var(--dsw-alias-border-l2); border-radius: 7px; background: var(--dsw-specific-input-major); overflow: hidden; }
+.dsh-tavern-rx-advanced > summary, .dsh-tavern-rx-test > summary { display: flex; align-items: center; gap: 7px; padding: 7px 9px; color: var(--dsw-alias-label-secondary); font-size: 10px; font-weight: 650; cursor: pointer; list-style: none; }
+.dsh-tavern-rx-advanced > summary::-webkit-details-marker, .dsh-tavern-rx-test > summary::-webkit-details-marker { display: none; }
+.dsh-tavern-rx-advanced > summary .dsh-tavern-rx-hint, .dsh-tavern-rx-test > summary .dsh-tavern-rx-hint { margin-left: auto; font-weight: 400; }
+.dsh-tavern-rx-advanced-body, .dsh-tavern-rx-test-body { display: grid; gap: 8px; padding: 0 9px 9px; }
+.dsh-tavern-rx-test-body textarea.dsh-tavern-rx-code { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-specific-input-minor); color: inherit; font: 10px/1.55 ui-monospace, monospace; resize: vertical; }
+.dsh-tavern-rx-test-actions { display: flex; align-items: center; gap: 7px; }
+.dsh-tavern-rx-test-meta { color: var(--dsw-alias-label-tertiary); font-size: 9px; font-variant-numeric: tabular-nums; }
+.dsh-tavern-rx-test-out { margin: 0; max-height: 220px; overflow: auto; padding: 7px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-secondary); font: 9.5px/1.55 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+.dsh-tavern-rx-meta { display: grid; gap: 2px; color: var(--dsw-alias-label-tertiary); font: 9px/1.55 ui-monospace, monospace; }
+.dsh-tavern-rx-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding-top: 7px; border-top: 1px dashed var(--dsw-alias-border-l2); }
+.dsh-tavern-rx-spacer { flex: 1 1 auto; }
+.dsh-tavern-rx-dirty { color: var(--dsh-tavern-accent); font-size: 9px; }
+.dsh-tavern-rx-empty { margin: 0; padding: 14px 10px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 8px; color: var(--dsw-alias-label-tertiary); font-size: 10px; line-height: 1.55; text-align: center; }
+.dsh-tavern-rx-footer { margin: 4px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 9px; line-height: 1.55; }
+
+@media (max-width: 560px) {
+  .dsh-tavern-rx-group-head { flex-wrap: wrap; }
+  .dsh-tavern-rx-group-sub { white-space: normal; }
+  .dsh-tavern-rx-grid { grid-template-columns: minmax(0, 1fr); }
+  .dsh-tavern-rx-row-preview { white-space: nowrap; }
+  .dsh-tavern-rx-actions .dsh-tavern-btn { flex: 0 0 auto; }
+}
+
+@media (max-width: 380px) {
+  .dsh-tavern-rx > .dsh-tavern-status-head > .dsh-tavern-rx-head-actions { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; flex-wrap: wrap; }
+}
+
+.dsh-tavern-rx-state-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.dsh-tavern-rx-state-label { color: var(--dsw-alias-label-tertiary); font-size: 9px; font-weight: 650; letter-spacing: .04em; }
+.dsh-tavern-rx-state-filters .dsh-tavern-rx-filter { height: 22px; padding: 0 8px; font-size: 9.5px; }
+
+.dsh-tavern-rx-select { flex: none; width: 14px; height: 14px; margin: 0 1px 0 0; accent-color: var(--dsh-tavern-accent); cursor: pointer; }
+.dsh-tavern-rx-select:focus-visible { outline: 2px solid var(--dsh-tavern-accent); outline-offset: 2px; }
+.dsh-tavern-rx-row.is-selected { background: color-mix(in srgb, var(--dsh-tavern-accent) 5%, var(--dsw-specific-input-major)); box-shadow: inset 0 0 0 1px var(--dsh-tavern-accent-border); }
+.dsh-tavern-rx-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-specific-input-major); }
+.dsh-tavern-rx-bulk-count { color: var(--dsw-alias-label-secondary); font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.dsh-tavern-rx-bulk .dsh-tavern-btn { min-height: 26px; padding: 2px 8px; font-size: 10px; }
+.dsh-tavern-rx-bulk .dsh-tavern-rx-spacer { flex: 1 1 auto; }

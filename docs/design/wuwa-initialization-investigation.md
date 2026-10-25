@@ -147,6 +147,6 @@ EJS 后端已有实际运行时就绪状态，缺口在原卡从 `window.parent.
 
 本地 `data/resources/cards/鸣潮.json` 的世界书控制脚本在 `cleanupResidualAutoBlue` 中引用未声明的 `roundWb`。将主循环已有的批次缓冲参数传入该函数，保留手动蓝灯条目和独立调用时直接保存的行为。修复只作用于本地卡，不通过全局变量兼容层掩盖，也没有把原卡内容收录进仓库。
 
-原卡备份：`/Users/cf/.dsh/profile-data/tavern/data/recovery/cards/鸣潮-before-worldbook-round-fix-20260910-164353.json`。
+原卡备份：`~/.dsh/profile-data/tavern/data/recovery/cards/鸣潮-before-worldbook-round-fix-20260910-164353.json`。
 
 回归工具 `node tests/fixtures/verify-wuwa-worldbook-script.mjs <card.json>` 读取外部卡，提取清理函数并使用一次性数据验证。修改前复现 `ReferenceError: roundWb is not defined`，修改后缓冲写入、手动条目保留和独立保存均通过。其他用户仍需取得修复后的卡；该本地修改不会随插件更新自动分发。

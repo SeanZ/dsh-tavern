@@ -1,9 +1,11 @@
+import { applyRegexOverrides } from './regex-manager.js'
+
 /** Export the conversation-owned snapshot, never today's library selection. */
 export function createPresetDiagnostics(chat, extensions = {}, now = Date.now()) {
   const snapshot = chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object' ? chat.runtimePresetSnapshot : null
   const globals = extensions.globalRegexScripts || []
   const cardRules = extensions.regexScripts || []
-  const presetRules = Array.isArray(snapshot?.regexScripts) ? snapshot.regexScripts : []
+  const presetRules = applyRegexOverrides(Array.isArray(snapshot?.regexScripts) ? snapshot.regexScripts : [], chat.regexOverrides && chat.regexOverrides.preset, 'preset')
   const globalRule = rule => globals.some(item => item === rule ||
     (item.ref && item.ref === rule.ref) || (item.id && item.id === rule.id))
   return {

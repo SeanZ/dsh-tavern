@@ -31,6 +31,7 @@
 			const [tip, setTip] = React.useState(null);
 			const [undoing, setUndoing] = React.useState(false);
 			const [notice, setNotice] = React.useState("");
+			const [saving, setSaving] = React.useState(false);
 			const revision = React.useRef(0);
 			const hover = {
 				current: tip,
@@ -46,7 +47,7 @@
 				setBusy(true);
 				try {
 					const result = await rpc("polishComparison", {}, sessionId);
-					if (requested === revision.current) setState({ sessionId: sessionId, comparison: result.comparison || null, error: "" });
+					if (requested === revision.current) setState({ sessionId: sessionId, comparison: result.comparison || null, prereview: result.prereview === true, error: "" });
 				} catch (error) {
 					if (requested === revision.current) setState({ sessionId: sessionId, comparison: null, error: String(error && error.message || error) });
 				} finally { if (requested === revision.current) setBusy(false); }
@@ -58,6 +59,15 @@
 				window.addEventListener("dsh-tavern-polished", changed);
 				return function () { window.removeEventListener("dsh-tavern-polished", changed); };
 			}, [sessionId, load]);
+			// 后台预审 is one switch for every game: each reply is reviewed as soon as it is written.
+			async function togglePrereview(enabled) {
+				setSaving(true); setNotice("");
+				try {
+					const result = await rpc("updateTavernSettings", { patch: { polishPrereview: enabled } });
+					setState(function (current) { return current ? Object.assign({}, current, { prereview: result.settings.polishPrereview === true }) : current; });
+				} catch (error) { setNotice("保存失败：" + String(error && error.message || error)); }
+				finally { setSaving(false); }
+			}
 			async function undo() {
 				setUndoing(true); setNotice("");
 				try {
@@ -73,7 +83,13 @@
 			const current = state && state.sessionId === sessionId ? state : null;
 			const comparison = current && current.comparison;
 			const edits = comparison ? comparison.segments.filter(function (segment) { return segment.kind === "edit"; }).sort(function (a, b) { return a.n - b.n; }) : [];
+			const prereview = current ? current.prereview === true : false;
 			return h("section", { className: "dsh-tavern-full-context dsh-tavern-polish-compare" },
+				h("label", { className: "dsh-tavern-background-task" },
+					h("span", null, "后台预审", h("span", { className: "dsh-tavern-settings-desc" }, prereview
+						? "每轮正文写完就在后台审稿，点「精修」时多半已经审好，直接应用。每轮都会多一次模型调用，没点精修的轮次也照样计费。"
+						: "开启后，每轮正文写完就在后台审稿，点「精修」不用再等；每轮多一次模型调用。关闭时点「精修」才开始审稿，要等半分钟到一分钟。")),
+					h("input", { type: "checkbox", role: "switch", "aria-label": "后台预审", checked: prereview, disabled: !current || saving, onChange: function (event) { void togglePrereview(event.target.checked); } })),
 				h("header", { className: "dsh-context-header" },
 					h("div", null, h("h3", null, "精修对比"),
 						h("p", null, !current ? "读取中…" : comparison

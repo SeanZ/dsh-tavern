@@ -184,7 +184,10 @@
             }
             function park() {
                 if (visible || disposed) return;
-                for (const [node, previous] of owned) if (node.parentNode === previous.root) {
+                // Park each node once per hidden period. A card that puts its node
+                // back keeps it there (still hidden): taking it again would feed the
+                // card's own observer, and the two would never let the page idle.
+                for (const [node, previous] of owned) if (!previous.parked && node.parentNode === previous.root) {
                     parkNode(node, previous);
                 }
             }

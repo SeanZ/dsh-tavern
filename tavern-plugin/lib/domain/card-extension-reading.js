@@ -1,4 +1,5 @@
 import { normalizeCardFrameSizing } from './frame-sizing.js'
+import { applyRegexOverrides } from './regex-manager.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -156,6 +157,8 @@ export function inspectCardExtensions(value) {
   const tavernHelper = object(extensions.tavern_helper) ? extensions.tavern_helper : {}
   return {
     frameSizing: normalizeCardFrameSizing(extensions.dsh_tavern?.frameSizing),
+    // The card's own stage skin (stage-skin-choice.js): a built-in id or a pack skin ref, as the card file names it.
+    defaultSkin: object(extensions.dsh_tavern?.stage) && (typeof extensions.dsh_tavern.stage.defaultSkin === 'string' || object(extensions.dsh_tavern.stage.defaultSkin)) ? clone(extensions.dsh_tavern.stage.defaultSkin) : null,
     extensionCount: regexScripts.length + helperScripts.length + otherExtensions.length + mvuResources.filter(function (item) { return item.kind === 'extension' }).length,
     regexScripts,
     helperScripts,
@@ -165,10 +168,10 @@ export function inspectCardExtensions(value) {
   }
 }
 
-/** Add Profile-owned global regexes without losing their scope identity. */
-export function withGlobalRegexScripts(extensions, settings) {
+/** Add Profile-owned global regexes and this session's card overrides without losing scope identity. */
+export function withGlobalRegexScripts(extensions, settings, overrides) {
   const source = object(extensions) ? extensions : {}
-  const characterRegexScripts = Array.isArray(source.regexScripts) ? source.regexScripts : []
+  const characterRegexScripts = applyRegexOverrides(Array.isArray(source.regexScripts) ? source.regexScripts : [], overrides && overrides.card, 'card')
   const globalRegexScripts = regexScriptsOf({ regex_scripts: Array.isArray(settings && settings.regex) ? settings.regex : [] })
   return Object.assign({}, source, {
     characterRegexScripts,
@@ -178,8 +181,9 @@ export function withGlobalRegexScripts(extensions, settings) {
 }
 
 /** SillyTavern priority: global, preset, character. Keep pinned replacements intact. */
-export function composeTavernRegexScripts(extensions, presetScripts = []) {
+export function composeTavernRegexScripts(extensions, presetScripts = [], presetOverrides = null) {
   const scripts = Array.isArray(extensions?.regexScripts) ? extensions.regexScripts : []
   const globalCount = Array.isArray(extensions?.globalRegexScripts) ? extensions.globalRegexScripts.length : 0
-  return scripts.slice(0, globalCount).concat(Array.isArray(presetScripts) ? presetScripts : [], scripts.slice(globalCount))
+  const preset = applyRegexOverrides(Array.isArray(presetScripts) ? presetScripts : [], presetOverrides, 'preset')
+  return scripts.slice(0, globalCount).concat(preset, scripts.slice(globalCount))
 }

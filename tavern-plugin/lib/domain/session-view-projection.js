@@ -9,6 +9,7 @@ import { createIncrementalReplyView } from './incremental-reply-view.js'
 import { latestStyleReference } from './style-reference.js'
 import { sessionOpeningDescriptor } from './session-opening.js'
 import { composeTavernRegexScripts } from './card-extension-reading.js'
+import { applyRegexOverrides } from './regex-manager.js'
 import { projectCharacterDesignDocument } from './character-design-document.js'
 import { readLedger } from './story-ledger.js'
 import { TAVERN_COMPATIBILITY_CAPABILITIES } from './tavern-compatibility-diagnostics.js'
@@ -71,7 +72,7 @@ export function createSessionViewProjection({
       const presetRegexScripts = Array.isArray(activePresetSnapshot && activePresetSnapshot.regexScripts) ? activePresetSnapshot.regexScripts : []
       replyDisplay = await requestPerformance.stage('historyProjection', () => incrementalReplyView.project(persistedProjection ? chat : { ...chat, _storageRevision: undefined }, {
         charName: chat.cardName, macroState: chat.macroState,
-        regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts),
+        regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset),
         placement: 2, isMarkdown: true, isEdit: false, depth: 0, forcedTurns: savedReplyTurns(transcriptPlan.transcriptTurns)
       }, { charName: chat.cardName, macroState: chat.macroState, regexScripts: cardExtensions.regexScripts }, {shared:true}))
       replyDisplay = await liveCardUpdate.project(chat, card, replyDisplay, {charName:chat.cardName,macroState:chat.macroState,regexScripts:cardExtensions.regexScripts})
@@ -166,7 +167,7 @@ export function createSessionViewProjection({
       tavernStatusViews: replyDisplay.statusViews || [],
       mvuReceipts: mvuReceiptsOf(chat),
       staleVariables: staleVariablesOf(chat),
-      tavernHelper: helperContext ? { ...helperContext, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost: sessionOpeningDescriptor(chat, card), worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: activePresetSnapshot?.regexScripts || [], character: cardExtensions.characterRegexScripts || [] } } : null,
+      tavernHelper: helperContext ? { ...helperContext, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost: sessionOpeningDescriptor(chat, card), worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: applyRegexOverrides(activePresetSnapshot?.regexScripts || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), character: cardExtensions.characterRegexScripts || [] } } : null,
       tavernMvuRuntime: chat.mvu && chat.mvu.enabled === true ? {
         owner: chat.mvu.owner === 'official' ? 'official' : 'legacy',
         commit: OFFICIAL_MVU_VERSION.commit,
@@ -420,7 +421,11 @@ export function createSessionViewProjection({
       characterVariables: previous.tavernHelper.characterVariables,
       compatibilityCapabilities: previous.tavernHelper.compatibilityCapabilities,
       extensionSettings: previous.tavernHelper.extensionSettings,
-      regexScripts: previous.tavernHelper.regexScripts
+      regexScripts: {
+        global: previous.tavernHelper.regexScripts?.global || [],
+        preset: applyRegexOverrides(previous.tavernHelper.regexScripts?.preset || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'),
+        character: applyRegexOverrides(previous.tavernHelper.regexScripts?.character || [], chat.regexOverrides && chat.regexOverrides.card, 'card')
+      }
     })
     delete next.tavernHelper.messagesPending
     if (mode === 'story' || mode === 'script') {
@@ -430,9 +435,16 @@ export function createSessionViewProjection({
         ? chat.runtimePresetSnapshot : null
       next.runtimePreset = activePresetSnapshot === null ? null : { id: activePresetSnapshot.presetPath, name: activePresetSnapshot.presetName }
       const presetRegexScripts = Array.isArray(activePresetSnapshot && activePresetSnapshot.regexScripts) ? activePresetSnapshot.regexScripts : []
+      // Rebuild the helper-visible regex list from fresh sources so resetting a
+      // conversation override cannot leave the previous (overridden) copy behind.
+      if (next.tavernHelper) next.tavernHelper.regexScripts = {
+        global: cardExtensions.globalRegexScripts || [],
+        preset: applyRegexOverrides(presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset, 'preset'),
+        character: cardExtensions.characterRegexScripts || []
+      }
       let replyDisplay = await requestPerformance.stage('historyProjection', () => incrementalReplyView.project(chat, {
         charName: chat.cardName, macroState: chat.macroState,
-        regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts),
+        regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset),
         placement: 2, isMarkdown: true, isEdit: false, depth: 0, forcedTurns: savedReplyTurns(next.transcriptTurns)
       }, { charName: chat.cardName, macroState: chat.macroState, regexScripts: cardExtensions.regexScripts }, {shared:true}))
       const renderChat = {...chat,messages:createScopedMessages(chat.messages.length,[],index=>{const message=chat.messages[index];return message.variables ? message : {...message,variables:helperCore.messages[index]?.swipes_data || []}})}

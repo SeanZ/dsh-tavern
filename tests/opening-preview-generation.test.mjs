@@ -24,3 +24,22 @@ test('开场预览里 TavernHelper.generate 和 generateRaw 都能用，分别�
     assert.equal(await pending, name + ' 回复')
   }
 })
+
+// A large card book went through whole-draft reads and two whole-book uploads per write,
+// past a card workshop's timeout; the script runtime's versioned, changed-entry calls stay.
+test('开场预览有脚本运行时时，世界书读写交给运行时的增量接口', async () => {
+  const sent = []
+  const context = vm.createContext({ parent: { postMessage: message => sent.push(message) }, console, setTimeout, clearTimeout, JSON, Promise, Map, Object, Array, String, Number, Error,
+    addEventListener: () => {} })
+  context.window = context
+  const getWorldbook = async () => [{ uid: 1 }]
+  const updateWorldbookWith = async () => [{ uid: 1 }, { uid: 2 }]
+  Object.assign(context, { getWorldbook, updateWorldbookWith, getChatMessages: () => [], setChatMessages: async () => {}, waitGlobalInitialized: async () => {},
+    SillyTavern: { getContext: () => ({}) }, TavernHelper: { getWorldbook, updateWorldbookWith } })
+  vm.runInContext(source, context)
+  context.installOpeningPreviewBridge('token', { runtime: {}, preparationId: 'p', swipes: ['开场'], selectedIndex: 0, openingIds: ['a'], worldbook: { name: '书', entries: [] } })
+  assert.equal(context.getWorldbook, getWorldbook)
+  assert.equal(context.TavernHelper.updateWorldbookWith, updateWorldbookWith)
+  assert.deepEqual(await context.TavernHelper.getWorldbook('书'), [{ uid: 1 }])
+  assert.equal(sent.length, 0)
+})

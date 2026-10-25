@@ -1,17 +1,17 @@
 import { setAllFailedErrorVisibility, setFailedErrorVisibility } from '../domain/failed-error-visibility.js'
 import { sessionEvents } from '../domain/session-events.js'
-import { applyPolishEdits, buildPolishReviewRequest, parsePolishReview, polishReviewContext } from '../domain/polish-review.js'
+import { applyPolishEdits, composePolishEdits } from '../domain/polish-review.js'
 import { randomUUID } from 'node:crypto'
 
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, backgroundAgentRunner, backgroundCatalog, bodyEditor, callModel, polishRecords, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
+  const { agentCompaction, agentRegistry, backgroundAgentRunner, backgroundCatalog, bodyEditor, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
-    pluginSettlementProgress, readBackgroundSuppression, readCard,
+    pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
     reconcileStory, reconcileWhenIdle, regenBody, replayFailedTurn, requestPerformance, retrySettlement,
-    retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, runtimePrompt, sessionActivity, sessionOperation,
+    retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, sessionActivity, sessionOperation,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setPlayerName, stopBackground, str,
     templateHistoryFrom, undoRollbackTurn, updateChat, view, withCompactionSession } = deps
   return {
@@ -144,31 +144,39 @@ export function createPlayHandlers(deps) {
     async retryStyleReference(args) {
       return { styleReference: await retryStyleReference(args?.sessionId, { target: 'next', guidance: args?.guidance }) }
     },
-    // 精修: review the latest reply and apply every edit that still finds its text, as one body edit.
-    // The texts before and after come back so the page can show the comparison and undo it.
+    // 精修: apply the review of the latest reply (the background pre-review when it read this
+    // text, a review now otherwise); with guidance, a second edit then follows only the guidance.
+    // Both land as one body edit; the record keeps the original for the comparison and its undo.
     async polishBody(args) {
-      const sessionId = str(args?.sessionId), started = Date.now()
+      const sessionId = str(args?.sessionId), guidance = str(args?.guidance).trim(), started = Date.now()
       await reconcileStory(sessionId)
       const edit = await bodyEditor.read(sessionId)
       const texts = edit.parts.filter(part => part.kind === 'text').map(part => part.text)
-      // The header and the last few floors are all a review reads: this turn's input and the reply before.
-      const chat = await chatHeaderWithLatestFloors(sessionId, 4)
-      const card = await readCard(chat.cardPath).catch(() => undefined) || chat.cardDefinitionSnapshot?.raw?.data || chat.cardDefinitionSnapshot?.raw
-      const request = buildPolishReviewRequest({ principles: runtimePrompt('polish'), card, playerName: chat.macroState?.userName,
-        ...polishReviewContext(chat.messages), reply: texts.join('\n\n'), guidance: args?.guidance })
-      const review = parsePolishReview(await callModel({ sessionId, ...request }), texts)
+      polishPrereview.settle(sessionId, texts)
+      const review = await polishPrereview.take(sessionId, texts) || await polishReviewer.review(sessionId, texts)
       const chosen = review.edits.filter(item => item.status === 'ok')
-      if (review.fallback || !chosen.length) return { edits: review.edits, guidance: review.fallback, view: null }
-      const polished = applyPolishEdits(texts, chosen)
+      if (review.fallback) return { edits: review.edits, guidance: review.fallback, view: null }
+      const reviewed = chosen.length ? applyPolishEdits(texts, chosen) : texts
+      let guided = [], polished = reviewed, edits = review.edits
+      if (guidance) {
+        const followed = await polishReviewer.guide(sessionId, reviewed, guidance)
+        if (followed.fallback && !chosen.length) return { edits: [], guidance: followed.fallback, view: null }
+        guided = followed.edits.filter(item => item.status === 'ok')
+        if (guided.length) polished = applyPolishEdits(reviewed, guided)
+        edits = [...review.edits, ...followed.edits]
+      }
+      if (!chosen.length && !guided.length) return { edits, guidance: '', view: null }
       const view = await bodyEditor.save(sessionId, { token: edit.token, texts: polished })
+      polishPrereview.settle(sessionId, polished)
       notifyPluginTimeline(sessionId, 'edit', { settled: true })
       // The record backs the 精修对比 page and its undo; one that cannot be kept never fails the 精修.
-      await polishRecords.save(sessionId, edit.turn, { original: texts, edits: chosen, seconds: Math.round((Date.now() - started) / 1000) })
+      const recorded = guided.length ? composePolishEdits(texts.join('\n\n'), chosen, guided) : chosen
+      await polishRecords.save(sessionId, edit.turn, { original: texts, edits: recorded, seconds: Math.round((Date.now() - started) / 1000) })
         .catch(error => console.warn('dsh-tavern: 精修记录保存失败', error))
-      return { edits: review.edits, view }
+      return { edits, view }
     },
     async polishComparison(args) {
-      return { comparison: await polishRecords.latest(str(args?.sessionId)) }
+      return { comparison: await polishRecords.latest(str(args?.sessionId)), prereview: (await readTavernSettings()).polishPrereview === true }
     },
     // Undo the latest 精修, from the 精修对比 page: only while its turn still shows the polished text.
     async undoPolish(args) {
@@ -185,8 +193,10 @@ export function createPlayHandlers(deps) {
     async regenBody(args) {
       if (args?.restyle === true) await retryStyleReference(args.sessionId, { target: 'regenerate', guidance: args.styleGuidance })
       await reconcileStory(args && args.sessionId)
+      polishPrereview.cancel(args?.sessionId)
       const view = await regenBody(args && args.chatId, args && args.guidance, args && args.sessionId)
       notifyPluginTimeline(args && args.sessionId, 'regenerate')
+      void polishPrereview.start(args?.sessionId).catch(() => {})
       return { view }
     },
     async replayTurn(args) {

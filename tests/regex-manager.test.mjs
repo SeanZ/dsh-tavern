@@ -1,0 +1,252 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createRegexManager, applyRegexOverrides, normalizeRegexOverrides, regexScriptKey, storedRegexScript } from '../tavern-plugin/lib/domain/regex-manager.js'
+import { createTavernRegexSettings } from '../tavern-plugin/lib/domain/regex-settings.js'
+import { withGlobalRegexScripts, composeTavernRegexScripts } from '../tavern-plugin/lib/domain/card-extension-reading.js'
+import { createRegexHandlers } from '../tavern-plugin/lib/rpc/regex.js'
+
+function extensionSettings(initial = {}) {
+  let settings = structuredClone(initial)
+  return {
+    async read() { return structuredClone(settings) },
+    async save(next, expected) {
+      if (JSON.stringify(settings) !== JSON.stringify(expected)) throw new Error('插件设置已被其他窗口修改')
+      settings = structuredClone(next)
+      return structuredClone(settings)
+    },
+    current: () => structuredClone(settings)
+  }
+}
+
+function legacyLibrary(items = []) {
+  let migrated = false
+  return {
+    async legacyForMigration() { return migrated ? [] : structuredClone(items) },
+    async markMigrated() { migrated = true },
+    migrated: () => migrated
+  }
+}
+
+function sampleChat() {
+  return {
+    id: 'chat-1', mode: 'story', cardPath: 'cards/x.png', cardName: '灯塔小镇',
+    runtimePresetSnapshot: {
+      presetPath: 'presets/p.json', presetName: 'warm-narrative',
+      regexScripts: [
+        { id: 'p1', regexKey: 'p1#1', name: '旁白转引用', findRegex: '/^【旁白】(.*)$/gm', replaceString: '> $1', placement: [2], enabled: true }
+      ]
+    },
+    regexOverrides: { preset: { 'p1#1': false }, card: { c1: true } }
+  }
+}
+
+function cardSources() {
+  return {
+    regexScripts: [
+      { id: 'c1', ref: 'regex:0', name: '选项折叠', findRegex: '/x/g', replaceString: 'y', placement: [2], enabled: false },
+      { id: 'c2', ref: 'regex:1', name: '状态封存', findRegex: '/s/g', replaceString: 't', placement: [2], enabled: true }
+    ]
+  }
+}
+
+function harness(options = {}) {
+  const store = extensionSettings({ variables: { global: {} }, regex: options.global || [] })
+  const settings = createTavernRegexSettings({ extensionSettings: store })
+  const legacy = legacyLibrary(options.legacy || [])
+  let chat = options.chat === null ? null : (options.chat || sampleChat())
+  const updates = []
+  const manager = createRegexManager({
+    regexSettings: settings,
+    legacyLibrary: legacy,
+    chatForSession: async id => id === 'session-1' ? structuredClone(chat) : undefined,
+    groupOfMode: mode => ['story', 'script'].includes(mode) ? 'play' : 'card',
+    readCardSources: async () => (options.cardSources || cardSources()),
+    updateChat: async (id, mutation, metadata) => {
+      updates.push({ id, metadata })
+      chat = mutation(structuredClone(chat))
+      return structuredClone(chat)
+    }
+  })
+  return { manager, store, legacy, updates, chat: () => chat }
+}
+
+test('migrates the retired inert library into disabled global rules exactly once', async () => {
+  const h = harness({
+    global: [{ id: 'g1', scriptName: '全局A', findRegex: '/a/g', replaceString: 'A', placement: [2], disabled: false }],
+    legacy: [{ id: 'old1', name: '旧正则', script: { findRegex: '/old/g', replaceString: 'OLD', placement: [2] } }],
+    chat: null
+  })
+  const first = await h.manager.read('')
+  assert.equal(first.migrated, 1)
+  assert.deepEqual(first.global.map(entry => entry.name), ['全局A', '旧正则'])
+  assert.equal(first.global[1].enabled, false)
+  assert.equal(h.store.current().regex[1].disabled, true)
+  assert.equal(h.legacy.migrated(), true)
+  const second = await h.manager.read('')
+  assert.equal(second.migrated, 0)
+  assert.equal(second.global.length, 2)
+})
+
+test('reads global, preset snapshot and card rules with session overrides applied', async () => {
+  const h = harness({
+    global: [{ id: 'g1', scriptName: '全局A', findRegex: '/a/g', replaceString: 'A', placement: [2] }]
+  })
+  const data = await h.manager.read('session-1')
+  assert.equal(data.mode, 'story')
+  assert.deepEqual(data.global.map(entry => [entry.key, entry.enabled, entry.overridden]), [['g1', true, false]])
+  assert.equal(data.preset.name, 'warm-narrative')
+  assert.deepEqual(data.preset.scripts.map(entry => [entry.key, entry.sourceEnabled, entry.overridden, entry.enabled]), [['p1#1', true, true, false]])
+  assert.deepEqual(data.card.scripts.map(entry => [entry.key, entry.sourceEnabled, entry.overridden, entry.enabled]), [['c1', false, true, true], ['c2', true, false, true]])
+  assert.deepEqual(data.overrides, { preset: { 'p1#1': false }, card: { c1: true } })
+})
+
+test('global writes are compare-and-swap and preserve order and unknown fields', async () => {
+  const h = harness({ global: [{ id: 'g1', scriptName: 'A', findRegex: '/a/g', replaceString: 'A', placement: [2], extra: 1, disabled: false }], chat: null })
+  const data = await h.manager.read('')
+  await assert.rejects(h.manager.writeGlobal({ revision: 'stale', scripts: data.global }), /已被其他窗口修改/)
+  const result = await h.manager.writeGlobal({
+    revision: data.revision,
+    scripts: [
+      { ...data.global[0], enabled: false },
+      { name: '新增', findRegex: '/n/g', replaceString: 'N', placement: [2, 1], enabled: true, trimStrings: ['\n'] }
+    ]
+  })
+  assert.deepEqual(result.global.map(entry => entry.name), ['A', '新增'])
+  assert.equal(result.global[0].enabled, false)
+  assert.deepEqual(result.global[1].placement, [1, 2])
+  const saved = h.store.current().regex
+  assert.equal(saved[0].extra, 1)
+  assert.equal(Object.prototype.hasOwnProperty.call(saved[0], 'enabled'), false)
+  assert.equal(saved[0].scriptName, 'A')
+  assert.equal(saved[1].scriptName, '新增')
+  assert.equal(saved[1].trimStrings[0], '\n')
+  assert.match(saved[1].id, /[0-9a-f-]{36}/)
+  await assert.rejects(h.manager.writeGlobal({ revision: result.revision, scripts: [{ name: '空', findRegex: '  ' }] }), /查找正则不能为空/)
+})
+
+test('preset and card overrides are session-only writes to the chat', async () => {
+  const h = harness({ global: [], chat: sampleChat() })
+  const data = await h.manager.read('session-1')
+  const preset = data.preset.scripts[0]
+  await h.manager.setOverride({ sessionId: 'session-1', source: 'preset', key: preset.key, enabled: true })
+  assert.deepEqual(h.chat().regexOverrides.preset, { 'p1#1': true })
+  assert.equal(h.updates.at(-1).metadata.source, 'regex.override')
+  await h.manager.setOverride({ sessionId: 'session-1', source: 'preset', key: preset.key, enabled: null })
+  assert.deepEqual(h.chat().regexOverrides.preset, {})
+  assert.deepEqual(h.chat().regexOverrides.card, { c1: true })
+  await h.manager.setOverride({ sessionId: 'session-1', source: 'card', key: 'c2', enabled: false })
+  assert.deepEqual(h.chat().regexOverrides.card, { c1: true, c2: false })
+  await assert.rejects(h.manager.setOverride({ sessionId: 'session-1', source: 'card', key: 'missing', enabled: true }), /已不存在/)
+  await assert.rejects(h.manager.setOverride({ sessionId: 'session-1', source: 'nope', key: 'x', enabled: true }), /未知/)
+  const after = await h.manager.read('session-1')
+  assert.deepEqual(after.preset.scripts.map(entry => entry.enabled), [true])
+  assert.deepEqual(after.card.scripts.map(entry => entry.enabled), [true, false])
+})
+
+test('batch overrides update the chat once and reject the whole batch on a missing key', async () => {
+  const h = harness({ global: [], chat: sampleChat() })
+  const before = h.updates.length
+  const result = await h.manager.setOverrides({
+    sessionId: 'session-1',
+    changes: [
+      { source: 'preset', key: 'p1#1', enabled: true },
+      { source: 'card', key: 'c1', enabled: false }
+    ]
+  })
+  assert.equal(h.updates.length, before + 1)
+  assert.deepEqual(result.overrides, { preset: { 'p1#1': true }, card: { c1: false } })
+  await assert.rejects(h.manager.setOverrides({
+    sessionId: 'session-1',
+    changes: [{ source: 'preset', key: 'p1#1', enabled: true }, { source: 'card', key: 'missing', enabled: true }]
+  }), /已不存在/)
+  assert.equal(h.updates.length, before + 1)
+  await assert.rejects(h.manager.setOverrides({ sessionId: 'session-1', changes: [] }), /没有要修改/)
+  await assert.rejects(h.manager.setOverrides({ sessionId: 'session-1', changes: [{ source: 'preset', key: 'p1#1', enabled: 'yes' }] }), /启用状态无效/)
+})
+
+test('imports SillyTavern exports into the global list and keeps their disabled flag', async () => {
+  const h = harness({ global: [], chat: null })
+  const data = await h.manager.read('')
+  const result = await h.manager.importGlobal({ text: JSON.stringify([{ scriptName: '导入A', findRegex: '/a/g', replaceString: 'A', placement: [2] }, { scriptName: '导入B', findRegex: '/b/g', disabled: true }]), fileName: 'x', revision: data.revision })
+  assert.equal(result.imported, 2)
+  assert.deepEqual(result.global.map(entry => [entry.name, entry.enabled]), [['导入A', true], ['导入B', false]])
+  await assert.rejects(h.manager.importGlobal({ text: '{', fileName: 'bad', revision: result.revision }), /不是有效的 JSON/)
+  await assert.rejects(h.manager.importGlobal({ text: '{"findRegex":""}', fileName: 'bad', revision: result.revision }), /缺少 findRegex/)
+})
+
+test('preview uses the host replacement engine and layer filters', async () => {
+  const h = harness({ global: [], chat: null })
+  const result = await h.manager.preview({
+    text: 'a a',
+    scripts: [{ name: 'A', findRegex: '/(a)/g', replaceString: '<$1>', placement: [2] }]
+  })
+  assert.equal(result.text, '<a> <a>')
+  assert.deepEqual(result.applied.map(item => [item.name, item.matches]), [['A', 2]])
+  const display = await h.manager.preview({
+    text: 'a',
+    scripts: [
+      { name: '仅显示', findRegex: '/a/g', replaceString: 'd', placement: [2], markdownOnly: true },
+      { name: '仅上下文', findRegex: '/a/g', replaceString: 'c', placement: [2], promptOnly: true }
+    ],
+    isMarkdown: true
+  })
+  assert.equal(display.text, 'd')
+  const context = await h.manager.preview({
+    text: 'a',
+    scripts: [
+      { name: '仅显示', findRegex: '/a/g', replaceString: 'd', placement: [2], markdownOnly: true },
+      { name: '仅上下文', findRegex: '/a/g', replaceString: 'c', placement: [2], promptOnly: true }
+    ],
+    isMarkdown: false
+  })
+  assert.equal(context.text, 'c')
+  const wrongPlacement = await h.manager.preview({ text: 'a', scripts: [{ name: 'X', findRegex: '/a/g', replaceString: 'x', placement: [1] }] })
+  assert.equal(wrongPlacement.text, 'a')
+  const broken = await h.manager.preview({ text: 'a', scripts: [{ name: '坏', findRegex: '(', replaceString: 'x', placement: [2] }, { name: '好', findRegex: '/a/g', replaceString: 'ok', placement: [2] }] })
+  assert.equal(broken.text, 'ok')
+  assert.equal(broken.warnings.length, 1)
+})
+
+test('card overrides and preset overrides flow into the composed regex list in SillyTavern order', async () => {
+  const global = { id: 'g1', name: 'G', findRegex: '/g/', replaceString: '', enabled: true, placement: [2] }
+  const card = { id: 'c1', name: 'C', ref: 'regex:0', findRegex: '/c/', replaceString: '', enabled: true, placement: [2] }
+  const preset = { id: 'p1', regexKey: 'p1#1', name: 'P', findRegex: '/p/', replaceString: '', enabled: true, placement: [2] }
+  const extensions = withGlobalRegexScripts({ regexScripts: [card] }, { regex: [global] }, { card: { c1: false } })
+  assert.deepEqual(extensions.regexScripts.map(script => [script.name, script.enabled]), [['G', true], ['C', false]])
+  assert.deepEqual(extensions.characterRegexScripts.map(script => script.enabled), [false])
+  const composed = composeTavernRegexScripts(extensions, [preset], { 'p1#1': false })
+  assert.deepEqual(composed.map(script => [script.name, script.enabled]), [['G', true], ['P', false], ['C', false]])
+  assert.equal(composed[1].findRegex, '/p/')
+})
+
+test('override maps are normalized and malformed entries are dropped', () => {
+  assert.deepEqual(normalizeRegexOverrides({ preset: { a: true, b: 'x', '': true }, card: { c: false } }), { preset: { a: true }, card: { c: false } })
+  assert.deepEqual(normalizeRegexOverrides(null), { preset: {}, card: {} })
+  assert.equal(regexScriptKey('preset', { regexKey: 'p#2', id: 'p' }, 0), 'p#2')
+  assert.equal(regexScriptKey('card', { ref: 'regex:3' }, 0), 'regex:3')
+  assert.equal(regexScriptKey('card', {}, 3), 'regex-4')
+  const scripts = [{ id: 'c1', enabled: true }, { id: 'c2', enabled: false }]
+  assert.deepEqual(applyRegexOverrides(scripts, { c1: false, c2: true }, 'card').map(script => script.enabled), [false, true])
+  assert.equal(scripts[0].enabled, true)
+  assert.throws(() => storedRegexScript({ findRegex: '' }), /查找正则不能为空/)
+  const normalized = storedRegexScript({ name: 'x', findRegex: '/x/g', enabled: true }, { id: 'x', scriptName: 'x', findRegex: '/x/g', enabled: false, disabled: true, extra: 1 })
+  assert.equal(normalized.disabled, false)
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized, 'enabled'), false)
+  assert.equal(normalized.extra, 1)
+})
+
+test('RPC handlers expose the manager without leaking storage details', async () => {
+  const h = harness({ global: [{ id: 'g1', scriptName: 'A', findRegex: '/a/g', replaceString: 'A', placement: [2] }] })
+  const handlers = createRegexHandlers({ regexManager: h.manager, str: String })
+  const data = await handlers.getRegexManager({ sessionId: 'session-1' })
+  assert.equal(data.preset.name, 'warm-narrative')
+  const written = await handlers.writeGlobalRegexes({ revision: data.revision, scripts: data.global.map(entry => ({ ...entry, enabled: false })) })
+  assert.equal(written.global[0].enabled, false)
+  const overridden = await handlers.setRegexOverride({ sessionId: 'session-1', source: 'preset', key: 'p1#1', enabled: true })
+  assert.deepEqual(overridden.overrides.preset, { 'p1#1': true })
+  const batch = await handlers.setRegexOverrides({ sessionId: 'session-1', changes: [{ source: 'card', key: 'c1', enabled: false }] })
+  assert.deepEqual(batch.overrides.card, { c1: false })
+  const previewed = await handlers.previewRegexScripts({ text: 'a', scripts: [{ name: 'A', findRegex: '/a/g', replaceString: 'b', placement: [2] }] })
+  assert.equal(previewed.text, 'b')
+  await assert.rejects(handlers.setRegexOverride({ sessionId: 'session-1', source: 'preset', key: 'p1#1' }), /启用状态无效/)
+})

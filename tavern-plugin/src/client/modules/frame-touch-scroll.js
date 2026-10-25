@@ -22,7 +22,11 @@ function scrollTavernTouchChain(start, distance, view) {
 function installTavernFrameTouch(token, scrollChain) {
     const view = { document, getComputedStyle: node => getComputedStyle(node) };
     let gesture = null, animation = 0, sequence = 0;
-    const send = (type, extra) => parent.postMessage(Object.assign({ type, token, sequence }, extra), '*');
+    // A detached frame loses window.parent; a relay from then on has no reader.
+    const send = (type, extra) => {
+        const host = window.parent;
+        if (host && typeof host.postMessage === 'function') host.postMessage(Object.assign({ type, token, sequence }, extra), '*');
+    };
     function stop() {
         gesture = null;
         if (animation) cancelAnimationFrame(animation);

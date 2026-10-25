@@ -136,6 +136,17 @@
 - 显式管道优先：`/sys 文本 | /trigger`、`/send 文本 | /trigger`、`/cut 0` 组合不再看草稿里留的内容，写什么就是什么。
 - 调用串行：`sourceDocument.openingCommandQueue` 让卡的连续调用按顺序结算；`openingCommandStarted` 保证只建一局，重复 `/trigger` 返回同一结果。
 - 兜底：只发 `/send` 却从不发 `/trigger` 的卡（如无限回廊 9.10）不会卡住——页面安静 2 秒后按记下的文本开局，这正是 SillyTavern 里 `/send` 的行为；期间真 `/trigger` 到了就按它走，仍然只开始一次。
+- 页面拆除后的上报：每次切换话题都会拆掉消息 iframe，拆掉之后 `window.parent` 是 null。大凉龙虎传 v4.11 的 unload 回调在 pagehide 里还调 `eventRemoveListener`，于是 `reportSubscriptions` 抛「Cannot read properties of null (reading 'postMessage')」，切回页面就弹一次。现在宿主侧的上报（订阅清单、事件状态回执、初始化耗时、MVU 诊断、脚本就绪、status-stale、触摸滚动中继）统一过 `postToHost`：宿主窗口不可用就安静放弃，不再中断卡自己的卸载流程。
 - 宿主窗口的观察器：`window.parent.MutationObserver` 属于宿主领域，拿不到沙箱里的补丁。`小手机v9` 正是用它观察 `window.parent.document.body`，于是宿主节点代理直接进了原生构造器，报“parameter 1 is not of type 'Node'”。兼容窗口现在对 `MutationObserver`、`IntersectionObserver`、`ResizeObserver` 统一套一层解包，取不到合法节点时改为观察文档根。
 
 测试：`tests/tavern-opening-slash-bridge.test.mjs` 覆盖单独 `/send`、单独 `/sys`、显式管道优先、重复 `/trigger` 只提交一次与其余命令拒绝；`tests/opening-preparation-chat-data.test.mjs` 覆盖草稿里的“先记录后开始”以及两步之间继续保存插件数据。
+
+### 开局楼层在准备页里先占位
+
+大凉龙虎传 v4.11 的向导把开局记录写进“刚发送的那一楼”：它取 `SillyTavern.getContext().chat.length - 1`，确认这一楼是用户楼层，再 `replaceVariables(record, { type: 'message', message_id: id })`；时间结算脚本反过来扫 `chat` 里第一条用户楼层上的 `dshOpening327`。先记录后开始之后，那层楼在准备页里还不存在，于是 persist 直接抛“未找到刚发送的开局楼”，即便不抛，宿主的 `normalizeMessageId` 也会因为越界拒绝写入。
+
+现在这层楼在准备页里先占位：单独的 `/send 文本` 把文本作为 `{ role: 'user', pendingOpening: true }` 追加进草稿，记下 `draft.pendingOpeningFloor`，重复发送只改写同一层。卡照常把数据写到这一楼，宿主用原始 `message_id` 定位，不再越界。建局时 `resolve()` 把该楼的变量作为 `openingMessageVariables` 交出去，`conversation-initialization` 存进 `chat.pendingOpeningMessageVariables`，`turn-orchestration` 在第一条用户楼层落库时把它并进 `variables[0]`（`stat_data` 再浅合并），随即删掉这份暂存。占位楼层本身不进新局，新局的第一条用户楼层就是它现在的位置。
+
+预览页也要对外说实话：`triggerSlash` 拿到 `deferred` 结果后用 `showPendingFloor` 在本地 `chat` 后面补一行，`getContext().chat`、`getLastMessageId()` 与 `getChatMessages` 都按两行回答，卡自己算出来的下标才和宿主一致。开场白仍在第 0 层，选开场的保存逻辑不受影响。
+
+测试：`tests/opening-floor-variables.test.mjs` 覆盖占位楼层、写回落在这层、重复 `/send` 只改写一层、越界楼层仍被拒绝，以及新局第一条用户楼层带上记录；`tests/opening-preview-event-relay.test.mjs` 覆盖预览页里 `/send` 之后多出的那一行和 `/trigger` 不加行。

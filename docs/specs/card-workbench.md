@@ -62,7 +62,7 @@ Better Sidebar 提供四个职责分离的库：
 - `tavern_update_worldbook`：通过现有世界书 Library interface 保存已确认的条目级修改；
 - `tavern_read_preset`：按 JSON Pointer 分段读取预设工作 JSON；
 - `tavern_update_preset`：按 JSON Pointer 保存已确认的最小修改并重新校验；
-- `tavern_read_regex_library`：读取正则库里用户导入的原版酒馆正则；正则库不生效，按用户要求写入人物卡或预设；
+- `tavern_read_regex_library`：读取本局全局、预设快照和人物卡自带的正则及本局覆盖状态；预设/人物卡开关不写回来源文件；
 - `tavern_update_card`：暂存并在本轮最终回复后提交已确认的人物卡最小变更；
 - `tavern_restore_card`：仅在灾难性损坏且用户再次确认后从原版恢复；
 - `skill` 与 `tavern_save_skill`：按需使用或创建 Tavern 专属 Skill。

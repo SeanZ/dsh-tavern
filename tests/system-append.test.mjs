@@ -16,7 +16,7 @@ for (const task of ['settlement', 'image', 'phone']) test(task + ' 复用会话�
         // Match the host: complete sections are snapshotted before the hook
         // and replace its sections afterwards.
         const completeText = completeSection.text()
-        seen.push({ hook: result.sections.map(s => s.text), system: completeText })
+        seen.push({ hook: result.sections.map(s => s.text), flags: result.sections.map(s => s.interpolate), complete: completeSection.interpolate, system: completeText })
         session.append('assistant/message', { message: { content: [{ type: 'text', text: '完成' }] } })
       })() }, async whenIdle() { await pending } }, async dispose() {} }
     } }
@@ -28,5 +28,9 @@ for (const task of ['settlement', 'image', 'phone']) test(task + ' 复用会话�
     assert.ok(seen[1].system.startsWith('第二版\n\n'))
     assert.equal(seen[2].system.includes('第一版'), false)
     assert.equal(seen[2].system.includes('第二版'), false)
+    // 玩家手写指令与后台 persona 都拼接了人物卡快照，必须按字面文本渲染。
+    assert.equal(seen[0].flags[0], false)
+    assert.equal(seen[0].complete, false)
+    assert.equal(seen[1].complete, false)
   } finally { await runner.dispose() }
 })

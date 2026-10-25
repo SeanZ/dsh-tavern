@@ -63,8 +63,8 @@ export function registerPlayChatTool({
       let projector = null
       let regexScripts
       if (str(args.layer) === 'diagnostics' || str(args.layer) === 'display' || str(args.layer) === 'regex') {
-        const extensions = await readCardExtensions(editorChat.cardPath)
-        regexScripts = composeTavernRegexScripts(extensions, sourceChat.runtimePresetSnapshot?.regexScripts)
+        const extensions = await readCardExtensions(sourceChat.cardPath || editorChat.cardPath, sourceChat)
+        regexScripts = composeTavernRegexScripts(extensions, sourceChat.runtimePresetSnapshot?.regexScripts, sourceChat.regexOverrides && sourceChat.regexOverrides.preset)
         projector = function (message) {
           return projectRuntimeReply(str(message.sourceText) || str(message.text), {
             charName: sourceChat.cardName,

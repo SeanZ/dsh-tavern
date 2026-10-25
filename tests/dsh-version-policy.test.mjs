@@ -3,40 +3,44 @@ import { readFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { adaptedDshVersion, allowedDshVersions, assertCompatibleDshVersion, desktopReleasesUrl, dshaReleasesUrl } from '../bin/dsh-compatibility.mjs'
-import { classifyDshVersion } from '../tavern-plugin/lib/domain/host-compatibility.js'
+import { adaptedDshVersion, minDshVersion, assertCompatibleDshVersion, desktopReleasesUrl, dshaReleasesUrl } from '../bin/dsh-compatibility.mjs'
+import { classifyDshVersion, compareDshVersions } from '../tavern-plugin/lib/domain/host-compatibility.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const unix = await readFile(new URL('../install.sh', import.meta.url), 'utf8')
 
-test('宿主按允许清单：清单内放行，清单外拦截；CLI 独立运行时仍精确匹配', () => {
+test('宿主按支持范围放行，范围外拦截；CLI 独立运行时仍精确匹配', () => {
   for (const host of ['desktop', 'android']) {
-    for (const version of allowedDshVersions) assert.doesNotThrow(() => assertCompatibleDshVersion(version, host), version)
-    for (const version of ['0.1.5-rc.2', '0.2.2', '99.0.0']) {
+    for (const version of [minDshVersion, adaptedDshVersion, '0.2.1-rc.3', '0.2.2']) assert.doesNotThrow(() => assertCompatibleDshVersion(version, host), version)
+    for (const version of ['0.1.5-rc.2', '0.3.0-rc.1', '99.0.0']) {
       assert.throws(() => assertCompatibleDshVersion(version, host), error => {
-        assert.match(error.message, version.startsWith('0.1.') ? /已停止安装，现有酒馆、存档和宿主都没有改动[^]*要用这个版本[^]*改装稳定版/ : /不在允许清单内；已停止安装/)
-        assert.ok(error.message.includes(allowedDshVersions.join('、')))
+        assert.match(error.message, version.startsWith('0.1.') ? /已停止安装，现有酒馆、存档和宿主都没有改动[^]*要用这个版本[^]*改装稳定版/ : /不在支持范围内；已停止安装/)
+        assert.ok(error.message.includes('0.2.0-rc.2 ≤ 版本 < 0.3.0'))
         assert.ok(error.message.includes(host === 'desktop' ? desktopReleasesUrl : dshaReleasesUrl), error.message)
         return true
       })
     }
   }
-  assert.ok(allowedDshVersions.includes(adaptedDshVersion))
   assert.doesNotThrow(() => assertCompatibleDshVersion(adaptedDshVersion, 'cli'))
   for (const version of ['', '0.2.0', '99.0.0']) assert.throws(() => assertCompatibleDshVersion(version, 'cli'), /DSH_TAVERN_REINSTALL_RUNTIME/)
 })
 
-test('允许清单只认精确版本号，读不出版本也拦截', () => {
-  const policy = { adaptedDshVersion: '0.2.1-rc.2', allowedDshVersions: ['0.2.1-rc.2'] }
-  assert.deepEqual(['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1', ''].map(v => classifyDshVersion(v, policy).status), ['allowed', 'blocked', 'blocked', 'blocked'])
+test('范围下限含预发布、上限按版本线；黑名单与读不出版本拦截', () => {
+  const policy = { minDshVersion: '0.2.0-rc.2', belowDshVersion: '0.3.0', blockedDshVersions: ['0.2.1-rc.4'] }
+  const rows = { '0.2.0-rc.1': 'blocked', '0.2.0-rc.2': 'allowed', '0.2.0': 'allowed', '0.2.1-rc.10': 'allowed', '0.2.1-rc.4': 'blocked',
+    '0.2.99': 'allowed', '0.3.0-rc.1': 'blocked', '0.3.0': 'blocked', '': 'blocked', 'dsh': 'blocked' }
+  for (const [version, status] of Object.entries(rows)) assert.equal(classifyDshVersion(version, policy).status, status, version)
+  assert.match(classifyDshVersion('0.2.1-rc.4', policy).reason, /已知与酒馆不兼容/)
+  assert.ok(compareDshVersions('0.2.1-rc.10', '0.2.1-rc.9') > 0)
+  assert.ok(compareDshVersions('0.2.1-rc.1', '0.2.1') < 0)
 })
 
-test('安装脚本以 --check 执行清单：清单内退出码 0，清单外非 0', () => {
+test('安装脚本以 --check 执行检查：范围内退出码 0，范围外非 0', () => {
   const script = fileURLToPath(new URL('../bin/dsh-compatibility.mjs', import.meta.url))
   const ok = spawnSync(process.execPath, [script, '--check', 'android', 'dsh 0.2.0-rc.2'], { encoding: 'utf8' })
   assert.equal(ok.status, 0, ok.stderr)
-  assert.match(ok.stdout, /在允许清单内/)
-  assert.notEqual(spawnSync(process.execPath, [script, '--check', 'desktop', 'dsh 0.2.2'], { encoding: 'utf8' }).status, 0)
+  assert.match(ok.stdout, /在支持范围内/)
+  assert.notEqual(spawnSync(process.execPath, [script, '--check', 'desktop', 'dsh 0.3.0'], { encoding: 'utf8' }).status, 0)
 })
 
 test('Unix 工具准备只处理 pnpm，不提前复用或更换 DSH', { skip: process.platform === 'win32' }, () => {

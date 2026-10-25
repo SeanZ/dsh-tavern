@@ -142,3 +142,111 @@ test('concurrent duplicate submissions cannot replace an already accepted transa
   assert.deepEqual(results.map(result => result.ok), [true, false])
   assert.equal(h.stats().published, 1)
 })
+
+// 物品 (cast-presentation.md「物品」): a lit item of the card's packs, shown once on its page; none offered, nothing said.
+test('items: offered by their lamps, shown once on a page by name; with none the director hears nothing of them', async () => {
+  const items = [lamp('Pocket watch', 'constant'), lamp('Letter', 'keyword', ['信封'])]
+  const h = await stageDirectorFixture({ ...chat(), messages: [...chat().messages.slice(0, 2), { role: 'assistant', turn: 2, text: '她拿出一只怀表。\n桌上没有别的东西。' }] }, { ...assets(), items })
+  const request = await h.prepare(), context = JSON.parse(request.turnContext)
+  assert.deepEqual(context.items, ['Pocket watch'], 'a green item waits for its trigger')
+  assert.match(request.system, /item\.play/)
+  assert.ok(JSON.stringify(request.tool.parameters.properties.performances).includes('item.play'))
+  for (const performances of [[{ at: 1, op: 'item.play', item: 'Letter' }], [{ at: 3, op: 'item.play', item: 'Pocket watch' }],
+    [{ at: 1, op: 'item.play', item: 'Pocket watch', count: 2 }], [{ at: 1, op: 'item.play', item: 'Pocket watch' }, { at: 1, op: 'item.play', item: 'Pocket watch' }]]) {
+    assert.equal((await request.call({ performances })).ok, false, JSON.stringify(performances))
+  }
+  assert.deepEqual(await request.call({ performances: [{ at: 1, op: 'item.play', item: 'Pocket watch' }] }), { ok: true })
+  assert.deepEqual(await h.director.performances('game', 2, (await h.body()).key), [{ at: 1, op: 'item.play', item: 'Pocket watch' }])
+  await h.persistence.update('story', turn('Quiet.'))
+  h.assets.items = []
+  const none = await h.prepare()
+  assert.equal(JSON.parse(none.turnContext).items, undefined)
+  assert.doesNotMatch(none.system, /item\.play|物品/)
+  assert.doesNotMatch(JSON.stringify(none.tool), /item\.play/)
+  assert.equal((await none.call({ performances: [{ at: 1, op: 'item.play', item: 'Pocket watch' }] })).ok, false)
+})
+
+// 音效 (cast-presentation.md 19/N): a lit sound of the card's packs, played once on its page; none offered, the request is
+// byte for byte the one without the kind.
+test('sound effects: offered by their lamps, played on a page by name; with none the request is byte-identical', async () => {
+  const sfx = [lamp('Knock', 'constant'), lamp('Bell', 'keyword', ['门铃']), lamp('Glass', 'constant')]
+  const text = '有人敲门。\n门铃响了。\n她没有回头。'
+  const h = await stageDirectorFixture({ ...chat(), messages: [...chat().messages.slice(0, 2), { role: 'assistant', turn: 2, text }] }, { ...assets(), sfx })
+  const request = await h.prepare(), context = JSON.parse(request.turnContext)
+  assert.deepEqual(context.sfx, ['Knock', 'Bell', 'Glass'], 'a green sound comes with its trigger')
+  assert.match(request.system, /sfx\.play/)
+  assert.ok(JSON.stringify(request.tool.parameters.properties.performances).includes('sfx.play'))
+  for (const performances of [[{ at: 1, op: 'sfx.play', sfx: 'Thunder' }], [{ at: 4, op: 'sfx.play', sfx: 'Knock' }],
+    [{ at: 1, op: 'sfx.play', sfx: 'Knock', volume: 1 }], [{ at: 1, op: 'sfx.play', sfx: 'Knock' }, { at: 1, op: 'sfx.play', sfx: 'Knock' }]]) {
+    assert.equal((await request.call({ performances })).ok, false, JSON.stringify(performances))
+  }
+  // Two different sounds may share a page; neither counts as a screen effect.
+  const played = [{ at: 1, op: 'sfx.play', sfx: 'Knock' }, { at: 1, op: 'sfx.play', sfx: 'Glass' }, { at: 2, op: 'sfx.play', sfx: 'Bell' }]
+  assert.deepEqual(await request.call({ performances: played }), { ok: true })
+  assert.deepEqual(await h.director.performances('game', 2, (await h.body()).key), played)
+  await h.persistence.update('story', turn('Quiet.'))
+  const without = await h.prepare()
+  h.assets.sfx = []
+  const none = await h.prepare()
+  delete h.assets.sfx
+  const absent = await h.prepare()
+  assert.deepEqual([none.system, JSON.stringify(none.tool), none.turnContext], [absent.system, JSON.stringify(absent.tool), absent.turnContext])
+  assert.notEqual(without.turnContext, none.turnContext)
+  assert.equal(JSON.parse(none.turnContext).sfx, undefined)
+  assert.doesNotMatch(none.system + JSON.stringify(none.tool), /sfx|音效/)
+  assert.equal((await none.call({ performances: [{ at: 1, op: 'sfx.play', sfx: 'Knock' }] })).ok, false)
+})
+
+// 环境音 (cast-presentation.md 20/N): a lit loop of the card's packs for the place or weather, kept like the BGM until the
+// director changes or stops it; none offered and none playing, the request is byte for byte the one without the kind.
+test('ambience: offered by its lamps, persistent until changed or stopped, beside the music; with none the request is byte-identical', async () => {
+  const ambience = [lamp('Rain', 'keyword', ['下雨']), lamp('Crowd', 'constant')]
+  const h = await stageDirectorFixture({ ...chat(), messages: [...chat().messages.slice(0, 2), { role: 'assistant', turn: 2, text: '外面下雨了。' }] }, { ...assets(), ambience })
+  let request = await h.prepare()
+  assert.deepEqual(JSON.parse(request.turnContext).ambience, ['Rain', 'Crowd'], 'a green loop comes with its trigger')
+  assert.match(request.system, /ambience 是地点或天气的持续背景声/)
+  assert.match(request.tool.description, /ambience:null 停环境音/)
+  for (const value of ['Thunder', 3]) assert.equal((await request.call({ ambience: value })).ok, false, String(value))
+  assert.deepEqual(await request.call({ music: 'Theme', ambience: 'Rain' }), { ok: true })
+  assert.deepEqual(await h.director.state('game', 2), { figures: [], background: null, music: 'Theme', ambience: 'Rain' }, 'both play')
+  // Omission keeps it, though its trigger is gone from the text; the director may still stop it.
+  await h.persistence.update('story', turn('Quiet.'))
+  request = await h.prepare()
+  assert.deepEqual([JSON.parse(request.turnContext).ambience, JSON.parse(request.turnContext).state.ambience], [['Crowd'], 'Rain'])
+  assert.deepEqual(await request.call({}), { ok: true })
+  assert.equal((await h.director.state('game', 3)).ambience, 'Rain')
+  // A change replaces it; null stops it and the state reads as if none had played.
+  await h.persistence.update('story', turn('The square fills up.'))
+  assert.deepEqual(await (await h.prepare()).call({ ambience: 'Crowd' }), { ok: true })
+  assert.equal((await h.director.state('game', 4)).ambience, 'Crowd')
+  await h.persistence.update('story', turn('Night falls.'))
+  assert.deepEqual(await (await h.prepare()).call({ ambience: null }), { ok: true })
+  assert.deepEqual(await h.director.state('game', 5), { figures: [], background: null, music: 'Theme' })
+  // 环境音 off (or its entry switched off): the playing loop is dropped and the turn records the stop.
+  await h.persistence.update('story', turn('Rain again.'))
+  await (await h.prepare()).call({ ambience: 'Crowd' })
+  await h.persistence.update('story', turn('Still.'))
+  h.assets.ambience = []
+  request = await h.prepare()
+  assert.equal(JSON.parse(request.turnContext).ambience, undefined, 'nothing offered and nothing playing: nothing about ambience')
+  assert.deepEqual(await request.call({}), { ok: true })
+  h.assets.ambience = ambience
+  assert.equal((await h.director.state('game', 7)).ambience, undefined, 'switching it on again waits for the director')
+  // None offered and none playing: the system prompt, tool and context are those of a catalog without the kind.
+  await h.persistence.update('story', turn('Later.'))
+  h.assets.ambience = []
+  const none = await h.prepare()
+  delete h.assets.ambience
+  const absent = await h.prepare()
+  assert.deepEqual([none.system, JSON.stringify(none.tool), none.turnContext], [absent.system, JSON.stringify(absent.tool), absent.turnContext])
+  assert.doesNotMatch(none.system + JSON.stringify(none.tool) + none.turnContext, /ambience|环境音/)
+  assert.equal((await none.call({ ambience: 'Rain' })).ok, false)
+})
+// 配音 (cast-presentation.md 21/N): the cast reaches the director with each character's voices (castView); they and the speech
+// settings never enter its request, which is byte for byte the one of a cast without voices.
+test('voices never reach the director: a voiced cast gives the byte-identical request', async () => {
+  const voiced = { ...assets(), cast: assets().cast.map(item => ({ ...item, voices: { fish: 'ref-' + item.name, openai: 'alloy' } })) }
+  const plain = await (await stageDirectorFixture(chat(), assets())).prepare(), withVoices = await (await stageDirectorFixture(chat(), voiced)).prepare()
+  assert.deepEqual([withVoices.system, JSON.stringify(withVoices.tool), withVoices.turnContext], [plain.system, JSON.stringify(plain.tool), plain.turnContext])
+  assert.equal(withVoices.turnContext.includes('ref-'), false)
+})

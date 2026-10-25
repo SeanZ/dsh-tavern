@@ -1,12 +1,13 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { classifyDshVersion } from '../tavern-plugin/lib/domain/host-compatibility.js'
+import { classifyDshVersion, dshRangeLabel } from '../tavern-plugin/lib/domain/host-compatibility.js'
 
 // One release-specific source for bootstrap installers, the launcher and documentation checks.
 const compatibility = JSON.parse(readFileSync(new URL('../config/dsh-compatibility.json', import.meta.url), 'utf8'))
 export const { adaptedDshVersion, recommendedDesktopVersion, desktopReleasesUrl, recommendedDshaVersion, dshaReleasesUrl } = compatibility
-export const allowedDshVersions = compatibility.allowedDshVersions || [adaptedDshVersion]
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(adaptedDshVersion)) throw new Error('DSH 适配版本配置无效')
+export const { minDshVersion, belowDshVersion } = compatibility
+export const blockedDshVersions = compatibility.blockedDshVersions || []
+if (classifyDshVersion(adaptedDshVersion, compatibility).status !== 'allowed') throw new Error('DSH 适配版本配置无效：须在支持范围内')
 
 // Bundles whose peer range follows the host line (dsh-better-sidebar 0.28 needs
 // ^0.2.1, 0.26 needs ^0.2.0). DSH silently skips a bundle with unmet peers, so
@@ -30,12 +31,12 @@ function hostGuidance(host) {
     : `推荐官方 DeepSeek Harness ${recommendedDesktopVersion}：${desktopReleasesUrl}`
 }
 
-// Host versions must be on the allowlist. CLI owns its private runtime, so it stays exact.
+// Host versions must be in the supported range and not blocked. CLI owns its private runtime, so it stays exact.
 export function dshCompatibilityNotice(currentVersion = '', host = 'desktop') {
   if (host === 'cli') return `命令行版独立安装并使用 DSH ${adaptedDshVersion}，不复用或修改全局 DSH。`
-  const allowed = allowedDshVersions.join('、')
-  if (!currentVersion) return `允许的 DSH 版本：${allowed}；${hostGuidance(host)}`
-  if (classifyDshVersion(currentVersion, compatibility).status === 'allowed') return `当前 DSH ${currentVersion} 在允许清单内。`
+  const allowed = dshRangeLabel(compatibility)
+  if (!currentVersion) return `支持的 DSH 版本：${allowed}；${hostGuidance(host)}`
+  if (classifyDshVersion(currentVersion, compatibility).status === 'allowed') return `当前 DSH ${currentVersion} 在支持范围内。`
   // DSH 0.1.x hosts (DSHA 0.1.5 and older desktop hosts): say first how to
   // get this release, then that the stable branch keeps serving the current host.
   if (/^0\.1\./.test(currentVersion)) {
@@ -44,7 +45,7 @@ export function dshCompatibilityNotice(currentVersion = '', host = 'desktop') {
       : `先安装官方 DeepSeek Harness ${recommendedDesktopVersion}（${desktopReleasesUrl}），打开一次后从托盘退出`
     return `已停止安装，现有酒馆、存档和宿主都没有改动。\n当前宿主是 DSH ${currentVersion}，装不了这个版本（需要 DSH ${allowed}）。\n要用这个版本：${upgrade}，再重新运行安装；原宿主的存档换宿主后按 https://github.com/flizzywine/dsh-tavern/blob/main/docs/data-import.md 导入。\n想继续用现在的宿主：请改装稳定版，安装方法见 ${STABLE_GUIDE}`
   }
-  return `当前 DSH ${currentVersion} 不在允许清单内；已停止安装，不会修改宿主版本。允许的版本：${allowed}；${hostGuidance(host)}`
+  return `${classifyDshVersion(currentVersion, compatibility).reason}；已停止安装，不会修改宿主版本。支持的版本：${allowed}；${hostGuidance(host)}`
 }
 
 export function assertCompatibleDshVersion(currentVersion, host = 'cli') {

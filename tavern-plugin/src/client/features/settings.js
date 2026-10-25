@@ -150,8 +150,13 @@
                 if (!input || typeof input !== "object" || !Array.isArray(input.items)) return { display: TAVERN_HEADER_DEFAULT.display, items: [...TAVERN_HEADER_DEFAULT.items] };
                 return { display: input.display === "icon" ? "icon" : "icon-text", items: input.items.filter(item => typeof item === "string").slice(0, 24) };
             }
+            // 对话始终在首位；旧配置或手改配置里缺了它、或排到后面，都在读取时纠正。
+            function viewTabsOf(settings) {
+                const input = settings && settings.viewTabs;
+                return { items: tavernViewTabItems(input && typeof input === "object" && Array.isArray(input.items) ? input : null) };
+            }
             function apply(settings) {
-                value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings) };
+                value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
                 document.documentElement.classList.toggle("dsh-tavern-hide-process", value.hideContextAndReasoning);
                 listeners.forEach(listener => listener());
             }
@@ -271,7 +276,7 @@
                     option.label,
                     h("span", { className: "dsh-tavern-header-chip-state", "aria-hidden": true }, on ? "✓" : "＋"));
             };
-            const headerSummary = (config.display === "icon" ? "只显示图标" : "图标 + 文字") + " · " + items.length + " 个按钮";
+            const headerSummary = (config.display === "icon" ? "只显示图标" : "图标 + 文字") + " · " + items.length + " 个按钮 · " + tavernViewTabItems(preferences && preferences.viewTabs).length + " 个标签";
             const heading = h("strong", { className: "dsh-tavern-settings-title", key: "title" }, "自定义顶栏");
             return h(collapsible ? "details" : "section", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" + (collapsible ? "" : " is-expanded") },
                 collapsible ? h("summary", { className: "dsh-tavern-header-summary" },
@@ -316,7 +321,8 @@
                 h("div", { className: "dsh-tavern-header-foot" },
                     h("p", { className: "dsh-tavern-settings-desc" }, "手机和窄窗口上统一只显示图标；放不下的页面会收进顶栏末尾的「⋯」菜单。酒馆状态和导出不会收起。"),
                     h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void save({ display: TAVERN_HEADER_DEFAULT.display, items: [...TAVERN_HEADER_DEFAULT.items] }); } }, "恢复默认")),
-                notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null);
+                notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null,
+                h(TavernViewTabsSettings));
         }
 
         function useCandidatePreferences() {

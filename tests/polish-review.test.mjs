@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyPolishEdits, buildPolishReviewRequest, parsePolishReview, polishReviewContext } from '../tavern-plugin/lib/domain/polish-review.js'
+import { applyPolishEdits, buildPolishGuidanceRequest, buildPolishReviewRequest, composePolishEdits, parsePolishReview, polishReviewContext } from '../tavern-plugin/lib/domain/polish-review.js'
 import { prompt } from '../tavern-plugin/lib/prompt-catalog.js'
 
 test('审稿读本轮玩家输入和上一轮正文', () => {
@@ -28,8 +28,76 @@ test('原则作 system，人物卡、前文与正文作审稿材料', () => {
   for (const part of ['【人物卡：罗峰】\n少年武者', '【玩家角色】阿杰', '【上一轮正文】\n上一轮', '【本轮玩家输入】\n继续', '【本轮正文】\n本轮正文']) assert.ok(text.includes(part), part)
   assert.throws(() => buildPolishReviewRequest({ principles: ' ', reply: 'x', input: '', previous: '' }), /精修原则为空/)
   assert.ok(!text.includes('【玩家的修改意见】'))
-  const guided = buildPolishReviewRequest({ principles: prompt('polish'), input: '', previous: '', reply: '本轮正文', guidance: '侧重心理描写' })
-  assert.match(guided.messages[0].content[0].text, /【玩家的修改意见】\n侧重心理描写/)
+})
+
+test('按意见修改只带意见和写法要求，不带审稿原则', () => {
+  const request = buildPolishGuidanceRequest({ instructions: prompt('polish-guidance'), card: { name: '罗峰' }, input: '继续', previous: '', reply: '本轮正文', guidance: '侧重心理描写' })
+  assert.match(request.system, /只按这条意见改/)
+  assert.doesNotMatch(request.system, /审稿标准/)
+  const text = request.messages[0].content[0].text
+  assert.ok(text.includes('【本轮正文】\n本轮正文\n\n【玩家的修改意见】\n侧重心理描写'))
+  assert.throws(() => buildPolishGuidanceRequest({ instructions: prompt('polish-guidance'), reply: 'x', guidance: ' ' }), /没有修改意见/)
+})
+
+test('两步精修记成原文上的修改：意见改动映射回原文，碰到精修改过的句子就并成一处', () => {
+  const review = [{ find: '乙。', replace: '乙改。', reason: '套话' }, { find: '戊。', replace: '', reason: '删去' }]
+  const original = '甲。乙。丙。丁。戊。己。'
+  // Inside a review change, on untouched text, and across a change and the text after it.
+  assert.deepEqual(composePolishEdits(original, review, [{ find: '乙改', replace: '乙再改', reason: '更狠' }, { find: '己。', replace: '己改。', reason: '加细节' }]), [
+    { find: '乙。', replace: '乙再改。', reason: '套话；按意见：更狠' },
+    { find: '戊。', replace: '', reason: '删去' },
+    { find: '己。', replace: '己改。', reason: '按意见：加细节' }
+  ])
+  assert.deepEqual(composePolishEdits(original, review, [{ find: '甲。乙改。丙', replace: '新句', reason: '合并' }]), [
+    { find: '甲。乙。丙', replace: '新句', reason: '套话；按意见：合并' },
+    { find: '戊。', replace: '', reason: '删去' }
+  ])
+  // Text right after a deleted sentence maps back past it.
+  assert.deepEqual(composePolishEdits(original, review, [{ find: '丁。己', replace: '丁己', reason: '连起来' }]), [
+    { find: '乙。', replace: '乙改。', reason: '套话' },
+    { find: '丁。戊。己', replace: '丁己', reason: '删去；按意见：连起来' }
+  ])
+  // Applying the record to the original gives what the two passes gave.
+  const record = composePolishEdits(original, review, [{ find: '丙。丁', replace: '丙丁', reason: 'x' }])
+  assert.equal(applyPolishEdits([original], record)[0], applyPolishEdits(applyPolishEdits([original], review), [{ find: '丙。丁', replace: '丙丁' }])[0])
+  assert.equal(review[0].replace, '乙改。')
+})
+
+test('后台预审：同一版正文只审一次，换了版本就作废，点精修时等它或当场审', async () => {
+  const { createPolishPrereview } = await import('../tavern-plugin/lib/domain/polish-run.js')
+  let enabled = false, texts = ['正文一'], calls = []
+  const prereview = createPolishPrereview({
+    enabled: async () => enabled,
+    readTexts: async () => texts,
+    review: (sessionId, read, signal) => { const call = { read, signal }; calls.push(call); return new Promise((resolve, reject) => { call.resolve = resolve; call.reject = reject }) },
+    logger: { warn() {} }
+  })
+  assert.equal(await prereview.start('s'), false)
+  enabled = true
+  assert.equal(await prereview.start('s'), true)
+  assert.equal(await prereview.start('s'), false)
+  assert.equal(calls.length, 1)
+  const waiting = prereview.take('s', ['正文一'])
+  calls[0].resolve({ edits: [{ status: 'ok' }], fallback: '' })
+  assert.deepEqual(await waiting, { edits: [{ status: 'ok' }], fallback: '' })
+  assert.equal(await prereview.take('s', ['正文一']), null)
+  // Another text aborts the running review and is never handed to a 精修 of the old one.
+  assert.equal(await prereview.start('s'), true)
+  texts = ['正文二']
+  assert.equal(await prereview.start('s'), true)
+  assert.equal(calls[1].signal.aborted, true)
+  assert.equal(await prereview.take('s', ['正文一']), null)
+  calls[2].reject(new Error('模型失败'))
+  assert.equal(await prereview.take('s', ['正文二']), null)
+  // Text a 精修 used or produced is not reviewed again; a player message cancels a running one.
+  prereview.settle('s', ['正文三'])
+  texts = ['正文三']
+  assert.equal(await prereview.start('s'), false)
+  texts = ['正文四']
+  await prereview.start('s')
+  prereview.cancel('s')
+  assert.equal(calls.at(-1).signal.aborted, true)
+  assert.equal(prereview.running('s'), false)
 })
 
 test('修改清单逐条定位原文，重叠的后一条不可选，读不懂的输出退回意见框', () => {

@@ -26,13 +26,16 @@ output/
 # 用户数据（人物卡、聊天、剧本、素材、索引、设置、diff）
 data/
 
-# 按需重新取得的本地参考副本
+# 按需重新取得的本地参考副本；来源见 docs/research/reference-projects.md
 /references/
 
-# 本地调研、实验与验收记录，不入库（结论写进提交说明或功能文档）
-/docs/research/
-/docs/verification/
-/docs/experiments/
+# 本地研究、验收、实验记录：只留工作区，不提交、不推送
+docs/research/
+docs/verification/
+docs/experiments/
+docs/plans/
+docs/reviews/
+docs/implementation/
 
 # Local installation context (host and isolated home)
 .dsh-tavern-local.json

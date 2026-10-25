@@ -57,7 +57,7 @@ export function createSettingsHandlers(deps) {
     },
     async getDisplayPreferences(args) {
       const settings = await readTavernSettings()
-      return { hideContextAndReasoning: settings.hideContextAndReasoning, headerItems: settings.headerItems }
+      return { hideContextAndReasoning: settings.hideContextAndReasoning, headerItems: settings.headerItems, viewTabs: settings.viewTabs }
     },
     async getCandidatePreferences(args) {
       return { candidateDismissMode: (await readTavernSettings()).candidateDismissMode }

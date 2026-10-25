@@ -1,6 +1,6 @@
 # 安装、更新与数据备份
 
-> 当前版本适配 DSH **0.2.1-rc.2**（官方 DeepSeek Harness、独立命令行）。Android 独立 APK 内置 DSH **0.2.0-rc.2**。Windows 一键安装版和 DSHA 0.1.5-rc2 说明属于[稳定版](https://github.com/flizzywine/dsh-tavern/blob/stable/docs/installation.md)（DSH 0.1.5，`stable` 分支）。
+> 当前版本适配 DSH **0.2.x**（0.2.0-rc.2 起；官方 DeepSeek Harness 推荐 0.2.1-rc.2 或更新，独立命令行固定 0.2.1-rc.2）。Android 独立 APK 内置 DSH **0.2.0-rc.2**。Windows 一键安装版和 DSHA 0.1.5-rc2 说明属于[稳定版](https://github.com/flizzywine/dsh-tavern/blob/stable/docs/installation.md)（DSH 0.1.5，`stable` 分支）。
 
 **桌面版仅支持官方 DeepSeek Harness，不再适配社区 DSH Desktop / DSH NEXT。** 社区版用户请先备份，再按[数据导入说明](data-import.md)迁移到官方版。
 
@@ -25,7 +25,7 @@ Android 仅提供独立 APK，要求 Android 11 及以上、ARM64；不再提供
 
 Windows Desktop 安装和更新使用 Desktop 自带的 pnpm 与 Node（即 Desktop 程序本身），不再另外下载 Node；旧版留下的 `tools/desktop-package-manager` 目录不再使用，可以删除。安装器会自动使用 Windows 系统代理（PAC 自动配置除外）。若旧版一直卡在“正在更新”，先关闭旧更新任务，再使用新版安装器修复入口；普通 Desktop 从系统终端重新运行本文安装命令。命令行版继续使用独立 Node，macOS/Linux 不应用这项 Windows 修复。
 
-Desktop 固定为 **0.2.1-rc.2**；以后在酒馆界面更新插件。仅 Desktop 安装和更新内置 **`dsh-pocket 2.12.0`**（固定版本），并移除冲突的 `dsh-web-mobile`；手机扫码入口在 **设置 → 手机访问**，无需自行安装插件。CLI 不安装 Pocket，升级时会移除旧版 Pocket。Android / DSHA 不安装 Pocket，继续使用 `dsh-web-mobile`。切换到下面的 CLI 安装方式不会自动同步这份数据。
+Desktop 需为 **0.2.x**（0.2.0-rc.2 起）；以后在酒馆界面更新插件。仅 Desktop 安装和更新内置 **`dsh-pocket 2.12.0`**（固定版本），并移除冲突的 `dsh-web-mobile`；手机扫码入口在 **设置 → 手机访问**，无需自行安装插件。CLI 不安装 Pocket，升级时会移除旧版 Pocket。Android / DSHA 不安装 Pocket，继续使用 `dsh-web-mobile`。切换到下面的 CLI 安装方式不会自动同步这份数据。
 
 ### 命令行及宿主内安装
 
@@ -38,7 +38,7 @@ CLI 首次安装可选择：**默认目录 `~/.dsh-tavern/`、当前目录（回
 | 安装方式 | DSH 运行时与版本策略 | 数据位置 |
 | --- | --- | --- |
 | 命令行版（Windows / macOS / Linux） | 使用独立的 DSH `0.2.1-rc.2`；版本匹配且可启动时直接复用，不要求预装 DSH，不复用或替换全局 DSH | 默认 `~/.dsh-tavern/`，与外部 DSH 数据分开 |
-| 官方 DeepSeek Harness | 适配版本：**0.2.1-rc.2**（内置 DSH `0.2.1-rc.2`），复用宿主自带 DSH，要求内置 DSH 版本完全匹配 | Desktop 的 Tavern Profile 数据目录 |
+| 官方 DeepSeek Harness | 推荐 **0.2.1-rc.2** 或更新的 0.2.x，复用宿主自带 DSH；内置 DSH 在 0.2.0-rc.2 ≤ 版本 < 0.3.0 范围内即可，已知不兼容的版本会被拦截 | Desktop 的 Tavern Profile 数据目录 |
 | 独立 APK（Android） | 内置 DSHA v0.2.0-rc2 与 DSH `0.2.0-rc.2`，只运行 `tavern` Profile，手机上只有一个 DSH 服务 | APK 自己的应用数据目录 |
 
 命令行版与 Desktop / DSHA 不再共用一套数据。切换安装方式不会自动同步人物卡或对话；首次升级旧 CLI 时会复制旧 CLI 配置和游戏数据，保留原件，Desktop / DSHA 数据不会自动迁入。
@@ -51,7 +51,7 @@ CLI 首次安装可选择：**默认目录 `~/.dsh-tavern/`、当前目录（回
 
 适合不想单独配置运行环境和管理服务的用户，支持 Windows 和 macOS。
 
-适配版本：**官方 DeepSeek Harness 0.2.1-rc.2**（内置 DSH `0.2.1-rc.2`），内置 DSH 版本必须匹配，否则停止安装。请自行打开 [DSH 下载页面](https://www.deepseek.com/harness/)，按页面提示下载适合自己 Windows / macOS 系统和处理器的安装包；不要下载 Source code。
+推荐 **官方 DeepSeek Harness 0.2.1-rc.2** 或更新的 0.2.x，内置 DSH 不在支持范围（0.2.0-rc.2 ≤ 版本 < 0.3.0）或属于已知不兼容版本时停止安装。请自行打开 [DSH 下载页面](https://www.deepseek.com/harness/)，按页面提示下载适合自己 Windows / macOS 系统和处理器的安装包；不要下载 Source code。
 
 安装后先退出官方桌面应用，在系统终端运行对应命令。Windows 使用 PowerShell，macOS 使用终端。安装器自动查找默认安装位置；自定义位置请设置 `DSH_DESKTOP_APP_EXECUTABLE` 为官方程序的完整路径。无需另装 Node 或 pnpm。
 

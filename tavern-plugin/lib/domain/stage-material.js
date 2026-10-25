@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { BLOB_MIME_TYPES } from '../asset-library/asset-packs/index.js'
 import { audioKind, imageKind } from '../asset-library/pack-v2/media.js'
+import { validateStageSkin, stageSkinFiles } from './stage-skin.js'
+import { validateStageEntrance } from './stage-entrance.js'
 
-// A card's stage material (backgrounds, music) lives in the asset library (docs/design/asset-library.md):
+// A card's stage material (backgrounds, music, sound effects, ambience, items) lives in the asset library (docs/design/asset-library.md):
 // entries of the card's own pack, which the card's cast manifest binds by id (boundPackIds).
 // Leases are the only way bytes leave the library: the page gets a lease URL, export reads through one.
 export const STAGE_MEDIA_SCOPE = 'dsh-tavern-stage'
@@ -14,7 +17,10 @@ export const STAGE_LEASE_ORIGIN = 'http://dsh-tavern.internal'
 export const STAGE_LEASE_TTL_MS = 24 * 60 * 60 * 1000
 const KINDS = Object.freeze({
   backgrounds: { id: 'bg', type: 'background', media: imageKind },
-  music: { id: 'music', type: 'music', media: audioKind }
+  music: { id: 'music', type: 'music', media: audioKind },
+  sfx: { id: 'sfx', type: 'sfx', media: audioKind },
+  ambience: { id: 'ambience', type: 'ambience', media: audioKind },
+  props: { id: 'prop', type: 'prop', media: imageKind }
 })
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const coded = (message, code) => Object.assign(new Error(message), { code })
@@ -128,9 +134,9 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
     if (event.revision !== null) return
     for (const key of leases.keys()) if (key.startsWith(event.packId + '\u0000')) leases.delete(key)
   })
-  async function mediaUrl(row) {
+  async function mediaUrl(row, bundleKey, leaseBundle) {
     if (!row) return ''
-    const key = row.ref.packId + '\u0000' + row.media
+    const key = bundleKey || row.ref.packId + '\u0000' + row.media
     const cached = leases.get(key)
     if (cached) {
       const lease = await cached.catch(() => null)
@@ -139,7 +145,7 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
       if (leases.get(key) === cached) leases.delete(key)
     }
     const issuedAt = now()
-    const pending = library.leaseMedia({ packId: row.ref.packId, hash: row.media, origin: STAGE_LEASE_ORIGIN, scope: STAGE_MEDIA_SCOPE }).then(lease => ({ ...lease, issuedAt }))
+    const pending = (leaseBundle ? leaseBundle() : library.leaseMedia({ packId: row.ref.packId, hash: row.media, origin: STAGE_LEASE_ORIGIN, scope: STAGE_MEDIA_SCOPE })).then(lease => ({ ...lease, issuedAt }))
     leases.set(key, pending)
     pending.catch(() => { if (leases.get(key) === pending) leases.delete(key) })
     while (leases.size > 256) {
@@ -165,21 +171,23 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
   // green entry only when the text names it or 判断模型 recalls it (stage-judge-recall.js; a green entry's director note
   // is what the judge reads). Names and refs only: the director's frozen catalog never holds a lease.
   async function catalog(cardPath, cardName) {
-    const result = { background: [], music: [] }
+    const result = { background: [], music: [], sfx: [], ambience: [], items: [] }
     for (const { pack, asset } of await entries(cardPath, cardName, true)) {
       if (asset.enabled !== true) continue
       const row = { name: asset.name, ref: { packId: pack.manifest.id, kind: asset.kind, assetId: asset.id }, media: asset.media, recall: asset.recall,
         ...(asset.recall.mode === 'keyword' && asset.directorNote ? { note: asset.directorNote } : {}) }
       if (asset.kind === 'backgrounds') { result.background.push(row); continue }
+      if (asset.kind === 'props') { result.items.push(row); continue }
+      if (asset.kind === 'sfx' || asset.kind === 'ambience') { result[asset.kind].push(asset.volume === undefined ? row : { ...row, volume: asset.volume }); continue }
       result.music.push({ ...row, pack: pack.manifest.name,
         ...Object.fromEntries(['volume', 'loopStart', 'loopEnd'].filter(key => asset[key] !== undefined).map(key => [key, asset[key]])) })
     }
     return result
   }
-  // A music row as the page plays it: identity names the exact content, so a renewed lease never restarts it.
+  // A music (or ambience) row as the page plays it: identity names the exact content, so a renewed lease never restarts it.
   async function track(row) {
     const { ref } = row
-    return { key: ref.packId + '/' + ref.assetId, ref, identity: ref.packId + ':music:' + ref.assetId + ':' + row.media, name: row.name, pack: row.pack,
+    return { key: ref.packId + '/' + ref.assetId, ref, identity: ref.packId + ':' + ref.kind + ':' + ref.assetId + ':' + row.media, name: row.name, pack: row.pack,
       url: await mediaUrl(row), volume: row.volume, loopStart: row.loopStart, loopEnd: row.loopEnd }
   }
 
@@ -195,6 +203,8 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
   async function exportMaterial(cardPath, cardName) {
     const items = []
     for (const { pack, asset } of await entries(cardPath, cardName)) {
+      // A card file has places for backgrounds and music only; items, sound effects and ambience stay in the library.
+      if (['props', 'sfx', 'ambience'].includes(asset.kind)) continue
       const blob = pack.manifest.blobs[asset.media]
       items.push({ kind: asset.kind, type: KINDS[asset.kind].type, name: asset.name, ext: blob.ext, file: asset.media.slice(0, 32) + '.' + blob.ext, bytes: await readMedia(pack.manifest.id, asset.media) })
     }
@@ -254,7 +264,83 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
       patch: { assets, blobs: { ...old.blobs, [hash]: pack.manifest.blobs[hash] || { ext, mime: BLOB_MIME_TYPES[ext], size: bytes.length } } } })
     return { pack: snapshot }
   })
+  // A skin (舞台皮肤) arrives as its folder: skin.json and the files it declares, by their paths relative to it. A skin with the
+  // same id is replaced as a whole (its old files go); a new one owns the bundle skin-<id>. The store checks the document and
+  // every file once, here; a skin is checked nowhere else.
+  const addSkin = (packId, documentBytes, items) => serial('pack:' + packId, async () => {
+    let document
+    try { document = validateStageSkin(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(documentBytes))) }
+    catch (error) { throw coded(error?.message || 'Invalid skin', error?.code === 'SKIN_CONTRAST' ? 'SKIN_CONTRAST' : 'INVALID_SKIN') }
+    const given = new Map(items.map(item => [item.path, Buffer.from(item.bytes)]))
+    const missing = stageSkinFiles(document).filter(file => !given.has(file))
+    if (missing.length) throw coded('皮肤缺少文件：' + missing.slice(0, 3).join('、'), 'MISSING_DEPENDENCY')
+    const pack = await packOf(packId), existing = pack.manifest.assets.find(asset => asset.kind === 'skins' && asset.id === document.id)
+    const bundleKey = existing ? existing.bundleKey : 'skin-' + document.id, entry = existing ? existing.entry : 'skin.json'
+    const base = 'bundles/' + bundleKey + '/', dir = entry.includes('/') ? entry.replace(/[^/]*$/, '') : ''
+    const files = new Map(pack.manifest.files.filter(file => file.path.startsWith(base)).map(file => [file.path, null]))
+    files.set(base + entry, Buffer.from(documentBytes))
+    for (const file of stageSkinFiles(document)) files.set(base + dir + file, given.get(file))
+    const asset = existing || { kind: 'skins', id: document.id, name: [...document.label].slice(0, 256).join(''), recall: { mode: 'constant', keywords: [] }, directorNote: '', bundleKey, entry }
+    const { snapshot } = await library.patchPack({ packId, expectedRevision: pack.revision, fileUpdates: files,
+      patch: { assets: existing ? pack.manifest.assets : [...pack.manifest.assets, asset], bundles: { ...pack.manifest.bundles, [bundleKey]: { kind: 'skin', entry, contentHash: '0'.repeat(64) } } } })
+    return { pack: snapshot, id: document.id }
+  })
+  // 入场演出 arrives as its dsh.entrance/1 file and is checked once, here (and by the store's manifest check). The same
+  // document again is the same entry; a new one is on (蓝灯), named after its label or the file.
+  const addEntrance = (packId, fileName, bytes) => serial('pack:' + packId, async () => {
+    let document
+    try { document = validateStageEntrance(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))) }
+    catch (error) { throw coded(error?.message || 'Invalid entrance', 'INVALID_ENTRANCE') }
+    const pack = await packOf(packId), own = pack.manifest.assets.filter(asset => asset.kind === 'entrances')
+    const same = own.find(asset => isDeepStrictEqual(asset.entrance, document))
+    if (same) return { pack, id: same.id }
+    let id = 'entrance', n = 1
+    while (own.some(asset => asset.id === id)) id = 'entrance-' + ++n
+    const name = [...(document.label || String(fileName).replace(/\.json$/i, '').trim() || '入场演出')].slice(0, 256).join('')
+    const asset = { kind: 'entrances', id, name, enabled: true, recall: { mode: 'constant', keywords: [] }, directorNote: '', entrance: document }
+    const { snapshot } = await library.patchPack({ packId, expectedRevision: pack.revision, patch: { assets: [...pack.manifest.assets, asset] } })
+    return { pack: snapshot, id }
+  })
+  // The 入场演出 this card's stage opens with: only the card's own packs count (a global pack never opens every card's
+  // stage), in binding order, then pack order; the first entrance that is on. Never part of the director's catalog.
+  async function entrance(cardPath) {
+    for (const packId of await boundIds(cardPath)) {
+      const pack = await snapshotOf(packId), asset = pack?.manifest.assets.find(row => row.kind === 'entrances' && row.enabled === true)
+      if (asset) return { ref: { packId, kind: 'entrances', assetId: asset.id }, name: asset.name, document: asset.entrance }
+    }
+    return null
+  }
+  // The pack's default stage skin (manifest.stageSkin), or none.
+  async function setPackSkin(packId, expectedRevision, id) {
+    const pack = await packOf(packId)
+    if (id !== null && !pack.manifest.assets.some(asset => asset.kind === 'skins' && asset.id === id)) throw coded('Skin missing', 'ASSET_UNAVAILABLE')
+    const { snapshot } = await library.patchPack({ packId, expectedRevision, patch: { stageSkin: id === null ? undefined : id } })
+    return { pack: snapshot }
+  }
+  // A skin's files for the page: one reused lease per bundle content; `base` + a path in the skin is that file's URL.
+  async function skinBase(packId, bundleKey, contentHash) {
+    const key = packId + '\u0000bundle\u0000' + bundleKey + '\u0000' + contentHash
+    const url = await mediaUrl({ ref: { packId }, media: contentHash }, key, () => library.leaseBundle({ packId, bundleKey, origin: STAGE_LEASE_ORIGIN, scope: STAGE_MEDIA_SCOPE }))
+    return url ? url.replace(/[^/]*$/, '') : ''
+  }
   async function removeEntry(packId, expectedRevision, kind, id) {
+    if (kind === 'skins') {
+      // A skin goes with its bundle; a pack default or card choice naming it simply stops applying (stage-skin-choice.js).
+      const pack = await packOf(packId), entry = pack.manifest.assets.find(asset => asset.kind === 'skins' && asset.id === id)
+      if (!entry) throw coded('Entry missing', 'ASSET_UNAVAILABLE')
+      const bundles = { ...pack.manifest.bundles }
+      delete bundles[entry.bundleKey]
+      const files = new Map(pack.manifest.files.filter(file => file.path.startsWith('bundles/' + entry.bundleKey + '/')).map(file => [file.path, null]))
+      const { snapshot } = await library.patchPack({ packId, expectedRevision, patch: { assets: pack.manifest.assets.filter(asset => asset !== entry), bundles }, fileUpdates: files })
+      return { pack: snapshot }
+    }
+    if (kind === 'entrances') {
+      // An entrance has no files: the entry is all there is.
+      const pack = await packOf(packId), entry = pack.manifest.assets.find(asset => asset.kind === 'entrances' && asset.id === id)
+      if (!entry) throw coded('Entry missing', 'ASSET_UNAVAILABLE')
+      const { snapshot } = await library.patchPack({ packId, expectedRevision, patch: { assets: pack.manifest.assets.filter(asset => asset !== entry) } })
+      return { pack: snapshot }
+    }
     const pack = await packOf(packId), entry = pack.manifest.assets.find(asset => asset.kind === kindOf(kind) && asset.id === id)
     if (!entry) throw coded('Entry missing', 'ASSET_UNAVAILABLE')
     const assets = pack.manifest.assets.filter(asset => asset !== entry), { blobs, files } = dropUnused(pack, assets, entry.media)
@@ -266,6 +352,11 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
     addFiles,
     replaceMedia,
     removeEntry,
+    addSkin,
+    addEntrance,
+    entrance,
+    setPackSkin,
+    skinBase,
     // A pack's picture or audio for the editor's previews: the same reused lease the stage plays.
     previewUrl: (packId, hash) => mediaUrl({ ref: { packId }, media: hash }),
     ready,

@@ -31,6 +31,41 @@ function revise(chat) {
     if (message.role === 'assistant' && !message.greeting) message.text = `修订${message.turn}`
 }
 
+test('旧修复正文与本局预设正则覆盖在全量、缓存、增量和冷读中同时生效', async (t) => {
+  const { session, chat } = nativeRepairGame()
+  revise(chat)
+  appendLegacyRepair(session)
+  chat.messages.at(-1).variablesStale = { replySeq: 42 }
+  chat.runtimePresetSnapshot = {
+    regexScripts: [{ id: 'preset-rich', regexKey: 'preset-rich#1', findRegex: '/修订(\\d)/g',
+      replaceString: '<div>修订$1</div>', placement: [2], markdownOnly: true, enabled: false }],
+  }
+  chat.regexOverrides = { preset: { 'preset-rich#1': true } }
+  const directory = await mkdtemp(join(tmpdir(), 'tavern-repair-regex-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const file = join(directory, 'session.jsonl')
+  const bytes = sessionEvents(session).map(event => JSON.stringify(event)).join('\n')
+  await writeFile(file, bytes)
+  const restored = Session.fromRestore(session.id, (await readFile(file, 'utf8')).split('\n').map(JSON.parse), session.header, 0, 'detached')
+  for (const current of [session, restored]) {
+    // 冷读自身会补 end-seed；只比较投影前后，避免把宿主恢复事件误判为显示写入。
+    const before = JSON.stringify(sessionEvents(current))
+    const fixture = projectionFixture({ sessionDebugEvidence: () => repairEvidence(current) })
+    Object.assign(chat, { cardPath: fixture.chat.cardPath, cardName: fixture.chat.cardName, mvu: fixture.chat.mvu })
+    const full = await fixture.projection.project.full(chat)
+    const cached = await fixture.projection.project.cached(chat, full, { busy: false, phase: 'idle' })
+    const dirty = await fixture.projection.project.dirty(chat, full, [2, 4], { busy: false, phase: 'idle' })
+    for (const view of [full, cached, dirty]) {
+      assert.deepEqual(visible(current, chat, view), ['正文1', '<div>修订2</div>', '<div>修订3</div>'])
+      assert.equal(view.tavernHelper.regexScripts.preset[0].enabled, true)
+      assert.deepEqual(view.staleVariables, { turn: 3, replySeq: 42 })
+    }
+    assert.equal(chat.runtimePresetSnapshot.regexScripts[0].enabled, false, '本局覆盖不改写预设原始开关')
+    assert.equal(JSON.stringify(sessionEvents(current)), before)
+  }
+  assert.equal(await readFile(file, 'utf8'), bytes)
+})
+
 test('整段修复的开场没有玩家输入时，仍写入宿主可绘制正文', () => {
   const { session, chat } = nativeRepairGame()
   const result = applyNativeSurfaceRepair(
