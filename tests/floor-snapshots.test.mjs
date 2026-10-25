@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 import { createFloorSnapshots, FLOOR_SNAPSHOT_HTML_LIMIT } from '../tavern-plugin/lib/story/floor-snapshots.js'
+import { createRegexManager } from '../tavern-plugin/lib/domain/regex-manager.js'
+import { createTavernRegexSettings } from '../tavern-plugin/lib/domain/regex-settings.js'
 
 // The real profile data store on a temporary directory: the files a restart reads back.
 async function fixture(t, links = { 'session-a': 'chat-a', 'session-b': 'chat-b' }) {
@@ -89,4 +91,31 @@ test('RPC 快照使用真实磁盘存储，删除后冷读为空', async t => {
   assert.equal((await cold.getFloorSnapshots({ sessionId: 'session-a' })).snapshots[3].html, '<p>正文</p>')
   await snapshots.removeChat('chat-a')
   assert.deepEqual(await cold.getFloorSnapshots({ sessionId: 'session-a' }), { snapshots: {} })
+})
+
+test('本局正则覆盖变化时清空该局快照；其它游戏不受影响，覆盖未变化时保留', async t => {
+  const { root, snapshots } = await fixture(t)
+  for (const sessionId of ['session-a', 'session-b']) await snapshots.save({ sessionId, turn: 1, reply: '1', html: '<p/>' })
+  let chat = { id: 'chat-a', mode: 'story', regexOverrides: { preset: { 'p1#1': false }, card: {} },
+    runtimePresetSnapshot: { regexScripts: [{ id: 'p1', regexKey: 'p1#1', findRegex: '/a/g', replaceString: 'b', placement: [2] }] } }
+  const manager = createRegexManager({
+    regexSettings: createTavernRegexSettings({ extensionSettings: { read: async () => ({}), save: async next => next } }),
+    legacyLibrary: { legacyForMigration: async () => [], markMigrated: async () => {} },
+    chatForSession: async id => (id === 'session-a' ? structuredClone(chat) : undefined),
+    groupOfMode: () => 'play',
+    readCardSources: async () => ({ regexScripts: [] }),
+    updateChat: async (id, mutation) => (chat = mutation(structuredClone(chat))),
+    onOverridesChanged: chatId => snapshots.removeChat(chatId)
+  })
+  const turnsOf = async chatId => await readdir(path.join(root, 'floor-snapshots', chatId))
+  // 与已存覆盖相同的写入不算变化，快照保留。
+  await manager.setOverride({ sessionId: 'session-a', source: 'preset', key: 'p1#1', enabled: false })
+  assert.deepEqual(await turnsOf('chat-a'), ['1.json'])
+  await manager.setOverride({ sessionId: 'session-a', source: 'preset', key: 'p1#1', enabled: true })
+  assert.deepEqual(await turnsOf('chat-a'), [])
+  assert.deepEqual(await turnsOf('chat-b'), ['1.json'])
+  // 恢复跟随来源（删除覆盖）同样是变化。
+  await snapshots.save({ sessionId: 'session-a', turn: 2, reply: '2', html: '<p/>' })
+  await manager.setOverrides({ sessionId: 'session-a', changes: [{ source: 'preset', key: 'p1#1', enabled: null }] })
+  assert.deepEqual(await turnsOf('chat-a'), [])
 })

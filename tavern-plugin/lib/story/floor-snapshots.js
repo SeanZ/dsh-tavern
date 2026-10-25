@@ -8,6 +8,7 @@
 // Each snapshot names the reply it was taken from (`reply`, the caller's identity of
 // that reply — the story view uses its reply seq). A reader compares it with the reply
 // it shows now and ignores a stale one; a regenerated or switched floor overwrites it.
+// 本局正则覆盖（chat.regexOverrides）变化时整档快照作废：覆盖改变渲染但不改回复 seq。
 export const FLOOR_SNAPSHOT_VERSION = 1
 export const FLOOR_SNAPSHOT_HTML_LIMIT = 512 * 1024
 const MAX_FLOORS = 200

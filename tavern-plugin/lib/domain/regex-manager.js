@@ -168,7 +168,8 @@ function presetScriptsOf(chat) {
  * extensions without applying global/override layers, and `updateChat` writes
  * conversation overrides.
  */
-export function createRegexManager({ regexSettings, legacyLibrary, chatForSession, groupOfMode, readCardSources, updateChat }) {
+// onOverridesChanged(chatId)：本局覆盖确实变化并保存后通知调用方（如作废按旧渲染拍下的楼层快照）。
+export function createRegexManager({ regexSettings, legacyLibrary, chatForSession, groupOfMode, readCardSources, updateChat, onOverridesChanged = async () => {} }) {
   async function migrateLegacy() {
     const items = await legacyLibrary.legacyForMigration()
     if (!items.length) return 0
@@ -327,6 +328,7 @@ export function createRegexManager({ regexSettings, legacyLibrary, chatForSessio
       const keys = change.source === 'preset' ? presetKeys : cardKeys
       if (!keys || !keys.has(change.key)) throw new Error('这条正则已不存在，请刷新后重试')
     }
+    let changed = false
     const saved = await updateChat(chat.id, function (current) {
       const overrides = normalizeRegexOverrides(current.regexOverrides)
       const next = { preset: { ...overrides.preset }, card: { ...overrides.card } }
@@ -334,10 +336,15 @@ export function createRegexManager({ regexSettings, legacyLibrary, chatForSessio
         if (change.enabled === null) delete next[change.source][change.key]
         else next[change.source][change.key] = change.enabled
       }
+      changed = ['preset', 'card'].some(function (source) {
+        const keys = Object.keys(next[source])
+        return keys.length !== Object.keys(overrides[source]).length || keys.some(function (key) { return overrides[source][key] !== next[source][key] })
+      })
       if (Object.keys(next.preset).length === 0 && Object.keys(next.card).length === 0) delete current.regexOverrides
       else current.regexOverrides = next
       return current
     }, { source: 'regex.override' })
+    if (changed) await onOverridesChanged(chat.id)
     return { overrides: normalizeRegexOverrides(saved && saved.regexOverrides) }
   }
 

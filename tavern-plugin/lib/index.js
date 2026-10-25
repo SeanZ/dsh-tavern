@@ -951,7 +951,9 @@ export async function apply(ctx) {
     chatForSession,
     groupOfMode,
     readCardSources: readCardExtensionSources,
-    updateChat
+    updateChat,
+    // 覆盖改变正文渲染但不改回复 seq，按旧渲染拍下的楼层快照整档作废（C3）。
+    onOverridesChanged: chatId => floorSnapshots.removeChat(chatId).catch(error => console.warn('dsh-tavern: 楼层快照清理失败', chatId, error?.message || error))
   })
   function sessionStateForSession(sessionId) {
     return requestPerformance.stage('readSessionState', () => sessionChats.readState(sessionId))
