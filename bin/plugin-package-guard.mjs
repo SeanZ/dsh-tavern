@@ -2,8 +2,8 @@ import { readHostCompatibility } from '../tavern-plugin/lib/domain/host-compatib
 import { resolveTavernDataRoot } from '../tavern-plugin/lib/domain/tavern-data.js'
 import { ensureUserExtensions } from '../tavern-plugin/lib/domain/user-extensions.js'
 
-// Host classification only ever reports `allowed` (inside the allowlist) or
-// `blocked`; `verified` is accepted too so the guard keeps working if a future
+// Host classification only ever reports `allowed` (inside the supported range
+// and not blocked) or `blocked`; `verified` is accepted too so the guard keeps working if a future
 // check distinguishes an installer-verified host from a runtime-allowed one.
 export function isCompatibleHost(compatibility) {
   return compatibility.status === 'allowed' || compatibility.status === 'verified'
