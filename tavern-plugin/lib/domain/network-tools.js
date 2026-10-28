@@ -38,9 +38,10 @@ export function createNetworkToolPolicy({ readHeader, backgroundContext, capabil
 export function installNetworkToolPolicy(ctx, policy) {
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
-    const original = assembly.tools || []
-    assembly.tools = await policy.filter(original, context.agent?.session)
-    const removed = new Set(original.filter(tool => !assembly.tools.includes(tool)).map(tool => 'tool:' + tool.name))
+    const original = assembly.tools || ctx.tools?.schemas(context.scope || context.agent, context.toolSet) || []
+    const tools = await policy.filter(original, context.agent?.session)
+    if (Array.isArray(assembly.tools)) assembly.tools = tools
+    const removed = new Set(original.filter(tool => !tools.includes(tool)).map(tool => 'tool:' + tool.name))
     assembly.sections = (assembly.sections || []).filter(section => !removed.has(section.name))
     return assembly
   })

@@ -115,6 +115,7 @@ export function registerTurnLifecycleHooks({
     catch { console.error('dsh-tavern: 资源工作区投影刷新失败，继续使用现有资源文件') }
     const assembled = await foregroundStrategies.assembleSystemPrompt(assembly, {
       sessionId: agent.session.id,
+      tools: assembly.tools || ctx.tools.schemas(context.scope || agent, context.toolSet),
       chat,
       cwd: agent.session.header && agent.session.header.cwd,
       workspaceProjection,

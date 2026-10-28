@@ -49,6 +49,17 @@ test('retired conversation mode is rejected before native preparation or system 
   assert.deepEqual(run.calls, [])
 })
 
+test('alpha.2 提示词表示不含工具时，读取公开工具快照并保持表示层形状', async () => {
+  const run = strategies()
+  const presentation = { sections: [], contexts: [], variables: {} }
+  const result = await run.value.assembleSystemPrompt(presentation, {
+    sessionId: 'native', chat: run.chats.get('native'), tools: [{ name: 'bash' }]
+  })
+  assert.equal(Object.hasOwn(result, 'tools'), false)
+  assert.ok(result.sections.some(section => section.name === 'tavern:no-foreground-tools'))
+  assert.deepEqual(await run.value.filterTools([{ name: 'bash' }, { name: 'external' }], { sessionId: 'native', chat: run.chats.get('native') }), [{ name: 'external' }])
+})
+
 test('游玩固定背景来自原生系统装配，预设前后段保持顺序，快照不重复发送', async () => {
   const session = Session.create('native')
   const savedPrefixes = new Map()

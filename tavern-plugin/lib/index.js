@@ -2,6 +2,7 @@
 import './domain/host-punycode-request.js'
 import { createSessionViewProjection } from './domain/session-view-projection.js'
 import { createNetworkToolPolicy, installNetworkToolPolicy } from './domain/network-tools.js'
+import { installToolPresentationPolicy } from './domain/tool-presentation-policy.js'
 import { installWebAccess } from './tools/web-access.js'
 import { readWebAccess } from './domain/web-access-settings.js'
 import { registerWorkbenchResearchTool } from './tools/workbench-research.js'
@@ -3811,12 +3812,23 @@ export async function apply(ctx) {
     tavernRetryLimiter,
   })
 
-  installNetworkToolPolicy(ctx, createNetworkToolPolicy({
+  const networkToolPolicy = createNetworkToolPolicy({
     readHeader: chatHeaderForSession,
     backgroundContext: id => backgroundAgentRunner.requestContext(id),
     capabilityFor: name => pluginApi.toolNetworkFor(name),
     settings: () => readWebAccess(tavernSettingsDocument?.webAccess)
-  }))
+  })
+  installNetworkToolPolicy(ctx, networkToolPolicy)
+  installToolPresentationPolicy(ctx, {
+    sessionFor: id => sessionStore.get(id) || agentRegistry.get(id)?.session || backgroundAgentRunner.requestSession(id),
+    async filter(tools, session) {
+      const background = backgroundAgentRunner.requestContext(session.id)
+      if (background?.task === 'phone') return []
+      const chat = background ? null : await hookChatForSession(session.id)
+      const visible = chat ? await foregroundStrategies.filterTools(tools, { sessionId: session.id, chat }) : tools
+      return networkToolPolicy.filter(visible, session)
+    }
+  })
 
   registerModelStreamHooks({
     agentRegistry,

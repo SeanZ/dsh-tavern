@@ -49,3 +49,15 @@ test('组装移除说明，执行前重新检查，拒绝后不调用下游', as
   assert.deepEqual(result.tools, [{ name: 'local' }])
   assert.deepEqual(result.sections, [{ name: 'persona' }])
 })
+
+test('alpha.2 通过公开 schemas 移除工具说明，不向提示词表示写入工具字段', async () => {
+  const hooks = {}, session = { id: 's' }, toolSet = {}
+  installNetworkToolPolicy({ on: (name, fn) => { hooks[name] = fn }, tools: {
+    schemas(scope, selected) { assert.equal(scope.session, session); assert.equal(selected, toolSet); return [{ name: 'web_search' }] }
+  } }, createNetworkToolPolicy({ readHeader: async () => ({ mode: 'story', webSearchEnabled: false }),
+    backgroundContext: () => null, capabilityFor: () => undefined, settings: () => ({ fetchEnabled: false }) }))
+  const presentation = { sections: [{ name: 'tool:web_search' }, { name: 'persona' }], contexts: [], variables: {} }
+  const result = await hooks['system-prompt/assemble']({}, { agent: { session }, toolSet }, async () => presentation)
+  assert.equal(Object.hasOwn(result, 'tools'), false)
+  assert.deepEqual(result.sections, [{ name: 'persona' }])
+})

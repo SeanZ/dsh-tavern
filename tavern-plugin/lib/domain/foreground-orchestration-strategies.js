@@ -434,11 +434,35 @@ export function createNativePlayOrchestrationStrategy(options) {
     frontTexts.delete(str(sessionId))
   }
 
-  async function assembleSystemPrompt(assembly, input) {
+  // 工具可见性与模型请求、执行门禁共用，避免依赖宿主的提示词表示层携带工具。
+  async function filterTools(tools, input, record = false) {
     const mode = await options.modeFor(input.sessionId)
     const visible = new Set(await options.visibleTools(input.sessionId))
     const playMode = mode === 'story' || mode === 'script'
     const disabled = new Set(playMode ? normalizeDisabledForegroundTools(input.chat?.disabledForegroundTools) : [])
+    // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
+    const group = mode === 'card' ? 'card' : 'play'
+    tools = tools.filter(function (schema) {
+      if (options.controlledToolNames.has(schema.name)) return visible.has(schema.name)
+      const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
+      return !modes || modes.includes(group)
+    })
+    // Record the plugin/extra tools before applying the per-game switches: the
+    // settings panel must keep listing a tool the player has switched off.
+    if (record && playMode && typeof options.recordTools === 'function') {
+      try {
+        options.recordTools(input.sessionId, tools
+          .filter(schema => !options.controlledToolNames.has(schema.name))
+          .map(schema => ({ name: schema.name, description: String(schema.description || '') })))
+      } catch { /* the tool catalog must never fail the request */ }
+    }
+    if (playMode) tools = tools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name))
+    return tools
+  }
+
+  async function assembleSystemPrompt(assembly, input) {
+    const mode = await options.modeFor(input.sessionId)
+    const playMode = mode === 'story' || mode === 'script'
     // Play rules arrive in the foreground frame. Still replace the inherited
     // sections explicitly so removing play-mode cannot restore DSH's persona.
     const cardEdit = mode === 'card' && input.chat?.cardEditContext?.version === 1
@@ -465,29 +489,15 @@ export function createNativePlayOrchestrationStrategy(options) {
       renderedFronts.set(input.sessionId, createHash('sha256').update(JSON.stringify(front.map(section => section.text))).digest('hex'))
     }
     if (Array.isArray(assembly.contexts)) assembly.contexts = assembly.contexts.filter(section => section.name !== 'approval:policy')
-    // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
-    const group = mode === 'card' ? 'card' : 'play'
-    assembly.tools = assembly.tools.filter(function (schema) {
-      if (options.controlledToolNames.has(schema.name)) return visible.has(schema.name)
-      const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
-      return !modes || modes.includes(group)
-    })
-    // Record the plugin/extra tools before applying the per-game switches: the
-    // settings panel must keep listing a tool the player has switched off.
-    if (playMode && typeof options.recordTools === 'function') {
-      try {
-        options.recordTools(input.sessionId, assembly.tools
-          .filter(schema => !options.controlledToolNames.has(schema.name))
-          .map(schema => ({ name: schema.name, description: String(schema.description || '') })))
-      } catch { /* the tool catalog must never fail the request */ }
-    }
-    if (playMode) assembly.tools = assembly.tools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name))
+    const tools = await filterTools(assembly.tools || input.tools || [], input, true)
+    // alpha.2 的 waterfall 只传提示词表示；工具列表由宿主在返回后另行装配。
+    if (Array.isArray(assembly.tools)) assembly.tools = tools
     // The submission contract follows the tools that actually survived the
     // per-game switches and the plugin scopes. When only input replay is on, the
     // tool is declared for the history but the model must write prose directly.
     // The strict wording is only true when submit_story is the single tool.
     if (playMode) {
-      const toolNames = new Set(assembly.tools.map(schema => schema.name))
+      const toolNames = new Set(tools.map(schema => schema.name))
       const outputToolCall = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
       if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) {
         if (outputToolCall) {
@@ -503,7 +513,7 @@ export function createNativePlayOrchestrationStrategy(options) {
     return assembly
   }
 
-  return Object.freeze({ kind: 'native-play', prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt })
+  return Object.freeze({ kind: 'native-play', prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt, filterTools })
 }
 
 export function createForegroundOrchestrationStrategies(options) {
@@ -538,5 +548,5 @@ export function createForegroundOrchestrationStrategies(options) {
     return await nativePlay.assembleSystemPrompt(assembly, input)
   }
 
-  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt })
+  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt, filterTools: nativePlay.filterTools })
 }
