@@ -45,6 +45,15 @@ test('standard package ships runtime resources without local links, host copies 
     'tavern-plugin/lib/vendor/runtime-assets/jquery/jquery.min.js',
     'tavern-plugin/lib/vendor/runtime-assets/lodash/lodash.min.js',
   ]) assert.ok(files.has(name), `missing runtime resource: ${name}`)
+  assert.ok(files.has('tavern-plugin/src/client/bubble-line.cjs'), '共享气泡解析器是服务端运行依赖')
+  assert.deepEqual([...files].filter(name => name.startsWith('tavern-plugin/src/')), ['tavern-plugin/src/client/bubble-line.cjs'])
+  const catalog = JSON.parse(read('tavern-plugin/lib/font-catalog.json'))
+  for (const family of catalog.families) {
+    assert.ok(files.has(`tavern-plugin/fonts/${family.id}/index.json`))
+    assert.ok(files.has(`tavern-plugin/fonts/${family.id}/LICENSE.txt`))
+    for (const face of family.files) assert.ok(!files.has(`tavern-plugin/fonts/${family.id}/${face.file}`), '可按需缓存字体不重复随包交付')
+  }
+  assert.ok([...files].some(name => /fontawesome.*\.(woff2|ttf)$/i.test(name)), '图标字体保持随包提供')
   assert.ok([...files].some(name => name.startsWith('presets/tavern/skills/')))
   assert.ok(![...files].some(name => /(^|\/)(node_modules|tests|docs)\//.test(name)))
   assert.deepEqual([...files].filter(name => name.includes('/upstream/')), ['tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html'])

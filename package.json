@@ -86,6 +86,10 @@
     "!**/tests/**",
     "!**/*.map",
     "!tavern-plugin/src/**",
+    "tavern-plugin/src/client/bubble-line.cjs",
+    "!tavern-plugin/fonts/**/*.woff2",
+    "!tavern-plugin/fonts/**/*.ttf",
+    "!tavern-plugin/fonts/**/*.otf",
     "!**/docs/**",
     "config/plugin-web.LICENSE",
     "tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html"
