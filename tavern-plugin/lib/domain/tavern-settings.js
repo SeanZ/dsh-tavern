@@ -211,13 +211,14 @@ export function presentPromptSets(document) {
 
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true, worldbookScreening: tasks.worldbookScreening === true }
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true, worldbookScreening: false }
 }
 
 
 export function normalizePlayDefaults(value) {
   const input = object(value)
   return { playerName: typeof input.playerName === 'string' ? input.playerName.trim().slice(0, 80) || '你' : '你',
+    worldbookStrategy: input.worldbookStrategy === 'legacy' ? 'legacy' : 'native-skills',
     statusBarPlacement: input.statusBarPlacement === 'body' ? 'body' : 'sidebar',
     // New games get 文风联想 unless the defaults turn it off; an existing game without the key stays off.
     backgroundTasks: { ...normalizeBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
@@ -233,6 +234,7 @@ export function applyTavernSettingsPatch(current, patch) {
   }
   if (Object.hasOwn(input, 'defaultPlaySettings')) {
     const patch = object(input.defaultPlaySettings)
+    if (Object.hasOwn(patch, 'worldbookStrategy') && !['legacy', 'native-skills'].includes(patch.worldbookStrategy)) throw new Error('默认世界书策略无效')
     if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
@@ -302,6 +304,10 @@ export function applyTavernSettingsPatch(current, patch) {
   if (Object.hasOwn(input, 'autoOpenStatusPanel')) {
     if (typeof input.autoOpenStatusPanel !== 'boolean') throw new Error('自动打开酒馆状态面板设置必须是布尔值')
     next.autoOpenStatusPanel = input.autoOpenStatusPanel
+  }
+  if (Object.hasOwn(input, 'showSystemNavigation')) {
+    if (typeof input.showSystemNavigation !== 'boolean') throw new Error('显示系统功能入口设置必须是布尔值')
+    next.showSystemNavigation = input.showSystemNavigation
   }
   if (Object.hasOwn(input, 'headerItems')) {
     // null restores the shipped top bar.
@@ -427,6 +433,7 @@ export function presentTavernSettings(document, defaults) {
     defaultWorkbenchModel: normalizeBackgroundModel(object(document).defaultWorkbenchModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
     hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
+    showSystemNavigation: object(document).showSystemNavigation === true,
     headerItems: readHeaderItems(object(document).headerItems),
     viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',

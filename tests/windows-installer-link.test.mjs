@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-// README 与使用文档各自手写下载链接，曾出现 README 已换修复版、文档站仍指向旧安装器的漂移。
-test('README 与使用文档指向同一个 Windows 安装器', async () => {
-  const files = ['README.md', 'docs/installation.md', 'docs/manual/introduction.mjs']
+// 使用文档由社区在 Wiki 维护；仓库中的安装入口仍不能推广旧社区宿主安装包。
+test('仓库安装入口不推广旧社区宿主安装器', async () => {
+  const files = ['README.md', 'android/README.md']
   const names = new Set()
   for (const file of files) {
     const text = await readFile(new URL('../' + file, import.meta.url), 'utf8')

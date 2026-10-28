@@ -1,6 +1,6 @@
 # Tavern 插件常见用法
 
-这里按「我要做什么」列出常见插件的写法，插件怎么放、怎么加载见接口文档的「快速开始」。每段代码都只用[插件接口](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)里列出的方法。代码是骨架：`drawImage()`、`callModel()` 这类函数换成你自己的服务。每个方法的完整规则以接口文档为准。
+这里按「我要做什么」列出常见插件的写法，插件怎么放、怎么加载见接口文档的「快速开始」。每段代码都只用[插件接口](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)里列出的方法。代码是骨架：`drawImage()`、`callModel()` 这类函数换成你自己的服务。每个方法的完整规则以接口文档为准。
 
 ## 每轮配一张图（生图、配音、视频）
 

@@ -477,3 +477,32 @@ test('插件后台任务：独立的一次性会话，插件工具注册在这�
     assert.ok(concluded >= 1)
   } finally { await runner.dispose() }
 })
+
+test('后台主动检索开放原生 read，切回旧机制后隐藏；运行期间绑定前台', async () => {
+  let enabled = true, work, assemble, allowed
+  const packets=[]
+  const session={id:'background-retrieval',events:[],append(){}}
+  const runner=createBackgroundAgentRunner({
+    id:()=>session.id, resolveWorldbookSkills:async()=>enabled,
+    agents:{get:()=>({session:{header:{}}}),async create(options){
+      await options.setup({systemPrompt:{section(){},variable(){},suppressRuntimeContext(){}},
+        tools:{restrict(value){allowed=value.allow},register(){}},
+        on(name,listener){if(name==='system-prompt/assemble') assemble=listener}})
+      return {agent:{session,followup(){work=(async()=>{
+        assert.equal(runner.requestContext(session.id).parentSessionId,'parent')
+        packets.push(await assemble(null,{},async()=>({sections:[{name:'tool:read'}],tools:[{name:'read'},{name:'skill'}]})))
+      })()},async whenIdle(){await work}},async dispose(){}}
+    }}
+  })
+  const input={sessionId:'parent',persistent:true,task:'settlement',selection:{provider:'test',model:'test'},messages:[],tools:[],acceptWithoutText:()=>true}
+  try {
+    await runner.run(input)
+    assert.ok(allowed.includes('read')); assert.ok(allowed.includes('skill'))
+    assert.ok(packets[0].tools.some(tool=>tool.name==='read'))
+    assert.equal(runner.activeRequestContext(session.id),null)
+    enabled=false
+    await runner.run({...input,task:'candidate'})
+    assert.ok(!packets[1].tools.some(tool=>tool.name==='read'))
+    assert.ok(!packets[1].sections.some(section=>section.name==='tool:read'))
+  } finally {await runner.dispose()}
+})

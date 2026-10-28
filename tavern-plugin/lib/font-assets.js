@@ -100,6 +100,9 @@ async function download(id, face, fetchImpl) {
   const urls = [`https://cdn.jsdelivr.net/gh/${suffix}`, `https://raw.githubusercontent.com/flizzywine/dsh-tavern/${FONT_CATALOG.revision}/tavern-plugin/fonts/${id}/${face.file}`]
   for (const url of urls) {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12_000)
+    // Node's fetch does not fail a pending body read on abort; the deadline races every read.
+    const deadline = new Promise((resolve, reject) => controller.signal.addEventListener('abort', () => reject(new Error('Font download timed out')), { once: true }))
+    deadline.catch(() => {})
     let reader
     try {
       // Redirects are deliberately rejected: no user-controlled hosts or cross-origin forwarding.
@@ -110,7 +113,7 @@ async function download(id, face, fetchImpl) {
       reader = response.body.getReader()
       let size = 0; const chunks = []
       while (true) {
-        const { done, value } = await reader.read()
+        const { done, value } = await Promise.race([reader.read(), deadline])
         if (done) break
         size += value.byteLength
         if (size > face.bytes || size >= MAX_FONT_BYTES) throw new Error('Font exceeds expected size')
@@ -120,7 +123,7 @@ async function download(id, face, fetchImpl) {
       if (bytes.length !== face.bytes || hash(bytes) !== face.sha256) throw new Error('Font integrity mismatch')
       return bytes
     } catch { /* One bounded fallback to the same immutable Git revision. */ }
-    finally { clearTimeout(timer); await reader?.cancel().catch(() => {}); controller.abort() }
+    finally { clearTimeout(timer); reader?.cancel().catch(() => {}); controller.abort() }
   }
   throw new Error('Font unavailable; use system fallback')
 }

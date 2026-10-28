@@ -1,6 +1,7 @@
-// 外观 → 正文排版：字号（就是 DSH 通用设置里的「字号大小」，两边联动）、行间距、字间距。
-// 只作用于酒馆正文、玩家对话气泡与舞台文本；卡片自己的 HTML 界面保持卡的排版。
-// 行距与字距是看屏幕的偏好，存在本机。思路来自 DrifterJD/ZITI。
+// 外观 → 正文排版：行距、字距、自动分段与段首缩进，字号就是 DSH 通用设置里的字号。
+// 行距、字距和自动分段只接管正文的呈现；字号联动 DSH 的「字号大小」。
+// 只在调过时写变量；自动分段在渲染前把正文重新分段（features/prose-layout.js）。
+// 思路来自 DrifterJD/ZITI。
 const TAVERN_TEXT_LAYOUT_KEY = "dsh-tavern-text-layout";
 const TAVERN_TEXT_LAYOUT_LIMITS = Object.freeze({ lineHeight: [1, 3], letterSpacing: [-0.1, 0.3] });
 
@@ -11,7 +12,10 @@ function normalizeTavernTextLayout(value) {
         if (raw === null || raw === "" || !Number.isFinite(number)) return null;
         return Math.round(Math.min(range[1], Math.max(range[0], number)) * 1000) / 1000;
     };
-    return { lineHeight: clamp(source.lineHeight, TAVERN_TEXT_LAYOUT_LIMITS.lineHeight), letterSpacing: clamp(source.letterSpacing, TAVERN_TEXT_LAYOUT_LIMITS.letterSpacing) };
+    return Object.assign({
+        lineHeight: clamp(source.lineHeight, TAVERN_TEXT_LAYOUT_LIMITS.lineHeight),
+        letterSpacing: clamp(source.letterSpacing, TAVERN_TEXT_LAYOUT_LIMITS.letterSpacing)
+    }, normalizeTavernProseLayout(source));
 }
 
 function readTavernTextLayout() {
@@ -19,15 +23,18 @@ function readTavernTextLayout() {
     catch (_) { return normalizeTavernTextLayout(null); }
 }
 
-// 没调过的项不写变量：行高沿用酒馆原来的 24px + 字号增量，字距保持默认。
+// 没调过的行距、字距不写变量；自动分段与段首缩进默认开着分段、关着缩进，
+// 都记在本机，换一张卡也一样。
 function applyTavernTextLayout(layout, root) {
     const element = root || document.documentElement;
     const custom = layout.lineHeight !== null || layout.letterSpacing !== null;
     element.toggleAttribute("data-dsh-text-layout", custom);
+    element.toggleAttribute("data-dsh-tavern-prose-indent", layout.indent === true);
     if (layout.lineHeight === null) element.style.removeProperty("--dsh-tavern-line-height");
     else element.style.setProperty("--dsh-tavern-line-height", String(layout.lineHeight));
     if (layout.letterSpacing === null) element.style.removeProperty("--dsh-tavern-letter-spacing");
     else element.style.setProperty("--dsh-tavern-letter-spacing", layout.letterSpacing + "em");
+    setTavernProseLayout(layout);
 }
 
 // 酒馆原来的行高是 24px + (字号 − 14px)，换算成倍数作为「默认」的显示值。
@@ -68,6 +75,11 @@ function createTavernTextLayoutFeature() {
         try { window.localStorage.setItem(TAVERN_TEXT_LAYOUT_KEY, JSON.stringify(layout)); } catch (_) {}
         applyTavernTextLayout(layout);
         listeners.forEach(function (listener) { listener(layout); });
+        // 行距、字距是 CSS，改完立刻生效；自动分段要重画正文，通知已经挂着的消息重取文本。
+        try {
+            const EventCtor = window.CustomEvent || window.Event;
+            window.dispatchEvent(new EventCtor("dsh-tavern-prose-layout"));
+        } catch (_) {}
     }
 
     function TextLayoutRow(props) {
@@ -112,17 +124,28 @@ function createTavernTextLayoutFeature() {
                 h("input", { type: "range", min: min, max: max, step: step, value: value, "aria-label": label, onChange: function (event) { onChange(Number(event.target.value)); } }),
                 h("span", { className: "dsh-tavern-text-layout-value" }, value + unit));
         }
+        function toggle(label, description, checked, onChange) {
+            return h("label", { className: "dsh-tavern-text-layout-switch" },
+                h("span", { className: "dsh-tavern-text-layout-switch-copy" },
+                    h("b", null, label),
+                    h("small", null, description)),
+                h("input", { type: "checkbox", role: "switch", "aria-label": label, checked: checked === true, onChange: function (event) { onChange(event.target.checked); } }));
+        }
+        const preview = layoutTavernProseText("夜色从窗棂上滑下来，落在她的发梢。她抬起头，轻声说：「雨停了，我们走吧。」窗外的水声一层层退下去，像有人在很远的地方翻书。她没有等到回答，只是把伞往他那边斜了斜，自己半边肩膀湿在雨里。", current);
         return h("section", { className: "dsh-tavern-text-layout" },
             h("div", { className: "dsh-tavern-text-layout-head" },
                 h("strong", null, "正文排版"),
-                h("button", { type: "button", className: "dsh-tavern-btn", disabled: current.lineHeight === null && current.letterSpacing === null && shownFontSize === 14,
-                    onClick: function () { update({ lineHeight: null, letterSpacing: null }); if (shownFontSize !== 14) changeFontSize(14); } }, "恢复默认")),
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: current.lineHeight === null && current.letterSpacing === null && shownFontSize === 14 && current.paragraphs === TAVERN_PROSE_DEFAULTS.paragraphs && current.indent === false && current.sentences === TAVERN_PROSE_DEFAULTS.sentences,
+                    onClick: function () { update({ lineHeight: null, letterSpacing: null, paragraphs: TAVERN_PROSE_DEFAULTS.paragraphs, indent: false, sentences: TAVERN_PROSE_DEFAULTS.sentences }); if (shownFontSize !== 14) changeFontSize(14); } }, "恢复默认")),
             h("p", { className: "dsh-tavern-settings-desc" }, "作用于酒馆正文、你的对话气泡和舞台文本，卡片自带的界面不受影响。字号与「通用设置」里的字号大小是同一个设置。"),
             field("字号", "px", shownFontSize, TAVERN_THEME_FONT_MIN, maxFontSize, 1, "px", changeFontSize),
             field("行间距", "倍", lineHeight, 1, 3, 0.05, "×", function (value) { update({ lineHeight: value }); }),
             field("字间距", "em", letterSpacing, -0.1, 0.3, 0.01, "em", function (value) { update({ letterSpacing: value }); }),
-            h("p", { className: "dsh-tavern-text-layout-preview", style: { fontSize: shownFontSize + "px", lineHeight: lineHeight, letterSpacing: letterSpacing + "em" } },
-                "夜色从窗棂上滑下来，落在她的发梢。她抬起头，轻声说：「雨停了，我们走吧。」"),
+            toggle("自动分段", "模型把整轮正文写成一整块时，按句子重新分段；代码块、列表和台词行原样保留。只改显示，不改存档。", current.paragraphs, function (value) { update({ paragraphs: value }); }),
+            field("每段", "句", current.sentences, TAVERN_PROSE_SENTENCE_RANGE[0], TAVERN_PROSE_SENTENCE_RANGE[1], 1, "句", function (value) { update({ sentences: value }); }),
+            toggle("段首缩进", "正文每一段缩进两个字，像纸书排版。", current.indent, function (value) { update({ indent: value }); }),
+            h("p", { className: "dsh-tavern-text-layout-preview", style: { fontSize: shownFontSize + "px", lineHeight: lineHeight, letterSpacing: letterSpacing + "em", textIndent: current.indent ? "2em" : undefined } },
+                preview),
             error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null);
     }
 

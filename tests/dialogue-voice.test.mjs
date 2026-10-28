@@ -111,9 +111,10 @@ test('配音语言 is the character’s own voice setting: kept once, cleared wi
 const castSource = readFileSync(new URL('../tavern-plugin/src/client/features/cast-presentation.js', import.meta.url), 'utf8')
 const runtimeSource = readFileSync(new URL('../tavern-plugin/src/client/features/stage-runtime.js', import.meta.url), 'utf8')
 const bubbleLineSource = readFileSync(new URL('../tavern-plugin/src/client/bubble-line.cjs', import.meta.url), 'utf8')
+const proseSource = readFileSync(new URL('../tavern-plugin/src/client/features/prose-layout.js', import.meta.url), 'utf8')
 const domain = name => readFileSync(new URL('../tavern-plugin/lib/domain/' + name, import.meta.url), 'utf8').replace(/^export \{[^}]+\};?$/gm, '')
 const client = new Function('React', 'TAVERN_CAST_EMOTIONS', 'TavernCastAvatar', 'TavernCastSpeak', 'tavernCastLineAvatar', 'tavernCastHue',
-  bubbleLineSource + '\n' + domain('dialogue-bubbles.js') + '\n' + domain('cast-stage-state.js') + '\n'
+  proseSource + '\n' + bubbleLineSource + '\n' + domain('dialogue-bubbles.js') + '\n' + domain('cast-stage-state.js') + '\n'
   + [sourceFunction(castSource, 'TavernCastRow'), sourceFunction(castSource, 'renderTavernDialogueText'), sourceFunction(runtimeSource, 'tavernPageSpeech'), sourceFunction(runtimeSource, 'tavernBeatSpeech')].join('\n')
   + '\nreturn { renderTavernDialogueText, TavernCastRow, tavernPageSpeech, tavernBeatSpeech }')
 const h = (type, props, ...children) => ({ type, props: props || {}, children })

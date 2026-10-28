@@ -157,8 +157,9 @@
                 return input && typeof input === "object" && Array.isArray(input.items) ? { items: tavernViewTabItems(input) } : null;
             }
             function apply(settings) {
-                value = { hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
+                value = { showSystemNavigation: settings.showSystemNavigation === true, hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
                 document.documentElement.classList.toggle("dsh-tavern-hide-process", value.hideContextAndReasoning);
+                document.documentElement.classList.toggle("dsh-tavern-show-system-navigation", value.showSystemNavigation);
                 listeners.forEach(listener => listener());
             }
             async function refresh() {
@@ -181,11 +182,11 @@
                     const onStorage = event => { if (event.key === key) refresh(); };
                     window.addEventListener("focus", refresh);
                     window.addEventListener("storage", onStorage);
-                    return () => { ++revision; window.removeEventListener("focus", refresh); window.removeEventListener("storage", onStorage); document.documentElement.classList.remove("dsh-tavern-hide-process"); };
+                    return () => { ++revision; window.removeEventListener("focus", refresh); window.removeEventListener("storage", onStorage); document.documentElement.classList.remove("dsh-tavern-hide-process", "dsh-tavern-show-system-navigation"); };
                 }
             };
         })();
-        function DisplayPreferencesSettings() {
+        function DisplayPreferencesSettings(props) {
             const preferences = React.useSyncExternalStore(displayPreferences.subscribe, displayPreferences.snapshot, displayPreferences.snapshot);
             const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState("");
             async function save(patch) {
@@ -202,7 +203,8 @@
                     h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: preferences === null || busy, onChange: event => save(patch(event.target.checked)) }));
             }
             return h("section", { className: "dsh-tavern-settings-group dsh-tavern-display-preferences" },
-                row("隐藏上下文注入和思考过程", "隐藏对话中的上下文注入、上下文压缩记录、收到执行请求的提示、已思考和思考过程。仅影响显示，正文、模型请求和存档内容不变。",
+                props?.sidebar ? row("显示系统功能入口", "在侧栏显示原生系统导航，可打开插件、自动任务和更多功能。",
+                    preferences?.showSystemNavigation === true, value => ({ showSystemNavigation: value })) : row("隐藏上下文注入和思考过程", "隐藏对话中的上下文注入、上下文压缩记录、收到执行请求的提示、已思考和思考过程。仅影响显示，正文、模型请求和存档内容不变。",
                     preferences?.hideContextAndReasoning === true, value => ({ hideContextAndReasoning: value })),
                 notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null);
         }

@@ -97,15 +97,18 @@ export function createChatHistoryImportService({ initialization, cards, worldBoo
           if (projectForegroundWorldbook) {
             let projected
             try {
-              projected = await projectForegroundWorldbook({ chat, card, userText, userTextInHistory: true, worldBook, purpose: 'history-import' })
+              projected = await projectForegroundWorldbook({ chat, card, userText, userTextInHistory: true, worldBook, purpose: 'history-import', requestKey: `import:${input.operationId}:${turn}` })
               assertImportedWorldbook(projected)
             } catch (error) {
               throw new Error(`导入第 ${turn} 轮世界书上下文失败：${error.message || error}`, { cause: error })
             }
             if (projected.reads) chat.worldBookReads = projected.reads
             if (projected.randomState) chat.worldBookRandomState = projected.randomState
-            return planner.plan({ purpose: 'body', card, chat: projected.macroState ? { ...chat, macroState: projected.macroState } : chat,
+            if (projected.virtualState) chat.worldBookVirtualState = projected.virtualState
+            const plan = await planner.plan({ purpose: 'body', card, chat: projected.macroState ? { ...chat, macroState: projected.macroState } : chat,
               userText, sessionId: input.sessionId, nativeTurn: turn, scriptReference: null, worldBookContext: projected.context })
+            return { ...plan, ...(projected.virtualState ? { virtualWorldbook: { scope: projected.virtualState.scope,
+              entries: Object.fromEntries((projected.changedVirtualRefs || []).map(ref => [ref, projected.virtualState.entries[ref]?.renderHash])) } } : {}) }
           }
           const recalled = prepareWorldBookRecall({ chat, card, worldBook, turn: turn - 1, userText, userTextInHistory: true })
           chat.worldBookReads = recalled.recordReads(chat.worldBookReads)

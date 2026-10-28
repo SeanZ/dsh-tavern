@@ -893,6 +893,7 @@ window.__ModuleLoader__.load({
 // @include modules/view-tabs.js
 // @include features/settings.js
 
+// @include features/prose-layout.js
 // @include features/text-layout.js
 
 // @include features/user-profile.js
@@ -908,6 +909,7 @@ window.__ModuleLoader__.load({
         // @include card-memory.js
 
 // @include features/skills.js
+// @include features/worldbook-inspector.js
 
 
 // @include features/preset-library.js
@@ -1187,6 +1189,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
         exports.apply = apply;
 		exports.createTurnHistoryProjection = createTurnHistoryProjection;
 		exports.createTurnErrorControls = createTurnErrorControls;
+		exports.createStepFoldControls = createStepFoldControls;
 		exports.createSupersededErrorProjection = createSupersededErrorProjection;
 		exports.inject = inject;
 		exports.buildOpeningPreviewDocument = buildOpeningPreviewDocument;

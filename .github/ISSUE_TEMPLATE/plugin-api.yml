@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tavern 不提前设计接口，而是根据插件实际用到的内容补接口。请先读[插件接口文档](https://github.com/flizzywine/dsh-tavern/blob/main/docs/plugin-api.md)，确认现有接口和 DSH 自带的服务（llm、credentials、attachments、subagents 等）做不到。
+        Tavern 不提前设计接口，而是根据插件实际用到的内容补接口。请先读[插件接口文档](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)，确认现有接口和 DSH 自带的服务（llm、credentials、attachments、subagents 等）做不到。
         接口只开放媒体等外围能力（生图、视频、配音、插图显示等），不开放修改正文、变量、存档。新增接口只加不改，已发布的插件不会受影响。
   - type: textarea
     id: plugin

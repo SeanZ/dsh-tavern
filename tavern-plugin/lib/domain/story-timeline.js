@@ -123,6 +123,7 @@ export function createStoryTimeline(options = {}) {
       preparedWorldBookContext: str(chat.preparedWorldBookContext),
       preparedWorldBook: chat.preparedWorldBook === undefined ? null : chat.preparedWorldBook,
       worldBookReads: chat.worldBookReads === undefined ? null : chat.worldBookReads,
+      worldBookVirtualState: chat.worldBookVirtualState,
       participants: object(chat.timeline).participants
     })
   }
@@ -151,6 +152,8 @@ export function createStoryTimeline(options = {}) {
     chat.preparedWorldBookContext = str(source.preparedWorldBookContext)
     chat.preparedWorldBook = clone(source.preparedWorldBook === undefined ? null : source.preparedWorldBook)
     chat.worldBookReads = clone(source.worldBookReads === undefined ? null : source.worldBookReads)
+    if (Object.hasOwn(source, 'worldBookVirtualState')) chat.worldBookVirtualState = clone(source.worldBookVirtualState)
+    else delete chat.worldBookVirtualState
   }
 
   function trimOperations(timeline) {

@@ -15,6 +15,26 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
 
+// Replay a cached projection's writes, not its whole old snapshot: newly
+// activated earlier controllers may have introduced unrelated state changes.
+function replayProjectionDelta(current, before, after) {
+  if (JSON.stringify(before) === JSON.stringify(after)) return clone(current)
+  if (!before || !after || typeof before !== 'object' || typeof after !== 'object' || Array.isArray(before) || Array.isArray(after)) return clone(after)
+  const next = { ...(current || {}) }
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Object.hasOwn(after, key)) delete next[key]
+    else if (!Object.hasOwn(before, key)) next[key] = clone(after[key])
+    else next[key] = replayProjectionDelta(next[key], before[key], after[key])
+  }
+  return next
+}
+function readerInputs(dependencies, macroState, card) {
+  return dependencies?.map(({ scope, key }) => {
+    const owner = scope === 'identity' ? { char: card?.name, user: macroState?.userName || '你' } : macroState?.[scope] || {}
+    return [scope, key, Object.hasOwn(owner, key), owner[key]]
+  })
+}
+
 function charCount(value) {
   return Array.from(str(value).trim()).length
 }
@@ -168,7 +188,7 @@ export async function projectWorldBookTemplates(input = {}) {
   if (!runtime || typeof runtime.render !== 'function') throw new Error('缺少世界书模板运行时')
   const resources = allEntries(input.worldBook)
   const controllers = promptOrder((input.selectedEntries || resources).filter(function (entry) {
-    return (entry.enabled !== false || (input.activationRequests || []).some(request => request.ref === entry.ref && request.force)) && (input.selectedEntries || entry.constant === true) && !isMvuUpdateEntry(entry) && (input.includeConstants === true || isWorldBookTemplateEntry(entry))
+    return (entry.enabled !== false || (input.activationRequests || []).some(request => request.ref === entry.ref && request.force)) && (input.selectedEntries || entry.constant === true) && (input.mvuUpdateOnly === true ? isMvuUpdateEntry(entry) : !isMvuUpdateEntry(entry)) && (input.includeConstants === true || isWorldBookTemplateEntry(entry))
   }))
   const { foregroundRefs, prefixRefs } = worldbookPlacement([...resources.filter(entry => !isMvuUpdateEntry(entry)), ...controllers.filter(entry => entry.enabled === false).map(entry => ({ ...entry, enabled: true }))])
   const projectedEntries = []
@@ -176,7 +196,7 @@ export async function projectWorldBookTemplates(input = {}) {
     global: clone(input.globalVariables || {}),
     initial: clone(input.chat && input.chat.promptTemplateInitialVariables || {}),
     local: clone(input.chat && input.chat.variables || {}),
-    message: lastTavernHelperVariables(input.chat?.promptTemplateInput?.message ? [input.chat.promptTemplateInput.message] : input.chat && input.chat.messages) || {}
+    message: input.messageVariables ?? lastTavernHelperVariables(input.chat?.promptTemplateInput?.message ? [input.chat.promptTemplateInput.message] : input.chat && input.chat.messages) ?? {}
   }
   let macroState = clone(input.chat?.macroState || {})
   const context = []
@@ -198,10 +218,10 @@ export async function projectWorldBookTemplates(input = {}) {
         ref: entry.ref, world: str(input.worldBook?.view?.displayName) }
     })
   }
-  const templates = controllers.filter(isWorldBookTemplateEntry)
+  const templates = controllers.filter(entry => isWorldBookTemplateEntry(entry) && !input.renderCache?.has(entry.ref))
   // Plain entries only affect the host macro state below, not template scopes.
   // Keep their output interleaved in the original order after the batch returns.
-  const useBatch = templates.length > 0 && typeof runtime.renderProjections === 'function'
+  const useBatch = templates.length > 0 && typeof runtime.renderProjections === 'function' && !input.renderCache?.size
   const batch = useBatch
     ? await runtime.renderProjections(templates.map(entry => ({ template: templateBody(entry.content), randomRef: entry.ref })),
       { ...templateContext, scopes, randomSeed: input.randomSeed }) : null
@@ -212,21 +232,41 @@ export async function projectWorldBookTemplates(input = {}) {
   }
   let templateIndex = 0
   for (const entry of controllers) {
+    let cached = input.renderCache?.get(entry.ref)
+    const dependencies = input.cacheReaders?.get(entry.ref)
+    const readerState = readerInputs(dependencies, macroState, input.card)
+    if (cached && dependencies && !cached.effectful && JSON.stringify(cached.readerState) !== JSON.stringify(readerState)) {
+      input.renderCache.delete(entry.ref); cached = null
+    }
+    if (cached) {
+      scopes = replayProjectionDelta(scopes, cached.beforeScopes, cached.scopes)
+      macroState = replayProjectionDelta(macroState, cached.beforeMacroState, cached.macroState)
+      activationRequests.push(...cached.activationRequests)
+      if (cached.diagnostic) diagnostics.push(cached.diagnostic)
+      if (cached.text) { context.push(cached.text); projectedEntries.push({ ...entry, content: cached.text }); refs.push(str(entry.ref)) }
+      continue
+    }
+    const beforeScopes = input.renderCache ? clone(scopes) : undefined
+    const beforeMacroState = input.renderCache ? clone(macroState) : undefined
     const random = input.randomSeed ? entryRandom(input.randomSeed, entry.ref) : (input.random || Math.random)
     const result = isWorldBookTemplateEntry(entry)
       ? batch ? batch[templateIndex++] : await (runtime.renderProjection || runtime.render).call(runtime, templateBody(entry.content), Object.assign({}, templateContext, { scopes, randomSeed: input.randomSeed, randomRef: entry.ref }))
       : { ok: true, text: entry.content, scopes }
     if (!result.ok) {
-      diagnostics.push({ kind: 'worldbook-template', code: result.kind, ref: str(entry.ref) })
+      const diagnostic = { kind: 'worldbook-template', code: result.kind, ref: str(entry.ref) }
+      diagnostics.push(diagnostic)
+      input.renderCache?.set(entry.ref, { diagnostic, beforeScopes, beforeMacroState, scopes: clone(scopes), macroState: clone(macroState), activationRequests: [] })
       continue
     }
     for (let count = 0; count < (result.randomCalls || 0); count++) random()
-    activationRequests.push(...(result.activationRequests || []).map(request => ({ ...request, sourceRef: entry.ref })))
-    if (!useBatch) scopes = clone(result.scopes)
+    const entryActivations = (result.activationRequests || []).map(request => ({ ...request, sourceRef: entry.ref }))
+    activationRequests.push(...entryActivations)
+    if (!useBatch || input.renderCache) scopes = clone(result.scopes)
     const projected = input.includeConstants === true
       ? projectAgentContent(renderWorldbookRandom(result.text, random), { charName: str(input.card?.name), macroState }) : null
     if (projected) macroState = projected.macroState
     const text = str(input.randomOutputs?.[entry.ref] ?? (projected ? projected.agentText : result.text)).trim()
+    input.renderCache?.set(entry.ref, { text, beforeScopes, beforeMacroState, scopes: clone(result.scopes || scopes), macroState: clone(macroState), activationRequests: entryActivations, readerState, effectful: !dependencies || /\{\{|<%/.test(JSON.stringify(readerState)) })
     if (text === '') continue
     context.push(text)
     projectedEntries.push({ ...entry, content: text })

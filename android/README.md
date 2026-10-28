@@ -2,7 +2,7 @@
 
 Android 用户安装仅提供独立 APK。此目录保留旧 DSHA 部署实现，供维护和历史兼容参考，不再作为用户安装入口。
 
-APK 下载、安装、更新和旧数据导入步骤见 [Android 安装说明](../docs/android-install.md)。
+APK 下载、安装、更新和旧数据导入步骤见 [Android 安装说明](https://github.com/flizzywine/dsh-tavern/wiki/Android-%E5%AE%89%E8%A3%85%E4%B8%8E%E6%9B%B4%E6%96%B0)。
 
 这里保存 DSHA 部署使用的酒馆入口插件：
 

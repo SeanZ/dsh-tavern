@@ -5,7 +5,9 @@ import test from 'node:test'
 import { JSDOM } from 'jsdom'
 
 const client = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-const start = client.indexOf('const TAVERN_TEXT_LAYOUT_KEY')
+// 正文排版的行距/字距读的是同一个设置对象，自动分段的规则与开关在 prose-layout.js 里，
+// 所以从那份源码开始切，免得切片里引用不到 normalizeTavernProseLayout。
+const start = client.indexOf('const TAVERN_PROSE_DEFAULTS')
 const marker = 'const tavernTextLayoutFeature = createTavernTextLayoutFeature();'
 const source = client.slice(start, client.indexOf(marker) + marker.length)
 
@@ -16,16 +18,16 @@ async function setup() {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator })
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
   const React = (await import('react')).default
-  const feature = new Function('React', 'window', 'document', source + '\nreturn tavernTextLayoutFeature;')(React, dom.window, dom.window.document)
-  return { dom, React, feature }
+  const api = new Function('React', 'window', 'document', source + '\nreturn { feature: tavernTextLayoutFeature, prose: tavernProseLayoutSettings, layoutText: layoutTavernProseText };')(React, dom.window, dom.window.document)
+  return { dom, React, feature: api.feature, prose: api.prose, layoutText: api.layoutText }
 }
 
 test('取值规整：没调过是 null，超范围夹住；默认行距按酒馆原来的 24px + 字号增量换算', async () => {
   assert.ok(start >= 0, '客户端 bundle 应包含正文排版')
   const { feature } = await setup()
-  assert.deepEqual(feature.normalize(null), { lineHeight: null, letterSpacing: null })
-  assert.deepEqual(feature.normalize({ lineHeight: 9, letterSpacing: -1 }), { lineHeight: 3, letterSpacing: -0.1 })
-  assert.deepEqual(feature.normalize({ lineHeight: '', letterSpacing: 'x' }), { lineHeight: null, letterSpacing: null })
+  assert.deepEqual(feature.normalize(null), { lineHeight: null, letterSpacing: null, paragraphs: true, sentences: 2, indent: false })
+  assert.deepEqual(feature.normalize({ lineHeight: 9, letterSpacing: -1 }), { lineHeight: 3, letterSpacing: -0.1, paragraphs: true, sentences: 2, indent: false })
+  assert.deepEqual(feature.normalize({ lineHeight: '', letterSpacing: 'x' }), { lineHeight: null, letterSpacing: null, paragraphs: true, sentences: 2, indent: false })
   assert.equal(feature.defaultLineHeight(14), 1.71)
   assert.equal(feature.defaultLineHeight(17), 1.59)
 })
@@ -39,7 +41,7 @@ test('调过才写变量和开关属性；恢复默认后撤掉，并保存在�
   assert.equal(root.hasAttribute('data-dsh-text-layout'), true)
   assert.equal(root.style.getPropertyValue('--dsh-tavern-line-height'), '2.2')
   assert.equal(root.style.getPropertyValue('--dsh-tavern-letter-spacing'), '0.05em')
-  assert.deepEqual(JSON.parse(dom.window.localStorage.getItem('dsh-tavern-text-layout')), { lineHeight: 2.2, letterSpacing: 0.05 })
+  assert.deepEqual(JSON.parse(dom.window.localStorage.getItem('dsh-tavern-text-layout')), { lineHeight: 2.2, letterSpacing: 0.05, paragraphs: true, sentences: 2, indent: false })
   feature.update({ lineHeight: null, letterSpacing: null })
   assert.equal(root.hasAttribute('data-dsh-text-layout'), false)
   assert.equal(root.style.getPropertyValue('--dsh-tavern-line-height'), '')
@@ -63,7 +65,7 @@ test('外观行：字号读写 DSH 的字号设置，并跟随通用设置的改
   const root = createRoot(dom.window.document.getElementById('root'))
   await act(async () => { root.render(React.createElement(Row, registered.inject())) })
   const values = () => [...dom.window.document.querySelectorAll('.dsh-tavern-text-layout-value')].map(node => node.textContent)
-  assert.deepEqual(values(), ['17px', '1.59×', '0em'])
+  assert.deepEqual(values(), ['17px', '1.59×', '0em', '2句'])
   const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set
   const size = dom.window.document.querySelector('.dsh-tavern-text-layout input[type=range]')
   await act(async () => { setter.call(size, '20'); size.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
@@ -143,5 +145,42 @@ test('DSH 0.2.1 未打字号补丁的宿主（上限 22）同样收窄滑杆，�
   assert.deepEqual(writes, [['text', 22]])
   assert.equal(size.max, '22')
   assert.equal(dom.window.document.querySelector('.dsh-tavern-settings-error'), null)
+  await act(async () => { root.unmount() })
+})
+
+test('自动分段：开关写进同一份设置、立刻改显示，并通知已挂着的正文重画', async () => {
+  const { dom, React, feature, prose } = await setup()
+  const { createRoot } = await import('react-dom/client')
+  const { act } = await import('react')
+  let registered, Row
+  const ctx = {
+    theme: { getTheme: () => ({ fontSizes: { text: 14 } }), setFontSize: () => {} },
+    on: () => () => {},
+    slots: { inject: (_name, run) => run(), register: (meta, component) => { registered = meta; Row = component; return () => {} } }
+  }
+  feature.register(ctx)
+  const changed = []
+  dom.window.addEventListener('dsh-tavern-prose-layout', () => changed.push(true))
+  const root = createRoot(dom.window.document.getElementById('root'))
+  await act(async () => { root.render(React.createElement(Row, registered.inject())) })
+
+  const rootNode = dom.window.document.documentElement
+  assert.equal(rootNode.hasAttribute('data-dsh-tavern-prose-indent'), false, '默认不缩进')
+  assert.equal(prose().paragraphs, true, '默认开着自动分段')
+
+  const layers = () => [...dom.window.document.querySelectorAll('.dsh-tavern-text-layout-switch input[role="switch"]')]
+  await act(async () => { layers()[0].click() })
+  assert.equal(prose().paragraphs, false, '关掉后正文不再自动分段')
+  assert.equal(JSON.parse(dom.window.localStorage.getItem('dsh-tavern-text-layout')).paragraphs, false)
+  assert.ok(changed.length >= 1, '改完通知正文重画')
+
+  await act(async () => { layers()[1].click() })
+  assert.equal(prose().indent, true, '段首缩进开关生效')
+  assert.equal(rootNode.hasAttribute('data-dsh-tavern-prose-indent'), true)
+
+  const sentences = dom.window.document.querySelectorAll('.dsh-tavern-text-layout input[type=range]')[3]
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set
+  await act(async () => { setter.call(sentences, '4'); sentences.dispatchEvent(new dom.window.Event('input', { bubbles: true })) })
+  assert.equal(prose().sentences, 4, '每段句数可调')
   await act(async () => { root.unmount() })
 })

@@ -171,7 +171,8 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     // not after the new turn has already committed.
     pendingReplays.add(chat.id)
     try {
-      const card = await readChatCard(chat)
+      // A blank workbench can retry the very request that creates its first card.
+      const card = chat.mode === 'card' && str(chat.cardPath) === '' ? null : await readChatCard(chat)
       // 1) 移除被中断的内容：清掉失败回合留在原生消息面上的节点。清理钩子
       // 正常已在失败时执行过，此处重复调用对已清理的回合是无操作。
       const cleared = clearFailedTurnSurface({ session, turn: target.turn })

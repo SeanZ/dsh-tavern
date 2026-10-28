@@ -6,7 +6,7 @@ import { normalizeBackgroundTasks } from './tavern-settings.js'
 /** Validate model choices, patch only current configuration and trigger newly enabled work. */
 export function createConversationBackgroundSettings({ readConfig, readChat, updateChat, modelCatalog, modelReasoning,
   isPlayMode, onStyleEnabled = () => {}, extraTools = async () => [],
-  worldbookStrategies = { list: () => [{ id: 'legacy', label: '当前注入策略（默认）' }, { id: 'native-skills', label: '本局原生 Skill 库' }], has: id => ['legacy', 'native-skills'].includes(id) } }) {
+  worldbookStrategies = { list: () => [{ id: 'legacy', label: '外部注入（旧机制）' }, { id: 'native-skills', label: '主动检索（推荐）' }], has: id => ['legacy', 'native-skills'].includes(id) } }) {
   function requirePlay(chat) {
     if (!chat || !isPlayMode(chat.mode)) throw new Error('请先打开游玩会话')
     return chat

@@ -571,7 +571,7 @@ Fish Audio 云端和自己部署的同协议服务用同一个渠道「Fish 协�
 
 ## 插件接口
 
-已开放（见[插件接口](../plugin-api.md)「演出」与 `registerStageView`）：
+已开放（见[插件接口](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)「演出」与 `registerStageView`）：
 
 - 宿主侧：`getCast({ gameId, turn })` 读某一轮当前版本的台词标注；`onCastAnnotated` 标注保存时通知；`getCastAssets({ gameId })` 读角色素材；`speechProvider` 加配音渠道；`synthesizeSpeech` 按人物声音合成一句。
 - 浏览器侧：`getStage`、`watchStage` 读舞台数据；`registerStageView` 换舞台画面，Tavern 保留阅读流程，插件失败时退回内置画面；`speak`、`stopSpeech` 朗读。

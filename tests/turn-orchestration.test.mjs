@@ -349,7 +349,7 @@ test('漏写的一轮可以按它自己的请求号补记进存档（#196 自愈
 test('本局前台工具可逐项关闭，卡片模式不受影响', async () => {
   const all = harness('story', { storyToolCall: true, webSearchEnabled: true })
   const names = await all.orchestrator.visibleTools('session-1')
-  assert.equal(names.includes('worldbook_search'), true)
+  assert.equal(names.includes('worldbook_search'), false)
   assert.equal(names.includes('submit_story'), true)
 
   const one = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: ['worldbook_search'] } })
@@ -377,4 +377,52 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
 
   const card = harness('card', { chatFields: { disabledForegroundTools: disabled } })
   assert.ok((await card.orchestrator.visibleTools('session-1')).includes('tavern_update_card'))
+})
+
+test('native virtual snapshots persist with explicit request identity while static constants stay out of history frames', async () => {
+  let key
+  const virtualState = { schemaVersion: 1, scope: '["session-1","cards/阿芙拉.json"]', entries: { weather: { text: '晴', renderHash: 'sun', version: 'v' } } }
+  const run = harness('story', { chatFields: { worldbookStrategy: 'native-skills' }, projectForegroundWorldbook: async ({ requestKey }) => {
+    key = requestKey
+    return { context: '晴', staticPrefix: 'STATIC EXACT', virtualState, changedVirtualRefs: ['weather'], activation: { refs: ['weather'] }, refs: ['weather'], reads: {} }
+  } })
+  const prepared = await run.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '出门' })
+  assert.equal(typeof key, 'string')
+  assert.ok(key)
+  assert.deepEqual(run.chat().worldBookVirtualState, virtualState)
+  const frame = Object.values(run.chat().foregroundFrames).at(-1)
+  assert.equal(frame.source.worldBook.virtualWorldbook.entries.weather, 'sun')
+  assert.doesNotMatch(JSON.stringify(frame), /STATIC EXACT/)
+  assert.equal(prepared.ready, true)
+  await run.orchestrator.finalize({ sessionId: 'session-1', turn: 2, userText: '出门', assistantText: '天气晴朗。' })
+  assert.equal(run.rollback().chat.worldBookVirtualState, undefined, 'rollback removes snapshots from the abandoned future')
+})
+
+
+test('native gameplay advertises scoped read instead of legacy worldbook search; legacy and card tools stay unchanged', async () => {
+  for (const mode of ['story', 'script']) {
+    const native = harness(mode, { chatFields: { worldbookStrategy: 'native-skills' } })
+    const names = await native.orchestrator.visibleTools('session-1')
+    assert.ok(names.includes('read'))
+    assert.ok(names.includes('skill'))
+    assert.equal(names.includes('worldbook_search'), false)
+    const legacy = harness(mode)
+    const oldNames = await legacy.orchestrator.visibleTools('session-1')
+    assert.ok(!oldNames.includes('worldbook_search'))
+    assert.equal(oldNames.includes('read'), false)
+  }
+  assert.deepEqual(await harness('card', { chatFields: { worldbookStrategy: 'native-skills' } }).orchestrator.visibleTools('session-1'),
+    await harness('card').orchestrator.visibleTools('session-1'))
+})
+
+test('tool visibility reads worldbook strategy from bounded header', async () => {
+  let fields
+  const orchestrator = createTurnOrchestrator({ frameBuilder: createForegroundFrameBuilder(), store: { headerForSession: async (_id, requested) => {
+    fields = requested
+    return Object.fromEntries(requested.map(key => [key, { mode: 'story', worldbookStrategy: 'native-skills' }[key]]))
+  } } })
+  const names = await orchestrator.visibleTools('game')
+  assert.ok(fields.includes('worldbookStrategy'))
+  assert.ok(names.includes('read'))
+  assert.equal(names.includes('worldbook_search'), false)
 })

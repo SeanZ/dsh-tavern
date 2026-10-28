@@ -84,7 +84,7 @@ export function createMvuSettlementEngine(deps) {
       variableSchema: mvuTarget.variables.schema,
       charName: card && card.name,
       macroState: snapshot.macroState,
-      updateRules: await mvuUpdateRules(snapshot, card),
+      updateRules: await mvuUpdateRules(snapshot, card, mvuTarget),
       webSearchEnabled: snapshot.webSearchEnabled === true
     }
     const pendingSubmission = mvuTarget.message.mvu && mvuTarget.message.mvu.pendingSubmission

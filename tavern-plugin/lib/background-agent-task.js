@@ -182,7 +182,7 @@ export function createBackgroundAgentTask(options) {
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
         if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
@@ -193,6 +193,10 @@ export function createBackgroundAgentTask(options) {
           })
           assembly.tools = []
           return assembly
+        }
+        if (!state.input.worldbookSkillsEnabled) {
+          assembly.sections = (assembly.sections || []).filter(section => section?.name !== 'tool:read')
+          assembly.tools = (assembly.tools || []).filter(tool => tool?.name !== 'read')
         }
         if (state.input.webSearchEnabled === true) return assembly
         assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })

@@ -140,6 +140,8 @@
 					props.children));
 		}
 
+		// 外观 → 正文排版：模型整块写下来的正文先按句子重新分段（features/prose-layout.js）；
+		// 台词行（@…）不参与，它们是气泡，本身就是一段。
 		/**
 		 * Text with its dialogue bubbles as speaker rows, while it streams too: a bubble is its speaker's row as soon as its
 		 * text starts (an unfinished thought has no closing bracket yet), and a last line still too short to read shows
@@ -148,9 +150,9 @@
 		function renderTavernDialogueText(text, key, renderText, cast, streaming) {
 			const h = React.createElement;
 			const source = String(text ?? ""), segments = source.indexOf("@") >= 0 ? parseBubbles(source, streaming) : null;
-			if (!cast || !segments || !segments.some(function (segment) { return segment.kind === "bubble"; })) return renderText(segments ? dialogueBubblePlainText(segments) : source, key);
+			if (!cast || !segments || !segments.some(function (segment) { return segment.kind === "bubble"; })) return renderText(layoutTavernProseText(segments ? dialogueBubblePlainText(segments) : source), key);
 			return h(React.Fragment, { key: key }, segments.map(function (segment, index) {
-				if (segment.kind === "markdown") return renderText(segment.text, index);
+				if (segment.kind === "markdown") return renderText(layoutTavernProseText(segment.text), index);
 				const speaker = bubbleSpeaker(segment), character = tavernCastCharacter(cast.characters, speaker);
 				return h(TavernCastRow, { key: index, cast: cast, speaker: speaker, emotion: bubbleEmotion(segment.mood), speech: bubbleSpeech(segment, voiceTranslates(character && character.voiceLanguage)) },
 					renderText(segment.thought ? "（" + segment.text + (segment.streaming ? "" : "）") : segment.text, "text"));

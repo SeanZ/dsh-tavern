@@ -262,6 +262,9 @@ export function createPlayHandlers(deps) {
     async getBackgroundProgress(args) {
       return { progress: backgroundAgentRunner.progress(args && args.sessionId) || pluginSettlementProgress.snapshot(args && args.sessionId) }
     },
+    async getBackgroundRuns(args) {
+      return { runs: backgroundAgentRunner.runs(args && args.sessionId) }
+    },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }
     },

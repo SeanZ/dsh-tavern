@@ -158,5 +158,26 @@ test('世界书模型筛选是本局开关，默认关闭', () => {
   assert.equal(normalizeBackgroundTasks({}).worldbookScreening, false)
   assert.equal(normalizePlayDefaults({}).backgroundTasks.worldbookScreening, false)
   const saved = patchConversationBackground({ backgroundTasks: { styleReference: true } }, { backgroundTasks: { worldbookScreening: true } })
-  assert.deepEqual([saved.backgroundTasks.worldbookScreening, saved.backgroundTasks.styleReference], [true, true])
+  assert.deepEqual([saved.backgroundTasks.worldbookScreening, saved.backgroundTasks.styleReference], [false, true])
+})
+
+test('新游戏默认使用 Skill 世界书，全局可切回旧机制且严格校验', () => {
+  assert.equal(normalizePlayDefaults({}).worldbookStrategy, 'native-skills')
+  const saved = applyTavernSettingsPatch({}, { defaultPlaySettings: { worldbookStrategy: 'legacy' } })
+  assert.equal(presentTavernSettings(saved, {}).defaultPlaySettings.worldbookStrategy, 'legacy')
+  const updated = applyTavernSettingsPatch(saved, { defaultPlaySettings: { playerName: '旅人' } })
+  assert.equal(updated.defaultPlaySettings.worldbookStrategy, 'legacy')
+  assert.throws(() => applyTavernSettingsPatch({}, { defaultPlaySettings: { worldbookStrategy: 'unknown' } }), /默认世界书策略无效/)
+})
+
+
+test('系统导航旧配置默认隐藏，布尔补丁保留其它偏好并可往返读取', () => {
+  assert.equal(presentTavernSettings({}, {}).showSystemNavigation, false)
+  const previous = { hideContextAndReasoning: false, unknown: 'preserved' }
+  const saved = applyTavernSettingsPatch(previous, { showSystemNavigation: true })
+  assert.equal(presentTavernSettings(JSON.parse(JSON.stringify(saved)), {}).showSystemNavigation, true)
+  assert.equal(saved.hideContextAndReasoning, false)
+  assert.equal(saved.unknown, 'preserved')
+  assert.equal(presentTavernSettings(applyTavernSettingsPatch(saved, { showSystemNavigation: false }), {}).showSystemNavigation, false)
+  for (const value of ['true', 1, null]) assert.throws(() => applyTavernSettingsPatch(previous, { showSystemNavigation: value }), /布尔值/)
 })

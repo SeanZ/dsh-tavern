@@ -7,11 +7,27 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parse, stringify } from 'yaml'
 import { syncUserPlugins, GUARD_FILE } from '../tavern-plugin/lib/domain/user-plugins.js'
+import { compareDshVersions } from '../tavern-plugin/lib/domain/host-compatibility.js'
 
 // Uses released host code, not a reimplementation of its manifest contract.
 // For a minimal isolated host install, point DSH_INVENTORY_MODULE at
 // @deepseek-ai/dsh-plugin-package-inventory-deepseek/lib/index.js.
 const anchor = process.env.DSH_INVENTORY_MODULE || process.env.DSH_BOOT_MODULE
+
+// From 0.2.1-rc.0 the host tolerates a plugin whose manifest has no version: it
+// advertises the package without one and still prepares the request. Below that an
+// incomplete identity failed the whole request, which is the pre-HTTP rejection
+// asserted when the installed host predates this behavior.
+const HOST_TOLERATES_INCOMPLETE_IDENTITY = '0.2.1-rc.0'
+
+async function readHostVersion() {
+  const modulePath = [process.env.DSH_BOOT_MODULE, process.env.DSH_INVENTORY_MODULE].find(Boolean)
+  if (!modulePath) return ''
+  try {
+    const manifest = JSON.parse(await readFile(path.join(path.dirname(path.resolve(modulePath)), '..', 'package.json'), 'utf8'))
+    return typeof manifest.version === 'string' ? manifest.version : ''
+  } catch { return '' }
+}
 
 test('real DeepSeek request preparation survives a previously registered invalid plugin and its repair', {
   skip: !anchor && 'Requires DSH_BOOT_MODULE or DSH_INVENTORY_MODULE pointing to installed DSH host packages',
@@ -56,8 +72,26 @@ test('real DeepSeek request preparation survives a previously registered invalid
   }
   inventory.apply({ loader, baseUrl: loader.ctx.baseUrl, get: () => undefined, deepseekLlmApiExtensions: registry }, { enabled: true })
   const prepare = () => registry.prepare({ body: {}, signal: new AbortController().signal })
+  // 0.2.1 hosts cache package identities per process, so a repaired manifest is only
+  // visible through a fresh inventory registration.
+  const prepareFresh = () => {
+    const freshRegistry = new DeepSeekLlmApiExtensionRegistry(new Context())
+    inventory.apply({ loader, baseUrl: loader.ctx.baseUrl, get: () => undefined, deepseekLlmApiExtensions: freshRegistry }, { enabled: true })
+    return freshRegistry.prepare({ body: {}, signal: new AbortController().signal })
+  }
+  const hostVersion = await readHostVersion()
+  const hostToleratesIncompleteIdentity = /^\d+\.\d+\.\d+/.test(hostVersion) && compareDshVersions(hostVersion, HOST_TOLERATES_INCOMPLETE_IDENTITY) >= 0
   await reloadPatch()
-  await assert.rejects(prepare, /must declare non-empty name and version/, 'legacy patch reproduces the actual pre-HTTP failure')
+  if (hostToleratesIncompleteIdentity) {
+    // The pre-HTTP failure this test was written to reproduce no longer happens: the
+    // request prepares and advertises the plugin whose manifest omits a version.
+    // Keeping that plugin out of the patch is still the guard's job, which the
+    // user-plugin assertions below cover.
+    const packages = (await prepare()).fields.dsh_plugin_packages.packages
+    assert.ok(packages.some(pkg => pkg.name === 'healthy' && pkg.version === '2.0.0'), 'healthy plugin is still advertised')
+  } else {
+    await assert.rejects(prepare, /must declare non-empty name and version/, 'legacy patch reproduces the actual pre-HTTP failure')
+  }
 
   const warnings = []
   const result = await syncUserPlugins({ dataRoot, dshHome, logger: { warn: value => warnings.push(value) } })
@@ -70,7 +104,7 @@ test('real DeepSeek request preparation survives a previously registered invalid
   await makePlugin('legacy-card', { name: 'dsh-card-dafeiyu-galgame', version: '1.0.0' })
   assert.equal((await syncUserPlugins({ dataRoot, dshHome, logger: { warn() {} } })).problems.length, 0)
   await reloadPatch()
-  assert.deepEqual((await prepare()).fields.dsh_plugin_packages.packages, [
+  assert.deepEqual((await (hostToleratesIncompleteIdentity ? prepareFresh() : prepare())).fields.dsh_plugin_packages.packages, [
     { name: 'dsh-card-dafeiyu-galgame', version: '1.0.0' }, { name: 'healthy', version: '2.0.0' },
   ], 'corrected plugins rejoin the next real inventory preparation')
 })

@@ -171,6 +171,7 @@ export function createConversationInitialization(options) {
     chat.userProfileId = profile?.profileId || 'default'
     chat.userProfileEnabled = profile?.hasConfirmed === true && profile.defaultEnabled === true
     chat.webSearchEnabled = groupOfMode(chat.mode) === 'play' && defaults.webSearchEnabled
+    if (groupOfMode(chat.mode) === 'play') chat.worldbookStrategy = defaults.worldbookStrategy
     chat.statusBarPlacement = defaults.statusBarPlacement
     chat.conversationFeaturesVersion = 1
     chat.backgroundModelSelection = groupOfMode(chat.mode) === 'play' ? normalizeBackgroundModel(currentSettings.defaultBackgroundModel) : null

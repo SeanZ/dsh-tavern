@@ -45,13 +45,17 @@ const PART_DEFS = [
     note: '显示偏好、候选策略、舞台开关等白名单字段；不含 API Key 与账号' },
   { kind: 'chats', group: 'story', label: '对话与存档', unit: '局', supported: true, privacy: '含剧情',
     note: '一局一个 .dshsave；导出时才生成，体积看剧情长度' },
-  { kind: 'scene', group: 'story', label: '场景配图', unit: '张', supported: false, note: '下一版随存档一起走' },
-  { kind: 'memory', group: 'story', label: '游玩记忆', unit: '局', supported: false, note: '下一版支持' },
+  // 配图没有单独的存储入口：它们随 .dshsave 的 scene/files 与附件一起走，页面上由「含对话配图」控制。
+  { kind: 'scene', group: 'story', label: '场景配图', unit: '张', supported: false,
+    note: '配图随「对话与存档」一起打包，勾选下面的「含对话配图」即可，不单独成项' },
+  { kind: 'memory', group: 'story', label: '游玩记忆', unit: '局', supported: true, privacy: '含私人剧情',
+    note: '每局最近十轮的世界书召回记录；导入随同包的存档并进同一局，操作 id 相同的跳过。卡记忆暂不搬' },
   { kind: 'plugins', group: 'ext', label: '插件', unit: '个', supported: true, privacy: '可执行代码',
     note: '插件文件夹原样打包；导入只复制，不启用、不执行' },
   { kind: 'plugin-data', group: 'ext', label: '插件数据', unit: '个', supported: true, privacy: '可能含 token',
     note: '导出时剥离疑似凭据；导入会覆盖对应插件的数据' },
-  { kind: 'assets', group: 'ext', label: '素材包与皮肤', unit: '包', supported: false, note: '下一版支持' },
+  { kind: 'assets', group: 'ext', label: '素材包与皮肤', unit: '包', supported: true,
+    note: '整包带走背景、音乐、音效与皮肤；导入会发新包 id，卡上的绑定要在素材页重新指一次' },
   { kind: 'fonts', group: 'ext', label: '字体', unit: '族', supported: true, note: '只带走自装字体；插件内置字体不重复打包' },
   { kind: 'scripts', group: 'ext', label: '剧本与素材', unit: '个', supported: true, note: '导入的参考资料原样带走；同名导入会加序号' },
   { kind: 'skills', group: 'ext', label: '写作 Skill', unit: '个', supported: true, note: '整目录打包；同名导入会加序号' },
@@ -72,7 +76,7 @@ export const TRANSFER_GROUPS = Object.freeze([
  */
 export function createTransferCatalog(deps) {
   const { fileResources, cardPreparation, readCardWorkspace, worldBooks, presetLibrary, promptDocuments,
-    userPreferenceProfile, regexManager, readTavernSettings, fileSize, tavernVersion, chats, plugins, materials, fonts, pluginData, skills, logs } = deps
+    userPreferenceProfile, regexManager, readTavernSettings, fileSize, tavernVersion, chats, plugins, materials, fonts, pluginData, skills, logs, assets, memory } = deps
 
   async function sizeOf(relative) {
     try { return await fileSize(relative) } catch { return 0 }
@@ -158,11 +162,17 @@ export function createTransferCatalog(deps) {
   if (pluginData) LISTS['plugin-data'] = () => pluginData.list()
   if (skills) LISTS.skills = () => skills.list()
   if (logs) LISTS.logs = () => logs.list()
+  if (assets) LISTS.assets = () => assets.list()
+  if (memory) LISTS.memory = () => memory.list()
 
   async function listParts() {
     const parts = []
     for (const def of PART_DEFS) {
-      if (!def.supported) { parts.push(Object.assign({}, def, { items: [], bytes: 0 })); continue }
+      // 依赖没接上（测试或裁剪过的宿主）时按「本机没有」处理，不去调用不存在的列表。
+      if (!def.supported || typeof LISTS[def.kind] !== 'function') {
+        parts.push(Object.assign({}, def, { items: [], bytes: 0 }))
+        continue
+      }
       let items = []
       try { items = await LISTS[def.kind]() } catch (error) { console.warn('dsh-tavern: 读取导出板块失败', def.kind, str(error && error.message || error)) }
       parts.push(Object.assign({}, def, { items, bytes: items.reduce(function (sum, item) { return sum + item.bytes }, 0) }))
@@ -265,9 +275,19 @@ export function createTransferCatalog(deps) {
       for (const item of exports) add('chats', '对话与存档', { key: item.key, title: item.title }, safeTransferFileName(item.fileName, 'game.dshsave'), item.content)
     }
 
+    if (memory && selected(selection, 'memory').length) {
+      const exports = await memory.collect(selected(selection, 'memory'))
+      for (const item of exports) add('memory', '游玩记忆', { key: item.key, title: item.title }, safeTransferFileName(item.fileName, 'recalls.json'), item.content)
+    }
+
     if (fonts && selected(selection, 'fonts').length) {
       const exports = await fonts.collect(selected(selection, 'fonts'))
       for (const item of exports) add('fonts', '字体', { key: item.key, title: item.title }, safeTransferFileName(item.fileName, 'font.zip'), item.content)
+    }
+
+    if (assets && selected(selection, 'assets').length) {
+      const exports = await assets.collect(selected(selection, 'assets'))
+      for (const item of exports) add('assets', '素材包与皮肤', { key: item.key, title: item.title }, safeTransferFileName(item.fileName, 'asset-pack.zip'), item.content)
     }
 
     if (logs && selected(selection, 'logs').length) {

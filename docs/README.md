@@ -1,5 +1,7 @@
 # dsh-tavern 文档
 
+正式使用文档统一在 [GitHub Wiki](https://github.com/flizzywine/dsh-tavern/wiki)维护，登录 GitHub 即可直接编辑。此目录只保留工程设计、架构与历史研究资料，不再维护使用手册或网站副本。旧文档网站已停用。
+
 ## 权威文档
 
 - [领域契约](../CONTEXT.md)：Story Timeline、前后台轮次和持久化边界的当前定义。
@@ -17,7 +19,7 @@
 - [`reviews/`](reviews/)：历史审查及实施记录，不作为当前架构入口。
 - [`research/`](research/)：外部项目、兼容机制、产品判断与故障研究。统一入口见[参考项目库](research/reference-projects.md)，已有专题包括[《灯火阑珊》MVU 兼容链路验收](research/lighthouse-mvu-compatibility-e2e-2026-08-28.md)、[人物卡自带 `phone-ctn` 小手机调研](research/card-native-phone-phone-ctn-audit-2026-09-05.md)、[强烈而旺盛的角色扮演游戏需求备忘](research/roleplaying-demand-memo.md)、[酒馆预设兼容边界备忘](research/preset-compatibility-boundary-memo.md)、[酒馆正则如何把 `【首页】` 变成可交互卡片](research/sillytavern-regex-rendering-memo.md)、[梨园架构研究与借鉴范围](research/liyuan-architecture-reference.md)、[dsh-visualize HTML 嵌入机制](research/dsh-visualize-html-embedding.md)以及[Windows 聊天落盘、候选失败与后台压缩排查报告](research/windows-chat-persistence-and-background-compaction-diagnosis-2026-08-27.md)。研究文档通常只提供证据；其中正则渲染备忘已由对应设计明确采纳为兼容基线。
 
-用户功能和演示见项目 [README](../README.md)；安装、更新、数据备份及排错见[安装说明](installation.md)。
+用户功能和演示见项目 [README](../README.md)；安装、更新、数据备份及排错见[安装说明](https://github.com/flizzywine/dsh-tavern/wiki/%E5%AE%89%E8%A3%85%E3%80%81%E6%9B%B4%E6%96%B0%E4%B8%8E%E6%95%B0%E6%8D%AE%E5%A4%87%E4%BB%BD)。
 
 v3.0 发布说明见 [变更记录](releases/v3.0.md) 和 [完整提交清单](releases/v3.0-commits.md)。
 
@@ -25,7 +27,6 @@ v3.0 发布说明见 [变更记录](releases/v3.0.md) 和 [完整提交清单](r
 
 | 目录 | 用途 |
 | --- | --- |
-| [`manual/`](manual/) | 正式手册的页面源文件、构建和发布工具 |
 | [`design/references/`](design/references/) | Apple、Claude 的视觉参考，不作为项目架构规范 |
 | [`plans/`](plans/) | 分阶段实施计划；是否完成应结合验证记录判断 |
 | [`implementation/`](implementation/) | 特定功能的实施记录 |

@@ -876,3 +876,38 @@ test('读卡期间重放已独占失败回合，读卡失败释放锁后可重�
   assert.equal(h.calls.filter(call => call === 'followup').length, 1)
   assert.equal(h.agent.input.content[0].text, '重放这句')
 })
+
+for (const createsCard of [false, true]) test('空白工作台失败重试允许无卡，并返回重试后的工作台视图，创建卡=' + createsCard, async () => {
+  const h = harness({ mode: 'card' })
+  h.chat.cardPath = ''
+  h.session.events.length = 0
+  h.session.surface.nodes.length = 0
+  h.chat.messages = []
+  h.session.append('turn/start', { turn: 1 })
+  h.session.append('user/message', { role: 'user', content: [{ type: 'text', text: '创建人物卡' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  h.session.append('turn/end', { turn: 1, reason: { kind: 'error', message: 'HTTP 500' } })
+  h.options.chats.readCard = async chat => {
+    if (!chat.cardPath) throw new Error('人物卡不存在: ')
+    return { name: '新卡' }
+  }
+  h.agent.whenIdle = async () => {
+    if (createsCard) await h.options.chats.update('chat', chat => ({ ...chat, cardPath: 'cards/new.json' }), { source: 'fixture.create-card' })
+  }
+  // Exercise the production result adapter too: it used to unconditionally read
+  // the card again after replay, even if generation had not created one.
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
+  const start = source.indexOf('  async function presentStory(chat) {')
+  const end = source.indexOf('  const sessionViews', start)
+  h.options.present = new Function('sessionProjection', 'readOpeningWindow', 'templateHistoryFrom', 'isScopedMessages', 'readChat', 'view', 'readChatCard',
+    source.slice(start, end) + '; return presentStory')(
+    { project: { full: async chat => ({ mode: chat.mode, cardPath: chat.cardPath, workspace: {} }) } },
+    async () => null, new Map(), () => false, h.options.chats.read,
+    () => assert.fail('工作台应使用工作台视图投影'), h.options.chats.readCard)
+  const result = await h.create().replayFailed('', 'session')
+  assert.equal(h.calls.filter(call => call === 'followup').length, 1)
+  assert.equal(h.agent.input.content[0].text, '创建人物卡')
+  assert.equal(result.cardPath, createsCard ? 'cards/new.json' : '')
+  assert.deepEqual(result.workspace, {})
+  assert.deepEqual(h.chat.suppressedDshTurns, [1])
+})

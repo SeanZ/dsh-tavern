@@ -5,7 +5,7 @@ import { chromium } from 'playwright'
 // Exercise the public plugin registration and real React effects/events. Only
 // the DSH host and HTTP boundary are fixtures; no component source extraction.
 export async function openTavernSettings(t, { respond, section: pageSection, sessionId } = {}) {
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || undefined })
   t.after(() => browser.close())
   const page = await browser.newPage()
   page.setDefaultTimeout(5000)
@@ -22,6 +22,7 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
     }
     if (result === undefined) {
       if (method === 'getTavernSettings') result = { settings: { defaultPlaySettings: { playerName: "你", backgroundTasks: { variables: true, posture: true } } } }
+      else if (method === 'getDisplayPreferences') result = {}
       else if (method === 'getWebSearchStatus') result = { provider: 'tavern-search', attempts: [] }
       else if (method === 'listPresets') result = { presets: [], activePresetPath: '' }
       else if (method === 'getUserPreferenceProfile') result = { userProfile: { profiles: [], defaultProfileId: '' } }
@@ -51,7 +52,7 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
       sessions: { subagentAddress() {} },
       betterSidebar: { registerTab(spec) { Settings = () => modules.react.createElement(spec.component, { scope: { sessionId } }); } },
       tavernSessionSignals: { subscribe() { return () => {} } },
-      effect(run, label) { if (label === section) return run() },
+      effect(run, label) { if (label === section || label === "dsh-tavern: global display preferences") return run() },
       slots: { inject(_name, run) { return run() }, register(_spec, Component) { Settings = Component } }
     })
     while (!Settings) await new Promise(resolve => setTimeout(resolve, 10))

@@ -46,3 +46,18 @@ test('正文底栏保留宿主复制和酒馆分叉，只藏原生分支与酒�
   assert.equal(display('native-branch'), 'none', '宿主的原生分支会绕开游戏状态，仍应藏掉')
   dom.window.close()
 })
+
+
+test('系统导航开关恢复中英文原生导航，卸载酒馆后不再隐藏', () => {
+  const dom = new JSDOM(`<style>${css}</style><body class="dsh-tavern-shell-active"><nav aria-label="全局面板"></nav><nav aria-label="Global panels"></nav></body>`)
+  const navs = [...dom.window.document.querySelectorAll('nav')]
+  const displays = () => navs.map(nav => dom.window.getComputedStyle(nav).display)
+  assert.deepEqual(displays(), ['none', 'none'])
+  dom.window.document.documentElement.classList.add('dsh-tavern-show-system-navigation')
+  assert(displays().every(display => display !== 'none'))
+  dom.window.document.documentElement.classList.remove('dsh-tavern-show-system-navigation')
+  assert.deepEqual(displays(), ['none', 'none'])
+  dom.window.document.body.classList.remove('dsh-tavern-shell-active')
+  assert(displays().every(display => display !== 'none'))
+  dom.window.close()
+})

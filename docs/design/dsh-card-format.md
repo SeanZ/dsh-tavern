@@ -1,6 +1,6 @@
 # DSH 人物卡格式（.dshcard）
 
-2026-10-17 设计备忘，待确认后实施。相关：[从酒馆到 Galgame](tavern-to-galgame.md)、[角色演出](cast-presentation.md)、[插件接口](../plugin-api.md)。
+2026-10-17 设计备忘，待确认后实施。相关：[从酒馆到 Galgame](tavern-to-galgame.md)、[角色演出](cast-presentation.md)、[插件接口](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)。
 
 ## 为什么要专属格式
 

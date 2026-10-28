@@ -1,5 +1,4 @@
 import { HISTORY_RECALL_OUTPUT_SCHEMA, HISTORY_RECALL_TOOL, renderHistoryRecall } from '../domain/history-recall.js'
-import { WORLD_BOOK_SEARCH_TOOL } from '../domain/worldbook-search.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { dshParameterFields } from '../domain/dsh-tool-schema.js'
 
@@ -8,7 +7,6 @@ export function registerGameplayTools({
   cardResponseTest,
   foregroundRecallScopes,
   recallHistoryForSession,
-  searchWorldbook,
   tools,
 }) {
   tools.register(defineTool({
@@ -36,17 +34,6 @@ export function registerGameplayTools({
     isConcurrencySafe: function () { return false },
     async execute(args, exec) {
       return { report: JSON.stringify(await cardResponseTest.execute(exec?.agent?.session?.id || '', args), null, 2) }
-    }
-  }))
-  tools.register(defineTool({
-    ...WORLD_BOOK_SEARCH_TOOL,
-    output: {
-      schema: { type: 'object', additionalProperties: false, properties: { report: { type: 'string', required: true } } },
-      render: (_args, value) => [{ type: 'text', text: value.report }]
-    },
-    isConcurrencySafe: () => false,
-    async execute(args, exec) {
-      return { report: JSON.stringify(await searchWorldbook(exec?.agent?.session?.id || '', args)) }
     }
   }))
   tools.register(defineTool({

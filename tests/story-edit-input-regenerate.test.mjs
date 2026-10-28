@@ -73,6 +73,7 @@ test('改已完成回合的输入后重新生成：请求里玩家输入是新�
   assert.ok(!JSON.stringify(request).includes('旧正文'), '被重生成的旧正文不进请求')
   assert.equal(result.messages.at(-2).text, '敲门')
   assert.equal(result.messages.at(-1).text, '新正文3')
+  assert.notEqual(h.chat.nativeSync?.status, 'stale', '重生成正文必须成功投影到原生会话')
   const after = foldStoryRounds(sessionEvents(h.session))
   assert.deepEqual(after.floors.map(item => [item.story, item.inputs.map(input => input.text), item.reply.text]), [[2, ['敲门'], '新正文3']])
   assert.ok(!texts(h.session.deriveMessages()).some(text => text.includes('推门')), '之后的请求也看不到旧输入')

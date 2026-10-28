@@ -126,3 +126,57 @@ test('自动生成候选项在「剧情」里，挨着上下文压缩，默认�
   await group.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
   assert.equal(await toggle.isChecked(), true)
 })
+test('手机宽度下默认模型各行不撑破卡片，第二个下拉留在卡片内', async t => {
+  // 长模型名决定下拉的 min-content；短名字不会触发溢出，所以这里必须用长标识符。
+  const settings = { defaultForegroundModel: null, defaultBackgroundModel: { provider: 'deepseek', model: 'deepseek-v4.1-flash-thinking-preview' },
+    defaultWorkbenchModel: null, defaultPlaySettings: { playerName: '你', statusBarPlacement: 'sidebar', backgroundTasks: { variables: true, posture: true }, webSearchEnabled: false } }
+  const { page } = await openTavernSettings(t, { respond(method) {
+    if (method === 'getTavernSettings') return { settings, modelCatalog: [{ provider: 'deepseek', providerName: 'DeepSeek',
+      models: [{ id: 'deepseek-v4.1-flash-thinking-preview', name: 'deepseek/deepseek-v4.1-flash-thinking-preview' }] }], releaseCapabilities: {} }
+    if (method === 'getBackgroundModelReasoning') return { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }
+    if (method === 'updateTavernSettings') return { settings }
+  } })
+  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
+  for (const width of [360, 390, 412, 430]) {
+    await page.setViewportSize({ width, height: 1200 })
+    const layout = await page.evaluate(() => {
+      const right = document.querySelector('.dsh-tavern-gs-card').getBoundingClientRect().right
+      return {
+        pageOverflow: document.documentElement.scrollWidth > innerWidth,
+        rows: [...document.querySelectorAll('.dsh-tavern-model-row')].map(row => ({
+          outside: [...row.querySelectorAll('select')].filter(select => select.getBoundingClientRect().right > right + 0.5).length,
+          widths: [...row.querySelectorAll('select')].map(select => Math.round(select.getBoundingClientRect().width))
+        }))
+      }
+    })
+    assert.equal(layout.pageOverflow, false, `${width}: 设置页不产生横向滚动`)
+    for (const [index, row] of layout.rows.entries()) {
+      assert.equal(row.outside, 0, `${width}: 第 ${index + 1} 个模型行的下拉不越出卡片`)
+      assert.ok(row.widths.every(value => value > 80), `${width}: 第 ${index + 1} 个模型行的下拉仍有可用宽度 ${row.widths}`)
+    }
+  }
+})
+
+
+test('侧栏显示开关即时保存，失败保留原值，焦点刷新读取已保存值', async t => {
+  const backend = fixture()
+  const { page, calls } = await openTavernSettings(t, { respond(method, args) {
+    if (method === 'getDisplayPreferences') return backend.respond('getTavernSettings').settings
+    return backend.respond(method, args)
+  } })
+  await page.getByText('侧栏显示', { exact: true }).click()
+  const toggle = page.getByRole('switch', { name: '显示系统功能入口', exact: true })
+  assert.equal(await toggle.isChecked(), false)
+  await toggle.click()
+  await page.waitForFunction(() => document.documentElement.classList.contains('dsh-tavern-show-system-navigation'))
+  assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { showSystemNavigation: true })
+  backend.setFail(true)
+  await toggle.click()
+  await page.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
+  assert.equal(await toggle.isChecked(), true)
+  backend.setFail(false)
+  backend.respond('updateTavernSettings', { patch: { showSystemNavigation: false } })
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await page.waitForFunction(() => !document.documentElement.classList.contains('dsh-tavern-show-system-navigation'))
+  assert.equal(await toggle.isChecked(), false)
+})

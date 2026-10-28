@@ -49,9 +49,9 @@ test('传 null 恢复默认顶栏', () => {
 })
 
 test('getDisplayPreferences 一并返回顶栏设置与顶部标签', async () => {
-  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } }) })
+  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ showSystemNavigation: true, hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } }) })
   const preferences = await handlers.getDisplayPreferences({})
-  assert.deepEqual(preferences, { hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } })
+  assert.deepEqual(preferences, { showSystemNavigation: true, hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } })
 })
 
 test('客户端顶栏默认值与服务端一致，设置在首次读取前就用默认值', async () => {
@@ -91,7 +91,7 @@ test('默认对小白无感：开始页没有图钉，「⋯」只在有按钮�
   assert.doesNotMatch(client, /dsh-tavern-header-divider/)
   assert.match(client, /foldedEntries\.length \? h\("div", \{ className: "dsh-tavern-more-actions dsh-tavern-header-more" \}/)
   const display = client.slice(client.indexOf('group("显示与交互"'), client.indexOf('group("高级"'))
-  assert.match(display, /h\(HeaderItemsSettings\)\),\s*$/)
+  assert.match(display, /h\(HeaderItemsSettings\),[\s\S]*侧栏显示[\s\S]*h\(DisplayPreferencesSettings, \{ sidebar: true \}\)/)
   assert.doesNotMatch(client.slice(client.indexOf('group("高级"')).split('state.error ?')[0], /HeaderItemsSettings/)
 })
 

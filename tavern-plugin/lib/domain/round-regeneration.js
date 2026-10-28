@@ -29,6 +29,15 @@ export function regenerationInputText(userText, guidance, rewriteBody) {
 }
 
 // What the model saw of a stored reply (same precedence as the body editor).
+// 原生事件只接受 JSON 值；可选字段不用 undefined 占位。
+function regeneratedSource(previous, storyTurn, resultTurn, partial, reason) {
+  const source = { ...previous, tavernStoryTurn: storyTurn, tavernResultOrigin: partial, tavernResultTurn: resultTurn, tavernIncomplete: partial }
+  delete source.tavernResultSeq
+  delete source.tavernIncompleteReason
+  if (partial && reason !== undefined) source.tavernIncompleteReason = reason
+  return source
+}
+
 function replyTextOf(message) { return str(message && (message.projectionText ?? message.sourceText ?? message.text)) }
 
 /**
@@ -274,9 +283,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
         throw new Error('重新生成失败：模型返回空文本')
       }
       const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
-        role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn, tavernResultSeq: undefined,
-          tavernResultOrigin: keptPartial, tavernResultTurn: syntheticTurn,
-          tavernIncomplete: keptPartial, tavernIncompleteReason: keptPartial ? newAssistant.incompleteReason : undefined } } }, operationId)
+        role: 'assistant', content: [{ type: 'text', text: body }], source: regeneratedSource(oldSource, oldTurn, syntheticTurn, keptPartial, newAssistant.incompleteReason) } }, operationId)
       // The persisted intent must only reference events already on disk.
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       committedChat = await updateChat(latest.id, function (current) {
@@ -485,9 +492,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
       body = str(newAssistant.text).trim()
       if (body === '') throw new Error('重新生成失败：模型返回空文本')
       const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
-        role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn, tavernResultSeq: undefined,
-          tavernResultOrigin: keptPartial, tavernResultTurn: syntheticTurn,
-          tavernIncomplete: keptPartial, tavernIncompleteReason: keptPartial ? newAssistant.incompleteReason : undefined } } }, operationId)
+        role: 'assistant', content: [{ type: 'text', text: body }], source: regeneratedSource(oldSource, oldTurn, syntheticTurn, keptPartial, newAssistant.incompleteReason) } }, operationId)
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
       // 2) The original floors around the new round. Floors changed since the

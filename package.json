@@ -4,9 +4,6 @@
   "scripts": {
     "build:client": "node bin/build-tavern-client.mjs",
     "check:client": "node bin/build-tavern-client.mjs --check",
-    "docs:build": "node docs/manual/build.mjs",
-    "docs:dev": "node docs/manual/build.mjs && python3 -m http.server 4173 --bind 127.0.0.1 --directory docs",
-    "test:docs": "node --test tests/manual-site.test.mjs tests/product-site.test.mjs tests/manual-pages.test.mjs",
     "install:tavern": "node ./bin/dsh-tavern.mjs install",
     "start:tavern": "node ./bin/dsh-tavern.mjs start",
     "stop:tavern": "node ./bin/dsh-tavern.mjs stop",
@@ -27,6 +24,7 @@
   },
   "dependencies": {
     "acorn": "8.15.0",
+    "pinyin-pro": "3.29.5",
     "chevrotain": "^11.2.0",
     "jsdom": "26.1.0",
     "@jsquash/jpeg": "1.6.0",

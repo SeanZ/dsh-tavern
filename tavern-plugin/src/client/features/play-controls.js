@@ -333,6 +333,7 @@
 							h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-debug-open" })),
                         props.submitStage ? h(TavernStageStatus, { key: props.sessionId, sessionId: props.sessionId, submit: props.submitStage, choices: props.stageChoices, generating: running }) : null,
                         h(TavernBackgroundWait, {sessionId:props.sessionId, activity:view.activity}),
+                        h(TavernBackgroundRunsLink, {sessionId:props.sessionId, open:() => props.openStyleTab("dsh-tavern:background-tasks")}),
                         h(TavernSaveUpgrade, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
 					["story", "script"].includes(view.mode || "story") && view.requestMode !== "sillytavern" && cardReloadLine ? h("section", { className: "dsh-tavern-status-section" },
 						h("div", { className: "dsh-tavern-card-reload" },
@@ -1082,10 +1083,13 @@
                     },
                     onError: function (error) { tavernErrorHub.report("保存错误提示状态失败", error); }
                 });
-				const apply = function () { projection.apply(turns); controls.apply(); rail.apply({ accept: railAccept }); };
+				// Settled rounds fold their work-step rows away; the live round keeps its
+				// progress, and the error row below owns the one control that brings them back.
+				const stepFold = createStepFoldControls(root);
+				const apply = function () { projection.apply(turns); controls.apply(); stepFold.apply(); rail.apply({ accept: railAccept }); };
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
-				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); rail.dispose(); };
+				return function () { observer.disconnect(); controls.dispose(); stepFold.dispose(); projection.dispose(); rail.dispose(); };
 			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
@@ -1228,6 +1232,8 @@
 					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, submitStage: submitTavernStageInput, stageChoices: stageChoices, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
 				}
 			}), "dsh-tavern: Better Sidebar status tab");
+			ctx.effect(() => ctx.betterSidebar.registerTab({ id: "dsh-tavern:background-tasks", title: "后台任务", order: 7, single: true,
+				component: props => React.createElement(TavernBackgroundTasksTab, { sessionId: props.scope.sessionId }) }), "dsh-tavern: background tasks tab");
 			registerTavernStagePanels(ctx);
 			ctx.effect(() => slots.inject("conversation.chat.assistant-actions", () => slots.register(
 				{ name: "conversation.chat.assistant-actions", id: "dsh-tavern-rollback-to", order: 19, inject: function (sessionId) { return { sessionId: sessionId }; } },

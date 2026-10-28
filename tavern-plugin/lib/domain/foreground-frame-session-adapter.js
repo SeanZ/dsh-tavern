@@ -24,14 +24,17 @@ export function createForegroundFrameSessionAdapter(options = {}) {
     if (messages.some(function (message) { return frameIdOf(message) === frame.frameId })) {
       return { messages, receipt: { appended: false, reason: 'duplicate', frameId: frame.frameId } }
     }
-    const snapshot = worldbookSnapshot(input.session, frame.contributions
-      .filter(item => item.slot === 'activeWorldbook').map(item => item.text).join('\n\n'), input.historyMessages || messages)
+    const virtual = frame.source?.worldBook?.virtualWorldbook
+    // Native virtual projection already deduplicates by entry identity+hash;
+    // two distinct entries with identical text still need their own receipt.
+    const snapshot = worldbookSnapshot(virtual ? null : input.session, frame.contributions
+      .filter(item => item.slot === 'activeWorldbook').map(item => item.text).join('\n\n'), virtual ? [] : input.historyMessages || messages)
     const contributions = frame.contributions.filter(item => item.slot !== 'activeWorldbook')
     const snapshots = snapshot ? [{
       id: makeId() + ':worldbook', role: 'user',
       content: [{ type: 'text', text: snapshot.rendered }],
       source: { kind: 'plugin:dsh-tavern', form: 'worldbook-snapshot',
-        worldbookSnapshot: snapshot, trace: { frameId: frame.frameId, turn: frame.turn, operationId: frame.operationId } }
+        worldbookSnapshot: snapshot, ...(frame.source?.worldBook?.virtualWorldbook ? { virtualWorldbook: frame.source.worldBook.virtualWorldbook } : {}), trace: { frameId: frame.frameId, turn: frame.turn, operationId: frame.operationId } }
     }] : []
     if (typeof frame.source?.card?.systemPromptText === 'string') {
       const update = cardSystemPromptSnapshot(input.session, frame.source.card.systemPromptText, input.historyMessages || messages, input.openingText)

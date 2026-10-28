@@ -99,7 +99,7 @@ const stringProperty = description => ({ type: 'string', description })
 
 export const CHARACTER_DESIGN_READ_TOOL = Object.freeze({
   name: CHARACTER_DESIGN_READ_TOOL_NAME,
-  description: '设计前先查本局世界书和人物档案。无参数返回两者索引；按姓名或别名查询返回匹配世界书原文及已有档案。判断世界书已有完整人物设定时调用 character_design_reuse，不重复建档。正文提及不等于完整人物设定；动态模板可用 worldbook_search 读取渲染结果。',
+  description: '设计前先查本局世界书和人物档案。无参数返回两者索引；按姓名或别名查询返回匹配世界书原文及已有档案。判断世界书已有完整人物设定时调用 character_design_reuse，不重复建档。正文提及不等于完整人物设定；静态资料可按需通过 skill 和 read 查阅，动态内容以本轮运行时提供的内容为准。',
   countsTowardLimit: false,
   parameters: Object.freeze({
     type: 'object', additionalProperties: false,

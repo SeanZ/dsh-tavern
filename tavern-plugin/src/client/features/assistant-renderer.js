@@ -557,6 +557,7 @@
 			}
 			function TavernAssistantNodeView(props) {
 				useTavernUiExtensions();
+				useTavernProseLayoutRevision();
 				const data = props.node.data;
                 const historyNode = React.useRef(null);
 				const turnRef = props.node.location.kind === "turn" || props.node.location.kind === "step" ? props.node.location.turn : null;
@@ -605,6 +606,7 @@
 				const waitingForHistory = Boolean(currentView?.historyWindow && ownsTurn && !projection && settled && storyTurn>0 && storyTurn<latestProjectionTurn);
 				const playView = isPlayMode(liveState.view && liveState.view.mode) && storyTurn > 0 && !sessionTransitioning && ownsTurn;
 				useTavernUiExtensions();
+				useTavernProseLayoutRevision();
 				const turnView = useTavernTurnView(props.sessionId);
 				const pluginMedia = useTavernPluginMedia(props.sessionId, storyTurn, playView && settled);
 				// While the reply streams too: its speaker rows come from the text (32/N).
@@ -762,6 +764,7 @@
 				const view = liveState.view;
 				const turn = Number(view && view.forkTurnsByMessageId && view.forkTurnsByMessageId[String(props.messageId || "")]) || 0;
 				useTavernUiExtensions();
+				useTavernProseLayoutRevision();
 				const play = Boolean(view && isPlayMode(view.mode) && turn > 0);
 				// Tavern draws nothing itself; an illustrator plugin answers this button.
 				const illustrator = play ? tavernUiExtensions.illustrator() : null;

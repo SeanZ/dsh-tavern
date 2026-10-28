@@ -1,6 +1,6 @@
 # 阿芙拉 · 最小 DSH 人物卡示例
 
-一张几十 KB 的完整 DSH 人物卡，照着它做你自己的卡。制作说明见 [DSH 人物卡制作指南](../../docs/dshcard-guide.md)。
+一张几十 KB 的完整 DSH 人物卡，照着它做你自己的卡。制作说明见 [DSH 人物卡制作指南](https://github.com/flizzywine/dsh-tavern/wiki/DSH-%E4%BA%BA%E7%89%A9%E5%8D%A1%E5%88%B6%E4%BD%9C)。
 
 - 人物卡文字来自仓库里的原创示例卡 [阿芙拉](../avra/cards/avra-complete.json)。
 - `assets/`：卡面头像和一张立绘（导入后成为「角色素材」里 neutral 情绪的立绘）。

@@ -115,3 +115,57 @@ test('没有全局世界书和单独的聊天世界书时如实回答，不假�
   assert.equal(api.getChatWorldbookName('current'), null)
   assert.equal(api.createWorldbook, undefined)
 })
+
+for (const embedded of [false, true]) test(`脚本增删改 → Skill 文件/稳定分类 → 失效通知，保留其他快照 (${embedded})`, async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join, basename, dirname } = await import('node:path')
+  const { createWorldbookSkillProvider } = await import('../tavern-plugin/lib/domain/worldbook-skill-provider.js')
+  const { appendWorldbookSkillChanges } = await import('../tavern-plugin/lib/domain/worldbook-skill-changes.js')
+  const host = await createHelperWorldbookHost(embedded)
+  t.after(host.cleanup)
+  const directory = await mkdtemp(join(tmpdir(), 'script-skill-sync-')); t.after(()=>rm(directory,{recursive:true,force:true}))
+  const api = await connect(host)
+  await api.updateWorldbookWith('审计书', rows => {
+    rows[0].name='城市·旧城'; rows[0].content='旧城旧正文'
+    return rows.concat([{name:'城市·旧港',content:'旧港正文'}, {name:'医术·规则',content:'医术正文'}, {name:'银行·存款',content:'银行正文'}])
+  })
+  const chat={sessionId:'audit',cardPath:'card.json',worldbookStrategy:'native-skills'}
+  const session={id:'audit',events:[],append(type,data){const event={seq:this.events.length,type,data};this.events.push(event);return event}}
+  const scope={session}, lookup={scope}, payload={agent:scope}
+  const oldBook=structuredClone(await host.record())
+  const oldScope={session:{id:'old'}}
+  const create=()=>createWorldbookSkillProvider({directory,inlineTokenBudget:0,load:async agent=>({chat:{...chat,sessionId:agent.session.id},worldBook:agent===oldScope?oldBook:await host.record()})})
+  let provider=create();t.after(()=>provider.dispose())
+  await provider.refresh(scope)
+  appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope))
+  const first=await provider.inspect(lookup)
+  const bank=first.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款'))
+  const oldEntry=first.clusters.flatMap(c=>c.entries).find(e=>e.title==='城市·旧城')
+  assert.equal(await provider.readResource(oldEntry.path,{scope:oldScope}),'旧城旧正文')
+  // Multiple script writes are observed as one effective batch before a model step.
+  await api.updateWorldbookWith('审计书', rows=>rows.filter(e=>e.name!=='城市·旧港').map(e=>({...e,content:e.name==='城市·旧城'?'旧城改写后的正文':e.name==='医术·规则'?'<%= getvar("hp") %>':e.content})))
+  await api.createWorldbookEntries('审计书',[{name:'城市·新港',content:'新港正文'}])
+  await provider.refresh(scope)
+  const notice=appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope))
+  assert.match(notice.content[0].text,/新增（1 条）/)
+  assert.match(notice.content[0].text,/改写（1 条）/)
+  assert.match(notice.content[0].text,/移出静态 Skill（2 条）/)
+  const second=await provider.inspect(lookup)
+  assert.deepEqual(second.clusters.flatMap(c=>c.entries.map(e=>e.title)).sort(),['城市·旧城','城市·新港','银行·存款'].sort())
+  const newBank=second.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款'))
+  assert.equal(newBank.name,bank.name)
+  assert.equal(basename(newBank.directory),basename(bank.directory))
+  assert.equal(basename(dirname(newBank.entries[0].path)),basename(dirname(bank.entries[0].path)))
+  assert.equal(await provider.readResource(oldEntry.path,lookup),undefined)
+  assert.equal(await provider.readResource(oldEntry.path,{scope:oldScope}),'旧城旧正文')
+  await provider.refresh(scope)
+  assert.equal(appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope)),null)
+  // Cold provider recovers the last published layout from persisted native history.
+  provider.dispose(); provider=create()
+  await api.updateWorldbookWith('审计书',rows=>rows.map(e=>e.name==='城市·旧城'?{...e,content:'再次修改正文'}:e))
+  await provider.refresh(scope)
+  const cold=await provider.inspect(lookup)
+  assert.equal(cold.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款')).name,bank.name)
+  assert.match(appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope)).content[0].text,/改写（1 条）/)
+})

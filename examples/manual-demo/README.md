@@ -19,8 +19,8 @@
 3. 文字模型使用 `http://127.0.0.1:3183/v1`，模型 `lighthouse-demo`，密钥填无效占位值 `demo-not-a-real-key`；前后台均明确选用该模型。先核对地址再发送。
 4. 插画演示只用同一本地地址的 OpenAI Images 接口。`POST /__fixture/image/success`、`pending`、`error` 分别模拟完成、等待及失败；其他渠道仅展示设置，不发送请求。
 5. 浏览器实际点击、输入和查看工具结果后截图。不得改写 DOM 伪造结果；保存原始浏览器图像，逐张核对内容与图注。完成后关闭演示生图开关。
-6. 运行 `node docs/manual/build.mjs` 和 `pnpm run test:docs`，检查 100 个主题无缺图、链接有效。
+6. 在 Wiki 对应页面补充截图，并检查图片和链接能否正常打开。
 
-运行 `node docs/manual/build.mjs` 会把可直接导入的 JSON 和剧情大纲同步生成到 `docs/examples/manual-demo/`；文档首页提供下载。人物卡已内置 MVU 规则，不要直接用独立世界书替换；如需并用，请先在工作台合并条目。
+示例 JSON 和剧情大纲保存在本目录，Wiki 首页链接到这些源文件。人物卡已内置 MVU 规则，不要直接用独立世界书替换；如需并用，请先在工作台合并条目。
 
-维护位置：`docs/manual/feature-captures.mjs` 逐项维护 100 个主题的图片、说明和尺寸，`screenshots.mjs` 管理通用图片及来源版本；`docs/images/manual/` 保存原始浏览器截图。更新时只操作独立样例环境，不复用个人环境，也不修改 DOM 来伪造运行结果。
+文档截图和说明已迁至 [GitHub Wiki](https://github.com/flizzywine/dsh-tavern/wiki)，可直接在对应文章编辑。截图文件保存在 Wiki 仓库的 `images/` 目录。新增截图仍只使用独立样例环境，不复用个人环境，也不修改 DOM 来伪造运行结果。

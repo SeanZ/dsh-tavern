@@ -19,6 +19,9 @@ export async function nativeSkillSource(root) {
     '@deepseek-ai/dsh-tools': 'packages/core/tools/src/index.ts',
     // Only re-export the real native leaf exports consumed by this composition,
     // avoiding unrelated provider/remote-service boot dependencies.
+    '@deepseek-ai/dsh-sandbox': 'packages/sandbox/sandbox/src/index.ts',
+    '@deepseek-ai/dsh-util-code-language': 'packages/util/code-language/src/index.ts',
+    '@deepseek-ai/dsh-fs': 'packages/fs/fs/src/types.ts',
     '@deepseek-ai/dsh-session': 'packages/core/session/src/types.ts',
   }
   const llm = 'data:text/javascript,' + encodeURIComponent([
@@ -39,10 +42,11 @@ export async function nativeSkillSource(root) {
     }
   })
   try {
-    const [{ Context }, { default: SkillRegistry }, { default: ToolsService }, { default: SystemPrompt }, skillTool] = await Promise.all([
+    const [{ Context }, { default: SkillRegistry }, { default: ToolsService }, { default: SystemPrompt }, skillTool, readTool] = await Promise.all([
       import('@deepseek-ai/cordis'), import('@deepseek-ai/dsh-skill'), import('@deepseek-ai/dsh-tools'),
       import(file('packages/core/system-prompt/src/index.ts')), import(file('packages/skill/tool-skill/src/index.ts')),
+      import(file('packages/fs/tool-fs/src/read.ts')),
     ])
-    return { Context, SkillRegistry, ToolsService, SystemPrompt, skillTool, close: () => hooks.deregister() }
+    return { Context, SkillRegistry, ToolsService, SystemPrompt, skillTool, readTool, close: () => hooks.deregister() }
   } catch (error) { hooks.deregister(); throw error }
 }

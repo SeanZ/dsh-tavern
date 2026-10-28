@@ -43,7 +43,7 @@ export function dshCompatibilityNotice(currentVersion = '', host = 'desktop') {
     const upgrade = host === 'android'
       ? `先升级到 DSHA ${recommendedDshaVersion}（${dshaReleasesUrl}）`
       : `先安装官方 DeepSeek Harness ${recommendedDesktopVersion}（${desktopReleasesUrl}），打开一次后从托盘退出`
-    return `已停止安装，现有酒馆、存档和宿主都没有改动。\n当前宿主是 DSH ${currentVersion}，装不了这个版本（需要 DSH ${allowed}）。\n要用这个版本：${upgrade}，再重新运行安装；原宿主的存档换宿主后按 https://github.com/flizzywine/dsh-tavern/blob/main/docs/data-import.md 导入。\n想继续用现在的宿主：请改装稳定版，安装方法见 ${STABLE_GUIDE}`
+    return `已停止安装，现有酒馆、存档和宿主都没有改动。\n当前宿主是 DSH ${currentVersion}，装不了这个版本（需要 DSH ${allowed}）。\n要用这个版本：${upgrade}，再重新运行安装；原宿主的存档换宿主后按 https://github.com/flizzywine/dsh-tavern/wiki/%E4%BB%8E%E6%97%A7%E9%85%92%E9%A6%86%E7%BB%A7%E6%89%BF%E6%95%B0%E6%8D%AE%EF%BC%88%E6%B5%8B%E8%AF%95%E7%89%88%EF%BC%89 导入。\n想继续用现在的宿主：请改装稳定版，安装方法见 ${STABLE_GUIDE}`
   }
   return `${classifyDshVersion(currentVersion, compatibility).reason}；已停止安装，不会修改宿主版本。支持的版本：${allowed}；${hostGuidance(host)}`
 }

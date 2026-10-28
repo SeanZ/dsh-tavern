@@ -434,7 +434,7 @@ export function createTurnOrchestrator(options) {
     // input first, then continue from its latest timeline instead of overwriting it.
     if (typeof options.projectForegroundWorldbook === 'function') await savePreparation({ source: 'foreground.prepare-worldbook' })
     const foregroundWorldBook = typeof options.projectForegroundWorldbook === 'function'
-      ? await options.projectForegroundWorldbook({ chat, card, turn, userText: runtimeUserText }) : null
+      ? await options.projectForegroundWorldbook({ chat, card, turn, userText: runtimeUserText, requestKey: foregroundOperation.operationId }) : null
     if (typeof options.projectForegroundWorldbook === 'function') {
       chat = await contextForSession(input.sessionId)
       if (chat && store.writeChatHeader) preparationBase = captureChatHeader(chat)
@@ -447,6 +447,7 @@ export function createTurnOrchestrator(options) {
     const worldBookContext = foregroundWorldBook ? str(foregroundWorldBook.context) : [str(chat.preparedWorldBookContext).trim(), str(scriptWorldBook && scriptWorldBook.context).trim(), templateWorldBook?.dynamicConstants ? '' : str(templateWorldBook && templateWorldBook.context).trim()].filter(Boolean).join('\n\n')
     if (foregroundWorldBook) {
       if (foregroundWorldBook.randomState) chat.worldBookRandomState = foregroundWorldBook.randomState
+      if (foregroundWorldBook.virtualState) chat.worldBookVirtualState = foregroundWorldBook.virtualState
       if (foregroundWorldBook.reads) chat.worldBookReads = foregroundWorldBook.reads
       chat.preparedWorldBookContext = worldBookContext
       chat.preparedWorldBook = { ...foregroundWorldBook.activation, branchId: foregroundOperation.basedOn.branchId, revision: foregroundOperation.basedOn.revision }
@@ -464,6 +465,10 @@ export function createTurnOrchestrator(options) {
     source.worldBook.scriptPromptRefs = Array.isArray(scriptWorldBook && scriptWorldBook.refs) ? clone(scriptWorldBook.refs) : []
     if (scriptWorldBook && typeof scriptWorldBook.recordReads === 'function') chat.worldBookReads = scriptWorldBook.recordReads(chat.worldBookReads)
     source.worldBook.templateRefs = Array.isArray(templateWorldBook && templateWorldBook.refs) ? clone(templateWorldBook.refs) : []
+    if (foregroundWorldBook?.virtualState) source.worldBook.virtualWorldbook = {
+      scope: foregroundWorldBook.virtualState.scope,
+      entries: Object.fromEntries((foregroundWorldBook.changedVirtualRefs || []).map(ref => [ref, foregroundWorldBook.virtualState.entries[ref]?.renderHash]))
+    }
     source.worldBook.templateDiagnostics = Array.isArray(templateWorldBook && templateWorldBook.diagnostics) ? clone(templateWorldBook.diagnostics) : []
     const frameInput = {
       chatId: chat.id,
@@ -900,7 +905,7 @@ export function createTurnOrchestrator(options) {
 
   async function visibleTools(sessionId) {
     // Every model call asks: mode, the web-search switch and the disabled tools live in the header.
-    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled', 'disabledForegroundTools'])
+    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled', 'disabledForegroundTools', 'worldbookStrategy'])
       : await (store.stateForSession || store.chatForSession)(sessionId)
     if (chat === undefined || chat === null) return []
     const mode = chat.mode || 'story'
@@ -912,9 +917,12 @@ export function createTurnOrchestrator(options) {
     const storyTools = storyToolCallEnabled(chat, outputToolCall || inputToolCall) ? [STORY_SUBMIT_TOOL_NAME] : []
     // Card workbenches keep their fixed editing tools; the per-game switches are play-only.
     if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', 'web_fetch', 'tavern_research', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
+    // Native virtual resources use the existing read protocol; the host restricts
+    // this gameplay read to the calling game's virtual worldbook namespace.
+    const worldbookTools = chat.worldbookStrategy === 'native-skills' ? ['read'] : []
     const names = mode === 'script'
-      ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
-      : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', ...webTools, ...storyTools]
+      ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
+      : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
     const disabled = new Set(normalizeDisabledForegroundTools(chat.disabledForegroundTools))
     return names.filter(name => !disabled.has(name))
   }

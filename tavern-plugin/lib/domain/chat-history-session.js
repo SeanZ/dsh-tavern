@@ -54,19 +54,20 @@ export async function buildImportedConversation(chat, parsed, { operationId, fil
       if (pendingUsers.length) {
         const userText = pendingUsers.join('\n\n')
         const beforeWorldBookReads = clone(chat.worldBookReads)
+        const beforeVirtualWorldbook = clone(chat.worldBookVirtualState)
         const plan = prepareFrame ? await prepareFrame({ chat, turn, userText }) : framePlan
         if (!plan?.text?.trim()) throw new Error('导入缺少原生正文任务指令')
         const frame = frameBuilder.build({ chatId: chat.id, branchId: chat.timeline.branchId,
           basedOnRevision: chat.timeline.revision, operationId: `import:${operationId}:${turn}`, turn,
           inputs: foregroundFrameInputs(plan, userText, userText, chat.runtimePresetSnapshot, chat),
-          source: { importSource: message.importSource, card: { systemPromptText: plan.systemPromptText } } })
+          source: { ...(plan.virtualWorldbook ? { worldBook: { virtualWorldbook: plan.virtualWorldbook } } : {}), importSource: message.importSource, card: { systemPromptText: plan.systemPromptText } } })
         const adapted = createForegroundFrameSessionAdapter({ id: () => `tavern-import-frame:${operationId}:${turn}` })
           .append({ messages: [], frame, step: 1, openingText: chat.cardContextSnapshot, historyMessages: events.filter(event => event.type === 'user/message').map(event => event.data) })
         events.push(...(turn === 1 ? [] : [{ type: 'turn/start', data: { turn } }, { type: 'step/start', data: { turn, step: 1 } }]))
         for (const context of adapted.messages) events.push({ type: 'user/message', data: context, intent: { surfaceOp: 'append' } })
         chat.timeline.checkpoints.push({ id: `import-checkpoint:${operationId}:${turn}`, turn, userText: pendingUsers.join('\n\n'),
           importMessageCount: roundStart, importBefore: { scriptState: clone(chat.scriptState), posture: '', candidates: null,
-            settleStatus: 'done', settleError: null, lastSettle: null, worldBookReads: beforeWorldBookReads, preparedWorldBookContext: '', preparedWorldBook: null, participants: beforeParticipants },
+            settleStatus: 'done', settleError: null, lastSettle: null, worldBookReads: beforeWorldBookReads, worldBookVirtualState: beforeVirtualWorldbook, preparedWorldBookContext: '', preparedWorldBook: null, participants: beforeParticipants },
           participants: beforeParticipants, committedAt: now })
         chat.timeline.checkpoints = chat.timeline.checkpoints.slice(-40)
         chat.timeline.revision++

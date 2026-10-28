@@ -36,23 +36,8 @@ function setup({ screening = true } = {}) {
   return { worldBook, screened, chat, project, round }
 }
 
-test('发送正文从不询问模型；回复结束后预筛，被排除条目之后十轮直接排除', async () => {
-  const h = setup()
-  await h.project({ chat: h.chat, card: {}, userText: '', purpose: 'prefilter' })
-  assert.equal(h.screened.length, 1)
-  assert.equal(h.screened[0].length, 6)
-  const first = await h.round('继续')
-  assert.deepEqual(first.refs, ['e0'], '预筛排除的五条不进入下一轮')
-  let sent
-  for (let i = 0; i < 9; i++) sent = await h.round('继续')
-  assert.ok(!sent.refs.includes('e1'), '第十轮仍在冷却')
-  sent = await h.round('继续')
-  assert.equal(h.screened.length, 1, '冷却期内候选不足门槛，不再询问模型')
-  assert.deepEqual(sent.refs.sort(), ['e1', 'e2', 'e3', 'e4', 'e5'], '十轮后排除失效；剩余候选不超门槛则直接注入')
-})
-
-test('世界书模型筛选关闭时，预筛不询问模型、不写筛选冷却，已有的筛选冷却不再生效', async () => {
-  const h = setup({ screening: false })
+for (const screening of [false, true]) test(`世界书模型筛选已退役，旧开关 ${screening} 不调用模型且旧排除失效`, async () => {
+  const h = setup({ screening })
   const prepared = await h.project({ chat: h.chat, card: {}, userText: '', purpose: 'prefilter' })
   assert.equal(h.screened.length, 0)
   assert.equal(prepared.log.screening, undefined)

@@ -2,6 +2,7 @@ import { sessionEvents } from './domain/session-events.js'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
+import { createBackgroundRunLedger } from './background-run-ledger.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -81,6 +82,7 @@ export function createBackgroundAgentSessions(options, task) {
     }
   }
   const residentSessionByParent = new Map()
+  const runs = createBackgroundRunLedger({ now: options.now })
   const queues = new Map()
 
   const now = typeof options.now === 'function' ? options.now : Date.now
@@ -175,9 +177,11 @@ export function createBackgroundAgentSessions(options, task) {
     if (options.resolveModelSelection && input.task !== 'phone') {
       input = { ...input, selection: await options.resolveModelSelection(input) }
     }
+    input.runRecord?.start(input.selection)
     const parent = agents.get(input.sessionId)
     if (parent === undefined || parent.session === undefined) throw new Error('无法创建后台 Agent：前台会话不可用')
     const runtimeInput = Object.assign({}, input)
+    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director'].includes(input.task) && Boolean(await options.resolveWorldbookSkills?.(input))
     // The game's web search setting, unless the task rules it out (style reference, worldbook
     // filter: paid, slow, and what they look for is not on the open web).
     if (options.resolveWebSearch && input.task !== 'phone' && input.webSearchEnabled !== false) {
@@ -344,10 +348,15 @@ export function createBackgroundAgentSessions(options, task) {
 
   function run(input) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
-    if (input.persistent !== true) return execute(input)
-    return enqueue(str(input.sessionId), () => {
+    const record = runs.begin(input)
+    input = { ...input, runRecord: record }
+    const work = input.persistent !== true ? execute(input) : enqueue(str(input.sessionId), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
+    })
+    return work.then(result => { record.finish(); return result }, error => {
+      record.fail(error, input.signal?.aborted === true || error?.name === 'AbortError')
+      throw error
     })
   }
 
@@ -469,9 +478,10 @@ export function createBackgroundAgentSessions(options, task) {
   // A deleted game must not keep resident agents that would write its sessions back to disk.
   async function releaseFor(parentSessionId) {
     const parent = str(parentSessionId)
+    runs.forget(parent)
     for (const [id, resident] of Array.from(residentHandles)) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, run, withSession, owns, requestContext, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), run, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

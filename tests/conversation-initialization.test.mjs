@@ -97,3 +97,14 @@ test('DSH 人物卡带的开局默认：新局用卡里的预设和设置，其�
   assert.equal(chat.backgroundTasks.variables, true, '卡没提到的设置沿用全局默认')
   assert.equal(chat.macroState.userName, '玩家', '玩家称呼不由卡决定')
 })
+
+test('新游戏继承 Skill 默认或显式旧机制，旧局重开不迁移策略', async () => {
+  const h = initializationFixture()
+  const first = await h.make().start(h.input)
+  assert.equal(first.worldbookStrategy, 'native-skills')
+  h.state.settings.defaultPlaySettings = { worldbookStrategy: 'legacy' }
+  assert.equal((await h.make().start({ ...h.input, sessionId: 'legacy-new' })).worldbookStrategy, 'legacy')
+  assert.equal((await h.make().start(h.input)).worldbookStrategy, 'native-skills')
+  delete h.saved.get(first.id).worldbookStrategy
+  assert.equal((await h.make().start(h.input)).worldbookStrategy, undefined)
+})
