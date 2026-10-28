@@ -75,7 +75,7 @@ async function fixture(t, bounded) {
       session.append('turn/end', { turn, reason: { kind: 'error', error: { message: 'Provider finish_reason: error', code: 'PI_AI_ERROR' } } })
       throw new Error('fixture generation failed')
     }
-    const turn = ++agent.phase.lastTurn, userText = agent.input.content[0].text, text = '重写正文' + turn
+    const turn = ++agent.phase.lastTurn, userText = agent.input.content[0].text, text = hooks.committedPartial ? '已提交的半截正文' : '重写正文' + turn
     agent.input = null
     let current = await p.read('chat')
     const begun = timeline.apply({ chat: current, intent: { kind: 'body.begin', turn, userText } })
@@ -86,7 +86,7 @@ async function fixture(t, bounded) {
     } }).chat, { source: 'foreground.commit' })
     session.append('user/message', { turn, role: 'user', content: [{ type: 'text', text: userText }], source: { kind: 'plugin', plugin: 'dsh-tavern-regen' } }, { surfaceOp: 'append' })
     session.append('assistant/message', { turn, step: 1, message: { role: 'assistant', source: model, content: [{ type: 'text', text }] } }, { surfaceOp: 'append' })
-    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    session.append('turn/end', { turn, reason: { kind: hooks.committedPartial ? 'max-tokens' : 'completed' } })
   } }
   const calls = [], hooks = {}
   const history = createBoundedHistory({ links: async () => ({ session: 'chat' }), readWindow: p.readWindow, pageSize: 8 })
@@ -306,4 +306,23 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
     return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
   }
   assert.deepEqual(strip(results[0]), strip(results[1]))
+})
+
+
+test('宿主已经提交的 max-tokens 正文仍保留不完整状态，完整与窗口路径一致', async t => {
+  for (const bounded of [true, false]) {
+    const h = await fixture(t, bounded)
+    h.hooks.committedPartial = true
+    const result = await h.rounds.regenerate('chat', '', 'session')
+    assert.match(result.regenerationWarning, /已保留/)
+    assert.equal((await h.p.read('chat')).messages.at(-1).incomplete, true)
+    const floor = foldStoryRounds(h.session.events).floors.at(-1)
+    assert.equal(floor.reply.incomplete, true)
+    assert.deepEqual(floor.history.map(item => [item.text, item.current]), [['新正文', false], ['已提交的半截正文', true]])
+    assert.deepEqual(foldStoryRounds(JSON.parse(JSON.stringify(h.session.events))), foldStoryRounds(h.session.events))
+    h.hooks.committedPartial = false
+    await h.rounds.regenerate('chat', '', 'session')
+    assert.equal((await h.p.read('chat')).messages.at(-1).incomplete, undefined)
+    assert.equal(foldStoryRounds(h.session.events).floors.at(-1).reply.incomplete, undefined)
+  }
 })

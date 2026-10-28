@@ -92,6 +92,13 @@ function streamedAttemptText(session, turn, eventStart) {
   } catch { return '' }
 }
 
+// alpha.2 也会提交 max-tokens 的正式回复；正文是否完整须以本次回合终态为准。
+function incompleteGeneration(session, turn, eventStart) {
+  const end = sessionEvents(session).findLast(event => event.type === 'turn/end' &&
+    Number(event.seq) >= Number(eventStart) && Number(event.data?.turn) === Number(turn))
+  return Boolean(end?.data?.reason?.kind && end.data.reason.kind !== 'completed')
+}
+
 /** The round a kept partial attempt writes: an ordinary floor, marked as incomplete. */
 function partialAttemptRows(input) {
   const attachments = Array.isArray(input.inputAttachments) ? input.inputAttachments : []
@@ -206,7 +213,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
     const syntheticText = regenerationInputText(originalUserText, guide, replyTextOf(msgs0[oldAssistantIndex]))
     releaseOpeningTurn(agent.session, agent)
     const beforeLastTurn = agent.phase !== undefined && agent.phase !== null && Number.isFinite(Number(agent.phase.lastTurn)) ? Number(agent.phase.lastTurn) : 0
-    let committedChat, body, syntheticTurn, keptStreamed = false
+    let committedChat, body, syntheticTurn, keptPartial = false
     try {
       if (activeRound !== undefined && typeof cancelSettlement === 'function') await cancelSettlement(chat.id)
       if (agent.phase?.kind === 'running') throw new Error('前台正在生成，未启动重新生成')
@@ -249,7 +256,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
         latest = await readChat(chat.id)
         if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
         latestMsgs = latest.messages || []
-        keptStreamed = true
+        keptPartial = true
       }
       const regeneratedUser = latestMsgs[latestMsgs.length - 2]
       const newAssistant = latestMsgs[latestMsgs.length - 1]
@@ -257,14 +264,19 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
           newAssistant === null || typeof newAssistant !== 'object' || newAssistant.role !== 'assistant' || Number(newAssistant.turn) !== syntheticTurn) {
         throw new Error('重新生成流程未产生正文')
       }
+      keptPartial ||= newAssistant.incomplete === true || incompleteGeneration(session, syntheticTurn, eventStart)
+      if (keptPartial) {
+        newAssistant.incomplete = true
+        newAssistant.incompleteReason ||= '这次重新生成未完成，保留了已生成的部分正文'
+      }
       body = str(newAssistant.text).trim()
       if (body === '') {
         throw new Error('重新生成失败：模型返回空文本')
       }
       const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
         role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn, tavernResultSeq: undefined,
-          tavernResultOrigin: keptStreamed, tavernResultTurn: syntheticTurn,
-          tavernIncomplete: keptStreamed, tavernIncompleteReason: keptStreamed ? newAssistant.incompleteReason : undefined } } }, operationId)
+          tavernResultOrigin: keptPartial, tavernResultTurn: syntheticTurn,
+          tavernIncomplete: keptPartial, tavernIncompleteReason: keptPartial ? newAssistant.incompleteReason : undefined } } }, operationId)
       // The persisted intent must only reference events already on disk.
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       committedChat = await updateChat(latest.id, function (current) {
@@ -275,6 +287,10 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
         if (currentMessages.length < rolledMessageCount + 2 || currentUser === null || typeof currentUser !== 'object' || currentUser.role !== 'user' ||
             currentAssistant === null || typeof currentAssistant !== 'object' || currentAssistant.role !== 'assistant' || Number(currentAssistant.turn) !== syntheticTurn ||
             str(currentAssistant.text).trim() !== body) throw new Error('重新生成流程的正文已被另一项操作修改')
+        if (keptPartial) {
+          currentAssistant.incomplete = true
+          currentAssistant.incompleteReason = newAssistant.incompleteReason
+        }
         const merged = replaceLastRound({ originalChat, regeneratedChat: current, assistantIndex: oldAssistantIndex })
         const next = merged.chat
         if (next.nativeCommits !== null && typeof next.nativeCommits === 'object') delete next.nativeCommits[String(syntheticTurn)]
@@ -314,7 +330,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
     }
     const result = await view(settledChat, card)
     result.adopted = { text: body, guidance: guide, hiddenTurn: oldTurn, syntheticTurn: syntheticTurn }
-    if (keptStreamed) result.regenerationWarning = '这次重新生成没有完成（可能被内容审核拦截或已停止），已保留生成到的部分正文。'
+    if (keptPartial) result.regenerationWarning = '这次重新生成没有完成（可能被内容审核拦截或已停止），已保留生成到的部分正文。'
     return result
   }
 
@@ -417,7 +433,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
     const syntheticText = regenerationInputText(originalUserText, guide, replyTextOf(msgs0[oldAssistantIndex]))
     releaseOpeningTurn(agent.session, agent)
     const beforeLastTurn = agent.phase !== undefined && agent.phase !== null && Number.isFinite(Number(agent.phase.lastTurn)) ? Number(agent.phase.lastTurn) : 0
-    let committedChat, body, syntheticTurn, keptStreamed = false
+    let committedChat, body, syntheticTurn, keptPartial = false
     try {
       if (activeRound !== undefined && typeof cancelSettlement === 'function') await cancelSettlement(chat.id)
       if (agent.phase?.kind === 'running') throw new Error('前台正在生成，未启动重新生成')
@@ -453,7 +469,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
         latest = await chats.readRecent(chat.id)
         if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
         latestMsgs = latest.messages
-        keptStreamed = true
+        keptPartial = true
       }
       const regeneratedUser = latestMsgs[latestMsgs.length - 2]
       const newAssistant = latestMsgs[latestMsgs.length - 1]
@@ -461,12 +477,17 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
           newAssistant === null || typeof newAssistant !== 'object' || newAssistant.role !== 'assistant' || Number(newAssistant.turn) !== syntheticTurn) {
         throw new Error('重新生成流程未产生正文')
       }
+      keptPartial ||= newAssistant.incomplete === true || incompleteGeneration(session, syntheticTurn, eventStart)
+      if (keptPartial) {
+        newAssistant.incomplete = true
+        newAssistant.incompleteReason ||= '这次重新生成未完成，保留了已生成的部分正文'
+      }
       body = str(newAssistant.text).trim()
       if (body === '') throw new Error('重新生成失败：模型返回空文本')
       const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
         role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn, tavernResultSeq: undefined,
-          tavernResultOrigin: keptStreamed, tavernResultTurn: syntheticTurn,
-          tavernIncomplete: keptStreamed, tavernIncompleteReason: keptStreamed ? newAssistant.incompleteReason : undefined } } }, operationId)
+          tavernResultOrigin: keptPartial, tavernResultTurn: syntheticTurn,
+          tavernIncomplete: keptPartial, tavernIncompleteReason: keptPartial ? newAssistant.incompleteReason : undefined } } }, operationId)
       if (typeof sessions.flush === 'function') await sessions.flush(session)
       if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
       // 2) The original floors around the new round. Floors changed since the
@@ -520,7 +541,7 @@ export function createRoundRegeneration({ chats, sessions, sessionPatch, diagnos
     }
     const result = await view(settledChat, card)
     result.adopted = { text: body, guidance: guide, hiddenTurn: oldTurn, syntheticTurn: syntheticTurn }
-    if (keptStreamed) result.regenerationWarning = '这次重新生成没有完成（可能被内容审核拦截或已停止），已保留生成到的部分正文。'
+    if (keptPartial) result.regenerationWarning = '这次重新生成没有完成（可能被内容审核拦截或已停止），已保留生成到的部分正文。'
     return result
   }
 
