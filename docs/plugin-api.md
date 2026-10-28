@@ -1,8 +1,8 @@
 # Tavern 插件接口总览
 
-接口版本：**3**
+接口版本：**4**（宿主侧；浏览器侧 `tavernUi.apiVersion` 仍为 **5**）
 
-DSH Tavern 把扩展功能交给第三方 **DSH 插件**：文生图、文生视频、配音，以及记忆、叙事锚点这类需要参与提示词和后台结算的功能。Tavern 提供一层稳定的接口：让插件知道「这一轮写完了、写了什么」，把图片或别的内容「挂回这一轮」，并往正文请求和后台结算里**添加**内容。多数是添加类接口，插件出错只会丢掉它自己那一份，游戏照常进行；少数替换类接口（如 `replaceSettlement`）让插件接管某个流程，插件失败时自动退回 Tavern 自己的做法。
+DSH Tavern 把扩展功能交给第三方 **DSH 插件**：文生图、文生视频、配音，以及记忆、叙事锚点这类需要参与提示词和后台结算的功能。Tavern 提供一层稳定的接口：让插件知道「这一轮写完了、写了什么」，把图片或别的内容「挂回这一轮」，并往正文请求和后台结算里**添加**内容。v4 另提供仅对当前人物卡卡内插件开放的官方 MVU 变量结算 provider。多数是添加类接口，插件出错只会丢掉它自己那一份，游戏照常进行；少数替换类接口（如 `replaceSettlement`）让插件接管某个流程，插件失败时自动退回 Tavern 自己的做法。
 
 ## 三条承诺
 
@@ -34,12 +34,14 @@ DSH Tavern 把扩展功能交给第三方 **DSH 插件**：文生图、文生视
 ```json
 {
   "name": "dsh-tavern-xxx",
+  "version": "1.0.0",
   "type": "module",
   "exports": { ".": "./index.mjs", "./client": "./client.js" },
   "dsh": { "client": { "platform": "web", "inject": ["dsh-tavern-plugin"] } }
 }
 ```
 
+- `name` 和 `version` 必须是非空字符串（例如 `"version": "1.0.0"`）；`private: true` 也不能省略版本。DSH 会读取插件包身份，缺少版本可能使官方 DeepSeek 请求在发送前失败。
 - 宿主侧入口必须有（`exports` 的 `"."`，或 `main`）。只做界面的插件也要放一个空的 `index.mjs`（`export function apply() {}`）。
 - 没有浏览器侧时，去掉 `"./client"` 和整个 `dsh` 字段。
 - 插件名建议叫 `dsh-tavern-xxx`，方便用户辨认；不能和已安装的包同名（例如 `dsh-tavern-plugin`），否则会被跳过。
@@ -70,7 +72,9 @@ window.__ModuleLoader__.load({
 | 修改 `index.mjs` | 要重启 DSH |
 | 删除插件文件夹 | 宿主侧不再加载；刷新页面后浏览器侧消失 |
 
-Tavern 把 `plugins/` 下的插件登记在 DSH 的 Tavern 配置（`~/.dsh/profiles/tavern/cordis.patch.yml`）里，以 `tavern-user-plugin-` 开头的条目由 Tavern 自动维护，不要手改。插件文件夹缺 `package.json` 或宿主入口时会被跳过，原因写在 Tavern 日志里。Tavern 通过插件文件夹里自动生成的 `.tavern-entry.mjs` 加载宿主侧：插件代码有语法错误、导入失败或 `apply` 抛错时，只在日志里记一条「plugins/<文件夹> 加载失败 / 启动失败」，不会让 DSH 起不来。这个文件不要改，也不用提交到插件仓库。
+Tavern 把 `plugins/` 下的插件登记在 DSH 的 Tavern 配置（`~/.dsh/profiles/tavern/cordis.patch.yml`）里，以 `tavern-user-plugin-` 开头的条目由 Tavern 自动维护，不要手改。插件文件夹缺 `package.json`、有效的 `name` / `version` 或宿主入口时会被跳过，原因写在 Tavern 日志里。Tavern 通过插件文件夹里自动生成的 `.tavern-entry.mjs` 加载宿主侧：插件代码有语法错误、导入失败或 `apply` 抛错时，只在日志里记一条「plugins/<文件夹> 加载失败 / 启动失败」，不会让 DSH 起不来。这个文件不要改，也不用提交到插件仓库。
+
+升级后，已有但缺少有效 `name` / `version` 的插件会保留在磁盘上，但不再登记加载，插件管理和日志会说明原因。请补齐作者确认的版本，或安装作者修正后的插件 / 人物卡，再启用；旧卡暂存副本仍无效时需重新导入修正后的卡。不要为第三方插件随意编造版本。
 
 写好之后怎样发布，才能让别人在设置里一键安装，见[发布与一键安装](plugin-publishing.md)。
 
@@ -108,7 +112,7 @@ export function apply(ctx) {
 两条规则：
 
 - **用 `ctx.tavern.方法名()` 的形式调用**，不要把方法单独取出来（`const { attach } = ctx.tavern` 会报错）。Tavern 靠调用方式认出是哪个插件，从而让各插件只能看到、修改自己的内容。
-- **注册类的方法（`onTurnSettled`、`onTimelineChanged`、`promptSection`、`turnSection`、`settlementSection`、`settlementTool`、`worldbookSource`、`register…`）在插件卸载时自动撤销**，也会返回一个撤销函数，可以提前调用。
+- **注册类的方法（`onTurnSettled`、`onTimelineChanged`、`promptSection`、`turnSection`、`settlementSection`、`settlementTool`、`worldbookSource`、`mvuSettlementProvider`、`register…`）在插件卸载时自动撤销**，也会返回一个撤销函数，可以提前调用。
 
 ## 基本概念
 
@@ -125,7 +129,7 @@ export function apply(ctx) {
 
 | 页面 | 内容 |
 |---|---|
-| [读取游戏](plugin-api-game.md) | 回合写完、读正文与人物卡、历史、时间线变化、改最新一轮 |
+| [读取游戏](plugin-api-game.md) | 回合写完、读正文与人物卡、历史、时间线变化、改最新一轮、MVU provider |
 | [正文、结算与任务](plugin-api-prompt.md) | 往正文请求、世界书、后台结算、候选、压缩里添加内容；结算任务、手动任务、`runTask`、`handle` |
 | [媒体与数据](plugin-api-data.md) | 挂图片等媒体、按轮与整局数据、插件数据、本局配置项、插件在哪些局生效 |
 | [人物卡、Skill 与演出](plugin-api-cards.md) | 人物卡库、改卡、Skill、台词标注、角色素材 |
@@ -137,13 +141,33 @@ export function apply(ctx) {
 
 Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【酒馆状态】」这类提示；带 `parentSession` 的子 Agent 会话一律不加，插件 Agent 收到的只有插件自己给的内容。
 
+## 注册世界书召回策略
+
+`ctx.tavern.worldbookStrategy({ name, label, description, select })` 注册一种可在本局设置中选择的策略。`name` 是插件内唯一的名称（规则同 `worldbookSource`）；宿主自动添加插件命名空间，插件卸载时自动移除。调用返回移除注册的函数。注册本身不切换任何游戏；默认仍为现有关键词注入策略。
+
+```js
+ctx.tavern.worldbookStrategy({
+  name: 'first-match',
+  label: '首个匹配条目',
+  description: '用于与现有召回策略进行对比',
+  select({ gameId, userText, purpose, entries }) {
+    const entry = entries.find(entry => entry.primaryKeys?.some(key => userText.includes(key)))
+    return entry ? [entry.ref] : []
+  }
+})
+```
+
+`select` 可以异步执行，最多 5 秒。输入是独立副本，不包含 Chat 内部状态；`entries` 只含本局启用且非 MVU 更新规则的条目，字段为 `ref`、`sourceUid`、`sourcePath`、`title`、`content`、`constant`、`primaryKeys`、`secondaryKeys`、`order`、`position`、`depth`、`role`。返回该数组内的 `ref` 字符串数组，不能返回任意正文。Tavern 负责模板渲染以及常驻、强制激活条目的保留；策略不能通过省略它们取消强制规则。此模式不消耗现有关键词召回的冷却记录，也不调用“世界书模型筛选”。
+
+卡内插件只能参与所属人物卡的游戏；异步回调结束时再次核对作用域和卸载状态。异常、超时、非法引用、插件不可用时退回现有召回，不覆盖玩家保存的策略选择。插件代码不得在选择回调中产生游戏外副作用。可以用 `tavern.capabilities.worldbookStrategy === 1` 检查支持情况。
+
 ## 暂时没有的
 
 下面这些目前还没有接口，不代表不能开放。有实际需要时请提[插件接口需求](https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml)，写清要做的插件和卡在哪一步，能开放的会按需补上。
 
 - 修改更早的轮次（`setVariables`、`editTurn` 目前只改最新一轮）。
 - 直接使用 Tavern 自己的常驻后台会话：它带着整局的结算历史，插件任务混进去会影响之后的结算。需要游戏背景的后台工作请用 `runTask`。
-- 替换 Tavern 的其他流程（提示词组装、世界书召回、候选、压缩、MVU 变量结算）。替换类接口会约定插件要交回的结果，插件失败时退回 Tavern 自己的做法。
+- 替换 Tavern 的其他流程（提示词组装、候选、压缩）。替换类接口会约定插件要交回的结果，插件失败时退回 Tavern 自己的做法。
 
 直接读写 Tavern 的数据目录和人物卡文件不属于接口：这些文件的格式会随版本变化，插件这样做，Tavern 一更新就可能失效。需要里面的数据，请按上面的方式提需求，由 Tavern 提供读取接口。
 

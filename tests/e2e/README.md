@@ -168,3 +168,8 @@ node tests/e2e/gameplay.mjs --real-gameplay
 ```
 
 复制指定人物卡和本机模型配置到临时 profile；会产生真实 API 费用，不修改原始人物卡和存档。通过浏览器选卡开局、发送三轮（含生成并选择候选）、带指导重生成、回退、重启并继续。断言前文不变、回退边界、刷新与重启后的持久化及原生会话对齐，保存截图、阶段正文、trace 和模型用量。该场景关闭独立后台任务，普通卡不覆盖 MVU；MVU 生命周期使用 `--refactor-lifecycle` 单独验证。
+
+## 改正文后生成候选（#394）
+
+`TAVERN_E2E_TIMEOUT_MS=60000 node tests/e2e/gameplay.mjs --edit-candidates`
+玩三轮，改最后一轮正文，再生成候选。所有后台请求原样写入 `background-requests.jsonl`；验收候选请求带上改过的正文。约 3 分钟。

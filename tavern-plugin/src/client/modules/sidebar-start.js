@@ -6,7 +6,8 @@ const TAVERN_HEADER_NOT_FOLDED = Object.freeze(["dsh-tavern:status", "header:exp
 const TAVERN_START_GROUPS = Object.freeze([
 	["本局", Object.freeze(["dsh-tavern:status", "dsh-tavern:conversation-settings"])],
 	["资料库", Object.freeze(["dsh-tavern:cards", "dsh-tavern:worldbooks", "dsh-tavern:regex-library", "dsh-tavern:resources", "dsh-tavern:skills"])],
-	["偏好", Object.freeze(["dsh-tavern:presets", "dsh-tavern:guide-library", "dsh-tavern:card-memory"])]
+	["偏好", Object.freeze(["dsh-tavern:presets", "dsh-tavern:guide-library", "dsh-tavern:card-memory"])],
+	["迁移", Object.freeze(["dsh-tavern:transfer"])]
 ]);
 
 const TAVERN_START_ICON_PATHS = Object.freeze({
@@ -22,6 +23,7 @@ const TAVERN_START_ICON_PATHS = Object.freeze({
 	'system-prompts': 'M10 3L6 21M18 3l-4 18M3 9h18M2 15h18',
 	'user-profile': 'M3 6h10m4 0h4M3 12h4m4 0h10M3 18h10m4 0h4M13 6a2 2 0 1 0 4 0a2 2 0 1 0-4 0M7 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0M13 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
 	'card-memory': 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h5',
+	transfer: 'M12 3v10m0 0-3.5-3.5M12 13l3.5-3.5M4 15v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3',
 	fallback: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z'
 });
 

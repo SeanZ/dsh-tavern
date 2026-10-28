@@ -3,6 +3,13 @@ import test from 'node:test'
 
 import { openTavernSettings } from './fixtures/tavern-settings-browser.mjs'
 
+test('酒馆插件页在安装前明确插件兼容范围', async t => {
+  const { page } = await openTavernSettings(t, { section: 'dsh-tavern: plugins settings section' })
+  const header = page.getByRole('region', { name: '酒馆插件', exact: true }).locator('header').first()
+  await header.getByText('不支持 SillyTavern 插件，仅支持 DSH 插件和 DSH Tavern 插件。', { exact: true }).waitFor({ state: 'visible' })
+  await header.getByText('给酒馆加功能：粘贴插件作者的 GitHub 地址即可安装。', { exact: true }).waitFor({ state: 'visible' })
+})
+
 // 设置 → 插件：已是最新时不显示更新按钮，有新版时按钮写明版本，停用/启用原地切换。
 test('插件列表按 Release 显示更新、停用与启用', async t => {
   let plugins = [

@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { validPackId } from './asset-packs.js'
+import { pluginManifestProblem } from './plugin-manifest.js'
 
 // Card archives read from disk (zip-file.js): a DSH card (.dshcard, docs/design/dsh-card-format.md),
 // the Galgame fork's card bundle (dsh-tavern-card-bundle.json), or a plain CHARX.
@@ -60,6 +61,16 @@ export async function readCardArchive(zip) {
         credits: (Array.isArray(pack.credits) ? pack.credits : []).filter(file => typeof file === 'string' && file.startsWith(prefix)).map(file => file.slice(prefix.length)) })
     }
     plugins = (Array.isArray(manifest.plugins) ? manifest.plugins : []).map(plugin => ({ name: String(plugin?.name || ''), path: String(plugin?.path || ''), purpose: String(plugin?.purpose || '') }))
+    // Preflight before the caller persists cards, packs, or import fingerprints.
+    // stage() checks again when extracting, but a late rejection leaves a partial import.
+    for (const plugin of plugins) {
+      const prefix = plugin.path.replace(/\/*$/, '/')
+      const folder = prefix.split('/')[1] || ''
+      if (!prefix.startsWith('plugins/') || prefix.split('/').length !== 3 || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(folder)) throw invalid('插件路径应为 plugins/<文件夹>/（小写字母、数字、点、下划线、连字符）：' + plugin.path)
+      const pkg = await readJson(zip, prefix + 'package.json', '插件 ' + folder)
+      const problem = pluginManifestProblem(pkg)
+      if (problem) throw invalid('插件 ' + folder + ' 的 ' + problem)
+    }
     defaults = await startDefaults(zip, manifest.defaults)
   } else if (zip.entries.has('dsh-tavern-card-bundle.json')) {
     // The Galgame fork's bundle: card/card.json, packs/<id>/, a cover beside the card.

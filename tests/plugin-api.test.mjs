@@ -98,6 +98,121 @@ async function harness(t, overrides = {}) {
   return { root, api, media, published, errors, setLatest(value) { latest = value } }
 }
 
+test('provider APIs：capabilities、克隆输入、卡绑定筛选与 Cordis 卸载撤销', { skip: !cordis }, async t => {
+  let cardPath = '/cards/a.json'
+  const h = await harness(t, {
+    cardScope: async () => new Map([['card-provider', { cards: ['/cards/a.json'] }]]),
+    cardPathOf: async () => cardPath,
+    readPendingTurn: async () => turnMaterial()
+  })
+  let tavern
+  const seen = []
+  const fiber = await h.root.plugin({ name: 'card-provider', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.mvuSettlementProvider({ name: 'state', settle: async input => {
+      seen.push(input)
+      input.currentVariables.stat_data.hp = 0
+      return { operations: [{ op: 'replace', path: '/stat_data/hp', valueJson: '2' }] }
+    } })
+  } })
+  await tick()
+  assert.equal(tavern.apiVersion, 6)
+  assert.deepEqual(tavern.capabilities, { mvuSettlementProvider: 1, worldbookStrategy: 1 })
+  assert.equal(Object.isFrozen(tavern.capabilities), true)
+  assert.equal(tavern.mvuProviderRegistered, undefined, 'registration guard is internal, not a plugin service method')
+  assert.equal(h.api.mvuProviderRegistered('card-provider'), true)
+  const input = { gameId: 'game-1', turn: 3, textVersion: 'caller-version', currentVariables: { stat_data: { hp: 10 } }, signal: new AbortController().signal }
+  assert.deepEqual(await h.api.mvuProvider(input), { owner: 'card-provider', operations: [{ op: 'replace', path: '/stat_data/hp', valueJson: '2' }] })
+  assert.equal(input.currentVariables.stat_data.hp, 10, 'provider only mutates its structured clone')
+  assert.equal(seen[0].signal, input.signal, 'callback receives the active cancellation signal')
+  assert.equal(seen[0].textVersion, 'key-3', 'provider sees the same canonical version as getTurn')
+  cardPath = '/cards/other.json'
+  assert.equal(await h.api.mvuProvider(input), null, 'a plugin bound to another card is not a candidate')
+  cardPath = '/cards/a.json'
+  await fiber.dispose()
+  await tick()
+  assert.equal(h.api.mvuProviderRegistered('card-provider'), false)
+  assert.equal(await h.api.mvuProvider(input), null, 'Cordis dispose revokes registration')
+})
+
+test('provider APIs：未绑定、多候选與迟到卸载结果均不接管；异常与主动 decline 分开', { skip: !cordis }, async t => {
+  let owners = new Map([['one-provider', { cards: ['/cards/a.json'] }], ['two-provider', { cards: ['/cards/a.json'] }]])
+  const h = await harness(t, { cardScope: async () => owners, cardPathOf: async () => '/cards/a.json', readPendingTurn: async () => turnMaterial() })
+  let resolveSlow
+  const slow = new Promise(resolve => { resolveSlow = resolve })
+  const fibers = []
+  for (const name of ['one-provider', 'two-provider']) {
+    fibers.push(await h.root.plugin({ name, inject: ['tavern'], apply(ctx) {
+      ctx.tavern.mvuSettlementProvider({ name: 'state', settle: () => name === 'one-provider' ? slow : null })
+    } }))
+  }
+  await tick()
+  const input = { gameId: 'game-1', turn: 3, textVersion: 'v1' }
+  assert.equal(await h.api.mvuProvider(input), null, 'multiple candidates are never chosen randomly')
+  owners = new Map()
+  assert.equal(await h.api.mvuProvider(input), null, 'an unbound provider is ignored')
+
+  owners = new Map([['one-provider', { cards: ['/cards/a.json'] }]])
+  const pending = h.api.mvuProvider(input)
+  await tick()
+  await fibers[0].dispose()
+  resolveSlow({ operations: [] })
+  assert.equal(await pending, null, 'unload during callback invalidates late results')
+  assert.equal(h.errors().some(item => /多个卡内提供器候选/.test(item.message)), true)
+  await fibers[1].dispose()
+})
+
+test('provider APIs：取消信号终止正在等待的插件回调', { skip: !cordis }, async t => {
+  const h = await harness(t, {
+    cardScope: async () => new Map([['cancel-provider', { cards: ['/cards/a.json'] }]]),
+    cardPathOf: async () => '/cards/a.json', readPendingTurn: async () => turnMaterial()
+  })
+  let fiber
+  await h.root.plugin({ name: 'cancel-provider', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.mvuSettlementProvider({ name: 'wait', settle: () => new Promise(() => {}) })
+  } }).then(value => { fiber = value })
+  await tick()
+  const controller = new AbortController()
+  const pending = h.api.mvuProvider({ gameId: 'game-1', turn: 3, signal: controller.signal })
+  controller.abort(new Error('cancelled'))
+  await assert.rejects(pending, /cancelled/)
+  await fiber.dispose()
+})
+
+test('MVU provider：decline为null，异常保持为异常，正文版本变化使迟到结果失效', { skip: !cordis }, async t => {
+  let latest = turnMaterial()
+  let settleNow = () => null
+  let resolveStarted
+  let resolveLate
+  const started = new Promise(resolve => { resolveStarted = resolve })
+  const late = new Promise(resolve => { resolveLate = resolve })
+  const h = await harness(t, {
+    cardScope: async () => new Map([['version-provider', { cards: ['/cards/a.json'] }]]),
+    cardPathOf: async () => '/cards/a.json',
+    readPendingTurn: async () => latest
+  })
+  let fiber
+  fiber = await h.root.plugin({ name: 'version-provider', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.mvuSettlementProvider({ name: 'state', settle(input) {
+      resolveStarted(input.textVersion)
+      return settleNow()
+    } })
+  } })
+  await tick()
+  const input = { gameId: 'game-1', turn: 3 }
+  assert.equal(await h.api.mvuProvider(input), null, 'null is an intentional decline')
+  assert.equal(await started, 'key-3')
+  settleNow = () => { throw new Error('provider failed') }
+  await assert.rejects(h.api.mvuProvider(input), /provider failed/, 'exception is not treated as decline')
+  settleNow = () => late
+  const pending = h.api.mvuProvider(input)
+  await tick()
+  latest = turnMaterial({ key: 'key-3b' })
+  resolveLate({ operations: [] })
+  assert.equal(await pending, null, 'a changed canonical key invalidates the late result')
+  await fiber.dispose()
+})
+
 test('tavern 服务：按调用插件识别归属，插件卸载后自动撤销监听与提示词段落', { skip: !cordis }, async t => {
   const h = await harness(t)
   const seen = []
@@ -855,7 +970,7 @@ test('版本失效信号：versionSignal 在正文版本被替换或删局时中
     ctx.tavern.onTimelineChanged(change => seen.push(change))
   } })
   await tick()
-  assert.equal(tavern.apiVersion, 3)
+  assert.equal(tavern.apiVersion, 6)
   assert.equal((await tavern.versionSignal({ gameId: 'game-1', turn: 3, textVersion: 'old' })).aborted, true, '不是当前版本时立即中止')
   const signal = await tavern.versionSignal({ gameId: 'game-1', turn: 3, textVersion: 'key-3' })
   h.api.timelineChanged('game-1', { kind: 'edit', turn: 3 })
@@ -1064,4 +1179,83 @@ test('插件数据：不跟某一局走，每个插件只读写自己的那一�
   await assert.rejects(image.savePluginData({ data: 'x'.repeat(300 * 1024) }), /256 KB/)
   await image.savePluginData({ data: null })
   assert.equal(await image.readPluginData(), null)
+})
+
+test('插件联网声明随卸载释放，不能覆盖原生工具或重复声明', { skip: !cordis }, async t => {
+  const h = await harness(t, { reservedToolNames: ['web_search'] })
+  let service
+  const fiber = await h.root.plugin({ name: 'network-plugin', inject: ['tavern'], apply(ctx) {
+    service = ctx.tavern
+    service.toolNetwork({ name: 'reference_lookup', capability: 'search' })
+  } })
+  await tick()
+  assert.equal(h.api.toolNetworkFor('reference_lookup'), 'search')
+  assert.throws(() => service.toolNetwork({ name: 'web_search' }), /自己的工具/)
+  assert.throws(() => service.toolNetwork({ name: 'reference_lookup' }), /已被声明/)
+  assert.throws(() => service.toolNetwork({ name: 'other', capability: 'anything' }), /search 或 fetch/)
+  await fiber.dispose()
+  await tick()
+  assert.equal(h.api.toolNetworkFor('reference_lookup'), undefined)
+})
+
+// #394 附带：配图插件的生成记录要和对话里的图同进同退。
+test('玩家删图只通知图的主人，带上被删每张图的插件数据；插件自己按版本删不触发', { skip: !cordis }, async t => {
+  const { createPluginMediaViews } = await import('../tavern-plugin/lib/domain/plugin-media-views.js')
+  const h = await harness(t)
+  const views = createPluginMediaViews({ pluginMedia: h.media, sessionSignals: { publish() {} }, attachments: () => null, mediaRemoved: h.api.mediaRemoved,
+    pluginTurns: { resolveGame: async sessionId => sessionId === 'game-1' ? { chatId: 'chat-1', sessionId } : null, currentKey: async () => 'key-3' } })
+  const heard = { mine: [], other: [] }
+  let tavern
+  await h.root.plugin({ name: 'image-plugin', inject: ['tavern'], apply(ctx) { tavern = ctx.tavern; ctx.tavern.onMediaRemoved(event => heard.mine.push(event)) } })
+  await h.root.plugin({ name: 'other-plugin', inject: ['tavern'], apply(ctx) { ctx.tavern.onMediaRemoved(event => heard.other.push(event)) } })
+  await tick()
+  const draw = async jobs => {
+    const { id } = await tavern.attach({ gameId: 'game-1', turn: 3, textVersion: 'key-3', item: { kind: 'image', attachment: { ...image, attachmentId: jobs[0] }, data: { jobId: jobs[0] } } })
+    for (const job of jobs.slice(1)) await tavern.update(id, { attachment: { ...image, attachmentId: job }, data: { jobId: job } })
+    return id
+  }
+  const first = await draw(['j1', 'j2', 'j3'])
+  await views.removePluginMediaVersion('game-1', first, 0)
+  await views.removePluginMediaVersion('game-1', first, null)
+  await tick()
+  assert.deepEqual(heard.mine.map(event => [event.itemRemoved, event.pictures.map(picture => picture.data.jobId)]), [[false, ['j1']], [false, ['j3']]])
+  assert.equal((await tavern.list({ gameId: 'game-1' }))[0].data.jobId, 'j2', '上一版顶上时带回它的数据')
+  await views.removePluginGalleryItems('game-1', [first])
+  await tick()
+  assert.deepEqual(heard.mine.at(-1), { gameId: 'game-1', itemId: first, kind: 'image', turn: 3, textVersion: 'key-3', itemRemoved: true,
+    pictures: [{ caption: '', prompt: '', createdAt: heard.mine.at(-1).pictures[0].createdAt, data: { jobId: 'j2' } }] })
+
+  const second = await draw(['k1', 'k2'])
+  assert.equal(await tavern.remove(second, { version: 0 }), true)
+  assert.equal(await tavern.remove(second, { version: 'current' }), true)
+  assert.deepEqual(await tavern.list({ gameId: 'game-1' }), [], '最后一张删掉整项')
+  await tick()
+  assert.equal(heard.mine.length, 3, '插件自己删不再通知自己')
+  assert.deepEqual(heard.other, [], '别的插件听不到')
+})
+
+test('台账整理替换：交回的增量先过校验；不合格、出错或放弃时退回 Tavern 自己整理；停止后台时中止', { skip: !cordis }, async t => {
+  const h = await harness(t)
+  let mode = 'ok', seen
+  await h.root.plugin({ name: 'ledger-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.replaceLedger({ async consolidate(input) {
+      seen = input
+      if (mode === 'throw') throw new Error('炸了')
+      if (mode === 'decline') return null
+      if (mode === 'wait') return await new Promise((_, reject) => input.signal.addEventListener('abort', () => reject(input.signal.reason)))
+      return { delta: mode === 'bad' ? { npcs: { update: [{ name: '无名' }] } } : { items: { add: [{ name: '钥匙', qty: 1 }] } } }
+    } })
+  } })
+  await tick()
+  const input = { gameId: 'game-1', from: 1, through: 2, text: '正文', ledger: { items: [] }, rules: '规则', tool: { name: 'ledger_submit' },
+    apply: delta => { if (delta.npcs) throw new Error('不能更新尚未登记的条目：无名') } }
+  assert.deepEqual(await h.api.replaceLedger(input), { owner: 'ledger-plugin', delta: { items: { add: [{ name: '钥匙', qty: 1 }] } } })
+  assert.deepEqual([seen.from, seen.through, seen.text, seen.rules, seen.tool.name, typeof seen.apply], [1, 2, '正文', '规则', 'ledger_submit', 'undefined'], '插件拿不到 apply')
+  for (mode of ['bad', 'throw', 'decline']) assert.equal(await h.api.replaceLedger(input), null, mode)
+  assert.deepEqual(h.errors().map(error => error.message), ['炸了', '不能更新尚未登记的条目：无名'])
+  mode = 'wait'
+  const running = h.api.replaceLedger(input)
+  await tick()
+  assert.equal(h.api.stopTasks('game-1'), true)
+  await assert.rejects(running, /停止了台账整理/)
 })

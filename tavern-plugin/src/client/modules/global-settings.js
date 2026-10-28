@@ -66,6 +66,87 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
             message ? h("div", { className: "dsh-tavern-settings-row", role: "status" }, h("span", { className: "dsh-tavern-settings-desc" }, message)) : null);
     }
 
+    function WebAccessSettings({ settings }) {
+        const h = React.createElement;
+        const [config, setConfig] = React.useState(settings.webAccess || { sources: ["bing", "ddg"], searxngUrl: "", searxngEngines: [], proxyUrl: "", sourceProxies: {}, fetchEnabled: false });
+        const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState(""), [error, setError] = React.useState(""), [status, setStatus] = React.useState(null);
+        const labels = { bing: "Bing", ddg: "DuckDuckGo", searxng: "SearXNG" };
+        const [engines, setEngines] = React.useState(config.searxngEngines.join(","));
+        React.useEffect(() => {
+            let live = true;
+            rpc("getWebSearchStatus").then(value => { if (live) setStatus(value); }, err => { if (live) setError(err.message); });
+            return () => { live = false; };
+        }, []);
+        const change = patch => setConfig(value => ({ ...value, ...patch }));
+        async function save(test) {
+            setBusy(true); setError(""); setNotice("");
+            try {
+                const result = await rpc("updateTavernSettings", { patch: { webAccess: { ...config, searxngEngines: engines.split(",").map(v => v.trim()).filter(Boolean) } } });
+                setConfig(result.settings.webAccess); notifySettingsChanged(); setNotice("卡片工作台搜索设置已保存，后续调用生效。");
+                if (test) {
+                    const checked = await rpc("testWebSearch");
+                    setNotice("已保存，内置搜索测试成功，返回 " + checked.count + " 条结果。");
+                }
+                setStatus(await rpc("getWebSearchStatus"));
+            } catch (err) { setError(String(err.message || err)); }
+            finally { setBusy(false); }
+        }
+        async function activate() {
+            setBusy(true); setError("");
+            try { setStatus(await rpc("useBuiltinWebSearch")); setNotice("已切换到内置搜索。"); }
+            catch (err) { setError(String(err.message || err)); }
+            finally { setBusy(false); }
+        }
+        function copy(title, description) {
+            return h("span", { className: "dsh-tavern-settings-copy" }, h("strong", null, title), description ? h("span", { className: "dsh-tavern-settings-desc" }, description) : null);
+        }
+        function field(title, value, onChange, placeholder, description) {
+            return h("label", { className: "dsh-local-field" }, copy(title, description), h("input", { "aria-label": title, value, disabled: busy, placeholder, onChange: e => onChange(e.target.value) }));
+        }
+        function move(source, step) {
+            const next = config.sources.slice(), at = next.indexOf(source), target = at + step;
+            if (target < 0 || target >= next.length) return;
+            [next[at], next[target]] = [next[target], next[at]]; change({ sources: next });
+        }
+        return h("div", { className: "dsh-tavern-web-settings", "aria-label": "卡片工作台搜索设置" },
+            h("section", { className: "dsh-tavern-settings-group" },
+                h("div", { className: "dsh-tavern-settings-row" }, copy("搜索服务", "用于工作台查找作品、人物和世界观资料。"),
+                    h("span", { className: "dsh-tavern-settings-desc", role: "status" }, status ? (status.provider === "tavern-search" ? "酒馆内置搜索" : status.provider || "未选择") : "正在读取…"),
+                    status && status.provider !== "tavern-search" ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: activate }, "使用内置搜索") : null),
+                h("div", { className: "dsh-tavern-settings-row" }, copy("搜索源", "按顺序尝试，当前来源不可用时使用下一项。")),
+                [...config.sources, ...Object.keys(labels).filter(source => !config.sources.includes(source))].map(source => {
+                    const at = config.sources.indexOf(source);
+                    return h("div", { key: source, className: "dsh-tavern-settings-row" },
+                        h("label", { className: "dsh-tavern-web-source dsh-tavern-background-task" },
+                            h("input", { type: "checkbox", role: "switch", "aria-label": labels[source], disabled: busy, checked: at >= 0, onChange: e => change({ sources: e.target.checked ? [...config.sources, source] : config.sources.filter(s => s !== source) }) }),
+                            h("span", null, labels[source])),
+                        at >= 0 ? h("span", { className: "dsh-tavern-web-actions" },
+                            h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": labels[source] + "优先", disabled: busy || at === 0, onClick: () => move(source, -1) }, "上移"),
+                            h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": labels[source] + "后移", disabled: busy || at === config.sources.length - 1, onClick: () => move(source, 1) }, "下移")) : null);
+                })),
+            h("details", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" },
+                h("summary", { className: "dsh-tavern-header-summary" }, h("strong", { className: "dsh-tavern-settings-title" }, "SearXNG 配置"), h("span", { className: "dsh-tavern-header-summary-meta" }, "自定义搜索源"), h("span", { className: "dsh-tavern-header-summary-chevron", "aria-hidden": true }, "▾")),
+                field("SearXNG 实例地址", config.searxngUrl, value => change({ searxngUrl: value }), "https://你的实例地址"),
+                field("SearXNG 引擎", engines, setEngines, "例如 wikipedia,bing", "用逗号分隔；留空使用实例默认。")),
+            h("section", { className: "dsh-tavern-settings-group" },
+                h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" }, copy("允许读取网页正文", "让工作台继续阅读搜索结果中的网页，核对原文并保留出处。"), h("input", { type: "checkbox", role: "switch", "aria-label": "允许读取网页正文", checked: config.fetchEnabled, disabled: busy, onChange: e => change({ fetchEnabled: e.target.checked }) }))),
+            h("details", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" },
+                h("summary", { className: "dsh-tavern-header-summary" }, h("strong", { className: "dsh-tavern-settings-title" }, "搜索代理"), h("span", { className: "dsh-tavern-header-summary-meta" }, "高级设置"), h("span", { className: "dsh-tavern-header-summary-chevron", "aria-hidden": true }, "▾")),
+                field("默认搜索代理", config.proxyUrl, value => change({ proxyUrl: value }), "http://127.0.0.1:7890", "留空直连。网页正文读取沿用 DSH 的代理设置。"),
+                Object.keys(labels).map(source => h(React.Fragment, { key: source },
+                    h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" }, copy(labels[source] + " 单独设置代理"), h("input", { type: "checkbox", role: "switch", "aria-label": labels[source] + " 单独设置代理", disabled: busy, checked: Object.hasOwn(config.sourceProxies, source), onChange: e => {
+                        const proxies = { ...config.sourceProxies }; if (e.target.checked) proxies[source] = ""; else delete proxies[source]; change({ sourceProxies: proxies });
+                    } })),
+                    Object.hasOwn(config.sourceProxies, source) ? field(labels[source] + "代理地址", config.sourceProxies[source], value => change({ sourceProxies: { ...config.sourceProxies, [source]: value } }), "留空强制直连") : null))),
+            h("div", { className: "dsh-tavern-web-actions dsh-tavern-web-save" },
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: () => save(false) }, "保存搜索设置"),
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: () => save(true) }, "保存并测试搜索")),
+            h("p", { className: "dsh-tavern-gs-notice" }, "游玩中开启本局联网搜索时，也会复用这些搜索源。"),
+            notice ? h("p", { className: "dsh-tavern-gs-notice", role: "status" }, notice) : null,
+            error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null,
+            (status?.attempts || []).length ? h("p", { className: "dsh-tavern-gs-notice" }, "最近搜索：" + status.attempts.map(a => (labels[a.source] || a.source) + "：" + (a.ok ? "成功" : a.error)).join("；")) : null);
+    }
+
     function TavernSettingsSection() {
         const [state, setState] = React.useState({ loading: true, busy: false, defaultForegroundModel: null, defaultBackgroundModel: null, defaultWorkbenchModel: null, notice: "", settings: null, modelCatalog: [], error: "" });
         React.useEffect(function () {
@@ -108,7 +189,11 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                 h(TavernConversationWritingSkills, { globalDefaults: true })),
             // 对话气泡 (castPresentation) lives in 舞台设置 › 基础设置 with the other stage switches.
             group("剧情", "所有游戏都按这些设置，下一轮生效。",
-                h(ContextCompactionSettings)),
+                h(ContextCompactionSettings),
+                // Off by default: it adds a background model request after every reply.
+                state.settings ? h(SettingSwitch, { settings: state.settings, name: "candidateAutoGenerate", title: "自动生成候选项",
+                    description: "打开后每轮会多一次后台请求：正文写完，酒馆在后台自动生成这一轮的候选项，不用再点「生成候选项」。只对打开后的新回复生效，失败时可手动重试。" }) : null),
+            group("卡片工作台搜索", "为制卡和改卡补充作品资料，设置搜索来源、网页读取与连接方式。", state.settings ? h(WebAccessSettings, { settings: state.settings }) : null),
             group("显示与交互", "对所有游戏生效，只改界面，不影响正文和存档。",
                 state.settings ? h(SettingSwitch, { settings: state.settings, name: "autoOpenStatusPanel", title: "进入游戏时打开酒馆状态",
                     description: "进入或切换到一局游戏时，右侧面板自动展开并显示本局设置和酒馆状态。关闭后右侧面板保持你上次的样子。" }) : null,
@@ -131,7 +216,9 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
         const h = React.createElement;
         return h("div", { className: "dsh-tavern-settings-section dsh-tavern-global-settings" },
             h("section", { className: "dsh-tavern-gs-group", "aria-label": "酒馆插件" },
-                h("header", { className: "dsh-tavern-gs-head" }, h("h2", null, "酒馆插件"), h("p", null, "给酒馆加功能：粘贴插件作者的 GitHub 地址即可安装。")),
+                h("header", { className: "dsh-tavern-gs-head" }, h("h2", null, "酒馆插件"),
+                    h("p", null, "给酒馆加功能：粘贴插件作者的 GitHub 地址即可安装。"),
+                    h("p", null, "不支持 SillyTavern 插件，仅支持 DSH 插件和 DSH Tavern 插件。")),
                 h(TavernUserPluginsSettings)));
     }
 

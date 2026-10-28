@@ -17,6 +17,29 @@ window.__ModuleLoader__.load({
     const NS = 'profileBridge'
 
     const zh = {
+      management: "DSH 酒馆安装管理",
+      appDir: "酒馆程序目录",
+      profileDir: "酒馆配置与依赖目录",
+      dataDir: "酒馆专属数据目录",
+      sharedHome: "原版 DSH / 共享目录（不移动）",
+      relocate: "切换安装目录",
+      uninstall: "删除 DSH 酒馆",
+      destination: "新的安装目录（绝对路径）",
+      destinationHint: "选择一个不存在或为空的独立目录，例如 D:\\DSH-Tavern；不能是当前目录的上级或子目录。",
+      relocationScope: "迁移酒馆程序、酒馆配置与依赖，以及全部酒馆专属数据（包括会话和存储）。原版 DSH、共享设置、凭据、缓存和已有备份不会移动。旧位置保留兼容链接。",
+      backupSpace: "为便于失败恢复，旧磁盘上的回滚备份会保留，不会自动删除；本操作不保证立即释放旧磁盘空间。",
+      uninstallScope: "将恢复原版 DSH，并停用酒馆注册、把酒馆程序和配置移入可恢复的隔离备份。保留全部用户数据和备份，不卸载原版 DSH、不删除共享凭据。",
+      reviewRelocate: "确认迁移 DSH 酒馆",
+      reviewUninstall: "确认删除 DSH 酒馆（保留数据）",
+      restartWarning: "请先保存工作。确认后桌面将正常退出，操作完成后重新打开；若取消退出，操作会超时且不修改安装。",
+      confirmRelocate: "确认迁移并重启",
+      confirmUninstall: "确认删除并重启",
+      cancel: "取消",
+      unavailable: "当前安装不支持此操作；请检查安装状态和日志。",
+      desktopOnly: "请在官方桌面中管理安装。",
+      operationPending: "操作已排队，等待桌面退出；请勿重复提交。",
+      lastOperationFailure: "上次操作失败",
+      operationDone: "上次操作已完成。",
       sectionTavern: '原版DSH',
       sectionOriginal: 'DSH酒馆',
       explain: 'DSH 酒馆和原版 DSH 是同一个应用里的两套环境，切换时应用会重启一次，对话和设置都会保留。',
@@ -31,15 +54,41 @@ window.__ModuleLoader__.load({
       loading: '读取中…',
       cliHint: '当前不是桌面版。命令行用户直接用 dsh --profile <名称> 选择即可。',
       failure: '操作失败',
+      lastFailure: '上次切换失败',
+      recoveryRequired: '切换结果需要人工确认，请勿再次切换；请检查日志中的入口和备份路径，必要时恢复原入口。',
+      logLocation: '日志：',
       more: '说明与日志',
       shortcut: '添加桌面快捷方式',
       shortcutHint: '首次安装会自动添加「DSH 酒馆」桌面快捷方式，点开即可打开酒馆。可随时删除，更新时不会重新添加；需要时可在这里恢复。',
       shortcutDone: '已添加到桌面：',
       shortcutExists: '桌面上已经有了：',
       logEmpty: '（还没有日志）',
-      why: '桌面版固定读取 profiles/desktop。进入 DSH 酒馆时，会把它链接到 profiles/tavern（Windows 用 junction，macOS/Linux 用符号链接）；原版配置先备份为 desktop.fresh-*，切回原版时恢复。切换需要桌面版先退出：重启走正常退出流程，有任务时会先请你确认，不会强制结束进程。',
+      why: '桌面版固定读取 profiles/desktop。进入 DSH 酒馆时，会把它链接到 profiles/tavern（Windows 用 junction，macOS/Linux 用符号链接）；原版配置先备份为 desktop.fresh-*，切回原版时恢复。切换需要桌面版先退出：重启走正常退出流程，有任务时会先请你确认。Windows 目录仍被占用时，只会在桌面退出后清理已核实属于本次桌面的残留子进程，不会按路径批量结束其他会话。',
     }
     const en = {
+      management: "DSH Tavern installation",
+      appDir: "Tavern application directory",
+      profileDir: "Tavern profile and dependencies",
+      dataDir: "Tavern-owned data directory",
+      sharedHome: "Original DSH / shared directory (not moved)",
+      relocate: "Change installation directory",
+      uninstall: "Remove DSH Tavern",
+      destination: "New installation directory (absolute path)",
+      destinationHint: "Choose an absent or empty separate directory, such as D:\\DSH-Tavern; it must not contain or be inside the current directory.",
+      relocationScope: "Moves Tavern application files, profile and dependencies, and all Tavern-owned data (including sessions and storage). Original DSH, shared settings, credentials, caches, and existing backups stay in place. Compatibility links remain at the old paths.",
+      backupSpace: "Rollback backups remain on the old disk and are not deleted automatically. This operation does not guarantee immediate disk-space savings.",
+      uninstallScope: "Restores original DSH, disables Tavern registration, and quarantines Tavern application and profile files in recoverable backups. All user data and backups are kept. Original DSH and shared credentials are not deleted.",
+      reviewRelocate: "Review DSH Tavern relocation",
+      reviewUninstall: "Review DSH Tavern removal (keep data)",
+      restartWarning: "Save your work first. Confirmation requests a normal Desktop quit, then reopens it after the operation. Cancelling quit causes a timeout without changing the installation.",
+      confirmRelocate: "Confirm migration and restart",
+      confirmUninstall: "Confirm removal and restart",
+      cancel: "Cancel",
+      unavailable: "This installation cannot be managed here. Check installation status and logs.",
+      desktopOnly: "Manage this installation in the official Desktop app.",
+      operationPending: "Operation queued; waiting for Desktop to exit. Do not submit again.",
+      lastOperationFailure: "The last operation failed",
+      operationDone: "The last operation completed.",
       sectionTavern: 'Original DSH',
       sectionOriginal: 'DSH Tavern',
       explain: 'DSH Tavern and the original DSH are two setups of the same app. Switching restarts the app once; conversations and settings are kept.',
@@ -54,13 +103,16 @@ window.__ModuleLoader__.load({
       loading: 'Loading…',
       cliHint: 'This is not the Desktop app. Command-line users can pick one with dsh --profile <name>.',
       failure: 'Failed',
+      lastFailure: 'The last switch failed',
+      recoveryRequired: 'This switch needs manual inspection. Do not switch again; check the entry and backup paths in the log, and restore the original entry if needed.',
+      logLocation: 'Log: ',
       more: 'Details and log',
       shortcut: 'Add desktop shortcut',
       shortcutHint: 'The first installation adds a "DSH 酒馆" desktop shortcut to open the Tavern. You can delete it; updates will not recreate it. Restore it here whenever you need it.',
       shortcutDone: 'Added to the desktop: ',
       shortcutExists: 'Already on the desktop: ',
       logEmpty: '(no log yet)',
-      why: 'Desktop always reads profiles/desktop. Opening DSH Tavern links it to profiles/tavern (a junction on Windows, a symlink elsewhere); the original is first backed up as desktop.fresh-* and restored when you switch back. Desktop has to exit first: restarting is a normal quit that asks for confirmation when tasks are running, never a forced kill.',
+      why: 'Desktop always reads profiles/desktop. Opening DSH Tavern links it to profiles/tavern (a junction on Windows, a symlink elsewhere); the original is first backed up as desktop.fresh-* and restored when you switch back. Desktop has to exit first: restarting is a normal quit that asks for confirmation when tasks are running. If a Windows directory remains busy after Desktop exits, only verified leftover descendants of this Desktop session may be stopped; other sessions are not killed by path matching.',
     }
 
     /** Scoped stylesheet; class names are prefixed so they never leak into the host. */
@@ -82,6 +134,15 @@ window.__ModuleLoader__.load({
 .pb-btn-quiet { color: inherit; background: var(--pb-fill); border: 1px solid var(--pb-line); }
 .pb-btn-quiet:hover:not(:disabled) { background: var(--pb-accent-soft); }
 .pb-error { margin: 0; padding: 10px 12px; border-radius: 10px; color: #e5484d; background: rgba(229,72,77,0.08); }
+.pb-management { display: grid; gap: 10px; border: 1px solid var(--pb-line); border-radius: 10px; padding: 14px; min-width: 0; }
+.pb-management h3, .pb-management p { margin: 0; }
+.pb-paths { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.pb-paths dt { opacity: .65; }
+.pb-paths dd { margin: 0 0 6px; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.pb-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pb-input { width: 100%; min-width: 0; font: inherit; padding: 8px; color: inherit; background: var(--pb-fill); border: 1px solid var(--pb-line); border-radius: 6px; }
+.pb-review { display: grid; gap: 10px; border-top: 1px solid var(--pb-line); padding-top: 12px; }
+.pb-danger { color: #d93f44; }
 .pb-fold summary { list-style: none; cursor: pointer; opacity: 0.55; font-size: 12px; user-select: none; }
 .pb-fold summary::-webkit-details-marker { display: none; }
 .pb-fold summary::before { content: '›'; display: inline-block; width: 12px; transition: transform .15s; }
@@ -112,6 +173,9 @@ window.__ModuleLoader__.load({
       const [failure, setFailure] = React.useState(null)
       const [applied, setApplied] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
+      const actionInFlight = React.useRef(false)
+      const [managementAction, setManagementAction] = React.useState(null)
+      const [destination, setDestination] = React.useState('')
 
       React.useEffect(() => {
         let alive = true
@@ -122,6 +186,32 @@ window.__ModuleLoader__.load({
         }, (error) => { if (alive) setFailure(describeFailure({ message: error?.message ?? String(error) })) })
         return () => { alive = false }
       }, [call])
+
+      // A quit can be cancelled or time out without closing this page. Keep the
+      // durable result visible in that case, as well as after the app reopens.
+      const pending = status?.lastResult?.status === 'pending'
+      React.useEffect(() => {
+        if (!pending) return
+        let alive = true
+        let timer
+        const refresh = async () => {
+          try {
+            const result = await call('status', {})
+            if (!alive) return
+            if (result?.ok === true) {
+              setStatus(result.value)
+              if (['failed', 'succeeded'].includes(result.value?.lastResult?.status)) {
+                setApplied(null)
+                return
+              }
+            }
+          } catch { /* Desktop may be between stopping and restarting. */ }
+          if (alive) timer = setTimeout(refresh, 1500)
+        }
+        timer = setTimeout(refresh, 1500)
+        return () => { alive = false; clearTimeout(timer) }
+      }, [call, pending])
+      const lastFailure = status?.lastResult?.status === 'failed' ? status.lastResult : null
 
       // Which side this page is on comes from the page itself, the same as the menu name.
       const side = inTavern() ? 'tavern' : 'original'
@@ -162,7 +252,10 @@ window.__ModuleLoader__.load({
         setFailure(null)
         try {
           const result = target ? await call('link', { target }) : await call('unlink', {})
-          if (result?.ok === true) setApplied(result.value ?? {})
+          if (result?.ok === true) {
+            setApplied(result.value ?? {})
+            setStatus(previous => ({ ...previous, lastResult: { status: 'pending', stamp: result.value?.stamp } }))
+          }
           else setFailure(describeFailure(result?.error))
         } catch (error) {
           setFailure(describeFailure({ message: error?.message ?? String(error) }))
@@ -173,6 +266,35 @@ window.__ModuleLoader__.load({
 
       const title = t(inTavern() ? 'sectionTavern' : 'sectionOriginal')
       const isDesktop = status?.appKind === 'desktop'
+      const installation = status?.installation
+      const managementBlocked = !isDesktop || status?.desktopApp !== true || !installation?.available || busy || pending || Boolean(lastFailure?.recoveryRequired)
+      const absoluteDestination = status?.platform === 'win32'
+        ? /^[A-Za-z]:[\\/]/.test(destination.trim())
+        : destination.trim().startsWith('/')
+      function reviewManagement(action) {
+        if (managementBlocked || actionInFlight.current) return
+        setFailure(null)
+        setManagementAction(action)
+      }
+      async function confirmManagement() {
+        if (managementBlocked || actionInFlight.current || !managementAction || (managementAction === 'relocate' && !absoluteDestination)) return
+        actionInFlight.current = true
+        setBusy(true)
+        setFailure(null)
+        try {
+          const result = await call(managementAction, { confirmed: true, ...(managementAction === 'relocate' ? { destination: destination.trim() } : {}) })
+          if (result?.ok === true) {
+            setApplied(result.value ?? {})
+            setStatus(previous => ({ ...previous, lastResult: { status: 'pending', mode: managementAction, stamp: result.value?.stamp } }))
+            setManagementAction(null)
+          } else setFailure(describeFailure(result?.error))
+        } catch (error) {
+          setFailure(describeFailure(error))
+        } finally {
+          actionInFlight.current = false
+          setBusy(false)
+        }
+      }
       return h('section', { className: 'pb' },
         h('style', null, CSS),
         h('header', { className: 'pb-head' },
@@ -184,19 +306,55 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', className: 'pb-btn', disabled: busy, onClick: () => void openOriginal() }, t('openOriginal')),
         ) : blocked ? h('p', { className: 'pb-error' }, blocked) : h('div', { className: 'pb-bar' },
           h('span', { className: 'pb-bar-text' },
-            applied === null ? '' : applied.closesApp ? t('restarting') : t('quitHint'),
+            applied === null ? (pending ? t('restarting') : '') : applied.closesApp ? t('restarting') : t('quitHint'),
             ...(applied?.warnings ?? []).map((warning) => h('span', { key: warning, style: { display: 'block', opacity: 0.75 } }, `• ${warning}`)),
           ),
-          applied !== null ? null : h('button', { type: 'button', className: 'pb-btn', disabled: busy, onClick: () => void apply() },
+          applied !== null ? null : h('button', { type: 'button', className: 'pb-btn', disabled: busy || pending || lastFailure?.recoveryRequired, onClick: () => void apply() },
             busy ? t('restarting') : target ? t('toTavern') : t('toOriginal')),
         ),
+        lastFailure ? h('div', { className: 'pb-error', role: 'alert' },
+          h('strong', null, t(['relocate', 'uninstall'].includes(lastFailure.mode) ? 'lastOperationFailure' : 'lastFailure')),
+          h('div', null, lastFailure.message),
+          lastFailure.recoveryRequired ? h('div', null, t('recoveryRequired')) : null,
+          h('div', null, t('logLocation') + (lastFailure.logPath || status.logPath || '')),
+        ) : null,
         failure !== null ? h('p', { className: 'pb-error' }, `${t('failure')}: ${failure}`) : null,
         !isDesktop || standalone ? null : h('div', { className: 'pb-shortcut' },
           h('div', { className: 'pb-bar-text' },
             h('p', { className: 'pb-sub' }, t('shortcutHint')),
             shortcut ? h('p', { className: 'pb-done' }, (shortcut.existed ? t('shortcutExists') : t('shortcutDone')) + shortcut.path) : null),
-          h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: busy, onClick: () => void addShortcut() }, t('shortcut')),
+          h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: busy || pending || lastFailure?.recoveryRequired, onClick: () => void addShortcut() }, t('shortcut')),
         ),
+        installation ? h('section', { className: 'pb-management', 'aria-label': t('management') },
+          h('h3', null, t('management')),
+          h('dl', { className: 'pb-paths' },
+            ...['appDir', 'profileDir', 'dataDir', 'sharedHome'].flatMap(key => [
+              h('dt', { key: key + '-label' }, t(key)),
+              h('dd', { key }, installation[key] || '—'),
+            ])),
+          h('p', { className: 'pb-sub' }, t('relocationScope')),
+          h('p', null, t('backupSpace')),
+          !installation.available ? h('p', { className: 'pb-error' }, installation.reason || t('unavailable')) : null,
+          !isDesktop || status?.desktopApp !== true ? h('p', null, t('desktopOnly')) : null,
+          pending ? h('p', { role: 'status' }, t('operationPending')) : null,
+          status?.lastResult?.status === 'succeeded' && ['relocate', 'uninstall'].includes(status.lastResult.mode)
+            ? h('p', { role: 'status' }, t('operationDone')) : null,
+          h('div', { className: 'pb-actions' },
+            h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: managementBlocked || managementAction !== null, onClick: () => reviewManagement('relocate') }, t('relocate')),
+            h('button', { type: 'button', className: 'pb-btn pb-btn-quiet pb-danger', disabled: managementBlocked || managementAction !== null, onClick: () => reviewManagement('uninstall') }, t('uninstall'))),
+          managementAction ? h('div', { className: 'pb-review', role: 'group', 'aria-label': t(managementAction === 'relocate' ? 'reviewRelocate' : 'reviewUninstall') },
+            h('strong', null, t(managementAction === 'relocate' ? 'reviewRelocate' : 'reviewUninstall')),
+            managementAction === 'relocate' ? h(React.Fragment, null,
+              h('label', { htmlFor: 'pb-destination' }, t('destination')),
+              h('input', { id: 'pb-destination', className: 'pb-input', type: 'text', value: destination, disabled: busy || pending, autoComplete: 'off', spellCheck: false, 'aria-describedby': 'pb-destination-hint', onChange: event => setDestination(event.target.value) }),
+              h('p', { id: 'pb-destination-hint', className: 'pb-sub' }, t('destinationHint')),
+            ) : h('p', null, t('uninstallScope')),
+            h('p', null, t('restartWarning')),
+            h('div', { className: 'pb-actions' },
+              h('button', { type: 'button', className: 'pb-btn', disabled: managementBlocked || (managementAction === 'relocate' && !absoluteDestination), onClick: () => void confirmManagement() }, t(managementAction === 'relocate' ? 'confirmRelocate' : 'confirmUninstall')),
+              h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: busy || pending, onClick: () => { setManagementAction(null); setDestination(''); setFailure(null) } }, t('cancel'))),
+          ) : null,
+        ) : null,
         h('details', { className: 'pb-fold' },
           h('summary', null, t('more')),
           h('p', null, t('why')),

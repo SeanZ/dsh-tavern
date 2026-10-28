@@ -1,5 +1,5 @@
 import { createLedgerItem } from './background-pipeline.js'
-import { LEDGER_RULES, LEDGER_SUBMIT_TOOL, createLedgerSubmission, ledgerContext, readLedger } from './story-ledger.js'
+import { LEDGER_RULES, LEDGER_SUBMIT_TOOL, applyLedgerDelta, createLedgerSubmission, ledgerContext, readLedger } from './story-ledger.js'
 
 // One request reads at most this much story text; longer backlogs continue on the next click.
 export const LEDGER_BATCH_CHARS = 40000
@@ -48,7 +48,7 @@ const LEDGER_ITEM = createLedgerItem({ rules: MANUAL_RULES })
  * a consolidation the next story turn reads it once (see ledgerFrameInputs), so the
  * story sees fresh facts without carrying the ledger in every request.
  */
-export function createManualLedger({ store, runAgent, selection, beginTask, ensureSession = async () => {}, onError = error => console.error('台账整理保存状态失败', error) }) {
+export function createManualLedger({ store, runAgent, selection, beginTask, ensureSession = async () => {}, replaceLedger = async () => null, onError = error => console.error('台账整理保存状态失败', error) }) {
   const jobs = new Map()
   function project(chat) {
     const state = chat.ledgerTask || { status: 'idle' }
@@ -89,25 +89,33 @@ export function createManualLedger({ store, runAgent, selection, beginTask, ensu
     let result
     const submission = createLedgerSubmission({ enabled: true, current: chat.ledger, turn: backlog.through })
     try {
-      await ensureSession(sessionId)
-      result = await runAgent({
-        task: 'ledger', persistent: true,
-        persistentSessionId: taskRun.participantRequest.sessionId,
-        rewindTo: taskRun.participantRequest.rewindTo,
-        rewindFormatVersion: taskRun.participantRequest.formatVersion,
-        onPersistentSessionReady: id => taskRun.bindSession(id), sessionId, chatId: chat.id, selection: model,
-        backgroundTasks: { variables: false, posture: false, characterDesign: false },
-        system: LEDGER_ITEM.system({ from: backlog.from + 1, through: backlog.through }),
-        messages: [{ role: 'user', content: [{ type: 'text', text: ledgerContext(chat.ledger) + '\n\n【待整理剧情】\n' + backlog.text }] }],
-        tools: [LEDGER_SUBMIT_TOOL],
-        maxToolCalls: 4,
-        temperature: 0.2,
-        stopToolsWhen: () => submission.result !== null,
-        acceptWithoutText: () => submission.result !== null,
-        onToolCall: async call => call?.name === LEDGER_SUBMIT_TOOL.name
-          ? submission.execute(call)
-          : JSON.stringify({ ok: false, retryable: true, error: '本任务只允许调用 ledger_submit' })
-      })
+      // A plugin may take the consolidation over (tavern.replaceLedger); its delta goes
+      // through the same validation and commit, and Tavern's own run is the fallback.
+      const replaced = await replaceLedger({ gameId: sessionId, from: backlog.from + 1, through: backlog.through, text: backlog.text,
+        ledger: readLedger(chat.ledger), rules: MANUAL_RULES, tool: LEDGER_SUBMIT_TOOL,
+        apply: delta => applyLedgerDelta(chat.ledger, delta, backlog.through) })
+      if (replaced) submission.execute({ arguments: replaced.delta })
+      else {
+        await ensureSession(sessionId)
+        result = await runAgent({
+          task: 'ledger', persistent: true,
+          persistentSessionId: taskRun.participantRequest.sessionId,
+          rewindTo: taskRun.participantRequest.rewindTo,
+          rewindFormatVersion: taskRun.participantRequest.formatVersion,
+          onPersistentSessionReady: id => taskRun.bindSession(id), sessionId, chatId: chat.id, selection: model,
+          backgroundTasks: { variables: false, posture: false, characterDesign: false },
+          system: LEDGER_ITEM.system({ from: backlog.from + 1, through: backlog.through }),
+          messages: [{ role: 'user', content: [{ type: 'text', text: ledgerContext(chat.ledger) + '\n\n【待整理剧情】\n' + backlog.text }] }],
+          tools: [LEDGER_SUBMIT_TOOL],
+          maxToolCalls: 4,
+          temperature: 0.2,
+          stopToolsWhen: () => submission.result !== null,
+          acceptWithoutText: () => submission.result !== null,
+          onToolCall: async call => call?.name === LEDGER_SUBMIT_TOOL.name
+            ? submission.execute(call)
+            : JSON.stringify({ ok: false, retryable: true, error: '本任务只允许调用 ledger_submit' })
+        })
+      }
       if (submission.result === null) throw new Error('模型未调用 ledger_submit 提交台账，本次未保存。请重试；若持续出现，请检查后台模型是否支持工具调用。')
       const completed = await taskRun.commit({ participant: taskRun.participant(result), stateChanged: true, apply: current => {
         // A manual edit or another consolidation since this request started wins.

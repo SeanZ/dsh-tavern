@@ -9,16 +9,16 @@ function fixture(t) {
  for(const name of ['desktop','tavern','other']) {mkdirSync(join(root,name));writeFileSync(join(root,name,'package.json'),JSON.stringify({dsh:{profile:{bundles:['@deepseek-ai/dsh-base']}}}));writeFileSync(join(root,name,'cordis.patch.yml'),'[]\n')}
  return {profilesRoot:root,liveDir:join(root,'desktop'),targetDir:join(root,'tavern'),stamp:'1'}
 }
-test('目录切换、改选与还原保留目标配置字节及原版目录',t=>{
+test('目录切换、改选与还原保留目标配置字节及原版目录',async t=>{
  const r=fixture(t);const original=readFileSync(join(r.targetDir,'cordis.patch.yml'))
- switchProfile({...r,mode:'link'});assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))
+ await switchProfile({...r,mode:'link'});assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))
  assert.deepEqual(readFileSync(join(r.targetDir,'cordis.patch.yml')),original)
- switchProfile({...r,mode:'link',targetDir:join(r.profilesRoot,'other'),stamp:'2'})
- switchProfile({...r,mode:'unlink',stamp:'3'});assert.equal(realpathSync(r.liveDir),join(realpathSync(r.profilesRoot),'desktop'))
+ await switchProfile({...r,mode:'link',targetDir:join(r.profilesRoot,'other'),stamp:'2'})
+ await switchProfile({...r,mode:'unlink',stamp:'3'});assert.equal(realpathSync(r.liveDir),join(realpathSync(r.profilesRoot),'desktop'))
 })
-test('缺少备份时保留原链接',t=>{const r=fixture(t);rmSync(r.liveDir,{recursive:true});symlinkSync(r.targetDir,r.liveDir,process.platform === 'win32' ? 'junction' : 'dir');assert.throws(()=>switchProfile({...r,mode:'unlink'}),/备份/);assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))})
-test('发布失败恢复原目录或原链接',t=>{const r=fixture(t);const rename=(a,b)=>{if(a.includes('switch-stage'))throw Error('模拟发布失败');renameSync(a,b)};assert.throws(()=>switchProfile({...r,mode:'link'},{rename}),/发布失败/);assert.equal(realpathSync(r.liveDir),join(realpathSync(r.profilesRoot),'desktop'));switchProfile({...r,mode:'link'});assert.throws(()=>switchProfile({...r,mode:'link',targetDir:join(r.profilesRoot,'other'),stamp:'2'},{rename}),/发布失败/);assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))})
-test('目标配置无效时不改入口；不允许越出 profiles 目录',t=>{const r=fixture(t);writeFileSync(join(r.targetDir,'package.json'),'{}');assert.throws(()=>switchProfile({...r,mode:'link'}),/bundle/);assert.throws(()=>switchProfile({...r,mode:'link',targetDir:tmpdir()}),/独立 profile/);assert.ok(existsSync(join(r.liveDir,'package.json')))})
+test('缺少备份时保留原链接',async t=>{const r=fixture(t);rmSync(r.liveDir,{recursive:true});symlinkSync(r.targetDir,r.liveDir,process.platform === 'win32' ? 'junction' : 'dir');await assert.rejects(()=>switchProfile({...r,mode:'unlink'}),/备份/);assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))})
+test('发布失败恢复原目录或原链接',async t=>{const r=fixture(t);const rename=(a,b)=>{if(a.includes('switch-stage'))throw Error('模拟发布失败');renameSync(a,b)};await assert.rejects(()=>switchProfile({...r,mode:'link'},{rename}),/发布失败/);assert.equal(realpathSync(r.liveDir),join(realpathSync(r.profilesRoot),'desktop'));await switchProfile({...r,mode:'link'});await assert.rejects(()=>switchProfile({...r,mode:'link',targetDir:join(r.profilesRoot,'other'),stamp:'2'},{rename}),/发布失败/);assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir))})
+test('目标配置无效时不改入口；不允许越出 profiles 目录',async t=>{const r=fixture(t);writeFileSync(join(r.targetDir,'package.json'),'{}');await assert.rejects(()=>switchProfile({...r,mode:'link'}),/bundle/);await assert.rejects(()=>switchProfile({...r,mode:'link',targetDir:tmpdir()}),/独立 profile/);assert.ok(existsSync(join(r.liveDir,'package.json')))})
 test('仍有进程时超时退出，不发送结束进程信号',async()=>{await assert.rejects(waitForExit([22],{timeout:0,alive:()=>true}),/超时/);await waitForExit([22],{alive:()=>false})})
 
 

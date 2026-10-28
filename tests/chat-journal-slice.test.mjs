@@ -65,3 +65,17 @@ test('layout boundary proves tail append but never hides old-floor replacement o
  await db.update('c',c=>{c.messages.push({role:'assistant',turn:4},{role:'assistant',turn:5},{role:'assistant',turn:6});return c})
  assert.equal((await db.readChangedSlice('c',before)).layoutFrom,1,'regrowth cannot disguise a truncated prefix as append')
 })
+
+test('worldbook strategy survives cold narrow configuration reads and unrelated patches', async t => {
+ const root = await mkdtemp(join(tmpdir(), 'worldbook-strategy-config-')); t.after(() => rm(root, { recursive: true, force: true }))
+ const store = createChatJournalStore({ dataRoot: root }), db = createChatPersistence({ store })
+ await db.write({ id: 'game', sessionId: 'session', mode: 'story', worldbookStrategy: 'native-skills', backgroundTasks: { worldbookScreening: true }, worldBookReads: { 'book:1': { turn: 9 } }, messages: [{ text: 'large history' }] })
+ const cold = createChatJournalStore({ dataRoot: root })
+ const config = await cold.readBackgroundConfig('game')
+ assert.equal(config.worldbookStrategy, 'native-skills')
+ assert.equal(config.backgroundTasks.worldbookScreening, true)
+ assert.equal(Object.hasOwn(config, 'messages'), false)
+ await db.patch('game', 1, [{ op: 'set', path: ['backgroundTasks', 'posture'], value: false }])
+ assert.equal((await cold.readBackgroundConfig('game')).worldbookStrategy, 'native-skills')
+ assert.deepEqual((await db.read('game')).worldBookReads, { 'book:1': { turn: 9 } })
+})

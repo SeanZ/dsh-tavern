@@ -1,4 +1,5 @@
 import { compactionPolicy } from './auto-compaction.js'
+import { readWebAccess, validateWebAccess } from './web-access-settings.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
 import { readJudgeConfig, validateJudgeConfig } from './engine-judge.js'
@@ -210,7 +211,7 @@ export function presentPromptSets(document) {
 
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true }
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true, worldbookScreening: tasks.worldbookScreening === true }
 }
 
 
@@ -226,6 +227,10 @@ export function normalizePlayDefaults(value) {
 export function applyTavernSettingsPatch(current, patch) {
   const next = Object.assign({}, object(current))
   const input = object(patch)
+  if (Object.hasOwn(input, 'webAccess')) {
+    if (!input.webAccess || typeof input.webAccess !== 'object' || Array.isArray(input.webAccess)) throw new Error('联网资料设置无效')
+    next.webAccess = validateWebAccess({ ...readWebAccess(next.webAccess), ...input.webAccess })
+  }
   if (Object.hasOwn(input, 'defaultPlaySettings')) {
     const patch = object(input.defaultPlaySettings)
     if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
@@ -258,6 +263,10 @@ export function applyTavernSettingsPatch(current, patch) {
   if (Object.hasOwn(input, 'candidateDismissMode')) {
     if (!['after-fill', 'after-send'].includes(input.candidateDismissMode)) throw new Error('无效的候选项收起方式')
     next.candidateDismissMode = input.candidateDismissMode
+  }
+  if (Object.hasOwn(input, 'candidateAutoGenerate')) {
+    if (typeof input.candidateAutoGenerate !== 'boolean') throw new Error('无效的自动生成候选项设置')
+    next.candidateAutoGenerate = input.candidateAutoGenerate
   }
   // Two independent directions: input replays the history that is sent to the
   // model, output turns this turn's body into a submission call. Legacy switches
@@ -411,6 +420,7 @@ export function presentTavernSettings(document, defaults) {
   const storyToolCalls = storyToolCallSettings(document)
   return {
     defaultPlaySettings: normalizePlayDefaults(object(document).defaultPlaySettings),
+    webAccess: readWebAccess(object(document).webAccess),
     defaultDisabledWritingSkills: Array.isArray(object(document).defaultDisabledWritingSkills) ? object(document).defaultDisabledWritingSkills.filter(name => typeof name === 'string') : [],
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
@@ -420,6 +430,8 @@ export function presentTavernSettings(document, defaults) {
     headerItems: readHeaderItems(object(document).headerItems),
     viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
+    // 自动生成候选项: off by default, since it adds a background request after every reply.
+    candidateAutoGenerate: object(document).candidateAutoGenerate === true,
     // 精修预审: off by default, since it reviews every reply whether or not 精修 is pressed.
     polishPrereview: object(document).polishPrereview === true,
     storyInputToolCall: storyToolCalls.input,

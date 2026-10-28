@@ -7,7 +7,7 @@ import { writeZipEntries } from '../../tavern-plugin/lib/domain/zip-entries.js'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createPluginData } from '../../tavern-plugin/lib/domain/plugin-data.js'
 import { readGameSave } from '../../tavern-plugin/lib/domain/game-save.js'
-import { stageStateChecks } from './stage-state.mjs'
+import { stageNext, stageStateChecks } from './stage-state.mjs'
 
 const endpoint = process.env.TAVERN_STAGE_TEST_CDP, modulePath = process.env.TAVERN_E2E_LLM_MODULE, dataRoot = process.env.TAVERN_STAGE_TEST_DATA
 const output = process.argv[process.argv.indexOf('--artifacts') + 1], baseline = process.argv.includes('--baseline')
@@ -61,7 +61,7 @@ try {
     const saved = async () => ({ chat: await store.read(initial.chat.id), plugins: { data: await data.snapshot(initial.chat.id) } })
     const records = save => save.plugins.data.owners['dsh-tavern.stage'].turns
     const view = () => call('castStage', { sessionId, count: 1 })
-    const send = async marker => { await stage.getByRole('button', { name: '跳过', exact: true }).click(); const box = stage.getByRole('textbox', { name: '舞台输入' }); await box.fill(marker); await stage.getByRole('button', { name: '发送', exact: true }).click() }
+    const send = async marker => { await stage.getByRole('button', { name: '跳过', exact: true }).click(); await stage.getByRole('menuitem', { name: '自由输入', exact: true }).click(); await stage.getByRole('textbox', { name: '自由输入下一步' }).fill(marker); await stage.getByRole('menuitem', { name: '发送', exact: true }).click() }
     await control('arm', 'normal')
     await send('C07B_FLOW')
     await until(async () => (await control()).foreground === 1)
@@ -73,7 +73,7 @@ try {
     if (!baseline) assert.equal(first.turns.at(-1).pages[0].text, 'First sealed page.')
     if (!baseline) await page.waitForFunction(() => window.stageStreamPlays.length === 1)
     await page.screenshot({ path: join(output, 'stream-first-window.png') })
-    if (!baseline) await stage.getByRole('button', { name: '下一句', exact: true }).click()
+    if (!baseline) await stageNext(stage)
     await control('body')
     const finalSave = await until(async () => {
       const save = await saved(), done = Object.values(save.chat.timeline.operations).some(op => op.userText === 'C07B_FLOW' && op.status === 'completed')
@@ -94,7 +94,7 @@ try {
     }
     await page.screenshot({ path: join(output, 'sealed-prefix.png') })
     if (!baseline) {
-      for (let index = 0; index < 4; index++) await stage.getByRole('button', { name: '下一句', exact: true }).click()
+      for (let index = 0; index < 4; index++) await stageNext(stage)
       await stage.getByRole('button', { name: '跳过', exact: true }).click()
       await page.waitForTimeout(1500)
       assert.equal(await page.evaluate(() => window.stageStreamPlays.length), 1, 'skip consumes the second-window effect')

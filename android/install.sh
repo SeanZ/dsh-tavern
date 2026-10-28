@@ -156,19 +156,31 @@ fi
 # 进度逐行追加：APK 日志框只追加新行，pnpm 默认的回车原地刷新在那里看起来像卡死。
 # 用配置项而不是命令行参数，避免污染包装函数传参顺序。
 export pnpm_config_reporter=append-only
+# 慢速移动网络保留 10 分钟超时，也允许调用方覆盖。pnpm 11 会把环境变量
+# 转为数字；--config.fetchTimeout 会保留字符串，传给 AbortSignal.timeout 后报错。
+# 导出后，配置阶段派生的 pnpm 也使用同一设置，不污染 config 子命令的参数。
+export pnpm_config_fetch_timeout="${pnpm_config_fetch_timeout:-600000}"
 pnpm() {
-  # 慢速移动网络下载大包会撞上 pnpm 单请求 60 秒默认超时（日志 error (23)）；
-  # 提高到 10 分钟，避免一次超时就丢掉整轮安装。可用同名环境变量覆盖。
-  "${PNPM_COMMAND}" --config.update-notifier=false \
-    --config.fetchTimeout="${pnpm_config_fetch_timeout:-600000}" "$@"
+  "${PNPM_COMMAND}" --config.update-notifier=false "$@"
 }
-# 本地 store 完整时先走 --offline（秒级完成）；缺包再联网补齐，而不是直接放弃。
+# 缓存命中时先跑一遍（秒级完成）；缺什么补什么，而不是直接放弃。
+# 这里不能再传 --offline：pnpm 11 在 “Verifying lockfile against supply-chain
+# policies” 阶段要读每个包的 metadata，缓存里少一条（例如 undici.jsonl）就会在
+# 把 287 个包全部从 store 复制完之后整轮失败，然后联网把同样 287 个包再复制一遍，
+# 日志里就是同一串 “Progress: … reused 286, downloaded 0, added …” 来回重复。
+# --prefer-offline 命中缓存就走本地，缺 metadata 时只补缺的部分，不会白跑一轮。
 pnpm_install() {
   if [ -n "${DSH_TAVERN_PNPM_STORE:-}" ]; then
-    if pnpm "$@" --offline; then return 0; fi
-    info '本地依赖缓存缺少部分包，改为联网补齐（只下载缺失项）……'
+    if pnpm "$@" --prefer-offline; then return 0; fi
+    info '缓存优先安装未完成，改为联网补齐（只下载缺失项）……'
   fi
-  pnpm "$@"
+  if pnpm "$@"; then return 0; fi
+  # 镜像缺包时（例如新版本 lockfile 里的 undici 在 npmmirror 上 metadata 没同步，
+  # 报 ERR_PNPM_NO_OFFLINE_META 或 404）整轮更新就白跑；换官方源再试一次。
+  # 用户显式指定过 DSH_TAVERN_NPM_REGISTRY 时不动他的选择。
+  if [ -n "${DSH_TAVERN_NPM_REGISTRY:-}" ]; then return 1; fi
+  info '当前镜像安装失败，改用官方源 registry.npmjs.org 重试一次……'
+  pnpm "$@" --registry=https://registry.npmjs.org
 }
 # Android 的 proot 会把硬链接模拟成符号链接，pnpm 默认导入方式可能因此
 # 生成无法进行相对 require 的包目录。DSHA 中的所有后续安装也必须沿用复制模式。
@@ -199,18 +211,36 @@ fi
 
 # 更新而不是重装：lockfile 没变、node_modules 与它一致时 pnpm 只会做一次空校验，
 # 直接跳过；桌面版更新也是这个行为。只有依赖真的变化（或首次安装）才装。
+DEPS_CHECKED_BY_TREE=0
 deps_up_to_date() {
-  [ -f "${REPO_ROOT}/node_modules/.pnpm/lock.yaml" ] || return 1
-  cmp -s "${REPO_ROOT}/node_modules/.pnpm/lock.yaml" "${REPO_ROOT}/pnpm-lock.yaml" || return 1
+  if [ -f "${REPO_ROOT}/node_modules/.pnpm/lock.yaml" ]; then
+    cmp -s "${REPO_ROOT}/node_modules/.pnpm/lock.yaml" "${REPO_ROOT}/pnpm-lock.yaml" && return 0
+    return 1
+  fi
+  # 这份记录会被复制或中断的安装弄丢，旧版安装器也从没写过它（node_modules 完整却
+  # 每次重装 287 个包就卡在这里）。缺了不整批重装，改为按 lockfile 逐项核对
+  # node_modules 是否真的装到位：装全了跳过，少包或版本不符才装。
+  [ -d "${REPO_ROOT}/node_modules" ] || return 1
+  [ -f "${REPO_ROOT}/bin/dependency-tree-check.mjs" ] || return 1
+  node "${REPO_ROOT}/bin/dependency-tree-check.mjs" "${REPO_ROOT}" >/dev/null 2>&1 || return 1
+  DEPS_CHECKED_BY_TREE=1
   return 0
 }
 if [ "${DSH_TAVERN_FORCE_DEPENDENCIES:-0}" != 1 ] && deps_up_to_date; then
   stage "检查酒馆核心依赖"
-  info '依赖未变化（lockfile 未变），跳过安装'
+  if [ "${DEPS_CHECKED_BY_TREE}" = 1 ]; then
+    info 'node_modules/.pnpm/lock.yaml 缺失，已按 pnpm-lock.yaml 逐项核对：依赖齐全，跳过安装'
+  else
+    info '依赖未变化（lockfile 未变），跳过安装'
+  fi
 else
   stage "安装酒馆核心依赖（287 包；本地依赖缓存命中时通常 10-60s，需要联网补齐则取决于网速）"
   info "依赖目录：${REPO_ROOT}/node_modules"
-  pnpm_install --dir "${REPO_ROOT}" install --frozen-lockfile
+  # 桌面端两条安装器都带 --config.minimum-release-age=0；安卓这边缺了它，pnpm 11
+  # 就会跑 “Verifying lockfile against supply-chain policies”，逐包去registry 要
+  # metadata——store 里明明有包（复用 286、下载 0），却会因为新包 undici 的 metadata
+  # 没缓存而整轮失败，日志就停在同一串计数上。
+  pnpm_install --dir "${REPO_ROOT}" install --frozen-lockfile --config.minimum-release-age=0
   info "核心依赖完成，node_modules：$(du -sh "${REPO_ROOT}/node_modules" 2>/dev/null | cut -f1)"
 fi
 

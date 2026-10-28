@@ -13,16 +13,48 @@ function attachmentRefs(value, found = new Map(), skip = new Set()) {
   return found
 }
 
-// Collect resources only within a validated snapshot. The host supplies lazy
-// attachment/plugin access because those services can be installed after setup.
+// A save carries its own copy of the opening worldbook (the whole book as JSON) so one `.dshsave`
+// opened on a clean install behaves exactly like the game it came from. When the same export also
+// packs that worldbook as a resource, the copy is pure duplication — a book ran to 15 MB here and
+// eleven games held four copies of it. Dropping it is a supported shape: a chat without a snapshot
+// re-resolves the worldbook its card is bound to (worldbook-library resolveBound), which is the
+// book the bundle just installed. Games whose book differs from the library keep their copy.
+function withoutWorldbookSnapshot(chat, embed) {
+  if (embed || !chat || !chat.openingWorldbookSnapshot) return chat
+  const next = { ...chat }
+  delete next.openingWorldbookSnapshot
+  return next
+}
+
+// The runtime preset snapshot is the frozen preset a game renders with (regex, templates, prompt
+// pieces). It is per game and never shared, so a bundle that already carries the preset itself
+// makes it duplication too. Import re-freezes it from the preset the chat points at
+// (`runtimePresetPath`), which is what the importing install just installed.
+function withoutPresetSnapshot(chat, embed) {
+  if (embed || !chat || !chat.runtimePresetSnapshot) return chat
+  const next = { ...chat }
+  delete next.runtimePresetSnapshot
+  return next
+}
+
+// Export options: `images` (scene pictures) and `embedWorldbook` (keep the opening worldbook
+// copy inside the save). Both default to keeping everything, so a lone save stays self-contained.
 export function createGameSaveExporter({ chatForSession, gameSaveSnapshot, readChatRevision,
   fileResources, gameFootprint, sceneWorldbookArchive, getAttachments, exportPluginData,
-  tavernVersion, warn = console.warn }) {
+  tavernVersion, hasBoundWorldbook = async () => false, warn = console.warn }) {
   async function exportGameSave(sessionId, options = {}) {
     const header = await chatForSession(str(sessionId))
     if (!header) throw new Error('当前 Session 没有绑定 Tavern 对话')
     return await gameSaveSnapshot(header.id, header.sessionId, async ({ chat, session }) => {
-      const revisions = await collectSaveRevisions(chat, readChatRevision)
+      // Only a game whose card really has a worldbook can fall back to it: with no bound book the
+      // snapshot is the only world this game has, so it stays even when the bundle carries books.
+      const embedWorldbook = options.embedWorldbook !== false ||
+        !(await hasBoundWorldbook(str(chat.cardPath)).catch(() => false))
+      // Without a recorded preset path there is nothing to re-freeze from on import.
+      const embedPreset = options.embedPreset !== false || str(chat.runtimePresetPath) === ''
+      const thin = value => withoutPresetSnapshot(withoutWorldbookSnapshot(value, embedWorldbook), embedPreset)
+      const revisions = (await collectSaveRevisions(chat, readChatRevision))
+        .map(item => ({ revision: item.revision, state: thin(item.state) }))
       let cardPayload = null
       try { cardPayload = await fileResources.originalCardPayload(chat.cardPath) } catch {}
       if (!cardPayload && chat.cardDefinitionSnapshot?.raw) cardPayload = { kind: 'text', name: str(chat.cardName || 'card') + '.json', text: JSON.stringify(chat.cardDefinitionSnapshot.raw) }
@@ -52,7 +84,8 @@ export function createGameSaveExporter({ chatForSession, gameSaveSnapshot, readC
       if (scene) scene.attachments = attachments
       else if (attachments.length) scene = { files: [], worldbooks: [], attachments }
       const plugins = await pluginSaveContents(chat)
-      const buffer = buildGameSave({ chat, revisions, session, card: { path: chat.cardPath, payload: cardPayload }, script, scene, plugins,
+      const buffer = buildGameSave({ chat: thin(chat), revisions, session,
+        card: { path: chat.cardPath, payload: cardPayload }, script, scene, plugins,
         tavernVersion: tavernVersion, exportedAt: Date.now() })
       const name = (sessionTitleOf(session.events) || str(chat.title) || str(chat.cardName) || 'game').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60)
       return { filename: name + '.dshsave', base64: buffer.toString('base64'), bytes: buffer.length, revisions: revisions.length, images: attachments.length }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
-import { stageStateChecks } from './stage-state.mjs'
+import { stageNext, stageStateChecks } from './stage-state.mjs'
 
 const endpoint = process.env.TAVERN_STAGE_TEST_CDP
 const output = process.argv[process.argv.indexOf('--artifacts') + 1]
@@ -35,16 +35,16 @@ try {
         assert.equal(idle.includes('dsh-tavern-stage-breathe'), baseline, 'demo breathing must be removed, not kept alongside directed actions')
         await settled()
         assert.equal(await count(), 0, 'opening an existing page must not replay')
-        await stage.getByRole('button', { name: '下一句', exact: true }).click()
+        await stageNext(stage)
         await stage.locator('.dsh-tavern-stage-text').filter({ hasText: 'The door shakes.' }).waitFor()
         if (!baseline) {
           await page.waitForFunction(() => window.performancePlays.length === 1)
           const sampled = await page.evaluate(() => {
             const play = window.performancePlays[0]
             play.animation.pause(); play.animation.currentTime = 120
-            return { id: play.id, transform: getComputedStyle(play.animation.effect.target).transform }
+            return { id: play.id, translate: getComputedStyle(play.animation.effect.target).translate }
           })
-          assert.notEqual(sampled.transform, 'none', 'real browser animation changes the frame')
+          assert.notEqual(sampled.translate, 'none', 'real browser animation changes the frame')
           await page.screenshot({ path: join(output, 'directed-shake.png') })
           await page.evaluate(() => window.performancePlays[0].animation.play())
         }
@@ -59,8 +59,8 @@ try {
         const full = page.locator('.dsh-tavern-stage-overlay')
         await full.waitFor(); await settled()
         assert.equal(await count(), baseline ? 0 : 2, 'fullscreen reopening never replays')
-        await full.getByRole('button', { name: '下一句', exact: true }).click()
-        await full.getByRole('button', { name: '下一句', exact: true }).click()
+        // rapid: turn, finish the line still typing (逐字显示), turn
+        for (let i = 0; i < 3; i++) await full.getByRole('button', { name: '下一句', exact: true }).click()
         await settled()
         assert.equal(await count(), baseline ? 0 : 3, 'rapid paging cancels the intermediate page')
         await page.screenshot({ path: join(output, 'fullscreen-performance.png') })

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createForegroundWorldbook } from '../tavern-plugin/lib/domain/foreground-worldbook.js'
 import { createWorldbookFilter } from '../tavern-plugin/lib/domain/worldbook-filter.js'
+import { fingerprint } from '../tavern-plugin/lib/domain/worldbook-recall.js'
 import { UpstreamTemplateRuntime } from './fixtures/upstream-template-runtime.mjs'
 
 const runtime = await UpstreamTemplateRuntime.create()
@@ -9,10 +10,10 @@ const long = 'x'.repeat(4400)
 const entries = ['漕帮', '剑宗', '药王谷', '铁骨', '商会', '皇女'].map((name, i) => ({ ref: 'e' + i, enabled: true, primaryKeys: [name], content: name + '设定' + long }))
 
 // A store-backed task stub: commit applies the filter's verdict to the chat, like the real coordinator.
-function setup() {
+function setup({ screening = true } = {}) {
   const worldBook = { view: { entries: structuredClone(entries) } }
   const screened = []
-  const chat = { messages: [{ role: 'assistant', turn: 1, text: '漕帮 剑宗 药王谷 铁骨 商会 皇女' }] }
+  const chat = { backgroundTasks: { worldbookScreening: screening }, messages: [{ role: 'assistant', turn: 1, text: '漕帮 剑宗 药王谷 铁骨 商会 皇女' }] }
   const filterCandidates = createWorldbookFilter({ selection: () => ({}),
     beginTask: async () => ({ participantRequest: {}, bindSession() {}, participant: () => ({}), fail: async () => {},
       commit: async ({ apply }) => { apply?.(chat); return { status: 'committed' } } }),
@@ -48,4 +49,17 @@ test('发送正文从不询问模型；回复结束后预筛，被排除条目�
   sent = await h.round('继续')
   assert.equal(h.screened.length, 1, '冷却期内候选不足门槛，不再询问模型')
   assert.deepEqual(sent.refs.sort(), ['e1', 'e2', 'e3', 'e4', 'e5'], '十轮后排除失效；剩余候选不超门槛则直接注入')
+})
+
+test('世界书模型筛选关闭时，预筛不询问模型、不写筛选冷却，已有的筛选冷却不再生效', async () => {
+  const h = setup({ screening: false })
+  const prepared = await h.project({ chat: h.chat, card: {}, userText: '', purpose: 'prefilter' })
+  assert.equal(h.screened.length, 0)
+  assert.equal(prepared.log.screening, undefined)
+  assert.ok(!Object.values(prepared.reads).some(read => read.kind === 'screened'))
+  // An exclusion left by an earlier session with screening on no longer holds the entry back.
+  h.chat.worldBookReads = { e1: { turn: 1, fingerprint: fingerprint(h.worldBook.view.entries[1].content), kind: 'screened' } }
+  const sent = await h.project({ chat: h.chat, card: {}, userText: '继续' })
+  assert.ok(sent.refs.includes('e1'))
+  assert.equal(h.screened.length, 0)
 })

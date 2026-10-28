@@ -117,8 +117,10 @@ export function createBackgroundTaskCoordinator(options = {}) {
     if (preempt !== null && chatId !== '') await preempt(chatId, role)
     const begun = await serialize(chatId, async function () {
       if (role === 'candidate' && store.readRecoveryState) {
+        // Header fields only: its empty message slice must not replace the story the
+        // candidate falls back on when the background session lost it (#394).
         const state = await store.readRecoveryState(chatId)
-        if (state) chat = {...chat,...state}
+        if (state) { const { messages: _messages, ...header } = state; chat = {...chat,...header} }
       }
       let fast = (input.reuseSnapshot === true && requestId === '' || role === 'candidate' && store.readRecoveryState) && store.patchChat && Number.isSafeInteger(chat?._storageRevision)
         && chat.timeline?.schemaVersion === 1 && !Object.values(chat.timeline.operations || {}).some(op => op?.kind === 'body' && op.status === 'foreground-completed')

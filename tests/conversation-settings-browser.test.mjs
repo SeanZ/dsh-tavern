@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { openTavernSettings } from './fixtures/tavern-settings-browser.mjs'
 
 test('注册的本局设置保存玩家称呼、预设、后台模型与前台工具，失败时保留已保存模型', async t => {
-  let playerName = '你', preset = null, model = null, disabledTools = [], fail = false
+  let playerName = '你', preset = null, model = null, disabledTools = [], strategy = 'legacy', screening = true, fail = false
   const { page, calls } = await openTavernSettings(t, { sessionId: 'game', respond(method, args) {
     if (method === 'listSessions') return { sessions: [{ sessionId: 'game', mode: 'story' }] }
     if (method === 'getSession') return { view: { sessionId: 'game', mode: 'story', playerName, runtimePreset: preset, statusBarPlacement: 'sidebar' } }
@@ -18,10 +18,12 @@ test('注册的本局设置保存玩家称呼、预设、后台模型与前台�
     if (method === 'getConversationBackgroundConfig' || method === 'setConversationBackgroundConfig') {
       if (method === 'setConversationBackgroundConfig') {
         if (Object.hasOwn(args, 'backgroundModel')) model = args.backgroundModel
+        if (Object.hasOwn(args, 'worldbookStrategy')) strategy = args.worldbookStrategy
+        if (Object.hasOwn(args.backgroundTasks || {}, 'worldbookScreening')) screening = args.backgroundTasks.worldbookScreening
         if (Array.isArray(args.disabledForegroundTools)) disabledTools = args.disabledForegroundTools
       }
       return {
-        backgroundModel: model, backgroundTasks: { variables: true, posture: true },
+        backgroundModel: model, worldbookStrategy: strategy, worldbookStrategies: [{ id: 'legacy', label: '当前注入策略（默认）' }, { id: 'native-skills', label: '本局原生 Skill 库' }], backgroundTasks: { variables: true, posture: true, worldbookScreening: screening },
         disabledForegroundTools: disabledTools,
         foregroundTools: [
           { name: 'worldbook_search', label: '搜索世界书', description: '按关键词检索本局世界书。' },
@@ -65,7 +67,23 @@ test('注册的本局设置保存玩家称呼、预设、后台模型与前台�
   await page.waitForFunction(() => document.querySelector('input[aria-label="插件查询"]')?.checked === false)
   assert.deepEqual(disabledTools, ['plugin_lookup'])
 
+  const strategySelect = page.getByLabel('本局世界书策略', { exact: true })
+  const screeningSwitch = page.getByLabel('世界书模型筛选', { exact: true })
+  assert.equal(await strategySelect.inputValue(), 'legacy')
+  assert.equal(await screeningSwitch.isChecked(), true)
+  await strategySelect.selectOption('native-skills')
+  await page.waitForFunction(() => document.querySelector('[aria-label="本局世界书策略"]')?.disabled === false)
+  assert.equal(strategy, 'native-skills')
+  assert.equal(await screeningSwitch.isDisabled(), true)
+  assert.equal(await screeningSwitch.isChecked(), true)
+  await strategySelect.selectOption('legacy')
+  await page.waitForFunction(() => document.querySelector('[aria-label="世界书模型筛选"]')?.disabled === false)
+  assert.equal(await screeningSwitch.isChecked(), true)
+
   fail = true
+  await strategySelect.selectOption('native-skills')
+  await page.getByRole('alert').filter({ hasText: '保存失败测试' }).waitFor()
+  assert.equal(await strategySelect.inputValue(), 'legacy')
   await select.selectOption('')
   await page.getByRole('alert').filter({ hasText: '保存失败测试' }).waitFor()
   assert.equal(await select.inputValue(), choice)

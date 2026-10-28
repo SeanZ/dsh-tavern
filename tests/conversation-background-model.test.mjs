@@ -72,3 +72,32 @@ test('前台工具逐项保存，默认全开并合并插件工具', async () =>
   await assert.rejects(settings.save({ sessionId: 'game', disabledForegroundTools: 'worldbook_search' }), /前台工具配置无效/)
   assert.deepEqual(chat.disabledForegroundTools, ['worldbook_search', 'plugin_lookup'])
 })
+
+test('worldbook strategy is per-game, defaults to legacy and preserves screening, cooldowns and concurrent settings', async () => {
+  const reads = { 'book:7': { turn: 3, kind: 'screened', fingerprint: 'old' } }
+  const chats = new Map(['one', 'two'].map(id => [id, { id, mode: 'story', worldBookReads: reads, backgroundTasks: { worldbookScreening: true, posture: false }, disabledWritingSkills: ['writing'] }]))
+  const strategies = [{ id: 'legacy', label: 'Legacy' }, { id: 'native-skills', label: 'Skills' }, { id: 'plugin.example_strategy', label: 'Plugin' }]
+  const settings = createConversationBackgroundSettings({
+    readConfig: async id => projectChatBackgroundConfig(chats.get(id)), readChat: async id => chats.get(id),
+    updateChat: async (id, mutation) => { const next = mutation({ ...chats.get(id), messages: ['concurrent'] }); chats.set(id, next); return next },
+    isPlayMode: mode => mode === 'story', modelCatalog: async () => [], modelReasoning: async () => null,
+    worldbookStrategies: { list: () => strategies, has: id => strategies.some(item => item.id === id) }
+  })
+  assert.equal((await settings.read('one')).worldbookStrategy, 'legacy')
+  assert.deepEqual((await settings.read('one')).worldbookStrategies, strategies)
+  await settings.save({ sessionId: 'one', worldbookStrategy: 'native-skills' })
+  assert.equal((await settings.read('one')).worldbookStrategy, 'native-skills')
+  assert.equal((await settings.read('two')).worldbookStrategy, 'legacy')
+  await settings.save({ sessionId: 'one', backgroundTasks: { styleReference: true } })
+  assert.equal(chats.get('one').worldbookStrategy, 'native-skills')
+  await settings.save({ sessionId: 'one', worldbookStrategy: 'legacy' })
+  assert.equal(chats.get('one').backgroundTasks.worldbookScreening, true)
+  assert.equal(chats.get('one').backgroundTasks.posture, false)
+  assert.equal(chats.get('one').backgroundTasks.styleReference, true)
+  assert.deepEqual(chats.get('one').worldBookReads, reads)
+  assert.deepEqual(chats.get('one').disabledWritingSkills, ['writing'])
+  assert.deepEqual(chats.get('one').messages, ['concurrent'])
+  await settings.save({ sessionId: 'one', worldbookStrategy: 'plugin.example_strategy' })
+  await assert.rejects(settings.save({ sessionId: 'one', worldbookStrategy: 'missing' }), /策略不可用/)
+  assert.equal(chats.get('one').worldbookStrategy, 'plugin.example_strategy')
+})

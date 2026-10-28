@@ -71,7 +71,9 @@ function TavernStageScene(props) {
 	// The skin's art layer draws the page cue and the auto lamp on its box image (stage-skin.js stageSkinArt).
 	// The cue ends the lines (an inline cue flows after them; a placed one stands on the box). The input docks on the box
 	// (`dock`), standing above its image however tall the box grows.
-	const next = props.art && index < beats.length - 1 ? h("span", { className: "dsh-tavern-stage-next", "aria-hidden": true }) : null;
+	// 逐字显示 (stage-typewriter.js): the line types out at the reader's 文字速度; the cue waits until it is typed.
+	// 分页 (stage-pager.js): a line longer than the box shows card by card (`card`: the shown card's text; `more`: a card follows).
+	const next = props.art && (index < beats.length - 1 || props.more) ? h("span", { className: "dsh-tavern-stage-next" + (props.typed ? "" : " is-waiting"), "aria-hidden": true }) : null;
 	const lamp = props.art ? h("span", { className: "dsh-tavern-stage-lamp", "aria-hidden": true }) : null;
 	const nameRef = React.useRef(null);
 	useTavernStageNameFit(nameRef, beat && beat.kind === "line" ? beat.speaker : "", props.art);
@@ -81,6 +83,8 @@ function TavernStageScene(props) {
 		name: beat && beat.kind === "line" ? beat.speaker : "", nameArc: props.art.faceName }) : null;
 	// 物品: this page's item (one at most) waits unseen, its picture already loading; the page's playback shows it once.
 	const item = (data.turns.at(-1)?.performances || []).find(event => event.op === "item.play" && event.at === index + 1);
+	// 旁白逐行 (stage-narration.js): a skin's art.narration.lines brings a narration card in line by line instead of glyph by glyph.
+	const typer = beat && beat.kind === "narration" && props.narrationLines ? TavernStageNarrationLines : TavernStageTypewriter;
 	return h("div", { ref: props.sceneRef, className: "dsh-tavern-stage-scene", onClick: props.onAdvance },
 		h("div", { className: "dsh-tavern-stage-backdrop" + (scene.backdrop ? " is-scene" : ""), style: scene.background ? { "--dsh-stage-backdrop": "url(\"" + scene.background + "\")" } : undefined }),
 		h("div", { className: "dsh-tavern-stage-figures" }, scene.figures.map(function (figure) {
@@ -90,12 +94,16 @@ function TavernStageScene(props) {
 			return h(TavernStageFigure, { key: name, name: name, url: figure.url, dim: beat && beat.kind === "line" && !speaking });
 		})),
 		item ? h(TavernStageItem, { key: index + ":" + item.item, item }) : null,
+		// 画面效果 (features/stage-effects.js): over the scene, under the text box; idle it shows nothing.
+		h("div", { className: "dsh-tavern-stage-fx", "aria-hidden": true },
+			h("div", { className: "dsh-tavern-stage-fx-cover" }), h("div", { className: "dsh-tavern-stage-fx-vignette" }), h("div", { className: "dsh-tavern-stage-fx-wave" })),
 		// is-speaking: the page's line is being read aloud (a skin's art.portrait.frame.speaking frame shows then).
 		beat ? h("div", { className: "dsh-tavern-stage-textbox" + (beat.kind === "narration" ? " is-narration" : "") + (props.speaking && beat.kind === "line" ? " is-speaking" : "") },
 			side,
 			beat.kind === "line" ? h("div", { className: "dsh-tavern-stage-name" }, h("b", { ref: nameRef, "data-text": beat.speaker }, beat.speaker),
 				TAVERN_CAST_EMOTIONS[beat.emotion] && beat.emotion !== "neutral" ? h("span", { className: "dsh-tavern-cast-emotion" }, TAVERN_CAST_EMOTIONS[beat.emotion]) : null) : null,
-			h("div", { key: index, className: "dsh-tavern-stage-text" + (beat.kind === "narration" ? " is-narration" : "") }, beat.text, next),
+			h("div", { key: index, ref: props.textRef, className: "dsh-tavern-stage-text" + (beat.kind === "narration" ? " is-narration" : "") },
+				h(typer, { key: props.visit, text: props.card ?? beat.text, speed: props.textSpeed, reveal: props.reveal, lines: props.narrationLines, instant: props.typed, onDone: props.onTyped }), next),
 			lamp, props.footer || null, props.dock || null)
 			: h("div", { className: "dsh-tavern-stage-textbox is-empty" }, props.empty || "还没有可以演出的正文", props.dock || null));
 }
@@ -245,7 +253,7 @@ function TavernStageItem(props) {
 		h("strong", null, props.item.item));
 }
 
-function playTavernStagePerformance(root, event, id) {
+function playTavernStagePerformance(root, event, id, skin) {
 	// A sound plays with reduced motion too, and rings out on its own after the page turns (the player is not handed it).
 	if (event.op === "sfx.play") { void tavernStageSfx.play(event.audio, event.volume); return null; }
 	const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -257,20 +265,22 @@ function playTavernStagePerformance(root, event, id) {
 		return node.animate([0, 1, 1, 0].map((opacity, at) => ({ opacity, transform: still ? "translateX(-50%)" : lift[at], offset: [0, .14, .86, 1][at] })),
 			{ id: "stage:" + id, duration: 2800, easing: "ease-out" });
 	}
+	if (event.op === "screen.play") return playTavernStageScreenEffect(root, event, id, skin, still);
 	if (!root || still) return null;
-	const target = event.op === "screen.play" ? root : Array.from(root.querySelectorAll("[data-speaker]")).find(function (node) { return node.dataset.speaker === event.actor; });
+	const target = Array.from(root.querySelectorAll("[data-speaker]")).find(function (node) { return node.dataset.speaker === event.actor; });
 	if (!target) return null;
-	const frames = event.op === "screen.play" ? ["none", "translateX(-3px)", "translateX(3px)", "translateX(-2px)", "none"]
-		: event.motion === "nod" ? ["none", "translateY(2%)", "none", "translateY(1%)", "none"] : ["none", "translateY(-6%)", "none"];
-	return target.animate(frames.map(function (transform) { return { transform: transform }; }), { id: "stage:" + id, duration: event.op === "screen.play" ? 450 : 650, easing: "ease-in-out" });
+	const frames = event.motion === "nod" ? ["none", "translateY(2%)", "none", "translateY(1%)", "none"] : ["none", "translateY(-6%)", "none"];
+	return target.animate(frames.map(function (transform) { return { transform: transform }; }), { id: "stage:" + id, duration: 650, easing: "ease-in-out" });
 }
 
 // 音效 (modules/stage-sfx.js): one page-wide one-shot player on the page's AudioContext, shared with the BGM transport.
-const tavernStageSfx = createStageSfx({ context: () => tavernStageAudio.context(), fetch: (url, init) => window.fetch(url, init),
+// While one sounds, the layers below it dip (避让, features/stage-audio.js).
+const tavernStageSfx = createStageSfx({ context: () => tavernStageAudio.context(), fetch: (url, init) => window.fetch(url, init), output: ctx => tavernStageAudio.output(ctx, "sfx"),
+	sounding: on => tavernStageAudio.duck("sfx", on),
 	clock: { setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) } });
 // 环境音 (castStage `ambience`): the state's loop for the place or weather on a second BGM transport (modules/stage-music.js) on the
 // same AudioContext, so it sounds alongside the BGM. Only the open stage plays it; it follows the state across pages and turns.
-const tavernStageAmbience = createStageMusic({ context: () => tavernStageAudio.context(), fetch: (url, init) => window.fetch(url, init),
+const tavernStageAmbience = createStageMusic({ context: () => tavernStageAudio.context(), fetch: (url, init) => window.fetch(url, init), output: ctx => tavernStageAudio.output(ctx, "ambience"),
 	clock: { now: () => performance.now(), setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) } });
 
 // The art layer's frames slots (art.textbox.next / lamp `frames`): each plays its sheet's cells while it shows, looping or once;
@@ -293,10 +303,40 @@ function useTavernStageReading() {
 	const channel = on ? speech.providers.find(item => item.id === speech.provider) : null;
 	return { on, prepares: Boolean(channel && channel.prepares) };
 }
-function tavernBeatSpeech(sessionId, beat) {
-	return beat.kind === "line" ? { sessionId: sessionId, speaker: beat.speaker, text: (beat.quotes || []).join(" ") || beat.text, emotion: beat.emotion }
+// What a line page's voice says (as dialogue-bubbles.js bubbleSpeech): its voice text, else its words unless the speaker's
+// 配音语言 is not 中文; '' says nothing. The stage, its backlog and the chat rows read the same rule.
+function tavernPageSpeech(page, data) {
+	const character = tavernCastCharacter(data && data.cast, page.speaker);
+	return page.voice !== undefined ? page.voice : voiceTranslates(character && character.voiceLanguage) ? "" : (page.quotes || []).join(" ") || page.text;
+}
+function tavernBeatSpeech(sessionId, beat, data) {
+	return beat.kind === "line" ? { sessionId: sessionId, speaker: beat.speaker, text: tavernPageSpeech(beat, data), emotion: beat.emotion }
 		: { sessionId: sessionId, text: beat.text, narration: true };
 }
+
+// This machine's reading pace (CONFIG › 文字 / 声音, stage-config.js): autoWait, autoSpeed and voiceRate
+// (modules/stage-runtime.js stageReadingPrefs); auto paging reads it at each wait, every voice plays at voiceRate.
+const tavernStageReadingPrefs = (function () {
+	const KEY = "dsh-tavern-stage-reading";
+	const listeners = new Set();
+	let cached = null;
+	function get() {
+		if (!cached) { let saved = null; try { saved = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (_) {} cached = stageReadingPrefs(saved); }
+		return cached;
+	}
+	tavernSpeech.tune({ rate: get().voiceRate });
+	return {
+		get,
+		set(patch) {
+			cached = stageReadingPrefs({ ...get(), ...patch });
+			try { localStorage.setItem(KEY, JSON.stringify(cached)); } catch (_) {}
+			tavernSpeech.tune({ rate: cached.voiceRate });
+			listeners.forEach(fn => fn());
+		},
+		subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+	};
+})();
+function useTavernStageReadingPrefs() { return React.useSyncExternalStore(tavernStageReadingPrefs.subscribe, tavernStageReadingPrefs.get); }
 
 // The fullscreen stage only shows its session: page, auto paging and playback belong to the
 // session runtime, which releases them when the view closes and restores the page on reopen.
@@ -308,26 +348,96 @@ function TavernStageScreen(props) {
 	// resolves to (stage-skin-choice.js, castStage `skin`); 经典 until it arrives.
 	// A pack skin's art layer draws from its bundle (castStage `skin.base`) once its images have loaded.
 	const skinDocument = data && data.skin && data.skin.document || BUILTIN_STAGE_SKINS.classic;
-	const skin = React.useMemo(() => stageSkinRoot(skinDocument), [JSON.stringify(skinDocument)]);
+	// Its font roles resolve against the font library (features/font-library.js) once that is listed.
+	const fontLibrary = useTavernFontLibrary();
+	const skin = React.useMemo(() => stageSkinRoot(skinDocument, fontLibrary), [JSON.stringify(skinDocument), fontLibrary]);
 	const artFiles = useStageSkinArtFiles(data && data.skin && data.skin.document ? data.skin : null);
 	const art = React.useMemo(() => stageSkinArt(skinDocument, artFiles), [skinDocument === BUILTIN_STAGE_SKINS.classic ? "" : JSON.stringify(skinDocument), artFiles]);
 	const icons = React.useMemo(() => stageSkinControlIcons(skinDocument, artFiles), [skinDocument, artFiles]);
+	useStageSkinFonts(data && data.skin && data.skin.document ? data.skin : null, skinDocument, fontLibrary);
+	// 避让 (stage-audio.js): the skin may set how far a voice or a sound effect lowers the layers below it; the engine's amounts
+	// return when the stage closes.
+	const duckBy = JSON.stringify(skinDocument.duck || null);
+	React.useEffect(() => { tavernStageAudio.duckBy(JSON.parse(duckBy)); return () => tavernStageAudio.duckBy(null); }, [duckBy]);
 	// 入场演出 (stage-entrance.js) plays over the stage as it opens; the stage is drawn under it all along.
 	const entrance = useTavernStageEntrance(data && data.entrance, Boolean(data));
-	const sceneRef = React.useRef(null), readingOn = React.useRef(reading.on);
-	readingOn.current = reading.on;
+	const sceneRef = React.useRef(null), readingOn = React.useRef(reading.on), skinRef = React.useRef(skinDocument), dataRef = React.useRef(null);
+	readingOn.current = reading.on; skinRef.current = skinDocument;
+	// Whose 配音语言 decides what a page says (tavernPageSpeech): as the stage last read it.
+	dataRef.current = data;
 	// A channel that can ready its voices (Fish /v1/warm, when its service offers it) is asked once as the stage opens.
 	React.useEffect(() => { if (reading.prepares) rpc("speechPrepare", {}, id).catch(() => {}); }, [id, reading.prepares]);
 	// While a line is read aloud (from its request until it ends or is stopped); a newer reading owns the flag.
 	const [speaking, setSpeaking] = React.useState(false), spoken = React.useRef(0);
-	const [draft, setDraft] = React.useState(""), [sending, setSending] = React.useState(false);
+	// 回合末选项 (stage-choices.js): the latest reply the round's candidates belong to.
+	const messageId = props.choices.useMessageId(id);
+	// CONFIG (stage-config.js): the stage owns its open state; while it is open auto paging waits and the stage's keys are
+	// CONFIG's. Closing returns focus to what opened it.
+	const [config, setConfig] = React.useState(null), configOpen = React.useRef(false), configOpener = React.useRef(null);
+	configOpen.current = Boolean(config);
+	const openConfig = (tab, opener) => { configOpener.current = opener || null; setConfig({ tab }); };
+	const closeConfig = () => {
+		setConfig(null);
+		const opener = configOpener.current; configOpener.current = null;
+		if (opener && opener.isConnected) opener.focus({ preventScroll: true });
+	};
+	// 履历 (stage-backlog.js): open like CONFIG - auto paging waits and the stage's keys are the backlog's. L, the control bar's
+	// 履历 or a wheel up open it; Esc, L, right click, ✕ or a wheel down past its end close it, focus back on what opened it.
+	// A wheel gesture that just closed it does not also turn a page.
+	const [backlog, setBacklog] = React.useState(false), backlogOpen = React.useRef(false), backlogOpener = React.useRef(null), backlogClosedAt = React.useRef(0);
+	backlogOpen.current = backlog;
+	const openBacklog = opener => { backlogOpener.current = opener || null; setBacklog(true); };
+	const closeBacklog = () => { backlogClosedAt.current = Date.now(); setBacklog(false); };
+	// After the stage's controls show again (they are hidden under the backlog).
+	React.useEffect(() => {
+		if (backlog) return;
+		const opener = backlogOpener.current; backlogOpener.current = null;
+		if (opener && opener.isConnected) opener.focus({ preventScroll: true });
+	}, [backlog]);
+	// 逐字显示: each visit of a page types its line (stage-typewriter.js) at CONFIG › 文字 › 文字速度. The first click, page key, wheel
+	// step or › finishes the line, the next turns the page; auto paging waits until it is typed. A skip, a restored page (the
+	// stage reopened, a rollback), a backlog jump and a plugin's stage view show the whole line at once.
+	const prefs = useTavernStageReadingPrefs();
+	// The skin's textFx (modules/stage-typewriter.js stageSkinReveal): how its glyphs come in, on the reader's speed.
+	const reveal = React.useMemo(() => stageSkinReveal(skinDocument, prefs.textSpeed), [JSON.stringify(skinDocument.textFx), skinDocument.photosensitive, prefs.textSpeed]);
+	const visit = reader.key + ":" + reader.visit;
+	// 分页 (stage-pager.js): a page whose line the box cannot hold shows card by card. The click, key, wheel step or › that
+	// turns the page first walks its cards, ‹ walks them back (into the previous page's last card), auto paging reads each card,
+	// 跳过 fast-forwards through them (below). Each card types out; a skip, a restored page or a backlog jump shows the card it
+	// lands on whole. `spot`: the card shown in this visit (its start, in characters, so a re-measured page keeps it) and how
+	// many cards it has turned through; a page turn (a new visit) starts on its first card.
+	const [spot, setSpot] = React.useState({ visit: "", offset: 0, turns: 0 });
+	const here = spot.visit === visit ? spot : { visit, offset: 0, turns: 0 };
+	const latest = data.turns[data.turns.length - 1];
+	const beats = React.useMemo(() => latest ? latest.pages.map(page => ({ turn: latest.turn, ...page })) : [], [latest]);
+	const pager = useTavernStagePager(beats, reader.index, here.offset, art || skin);
+	const cards = pager.cards, card = pager.card, lastCard = card >= cards.length - 1;
+	const cardKey = visit + ":" + here.turns;
+	// 跳过 (the control, or Ctrl held): a fast-forward, not a jump. Every STAGE_SKIP_CARD_MS it shows the next card whole - a
+	// page's first card on a skip visit, which plays no voice and no performance - until the round's last card; auto paging
+	// is off meanwhile. The control turns it on and off; Ctrl held (after a short arm delay, so Ctrl shortcuts do not skip)
+	// runs it until released. Any other key, click or wheel stops it, and that input does only that (skipStopped).
+	const [skipLatch, setSkipLatch] = React.useState(false), [skipHeld, setSkipHeld] = React.useState(false);
+	const skipping = skipLatch || skipHeld, skippingRef = React.useRef(false), skipStopped = React.useRef(false), skipPossible = React.useRef(false);
+	skippingRef.current = skipping;
+	const [typedVisit, setTypedVisit] = React.useState("");
+	const typed = typedVisit === cardKey || here.turns === 0 && (reader.mode === "skip" || reader.mode === "refresh") || Boolean(choice.view) || skipping;
+	const typedRef = React.useRef(typed), visitRef = React.useRef(cardKey), shownRef = React.useRef(null);
+	typedRef.current = typed; visitRef.current = cardKey;
+	shownRef.current = { reader, visit, turns: here.turns, cards, card, last: lastCard };
+	// The next visit (a page turn, a skip) opens on its last card.
+	const landLast = () => { const now = shownRef.current.reader; setSpot({ visit: now.key + ":" + (now.visit + 1), offset: Infinity, turns: 0 }); };
+	const showCard = at => { const now = shownRef.current; setSpot({ visit: now.visit, offset: now.cards[at].start, turns: now.turns + 1 }); };
 	const session = () => props.sessions?.binding(id)?.session;
 	const running = React.useSyncExternalStore(fn => session()?.subscribe(fn) || (() => {}), () => session()?.getSnapshot().running === true);
 	React.useEffect(() => tavernStageRuntime.attach(id, {
-		animate: (event, key) => playTavernStagePerformance(sceneRef.current, event, key),
-		speech: { on: () => readingOn.current, stop: () => { spoken.current++; setSpeaking(false); tavernSpeech.stop(); },
+		animate: (event, key) => playTavernStagePerformance(sceneRef.current, event, key, skinRef.current),
+		reading: () => tavernStageReadingPrefs.get(), held: () => configOpen.current || backlogOpen.current || !typedRef.current,
+		card: () => { const now = shownRef.current; return now.cards.length > 1 ? { at: now.card, last: now.last, text: now.cards[now.card].text, share: stageCardVoiceShare(now.cards, now.card) } : null; },
+		nextCard: () => { const now = shownRef.current; if (!now.last) showCard(now.card + 1); },
+		speech: { on: () => readingOn.current, progress: () => tavernSpeech.progress(), stop: () => { spoken.current++; setSpeaking(false); tavernSpeech.stop(); },
 			speak: beat => {
-				const mine = ++spoken.current, done = tavernSpeech.speak(tavernBeatSpeech(id, beat));
+				const mine = ++spoken.current, done = tavernSpeech.speak(tavernBeatSpeech(id, beat, dataRef.current));
 				setSpeaking(true);
 				Promise.resolve(done).finally(() => { if (spoken.current === mine) setSpeaking(false); });
 				return done;
@@ -348,32 +458,105 @@ function TavernStageScreen(props) {
 		if (ambience) tavernStageAmbience.play(ambience.url, reader.mode === "skip", ambience.identity, { volume: ambience.volume });
 		else tavernStageAmbience.stop(!ambienceOn || reader.mode === "skip");
 	}, [ambienceOn, ambience && ambience.identity, ambience && ambience.url, ambience && ambience.volume]);
-	React.useEffect(() => { tavernStageRuntime.sync(id); }, [id, reading.on]);
+	React.useEffect(() => { tavernStageRuntime.sync(id); }, [id, reading.on, Boolean(config), backlog, typed, card, cards[card].text, lastCard]);
 	useTavernStageArtFrames(sceneRef, art, reader.index, reader.auto);
-	const latest = data.turns[data.turns.length - 1];
-	const beats = React.useMemo(() => latest ? latest.pages.map(page => ({ turn: latest.turn, ...page })) : [], [latest]);
 	const atEnd = reader.index >= beats.length - 1, step = delta => tavernStageRuntime.page(id, index => index + delta);
+	skipPossible.current = !(atEnd && lastCard);
+	const stopSkip = () => { setSkipLatch(false); setSkipHeld(false); };
+	// The control: on ends auto paging, a second press stops it.
+	const toggleSkip = () => { tavernStageRuntime.setAuto(id, false); setSkipLatch(value => !value); };
+	// One card a step, each shown whole (the card it lands on stays typed when the fast-forward stops there). It ends on the
+	// round's last card; CONFIG or the backlog open pauses it.
+	React.useEffect(() => {
+		if (!skipping) return undefined;
+		if (atEnd && lastCard) { stopSkip(); return undefined; }
+		if (config || backlog) return undefined;
+		const timer = setTimeout(() => {
+			const now = shownRef.current;
+			if (!now.last) { setTypedVisit(now.visit + ":" + (now.turns + 1)); showCard(now.card + 1); }
+			else tavernStageRuntime.page(id, index => index + 1, "skip");
+		}, STAGE_SKIP_CARD_MS);
+		return () => clearTimeout(timer);
+	}, [skipping, atEnd, lastCard, Boolean(config), backlog, cardKey]);
+	// 旁白 (modules/stage-narration.js): a skin's art.narration lays a narration page out without the box (tavern.css 「stage narration」).
+	const narration = skinDocument.art && skinDocument.art.narration || null;
+	const narrationLayout = stageNarrationLayout({ narration, beat: beats[reader.index], skipping, mode: reader.mode, events: latest ? latest.performances : [], at: reader.index + 1 });
+	const skipHoldBlocked = Boolean(config) || backlog;
+	React.useEffect(() => {
+		if (skipHoldBlocked) { setSkipHeld(false); return undefined; }
+		let timer = 0;
+		const cancel = () => { clearTimeout(timer); timer = 0; setSkipHeld(false); };
+		// Any other key, click or wheel stops a fast-forward (the control's own press toggles it instead); advance(), back()
+		// and the wheel then drop that input instead of turning a card.
+		function interrupt(event) {
+			const own = event && event.type === "pointerdown" && event.target && typeof event.target.closest === "function" && event.target.closest(STAGE_SKIP_CONTROL);
+			const running = skippingRef.current && !own;
+			skipStopped.current = running;
+			cancel();
+			if (running) setSkipLatch(false);
+		}
+		function onDown(event) {
+			if (event.key !== "Control") { interrupt(event); return; }
+			if (event.repeat || timer || event.altKey || event.shiftKey || event.metaKey) return;
+			const target = event.target;
+			if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+			timer = setTimeout(() => { timer = 0; if (!skipPossible.current) return; tavernStageRuntime.setAuto(id, false); setSkipHeld(true); }, STAGE_SKIP_HOLD_MS);
+		}
+		function onUp(event) { if (event.key === "Control") cancel(); }
+		function onHidden() { if (document.hidden) cancel(); }
+		window.addEventListener("keydown", onDown, true);
+		window.addEventListener("keyup", onUp, true);
+		window.addEventListener("wheel", interrupt, true);
+		window.addEventListener("pointerdown", interrupt, true);
+		window.addEventListener("blur", cancel);
+		document.addEventListener("visibilitychange", onHidden);
+		return () => {
+			clearTimeout(timer); setSkipHeld(false); skipStopped.current = false;
+			window.removeEventListener("keydown", onDown, true);
+			window.removeEventListener("keyup", onUp, true);
+			window.removeEventListener("wheel", interrupt, true);
+			window.removeEventListener("pointerdown", interrupt, true);
+			window.removeEventListener("blur", cancel);
+			document.removeEventListener("visibilitychange", onHidden);
+		};
+	}, [skipHoldBlocked, id]);
+	// A click, → / Space / Enter, a wheel step or ›: finish the line still typing, else the next card, else the next page.
+	const advance = () => {
+		if (skipStopped.current) { skipStopped.current = false; return; }
+		const now = shownRef.current;
+		if (!typedRef.current) setTypedVisit(visitRef.current);
+		else if (!now.last) showCard(now.card + 1);
+		else step(1);
+	};
+	// ← / ‹: the card before, else the previous page's last card.
+	const back = () => {
+		if (skipStopped.current) { skipStopped.current = false; return; }
+		const now = shownRef.current;
+		if (now.card > 0) showCard(now.card - 1);
+		else if (now.reader.index > 0) { landLast(); step(-1); }
+	};
 	React.useEffect(() => {
 		function onKey(event) {
+			if (configOpen.current) return;
 			if (event.target && /^(INPUT|TEXTAREA)$/.test(event.target.tagName)) return;
 			// The BGM panel's keys are its own (its Esc closes only the panel).
 			if (event.target && event.target.closest && event.target.closest(".dsh-tavern-bgm-panel")) return;
-			if (event.key === "Escape") { event.stopPropagation(); props.onClose(); }
-			else if (event.key === "ArrowRight" || event.key === " " || event.key === "Enter") { event.preventDefault(); step(1); }
-			else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
+			const letter = !event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1 ? event.key.toLowerCase() : "";
+			// The backlog keeps the keyboard (arrows / Page keys scroll it; Enter on a row jumps).
+			if (backlogOpen.current) {
+				if ((event.key === "Escape" || letter === "l") && !event.repeat) { event.preventDefault(); event.stopPropagation(); closeBacklog(); }
+				return;
+			}
+			if (letter === "l") { event.preventDefault(); if (!event.repeat) openBacklog(null); }
+			else if (event.key === "Escape") { event.stopPropagation(); props.onClose(); }
+			// Enter / Space on a choice press it; they turn no page.
+			else if ((event.key === " " || event.key === "Enter") && event.target && event.target.closest && event.target.closest(".dsh-tavern-stage-choices")) return;
+			else if (event.key === "ArrowRight" || event.key === " " || event.key === "Enter") { event.preventDefault(); advance(); }
+			else if (event.key === "ArrowLeft") { event.preventDefault(); back(); }
 		}
 		document.addEventListener("keydown", onKey, true);
 		return () => document.removeEventListener("keydown", onKey, true);
 	}, [id, props.onClose]);
-	async function send(event) {
-		event.preventDefault();
-		const text = draft.trim();
-		if (!text || sending) return;
-		setSending(true);
-		try { await props.submit(id, text); setDraft(""); }
-		catch (error) { tavernErrorHub.report("舞台发送", error); }
-		finally { setSending(false); }
-	}
 	// A control the skin draws (quickMenu.icons: back = ‹, auto, skip) shows its icon on the skin's button body; the others keep
 	// their own words. Every control keeps its action, name and keys.
 	const control = (action, label, glyph, attributes, on) => {
@@ -382,26 +565,60 @@ function TavernStageScreen(props) {
 			icon ? tavernStageControlIcon(icon, on, attributes.disabled) : glyph);
 	};
 	const footer = h("div", { className: "dsh-tavern-stage-controls", onClick: event => event.stopPropagation() },
-		control("back", "上一句", "‹", { onClick: () => step(-1), disabled: reader.index <= 0, "aria-label": "上一句" }),
+		control("back", "上一句", "‹", { onClick: back, disabled: reader.index <= 0 && card === 0, "aria-label": "上一句" }),
 		h("span", { className: "dsh-tavern-stage-progress" }, beats.length ? (reader.index + 1) + " / " + beats.length : ""),
-		h("button", { type: "button", onClick: () => step(1), disabled: atEnd, "aria-label": "下一句" }, "›"),
-		control("auto", "自动", "自动", { className: reader.auto ? "is-on" : "", onClick: () => tavernStageRuntime.setAuto(id, !reader.auto), "aria-pressed": reader.auto }, reader.auto),
-		control("skip", "跳过", "跳过", { onClick: () => tavernStageRuntime.page(id, beats.length - 1, "skip") }),
+		h("button", { type: "button", onClick: advance, disabled: atEnd && lastCard, "aria-label": "下一句" }, "›"),
+		control("auto", "自动", "自动", { className: reader.auto ? "is-on" : "", onClick: () => { setSkipLatch(false); tavernStageRuntime.setAuto(id, !reader.auto); }, "aria-pressed": reader.auto }, reader.auto),
+		control("skip", "跳过", "跳过", { className: skipping ? "is-on" : "", onClick: toggleSkip, "aria-pressed": skipping, title: "跳过（按住 Ctrl 快进）" }, skipping),
+		control("backlog", "履历", "履历", { title: "履历（L / 滚轮向上）", onClick: event => openBacklog(event.currentTarget) }),
 		h(TavernBgmStage, { sessionId: id }),
 		h(TavernMusicToggle, null),
+		h(TavernStageSoundEntry, { openConfig }),
 		h("span", { className: "dsh-tavern-spacer" }),
 		h("button", { type: "button", onClick: props.onClose }, "退出舞台"));
 	const generating = props.generating ?? running;
-	const input = atEnd ? h("form", { className: "dsh-tavern-stage-input", onSubmit: send, onClick: event => event.stopPropagation() },
-		h("input", { value: draft, onChange: event => setDraft(event.target.value), placeholder: generating ? "正在生成下一轮…" : "接下来做什么？", "aria-label": "舞台输入", disabled: sending }),
-		h("button", { type: "submit", disabled: sending || !draft.trim() }, sending ? "发送中…" : "发送")) : null;
-	// With the skin's art the input docks on Tavern's own box (above its image); a plugin view keeps it under the scene.
-	const docked = Boolean(art) && !choice.view;
+	// The round's last card ends on the choice menu (stage-choices.js); its waits take the box's place. It docks on Tavern's
+	// own box (above the box, or its image); a plugin view keeps it under the scene.
+	const input = h(TavernStageChoices, { key: id, sessionId: id, flow: props.choices, messageId, running: generating, atEnd: atEnd && lastCard,
+		submit: text => props.submit(id, text), lines: skinDocument.waitLines || STAGE_WAIT_LINES });
+	const docked = !choice.view;
+	// The stage's wheel (modules/stage-backlog.js stageWheelDecision): up opens the backlog, down turns a page. An open CONFIG or
+	// backlog keeps its own wheel; the BGM panel scrolls its list.
+	const wheelGesture = React.useRef(null);
+	function wheel(event) {
+		if (configOpen.current || backlogOpen.current || Date.now() - backlogClosedAt.current < 450) return;
+		if (event.target && event.target.closest && event.target.closest(".dsh-tavern-bgm-panel")) return;
+		if (skipStopped.current) { skipStopped.current = false; return; } // this notch only stopped a fast-forward
+		const decision = stageWheelDecision(wheelGesture.current, { now: Date.now(), deltaY: event.deltaY, deltaMode: event.deltaMode, typed: typedRef.current });
+		wheelGesture.current = decision.state;
+		if (decision.action === "backlog") openBacklog(null);
+		else if (decision.action === "advance" || decision.action === "finish") advance();
+	}
+	// A row of the latest turn: auto paging stops and the stage shows that page (the current one: back to the stage as it was).
+	function jumpBack(page, turn) {
+		closeBacklog();
+		if (!latest || turn !== latest.turn) return;
+		tavernStageRuntime.setAuto(id, false);
+		// the page shows its first card whole: a turn is the next visit; the current page stays this one and goes back to its first card
+		if (page === reader.index) { setSpot({ visit, offset: 0, turns: here.turns + 1 }); setTypedVisit(visit + ":" + (here.turns + 1)); }
+		else setTypedVisit(reader.key + ":" + (reader.visit + 1) + ":0");
+		tavernStageRuntime.page(id, page);
+	}
 	return h("div", { className: "dsh-tavern-stage-overlay", role: "dialog", "aria-modal": "true", "aria-label": "舞台", ...skin,
-		...(art ? { ...art.marks, style: { ...skin.style, ...art.tokens } } : null), "data-stage-auto": reader.auto ? "" : undefined },
-		h(TavernStageSceneView, { scene, view: choice.view, sessionId: id, data, beats, index: reader.index, sceneRef, onAdvance: () => step(1), footer, art, speaking, dock: docked ? input : null }),
-		docked ? null : input, entrance.element);
+		...(art ? { ...art.marks, style: { ...skin.style, ...art.tokens } } : null), "data-narration-layout": narrationLayout, "data-stage-auto": reader.auto ? "" : undefined, "data-stage-backlog": backlog ? "" : undefined, onWheel: wheel },
+		h(TavernStageSceneView, { scene, view: choice.view, sessionId: id, data, beats, index: reader.index, sceneRef, onAdvance: advance, footer, art, speaking, dock: docked ? input : null,
+			visit: cardKey, typed, textSpeed: prefs.textSpeed, reveal, narrationLines: narration && narration.lines, onTyped: () => setTypedVisit(cardKey), textRef: pager.textRef, card: cards[card].text, more: !lastCard }),
+		docked ? null : input,
+		config ? h(TavernStageConfigScreen, { tab: config.tab, onClose: closeConfig,
+			tests: { voice: reading.on && beats[reader.index] ? () => tavernSpeech.speak(tavernBeatSpeech(id, beats[reader.index], data)) : null } }) : null,
+		backlog ? h(TavernStageBacklog, { sessionId: id, data, page: reader.index, onJump: jumpBack, onClose: closeBacklog }) : null,
+		entrance.element);
 }
+
+// 跳过 shows a card every 150 ms, each painted fully before the next: 9 frames at 60 Hz, long enough to see each card as a
+// distinct frame, short enough for a 40-card round in about 6 s. Ctrl must be held 160 ms before it skips.
+const STAGE_SKIP_CARD_MS = 150, STAGE_SKIP_HOLD_MS = 160;
+const STAGE_SKIP_CONTROL = '[data-action="skip"]';
 
 // A drawn control (stageSkinControlIcons): the icon (its `on` image while it runs) alone, or on the skin's button body - its
 // normal / on / disabled image by state and the hover image over it under the pointer and keyboard focus - in the glyph box.

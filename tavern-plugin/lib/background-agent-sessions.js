@@ -287,6 +287,7 @@ export function createBackgroundAgentSessions(options, task) {
     requestSessions.set(traceSessionId, handle.agent.session)
     requestContexts.set(traceSessionId, {
       scope: 'background',
+      webSearchEnabled: !['phone', 'stage-director'].includes(input.task) && runtimeInput.webSearchEnabled === true,
       parentSessionId: str(input.sessionId),
       selection: { ...input.selection },
       maxTokens,

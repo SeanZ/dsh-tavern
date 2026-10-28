@@ -4240,7 +4240,7 @@ function versionsOf(jobId) {
       async function deleteJobBatch(ids) {
         const list = (Array.isArray(ids) ? ids : []).filter(Boolean)
         if (!list.length) { if (typeof showToast === 'function') showToast('没有选中任何图', 'fail'); return }
-        if (!confirm('删除选中的 ' + list.length + ' 张图？缓存文件也会一起删掉。')) return
+        if (!confirm('删除选中的 ' + list.length + ' 张图？对话里挂着的同一张也会一起删掉。')) return
         let ok = 0
         for (const id of list) {
           try {
@@ -4254,10 +4254,10 @@ function versionsOf(jobId) {
         if (typeof showToast === 'function') showToast('已删除 ' + ok + ' / ' + list.length + ' 张' + (ok === list.length ? '' : '（有些没删掉）'), ok === list.length ? 'ok' : 'fail')
       }
 
-      /** 删除一张历史图（连带缓存文件与计划里的引用）。 */
+      /** 删除一张历史图（连带缓存文件、计划里的引用和对话里挂着的那张）。 */
       async function deleteJob(jobId) {
         if (!jobId) return
-        if (!confirm('删除这张图？缓存文件也会一起删掉。')) return
+        if (!confirm('删除这张图？对话里挂着的同一张也会一起删掉。')) return
         try {
           const r = await post('/delete-job', { jobId: String(jobId) })
           if (!r?.ok) { if (typeof showToast === 'function') showToast('删除失败：' + (r?.error || ''), 'fail'); return }
@@ -5118,7 +5118,7 @@ function versionsOf(jobId) {
             }, galleryPicked[job.id] ? '✓' : '') : null,
             !gallerySelect ? h('button', {
               type: 'button',
-              title: '删除这张（连带缓存）',
+              title: '删除这张（对话里的也一起删）',
               onClick: function (e) { e.stopPropagation(); deleteJob(job.id) },
               style: {
                 position: 'absolute', top: '6px', right: '6px', width: '26px', height: '26px',

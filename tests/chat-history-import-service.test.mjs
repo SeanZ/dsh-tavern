@@ -36,14 +36,14 @@ for (const textOnly of [false,true]) test(`历史导入装配真实筛选器仍�
   ...['walk','rest'].flatMap(word=>Array.from({length:6},(_,i)=>({ref:word+i,enabled:true,primaryKeys:[word],content:`${word} rule ${i} `+'x'.repeat(4400)})))]}}
  const project=createForegroundWorldbook({bound:async()=>worldBook,runtime:async()=>runtime,globalVariables:async()=>({}),
   filterCandidates:createWorldbookFilter({selection:()=>({}),beginTask:async()=>({participantRequest:{},fail:async()=>{}}),runAgent:async()=>{calls++;throw Error('model transport reached')}})})
- h.options.worldBooks.bound=async()=>worldBook;h.options.projectForegroundWorldbook=project
+ h.options.worldBooks.bound=async()=>worldBook;h.options.projectForegroundWorldbook=args=>project({...args,chat:{...args.chat,backgroundTasks:{worldbookScreening:true}}})
  await createChatHistoryImportService(h.options).import({...input,textOnly})
  assert.equal(calls,0)
  const frames=foregroundContexts(h.session)
  assert.match(frames[0],/walk rule/);assert.match(frames[1],/rest rule/)
  await project({chat:{id:'live',sessionId:'session',messages:[]},card:{},userText:'walk',worldBook})
  assert.equal(calls,0,'发送正文不等待模型筛选')
- await project({chat:{id:'live',sessionId:'session',messages:[{role:'assistant',turn:1,text:'walk'}]},card:{},userText:'',worldBook,purpose:'prefilter'})
+ await project({chat:{id:'live',sessionId:'session',backgroundTasks:{worldbookScreening:true},messages:[{role:'assistant',turn:1,text:'walk'}]},card:{},userText:'',worldBook,purpose:'prefilter'})
  assert.equal(calls,1,'回复结束后的预筛仍走真实模型筛选器')
 })
 

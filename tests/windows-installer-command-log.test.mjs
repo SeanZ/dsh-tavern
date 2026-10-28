@@ -51,3 +51,13 @@ Write-UpdateLog 'installer.stage.failed' 'fallback.test' '17' '' $fallback
     assert.match(logs.find(r => r.step === 'fallback.test').output, /FALLBACK_ERROR/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('installation path validation preserves resolver stderr instead of guessing migration failure', async () => {
+  const source = await readFile(new URL('../install.ps1', import.meta.url), 'utf8')
+  const validation = source.slice(source.indexOf("  $LocationErrorFile ="), source.indexOf('  $env:DSH_TAVERN_APP_DIR = $AppDir'))
+  assert.match(validation, /\$ResolvedAppDir = & node .* 2> \$LocationErrorFile/)
+  assert.match(validation, /\$LocationExitCode = \$LASTEXITCODE/)
+  assert.match(validation, /Get-Content -LiteralPath \$LocationErrorFile/)
+  assert.match(validation, /throw .*\$LocationReason/)
+  assert.doesNotMatch(validation, /请先恢复迁移/)
+})

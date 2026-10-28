@@ -4,6 +4,7 @@ import path from 'node:path'
 import { readZipEntries } from './zip-entries.js'
 import { DISABLED_FILE, RESTART_FILE, scanUserPlugins, STATUS_FILE, userPluginPaths } from './user-plugins.js'
 import { pluginDataFile } from './plugin-data-store.js'
+import { pluginManifestProblem } from './plugin-manifest.js'
 
 // 应用内安装插件：粘贴 GitHub 地址或上传 zip，放进 <data>/plugins/<文件夹>；
 // 之后的加载仍由 plugins/ 目录同步负责（宿主侧几秒内加载，浏览器侧刷新后出现）。
@@ -99,6 +100,8 @@ export function readPluginArchive(bytes) {
   const root = manifests[0].slice(0, -'package.json'.length)
   let pkg
   try { pkg = JSON.parse(entries.get(manifests[0]).toString('utf8')) } catch (error) { fail('package.json 无法解析：' + error.message) }
+  const manifestProblem = pluginManifestProblem(pkg)
+  if (manifestProblem) fail(manifestProblem)
   const files = new Map()
   for (const [name, data] of entries) {
     if (!name.startsWith(root) || name.endsWith('/')) continue
@@ -275,6 +278,8 @@ export function createUserPluginInstaller({ dataRoot, fetchImpl = fetch, now = (
     enable(folder) {
       return serial(async () => {
         const name = folderOf(folder)
+        const manifestProblem = pluginManifestProblem(await readJson(path.join(paths.plugins, name, 'package.json')))
+        if (manifestProblem) fail(manifestProblem)
         await rm(path.join(paths.plugins, name, DISABLED_FILE), { force: true })
         // Drop the old load record so the list shows "刷新后生效" until the host loads it again.
         await rm(path.join(paths.plugins, name, STATUS_FILE), { force: true })

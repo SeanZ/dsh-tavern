@@ -4,6 +4,8 @@ import { recordUpdateDiagnostic, redactUpdateDiagnostic } from './update-diagnos
 import { randomUUID } from 'node:crypto'
 import { runInstallationProcess } from './installation-process.mjs'
 import installationState from './installation-state.cjs'
+import installationLocation from './installation-location.cjs'
+import { applySystemProxy } from './system-proxy.mjs'
 import { createUpdateState } from './update-state.mjs'
 import { readInstallationReceipt } from './installation-receipt.mjs'
 import { closeSync, copyFileSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
@@ -144,6 +146,9 @@ export function installerFailureTail(output, lines = 12) {
 }
 
 export async function updateApplication(options = { host: RUNTIME_HOST, statusFile: '', delay: 0 }) {
+  // 更新器自己的诊断请求和随后的安装子进程都要能看到系统代理：先翻译成环境变量，
+  // 子进程用同一份 env 启动（Windows 的 WinINET 设置对 Node/curl/git/pnpm 都不可见）。
+  applySystemProxy()
   options = { statusFile: '', delay: 0, ...options }
   const sourceRoot = path.resolve(options.sourceRoot || SOURCE_ROOT)
   const log = typeof options.log === 'function' ? options.log : console.log
@@ -154,6 +159,11 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
   // when the update was started from a terminal opened there.
   if (process.platform === 'win32' && !options.keepCwd) try { process.chdir(os.tmpdir()) } catch {}
   const lease = installationState.acquireInstallation({ dshHome, sourceRoot, statusFile: options.statusFile, attemptId, adopt: !!options.attemptId, supervised: true })
+  let installedAppRoot
+  try {
+    installedAppRoot = options.host === 'android' ? (options.installedSourceRoot || sourceRoot)
+      : installationLocation.resolveInstallationApp({ dshHome, appDir: options.installedSourceRoot || process.env.DSH_TAVERN_APP_DIR })
+  } catch (error) { lease.release(); throw error }
   lease.update({ supervised: true, state: 'running' })
   const state = createUpdateState(options.statusFile, dshHome)
   const writeUpdateStatus = value => state.write(value, { attemptId })
@@ -211,6 +221,7 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
           ...(options.host === 'cli' ? { DSH_TAVERN_DEFER_SERVICE_START: '1' } : {}),
           DSH_TAVERN_UPDATE_ATTEMPT: attemptId,
           DSH_TAVERN_SOURCE_ROOT: sourceRoot,
+          DSH_TAVERN_APP_DIR: installedAppRoot,
           DSH_HOME: dshHome,
           ...(options.host === 'cli' ? { DSH_TAVERN_CLI_HOME: dshHome } : {}),
           DSH_TAVERN_INSTALL_ATTEMPT: attemptId,
@@ -247,7 +258,7 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
     temporary = ''
     if (outputFile !== '' && existsSync(outputFile)) unlinkSync(outputFile)
     outputFile = ''
-    const installedSourceRoot = options.installedSourceRoot || (options.host === 'android' ? sourceRoot : process.env.DSH_TAVERN_APP_DIR || path.join(dshHome, 'apps/dsh-tavern'))
+    const installedSourceRoot = installedAppRoot
     const receipt = await readInstallationReceipt({ sourceRoot: installedSourceRoot, dshHome, host: options.host, attemptId, after: startedAt - 1 })
     if (!receipt) throw new Error('安装程序已退出，但未确认配置验证和安装完成；请修复安装。')
     if (controller.signal.aborted) throw Object.assign(new Error('更新已取消'), { code: 'INSTALLATION_ABORTED' })
@@ -280,7 +291,7 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
     // job has ended, so the service may be started outside it, as on success.
     let restored = false
     if (options.host === 'cli' && safeToRelease) {
-      const appRoot = options.installedSourceRoot || process.env.DSH_TAVERN_APP_DIR || path.join(dshHome, 'apps/dsh-tavern')
+      const appRoot = installedAppRoot
       // Cancellation ends the whole installer tree, so its own cleanup may not run.
       // With the tree verified stopped, finish it here: undo an unfinished switch
       // (no-op when the installer already did) and drop a leftover staging copy.
@@ -295,9 +306,35 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
         catch (startError) { failure = new Error(`${String(failure?.message || failure)}\n${String(startError?.message || startError)}`) }
       }
     }
+    // Android swaps the source directory in place and only rolls back from the
+    // installer's own trap. Cancellation ends that whole process tree, so the new
+    // source would stay on disk with dependencies half installed while the app
+    // still reports the old version (#388). Undo the swap here, once the tree is
+    // verified stopped: setup.sh --restore-previous moves the backup back.
+    if (options.host === 'android' && safeToRelease && !restored) {
+      const appRoot = options.installedSourceRoot || process.env.DSH_TAVERN_ANDROID_APP_DIR || sourceRoot
+      const setupScript = path.join(appRoot, 'android', 'setup.sh')
+      let supportsRestore = false
+      try { supportsRestore = readFileSync(setupScript, 'utf8').includes('--restore-previous') } catch {}
+      if (supportsRestore) {
+        try {
+          const restoredRun = await promisify(execFile)('bash', [setupScript, '--restore-previous', appRoot], {
+            windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, cwd: os.tmpdir(),
+            env: { ...runtimeEnvironment(), DSH_HOME: dshHome, DSH_TAVERN_SOURCE_ROOT: appRoot, DSH_TAVERN_ANDROID_APP_DIR: appRoot },
+          })
+          if (restoredRun.stdout) log(restoredRun.stdout.trim())
+          restored = true
+        } catch (rollbackError) {
+          // Exit code 3: the swap never completed, so there is nothing to undo.
+          if (Number(rollbackError?.code) !== 3) {
+            failure = new Error(`${String(failure?.message || failure)}\n恢复原版本失败：${String(rollbackError?.stderr || rollbackError?.message || rollbackError)}`)
+          }
+        }
+      }
+    }
     await writeUpdateStatus({
       phase: safeToRelease ? 'failed' : 'blocked', attemptId, ...(restored ? {} : { repairRequired: true, repairSince: Date.now() }), host: options.host, failedAt: Date.now(),
-      error: (restored ? '更新未完成，已恢复原版本并继续运行。' : '') + String(failure?.message || failure),
+      error: (restored ? (options.host === 'android' ? '更新未完成，已恢复更新前的源码。' : '更新未完成，已恢复原版本并继续运行。') : '') + String(failure?.message || failure),
       ...(targetCommit ? { targetCommit } : {}),
     })
     throw failure

@@ -224,7 +224,7 @@ function createConversationSettingsModule({
             try {
                 const result = await rpc("getConversationBackgroundConfig", { sessionId: props.sessionId }, props.sessionId);
                 setCatalog(result.modelCatalog || []); setSelection(result.backgroundModel);
-                setTasks(result.backgroundTasks); setFeatures({ webSearchEnabled: result.webSearchEnabled === true, mvuCard: result.mvuCard === true }); setLoaded(true);
+                setTasks(result.backgroundTasks); setFeatures({ worldbookStrategy: result.worldbookStrategy || "legacy", worldbookStrategies: result.worldbookStrategies || [], webSearchEnabled: result.webSearchEnabled === true, mvuCard: result.mvuCard === true }); setLoaded(true);
             } catch (err) { setError(String(err.message || err)); }
         }
         React.useEffect(() => { void load(); }, []);
@@ -239,8 +239,8 @@ function createConversationSettingsModule({
             if (busy || !loaded) return;
             setBusy(true); setError(""); setNotice("");
             try {
-                const result = await rpc("setConversationBackgroundConfig", Object.assign({ sessionId: props.sessionId, backgroundModel: selection }, patch), props.sessionId);
-                setSelection(result.backgroundModel); setTasks(result.backgroundTasks); setFeatures({ ...features, webSearchEnabled: result.webSearchEnabled });
+                const result = await rpc("setConversationBackgroundConfig", Object.assign({ sessionId: props.sessionId }, patch), props.sessionId);
+                setSelection(result.backgroundModel); setTasks(result.backgroundTasks); setFeatures({ ...features, worldbookStrategy: result.worldbookStrategy || "legacy", webSearchEnabled: result.webSearchEnabled });
                 setNotice("已保存");
                 invalidateView(props.sessionId);
             } catch (err) { setError(String(err.message || err)); }
@@ -249,9 +249,9 @@ function createConversationSettingsModule({
         const efforts = reasoning.key === key ? reasoning.value?.efforts || [] : [];
         const modelOptions = () => catalog.map(group => h("optgroup", { key: group.provider, label: group.providerName || group.provider }, group.models.map(model => h("option", { key: model.id, value: JSON.stringify({ provider: group.provider, model: model.id }) }, model.name || model.id))));
         const known = !selection || catalog.some(group => group.provider === selection.provider && group.models.some(model => model.id === selection.model));
-        const toggle = (name, title, description, checked, patch) => h("label", { key: name, className: "dsh-tavern-background-task" },
+        const toggle = (name, title, description, checked, patch, disabled = false) => h("label", { key: name, className: "dsh-tavern-background-task" },
             h("span", null, title, h("span", { className: "dsh-tavern-settings-desc" }, description)),
-            h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: !loaded || busy, onChange: event => save(patch(event.target.checked)) }));
+            h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: !loaded || busy || disabled, onChange: event => save(patch(event.target.checked)) }));
         return h("div", { className: "dsh-local-runtime" },
             h("section", { className: "dsh-local-section" }, h("h3", null, "模型"),
                 h("p", { className: "dsh-tavern-settings-desc" }, "下一次后台任务生效。建议 High 推理强度；Max 容易过度思考、增加等待。"),
@@ -261,6 +261,12 @@ function createConversationSettingsModule({
                     modelOptions())),
                 h("label", null, "推理强度", h("select", { "aria-label": "本局后台推理强度", className: "dsh-tavern-settings-select", value: selection?.reasoningEffort || "", disabled: !key || !efforts.length || busy, onChange: event => { const next = { ...selection }; if (event.target.value) next.reasoningEffort = event.target.value; else delete next.reasoningEffort; return save({ backgroundModel: next }); } },
                     h("option", { value: "" }, key ? "模型默认" : "跟随前台"), efforts.map(item => h("option", { key: item.id, value: item.id }, item.name || item.id))))),
+            h("section", { className: "dsh-local-section" }, h("h3", null, "世界书"),
+                h("label", null, "召回策略", h("select", { "aria-label": "本局世界书策略", className: "dsh-tavern-settings-select", value: features.worldbookStrategy || "legacy", disabled: !loaded || busy,
+                    onChange: event => save({ worldbookStrategy: event.target.value }) },
+                    (features.worldbookStrategies?.length ? features.worldbookStrategies : [{ id: "legacy", label: "当前注入策略（默认）" }, { id: "native-skills", label: "本局原生 Skill 库" }]).map(strategy => h("option", { key: strategy.id, value: strategy.id }, strategy.label)))),
+                h("p", { className: "dsh-tavern-settings-desc" }, "只影响本局后续请求，不修改原世界书，可随时切回；此前已加载内容仍保留在历史中。原生 Skill 策略将条目统一放入本局 Skill 目录，常驻条目仍自动注入，也可按需读取。非常驻条目改由模型按需读取，不再按关键词、概率和冷却召回；请在前台工具中保持 skill 开启。"),
+                toggle("worldbookScreening", "世界书模型筛选", "仅当前注入策略生效：请后台模型筛选相关条目，被排除条目冷却 10 轮。多一次后台请求。切换策略保留此开关。", tasks.worldbookScreening === true, checked => ({ backgroundTasks: { worldbookScreening: checked } }), (features.worldbookStrategy || "legacy") !== "legacy")),
             h("section", { className: "dsh-local-section" }, h("h3", null, "功能"),
                 features.mvuCard ? toggle("variables", "变量结算", "关闭后变量和状态栏不再更新。", tasks.variables, checked => ({ backgroundTasks: { variables: checked } })) : null,
                 toggle("posture", "人物姿势", "每轮总结人物的位置、动作和姿势，供前台保持一致。", tasks.posture, checked => ({ backgroundTasks: { posture: checked } })),

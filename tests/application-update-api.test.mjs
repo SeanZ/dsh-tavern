@@ -10,7 +10,7 @@ function route(updater) {
   }
   let handler
   const webServer = { register(spec) { if (spec.path === '/api/dsh-tavern') handler = spec.handler; return () => {} } }
-  registerTavernHttpRoutes({ ctx: { get: () => webServer, effect: fn => fn() }, dispatch, str: String,
+  registerTavernHttpRoutes({ ctx: { get: name => name === 'webServer' ? webServer : { requestRejection: () => undefined }, effect: fn => fn() }, dispatch, str: String,
     performanceDiagnostics: { http() {} }, runtimeGeneration: 'test-generation', runtimeReadiness: Promise.resolve({ ok: true }) })
   return async ({ method = 'POST', origin, body = '{}' } = {}) => {
     const result = {}

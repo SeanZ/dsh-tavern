@@ -4,9 +4,16 @@ import { readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeZipEntries } from '../../tavern-plugin/lib/domain/zip-entries.js'
+import { pluginManifestProblem } from '../../tavern-plugin/lib/domain/plugin-manifest.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const target = process.argv[2] || path.join(here, '阿芙拉.dshcard')
+
+// Validate before opening source archives or producing a distributable.
+const pluginDir = path.join(here, 'plugin')
+const pluginManifest = JSON.parse(await readFile(path.join(pluginDir, 'package.json'), 'utf8'))
+const manifestProblem = pluginManifestProblem(pluginManifest)
+if (manifestProblem) throw new Error(pluginDir + ': ' + manifestProblem)
 
 // 卡的文字部分直接用仓库里的原创示例卡；DSH 卡里的 card.json 就是一张普通的 Character Card V3。
 const card = JSON.parse(await readFile(path.join(here, '../avra/cards/avra-complete.json'), 'utf8'))
@@ -21,7 +28,7 @@ const manifest = {
   formatVersion: 1,
   card: { version: '1.0.0', title: '阿芙拉', author: 'DSH Tavern 示例' },
   requires: { tavernApi: 2 },
-  plugins: [{ name: 'dsh-card-hello-mood', path: 'plugins/hello-mood/', purpose: '每轮按剧情记下氛围，舞台底色跟着变' }],
+  plugins: [{ name: pluginManifest.name, path: 'plugins/hello-mood/', purpose: '每轮按剧情记下氛围，舞台底色跟着变' }],
 }
 
 const entries = [

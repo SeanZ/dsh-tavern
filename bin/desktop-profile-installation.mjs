@@ -2,6 +2,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
+import installationLocation from './installation-location.cjs'
+import { beginOriginalBridgeUpdate } from './original-bridge-update.mjs'
 import { copyTreeSync } from './portable-fs.mjs'
 import { assertDesktopStopped } from './import-user-home.mjs'
 
@@ -50,13 +52,22 @@ function recover(journalFile, journal) {
   }
   journal.phase = 'rolled-back'; save(journalFile, journal)
 }
-// Returns null when desktop already links to tavern: an update then rewrites the tavern profile in place,
-// as in-app updates do while the desktop is running. Only the first bridging needs the desktop closed.
+// Existing installs retain their independent original profile and refresh only its
+// bridge. Tavern-active updates need no Desktop shutdown or profile replacement.
 export function beginDesktopProfileInstallation({ home, sourceRoot, checkStopped = () => assertDesktopStopped([home], { requireGuiClosed: true }) }) {
   const profiles = path.join(home, 'profiles'), live = path.join(profiles, 'desktop'), tavern = path.join(profiles, 'tavern')
   const interrupted = (() => { try { return JSON.parse(readFileSync(path.join(home, 'profile-bridge', 'install.json'), 'utf8')).phase === 'preparing' } catch { return false } })()
   const linkedToTavern = present(live) && lstatSync(live).isSymbolicLink() && present(tavern) && realpathSync(live) === realpathSync(tavern)
-  if (!interrupted && linkedToTavern) return null
+  if (!interrupted && existsSync(path.join(home, 'profile-bridge', 'installation.json'))) {
+    const operationFile = path.join(home, 'profile-bridge', 'installation-operation.json')
+    if (existsSync(operationFile) && JSON.parse(readFileSync(operationFile, 'utf8')).phase === 'preparing') throw Error('上次安装管理未完成，请先恢复事务与备份。')
+    installationLocation.resolveInstallationApp({ dshHome: home })
+    // A registered relocation already owns its profile. Rebuilding it through
+    // the first-install staging flow would replace its compatibility junction.
+    if (!linkedToTavern && (!present(live) || !read(live)?.dsh?.profile?.bundles?.includes('dsh-profile-bridge'))) throw Error('已迁移安装的原版 desktop 配置缺少切换组件，请先恢复备份。')
+    return beginOriginalBridgeUpdate({ home, sourceRoot, checkStopped })
+  }
+  if (!interrupted && (linkedToTavern || (present(live) && !lstatSync(live).isSymbolicLink() && !isTavern(read(live)) && read(live)?.dsh?.profile?.bundles?.includes('dsh-profile-bridge')))) return beginOriginalBridgeUpdate({ home, sourceRoot, checkStopped })
   checkStopped()
   const state = path.join(home, 'profile-bridge')
   mkdirSync(state, { recursive: true })

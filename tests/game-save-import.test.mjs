@@ -71,3 +71,33 @@ test('same source import cannot overlap; completion allows another import', asyn
   await first
   await h.run(archive())
 })
+
+test('存档没有预设快照时按 runtimePresetPath 重新冻结，写回当前状态与回退历史', async t => {
+  const dataRoot = await mkdtemp(path.join(tmpdir(), 'save-import-'))
+  t.after(() => rm(dataRoot, { recursive: true, force: true }))
+  const state = { id: 'old-chat', sessionId: 'old-session', mode: 'story', cardPath: 'cards/a.json',
+    runtimePresetPath: 'presets/play.json', cardDefinitionSnapshot: { name: 'A' },
+    messages: [{ role: 'assistant', turn: 1, text: '故事' }], timeline: { checkpoints: [{ beforeRevision: 7 }] } }
+  const fileB64 = buildGameSave({ chat: state, revisions: [{ revision: 7, state: { ...state, timeline: {} } }],
+    session: { header: { id: 'old-session' }, events: [{ seq: 0, type: 'turn/end', data: { turn: 1 } }] },
+    tavernVersion: '3.0.1' }).toString('base64')
+  const restored = [], states = []
+  const run = createGameSaveImporter({ tavernVersion: '3.0.1', dataRoot,
+    newChatId: () => 'new-chat', newSessionId: () => 'new-session',
+    prepareGameSaveResources: async () => ({ cardPath: 'cards/a.json', rollback() {} }),
+    readCard: async () => ({}), getAttachments: () => ({}), profileData: {},
+    rawWriteChat: async value => { states.push(structuredClone(state)) ; states[states.length - 1] = structuredClone(value); return { ...value, _storageRevision: states.length } },
+    conversationRegistry: { publish() {} }, sceneWorldbookArchive: { forgetChat() {} },
+    pluginApi: { importGame() {} },
+    sessions: { create: async () => ({ agent: {}, dispose() {} }), flush() {}, attach() {}, detach() {}, remove() {} },
+    restorePresetSnapshot: async chat => {
+      if (chat.runtimePresetSnapshot !== undefined || !chat.runtimePresetPath) return chat
+      restored.push(chat.runtimePresetPath)
+      return { ...chat, runtimePresetSnapshot: { presetPath: chat.runtimePresetPath, regexScripts: [{ scriptName: '冻结' }] } }
+    }
+  })
+  await run({ fileB64 })
+  assert.deepEqual(restored, ['presets/play.json', 'presets/play.json'], '当前状态与回退历史各补一次')
+  assert.equal(states[0].runtimePresetSnapshot.regexScripts[0].scriptName, '冻结')
+  assert.equal(states[1].runtimePresetSnapshot.regexScripts[0].scriptName, '冻结')
+})

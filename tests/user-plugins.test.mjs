@@ -21,7 +21,7 @@ async function home(t) {
 async function plugin(dataRoot, folder, pkg, files = { 'index.mjs': 'export function apply() {}\n' }) {
   const dir = path.join(dataRoot, 'plugins', folder)
   await mkdir(dir, { recursive: true })
-  if (pkg) await writeFile(path.join(dir, 'package.json'), JSON.stringify(pkg))
+  if (pkg) await writeFile(path.join(dir, 'package.json'), JSON.stringify({ version: '1.0.0', ...pkg }))
   for (const [name, text] of Object.entries(files)) await writeFile(path.join(dir, name), text)
   return dir
 }
@@ -233,4 +233,34 @@ test('桌面版回到原版 DSH 时，从原版配置里清掉旧版本写进去
   const text = await readFile(original, 'utf8')
   assert.doesNotMatch(text, /tavern-user-plugin-/)
   assert.match(text, /keep-me/, '用户自己的条目原样保留')
+})
+
+for (const pkg of [null, [], 'bad', {}, { name: 'broken' }, { name: 42, version: '1.0.0' }, { name: 'broken', version: 1 }, { name: 'broken', version: '  ' }]) {
+  test('invalid manifest is removed from existing registration without rewriting plugin: ' + JSON.stringify(pkg), async t => {
+    const { dataRoot, profile } = await home(t)
+    const dir = await plugin(dataRoot, 'legacy', { name: 'legacy', version: '1.0.0', main: 'index.mjs' })
+    await syncUserPlugins({ dataRoot, logger: { warn() {} } })
+    const source = JSON.stringify(pkg)
+    await writeFile(path.join(dir, 'package.json'), source)
+    const result = await syncUserPlugins({ dataRoot, logger: { warn() {} } })
+    assert.deepEqual(result.plugins, [])
+    assert.equal(result.problems.length, 1)
+    assert.match(result.problems[0].reason, /package.json/)
+    assert.deepEqual(parse(await readFile(path.join(profile, 'cordis.patch.yml'), 'utf8')), [])
+    assert.equal(await readFile(path.join(dir, 'package.json'), 'utf8'), source)
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'legacy', version: '1.0.0', main: 'index.mjs' }))
+    assert.equal((await syncUserPlugins({ dataRoot, logger: { warn() {} } })).plugins.length, 1)
+  })
+}
+
+test('invalid legacy registration removal preserves healthy plugins and manual patch entries', async t => {
+  const { dataRoot, profile } = await home(t)
+  const bad = await plugin(dataRoot, 'bad', { name: 'bad', main: 'index.mjs' })
+  await plugin(dataRoot, 'healthy', { name: 'healthy', main: 'index.mjs' })
+  const patch = path.join(profile, 'cordis.patch.yml')
+  await writeFile(patch, '- insert:\n    - id: user-owned\n      name: /user/manual-plugin.mjs\n')
+  await syncUserPlugins({ dataRoot, logger: { warn() {} } })
+  await writeFile(path.join(bad, 'package.json'), '{"name":"bad","main":"index.mjs"}')
+  await syncUserPlugins({ dataRoot, logger: { warn() {} } })
+  assert.deepEqual(parse(await readFile(patch, 'utf8')).flatMap(op => op.insert || []).map(item => item.id), ['user-owned', 'tavern-user-plugin-healthy'])
 })

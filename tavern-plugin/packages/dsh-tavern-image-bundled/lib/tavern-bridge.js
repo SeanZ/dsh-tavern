@@ -39,6 +39,28 @@ function markerRule(count) {
  * 安装官方桥。
  * @returns {{ dispose: Function, attachTurn: Function, available: boolean }}
  */
+const PLUGIN_IMAGE_KINDS = ['dsh-tavern-image/image', 'dsh-tavern-comfy/image']
+
+/**
+ * 设置页删一张图时，撤下它挂在对话里的那个版本：当前图（由上一版顶上）或某个早期版本。
+ * 第 5 版之前的 Tavern 不能只删一个版本，那时只在整项只有这一张时删。
+ */
+export async function removeMountedPicture(tavern, job) {
+  if (!job?.gameId || typeof tavern?.list !== 'function' || typeof tavern?.remove !== 'function') return
+  const versioned = Number(tavern.apiVersion) >= 5
+  for (const item of await tavern.list({ gameId: job.gameId })) {
+    if (!PLUGIN_IMAGE_KINDS.includes(item.kind)) continue
+    const history = item.history || []
+    if (String(item.data?.jobId ?? '') === job.id) {
+      if (versioned) await tavern.remove(item.id, { version: 'current' })
+      else if (!history.length) await tavern.remove(item.id)
+      continue
+    }
+    const index = versioned ? history.findIndex(entry => String(entry.data?.jobId ?? '') === job.id) : -1
+    if (index >= 0) await tavern.remove(item.id, { version: index })
+  }
+}
+
 export function installTavernBridge({ tavern, attachments, engine, getConfig, logger, readFileAsBytes, onTurn, onTimeline }) {
   const disposes = []
   const log = msg => { try { logger?.info?.(`dsh-tavern-image[官方桥]: ${msg}`) } catch {} }
@@ -348,7 +370,7 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
   }
 
   function isPluginImage(media) {
-    return ['dsh-tavern-image/image', 'dsh-tavern-comfy/image'].includes(media?.kind)
+    return PLUGIN_IMAGE_KINDS.includes(media?.kind)
   }
 
   async function removeSnapshotMedia(task, media) {
@@ -421,6 +443,23 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
       })
       if (typeof off === 'function') disposes.push(off)
     } catch (error) { warn('注册删除监听失败：' + (error?.message ?? error)) }
+  }
+
+  // 玩家在对话或画廊里删了图：插件这边的作业记录和缓存一起删，设置页画廊不再留着（第 5 版）。
+  if (typeof tavern.onMediaRemoved === 'function') {
+    try {
+      const off = tavern.onMediaRemoved(event => {
+        if (!isPluginImage(event)) return
+        const ids = new Set()
+        for (const picture of event.pictures ?? []) {
+          if (picture?.data?.jobId) ids.add(String(picture.data.jobId))
+          // 整项没了：还在重画的那张也不要了
+          if (event.itemRemoved && picture?.data?.replacement?.jobId) ids.add(String(picture.data.replacement.jobId))
+        }
+        return Promise.all([...ids].map(id => engine.deleteJob?.(id)))
+      })
+      if (typeof off === 'function') disposes.push(off)
+    } catch (error) { warn('注册删图监听失败：' + (error?.message ?? error)) }
   }
 
   if (Number(tavern.apiVersion) >= 2 && typeof tavern.onTimelineChanged === 'function') {

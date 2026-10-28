@@ -3,10 +3,12 @@
 // at most 10 s, then fades out over 0.5 s; at most six sound at once (a further cue is dropped). Decoded sounds are kept by
 // URL (the newest 16), so a page's cues decode before its visit plays them. stop() ends every sound, including one still
 // decoding.
-// context(): the page's AudioContext (or null); clock: { setTimeout, clearTimeout } on wall time. Bytes are read with the
-// BGM transport's bounded reader (modules/stage-music.js stageMusicBytes).
+// context(): the page's AudioContext (or null); output(ctx): where the sounds go, the layer's bus (features/stage-audio.js;
+// the context's destination by default); clock: { setTimeout, clearTimeout } on wall time. Bytes are read with the
+// BGM transport's bounded reader (modules/stage-music.js stageMusicBytes). sounding(on): true when the first sound starts, false
+// when the last one ends (the stage's 避让, features/stage-audio.js).
 const STAGE_SFX_LIMITS = Object.freeze({ playMs: 10000, fadeMs: 500, voices: 6, cached: 16 });
-function createStageSfx({ context, fetch, clock }) {
+function createStageSfx({ context, fetch, clock, output = ctx => ctx.destination, sounding = () => {} }) {
 	const buffers = new Map(), shots = new Set();
 	let epoch = 0;
 	function decode(url) {
@@ -30,6 +32,7 @@ function createStageSfx({ context, fetch, clock }) {
 		shot.source.onended = null;
 		try { shot.source.stop(); } catch (_) {}
 		shot.source.disconnect(); shot.gain.disconnect();
+		if (!shots.size) sounding(false);
 	}
 	return {
 		prepare(url) { if (url) decode(url).catch(() => {}); },
@@ -44,11 +47,12 @@ function createStageSfx({ context, fetch, clock }) {
 			const level = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 1;
 			const gain = ctx.createGain(), source = ctx.createBufferSource();
 			gain.gain.value = level; source.buffer = buffer;
-			source.connect(gain); gain.connect(ctx.destination);
+			source.connect(gain); gain.connect(output(ctx));
 			const shot = { source, gain, timer: 0 };
 			shots.add(shot);
 			source.onended = () => release(shot);
 			source.start();
+			if (shots.size === 1) sounding(true);
 			if (ctx.state === "suspended") ctx.resume().catch(() => {});
 			shot.timer = clock.setTimeout(() => {
 				gain.gain.setValueAtTime(level, ctx.currentTime);

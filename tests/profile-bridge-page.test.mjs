@@ -20,6 +20,7 @@ async function mount(status, calls = [], options = {}) {
   const { act } = await import('react')
   const rpc = async (_channel, endpoint, payload) => {
     calls.push([endpoint, payload])
+    if (options.rpc) return options.rpc(endpoint, payload)
     if (endpoint === 'shortcut') return { ok: true, value: { path: '/Users/me/Desktop/DSH 酒馆.app', existed: false } }
     return endpoint === 'status' ? { ok: true, value: status } : { ok: true, value: { closesApp: true } }
   }
@@ -38,7 +39,7 @@ async function mount(status, calls = [], options = {}) {
   const root = createRoot(dom.window.document.getElementById('root'))
   await act(async () => { root.render(React.createElement(page, registered.inject())) })
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
-  return { dom, act, label: () => registered.label(), text: () => dom.window.document.body.textContent, button: () => dom.window.document.querySelector('.pb-bar .pb-btn'), calls, dispose: () => root.unmount() }
+  return { dom, act, label: () => registered.label(), text: () => dom.window.document.body.textContent, button: () => dom.window.document.querySelector('.pb-bar .pb-btn'), calls, dispose: () => act(() => root.unmount()) }
 }
 
 const tavernProfile = { name: 'tavern', bundles: ['dsh-tavern-plugin', 'dsh-profile-bridge'], hasNodeModules: true }
@@ -96,5 +97,138 @@ test('快捷方式打开的独立酒馆窗口：不给切换按钮，只说明�
   assert.ok(open, '给一个直接打开原版 DSH 的按钮')
   await page.act(async () => { open.click() })
   assert.deepEqual(page.calls.at(-1), ['openOriginal', {}])
+  page.dispose()
+})
+
+
+test('重开页面后切换失败显示在折叠日志之外；文本不会解析成 HTML', async () => {
+  const page = await mount({ appKind: 'desktop', profiles: [tavernProfile], lastResult: {
+    status: 'failed', message: '<img src=x onerror=alert(1)> EBUSY desktop', logPath: 'C:\\dsh\\profile-bridge\\last-run.log',
+  } })
+  const alert = page.dom.window.document.querySelector('[role="alert"]')
+  assert.ok(alert)
+  assert.equal(alert.closest('details'), null)
+  assert.match(alert.textContent, /上次切换失败.*EBUSY desktop/)
+  assert.match(alert.textContent, /last-run.log/)
+  assert.equal(alert.querySelector('img'), null)
+  await page.act(async () => { page.button().click() })
+  assert.equal(page.dom.window.document.querySelector('[role="alert"]'), null, 'accepted retry replaces previous failure with pending')
+  page.dispose()
+})
+
+test('自动恢复失败时保留备份指引并阻止再次切换', async () => {
+  const page = await mount({ appKind: 'desktop', profiles: [tavernProfile], lastResult: {
+    status: 'failed', message: 'backup at desktop.fresh-1', recoveryRequired: true,
+  } })
+  assert.match(page.text(), /切换结果需要人工确认/)
+  assert.equal(page.button().disabled, true)
+  page.dispose()
+})
+
+test('成功结果不从历史日志误报失败', async () => {
+  const page = await mount({ appKind: 'desktop', profiles: [tavernProfile], lastResult: { status: 'succeeded' }, logTail: 'ERROR: an earlier switch failed' })
+  assert.equal(page.dom.window.document.querySelector('[role="alert"]'), null)
+  assert.equal(page.button().disabled, false)
+  page.dispose()
+})
+
+test('等待退出时禁用重复切换，超时结果不需要重新打开页面即可看到', async () => {
+  let status = { appKind: 'desktop', profiles: [tavernProfile], lastResult: { status: 'pending', stamp: '1' } }
+  const page = await mount(status, [], { rpc: async () => ({ ok: true, value: status }) })
+  assert.equal(page.button().disabled, true)
+  status = { ...status, lastResult: { status: 'failed', stamp: '1', message: '等待桌面退出超时' } }
+  await page.act(async () => { await new Promise(resolve => setTimeout(resolve, 1600)) })
+  assert.match(page.dom.window.document.querySelector('[role="alert"]').textContent, /等待桌面退出超时/)
+  assert.equal(page.button().disabled, false)
+  page.dispose()
+})
+
+test('重试请求被拒绝时不抹去原切换失败证据', async () => {
+  const status = { appKind: 'desktop', profiles: [tavernProfile], lastResult: { status: 'failed', message: 'original failure' } }
+  const page = await mount(status, [], { rpc: async endpoint => endpoint === 'status'
+    ? { ok: true, value: status } : { ok: false, error: { message: 'busy' } } })
+  await page.act(async () => { page.button().click() })
+  assert.match(page.dom.window.document.querySelector('[role="alert"]').textContent, /original failure/)
+  assert.match(page.text(), /busy/)
+  assert.equal(page.button().disabled, false)
+  page.dispose()
+})
+
+const managedStatus = {
+  platform: 'win32', appKind: 'desktop', desktopApp: true, profiles: [tavernProfile],
+  installation: { available: true, appDir: 'C:\\DSH\\apps\\dsh-tavern', profileDir: 'C:\\DSH\\profiles\\tavern', dataDir: 'C:\\DSH\\profile-data\\tavern', sharedHome: 'C:\\DSH' },
+}
+const namedButton = (page, text) => [...page.dom.window.document.querySelectorAll('button')].find(button => button.textContent === text)
+async function enterDestination(page, value) {
+  const input = page.dom.window.document.querySelector('#pb-destination')
+  await page.act(async () => {
+    Object.getOwnPropertyDescriptor(page.dom.window.HTMLInputElement.prototype, 'value').set.call(input, value)
+    input.dispatchEvent(new page.dom.window.Event('input', { bubbles: true }))
+  })
+}
+
+test('安装管理显示程序、配置、完整酒馆数据和不迁移的共享路径；打开和取消不修改安装', async () => {
+  const page = await mount(managedStatus)
+  for (const value of Object.values(managedStatus.installation).filter(value => typeof value === 'string')) assert.ok(page.text().includes(value))
+  assert.match(page.text(), /包括会话和存储/)
+  assert.match(page.text(), /不保证立即释放旧磁盘空间/)
+  await page.act(async () => namedButton(page, '切换安装目录').click())
+  assert.ok(page.dom.window.document.querySelector('#pb-destination'))
+  assert.equal(namedButton(page, '确认迁移并重启').disabled, true)
+  await page.act(async () => namedButton(page, '取消').click())
+  assert.equal(page.dom.window.document.querySelector('#pb-destination'), null)
+  assert.deepEqual(page.calls.map(([endpoint]) => endpoint), ['status'])
+  page.dispose()
+})
+
+test('卸载需要独立确认，保留数据和原版 DSH；重复点击只提交一次', async () => {
+  let finish
+  const calls = []
+  const page = await mount(managedStatus, calls, { rpc: async endpoint => endpoint === 'status'
+    ? { ok: true, value: managedStatus } : new Promise(resolve => { finish = resolve }) })
+  await page.act(async () => namedButton(page, '删除 DSH 酒馆').click())
+  assert.match(page.text(), /保留全部用户数据和备份，不卸载原版 DSH/)
+  assert.deepEqual(calls.map(([endpoint]) => endpoint), ['status'])
+  await page.act(async () => {
+    namedButton(page, '确认删除并重启').click()
+    namedButton(page, '确认删除并重启').click()
+  })
+  assert.deepEqual(calls.at(-1), ['uninstall', { confirmed: true }])
+  assert.equal(calls.filter(([endpoint]) => endpoint === 'uninstall').length, 1)
+  assert.equal(namedButton(page, '取消').disabled, true)
+  await page.act(async () => finish({ ok: true, value: { closesApp: true } }))
+  assert.match(page.text(), /操作已排队/)
+  assert.equal(namedButton(page, '删除 DSH 酒馆').disabled, true)
+  page.dispose()
+})
+
+test('不可管理、独立窗口、待处理及需要人工恢复的状态均禁止安装管理', async () => {
+  for (const patch of [
+    { installation: { ...managedStatus.installation, available: false, reason: 'unverified installation' } },
+    { desktopApp: false },
+    { lastResult: { status: 'pending' } },
+    { lastResult: { status: 'failed', recoveryRequired: true, message: 'restore backup' } },
+  ]) {
+    const page = await mount({ ...managedStatus, ...patch })
+    assert.equal(namedButton(page, '切换安装目录').disabled, true)
+    assert.equal(namedButton(page, '删除 DSH 酒馆').disabled, true)
+    page.dispose()
+  }
+})
+
+test('迁移只接受绝对路径，显示失败后保留输入允许取消或重试', async () => {
+  const page = await mount(managedStatus, [], { rpc: async endpoint => endpoint === 'status'
+    ? { ok: true, value: managedStatus } : { ok: false, error: { message: '目标目录非空' } } })
+  await page.act(async () => namedButton(page, '切换安装目录').click())
+  await enterDestination(page, 'relative/path')
+  assert.equal(namedButton(page, '确认迁移并重启').disabled, true)
+  await enterDestination(page, 'D:\\DSH-Tavern')
+  assert.equal(namedButton(page, '确认迁移并重启').disabled, false)
+  await page.act(async () => namedButton(page, '确认迁移并重启').click())
+  assert.deepEqual(page.calls.at(-1), ['relocate', { confirmed: true, destination: 'D:\\DSH-Tavern' }])
+  assert.match(page.text(), /目标目录非空/)
+  assert.equal(page.dom.window.document.querySelector('#pb-destination').value, 'D:\\DSH-Tavern')
+  await page.act(async () => namedButton(page, '取消').click())
+  assert.equal(page.dom.window.document.querySelector('#pb-destination'), null)
   page.dispose()
 })

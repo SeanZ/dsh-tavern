@@ -1,4 +1,4 @@
 {
   "title": "Original DSH / DSH Tavern switch",
-  "description": "Switch between the original DSH and DSH Tavern: in the Tavern settings it is \"Back to DSH\", in the original DSH settings \"Open Tavern\". Switching restarts the app once; the original setup is backed up automatically."
+  "description": "Switch between original DSH and DSH Tavern, inspect installation paths, relocate Tavern and its own data, or remove Tavern while preserving data. Operations require confirmation; original DSH and shared data stay unchanged."
 }

@@ -35,6 +35,9 @@ function createApplicationUpdater(options) {
     platform: 'linux', dshHome: options.sourceRoot,
     // CDN fallback is explicit in each fixture; never fetch live metadata.
     fetchCdnMetadata: async () => { throw new Error('CDN unavailable in GitHub fixture') },
+    // 检查更新的回退是 GitHub commits API → GitHub raw 清单 → jsDelivr；
+    // 测试默认把 raw 清单也置为不可用，需要它的用例自己传 fetchGithubManifest。
+    fetchGithubManifest: async () => { throw new Error('GitHub manifest unavailable in fixtures') },
     ...options,
   })
 }
@@ -179,7 +182,7 @@ test('更新诊断跨检查保留回退和网络原因，并可在重启后读�
     assert.equal(checked.latestVersion, 'unknown')
     const records = recovered.diagnostics().records
     assert.equal(new Set(records.filter(r => r.event === 'check.started').map(r => r.attemptId)).size, 2)
-    assert.ok(records.some(r => r.event === 'fallback.cdn'))
+    assert.ok(records.some(r => r.event === 'fallback.manifest'))
     assert.ok(records.some(r => r.event === 'github.commit.failed' && r.cause.code === 'ETIMEDOUT' && r.durationMs >= 0))
     assert.ok(records.some(r => r.event === 'github.version.failed' && r.cause.code === 'ETIMEDOUT'))
     assert.ok(records.some(r => r.event === 'status' && r.phase === 'check-failed'))
@@ -235,6 +238,47 @@ test('jsDelivr 兜底：本地清单未核验时用提交比较，比较不可�
     metadata.releaseSequence = 42
     assert.equal((await createApplicationUpdater({ ...common, compareCommits: offline }).check()).phase, 'check-failed')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('jsDelivr 滞后（清单提交号对不上 GitHub 最新提交）时，用发布序号判断更新', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-updater-lag-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const installed = 'b'.repeat(40)
+  const latestCommit = 'd'.repeat(40)
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '3.1.0' }))
+  await writeFile(path.join(root, 'dsh-tavern-runtime.json'), JSON.stringify({
+    revision: installed, releaseSequence: 900, version: '3.1.0', files: [{ path: 'package.json', sha256: 'f'.repeat(64) }],
+  }))
+  const metadata = { revision: 'c'.repeat(40), releaseSequence: 914, version: '3.1.0', files: [{ path: 'package.json', sha256: 'e'.repeat(64) }] }
+  const common = {
+    dataRoot: path.join(root, 'data'), sourceRoot: root, dshHome: path.join(root, 'home'), runtimeHost: 'android',
+    fetchManifest: async () => ({ version: '3.1.0' }), fetchLatestCommit: async () => ({ sha: latestCommit }),
+    fetchCdnMetadata: async () => metadata,
+    compareCommits: async () => { throw new Error('提交号不可比时不该阻塞') },
+  }
+  const behind = await createApplicationUpdater(common).check()
+  assert.equal(behind.phase, 'update-available')
+  assert.equal(behind.latestVersion, '3.1.0')
+})
+
+test('压缩包安装没有 .git 和安装记录时，用源码自带运行清单的提交号判断更新', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-updater-archive-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const installed = 'b'.repeat(40)
+  const latest = 'd'.repeat(40)
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '3.1.0' }))
+  // 清单里的哈希与本地文件不一致（安装后 regenerate 过），但提交号仍是这一版。
+  await writeFile(path.join(root, 'dsh-tavern-runtime.json'), JSON.stringify({
+    revision: installed, releaseSequence: 900, version: '3.1.0', files: [{ path: 'package.json', sha256: 'f'.repeat(64) }],
+  }))
+  const updater = createApplicationUpdater({
+    dataRoot: path.join(root, 'data'), sourceRoot: root, dshHome: path.join(root, 'home'), runtimeHost: 'android',
+    fetchManifest: async () => ({ version: '3.1.0' }), fetchLatestCommit: async () => ({ sha: latest }),
+    compareCommits: async (current, target) => { assert.deepEqual([current, target], [installed, latest]); return 'ahead' },
+  })
+  const checked = await updater.check()
+  assert.equal(checked.phase, 'update-available')
+  assert.equal(checked.currentCommit, installed)
 })
 
 test('状态查询按与安装相同的规则回收残留锁，更新按钮不再永久卡在「等待安全停止」', async t => {

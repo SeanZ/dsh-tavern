@@ -40,6 +40,12 @@
 | **边玩边改卡** | ❌ 想排错或按喜好调整，都要自己翻人物卡、世界书、正则，逐项手改          | ✅ 边玩边改：<br>① 排查错误：有问题随时交给调试 Agent，结合实际游玩记录分析并修复<br>② 调整内容：用对话告诉 Agent 哪里不喜欢，按自己的口味微调                        |
 | **酒馆生态**  | ✅ 生态极其丰富：人物卡、世界书、预设、正则、MVU、酒馆助手脚本、大量第三方插件 | ✅ 兼容大部分人物卡（包括 MVU、正则、酒馆助手脚本、前端美化），世界书、预设可直接导入<br>⚠️ 不支持安装酒馆插件（DSH 插件可以装），但内置了酒馆助手、MVU、提示词模板等重要插件，足以支撑大部分人物卡 |
 
+## 字体与离线使用
+
+字体列表和皮肤中的字体 ID 保持不变。精简 runtime 包仅保留字体清单与许可证，使用某一字重时才下载对应文件，校验大小和 SHA-256 后写入酒馆数据目录的 `cache/fonts`。下载失败会使用系统字体，不阻塞游玩；缓存可离线使用，随数据目录迁移，默认卸载保留数据时也保留缓存。旧版本已带的字体会先校验复用。
+
+需要提前准备离线字体时，在酒馆程序目录、使用与酒馆相同的数据目录环境运行 `node bin/prefetch-fonts.mjs`；失败项可联网后重试，不修改皮肤选择。当前分阶段发布仅精简 CDN runtime 包及逐文件安装清单；Git、codeload 和 Android 源码安装仍保留完整字体，不能视为同等下载减量。
+
 ## 产品特色
 
 ### 剧本模式
@@ -112,6 +118,8 @@
 
 ## 快速开始
 
+> **请不要从 npm 下载或安装本项目。** 由于对 DSH 的定制改动较多，DSH Tavern 无法作为常规 DSH 插件安装使用。npm 上的 `dsh-profile-tavern` 已标记弃用，不再维护；请按下方对应平台的方式安装。
+
 **桌面版仅支持官方 DeepSeek Harness，不再支持社区 DSH Desktop 或 DSH NEXT。** 从社区版迁移前请备份数据，再按[数据导入说明](docs/data-import.md)导入；Android 和独立命令行版继续支持。
 
 当前版本适配 **DSH 0.2.x**（0.2.0-rc.2 起）。还在用 DSH 0.1.5（DSH Desktop 2.0.13、旧一键安装包）的，请用[稳定版](#稳定版dsh-015)。安装前建议备份 `.dsh` 目录。
@@ -130,6 +138,14 @@
 ### Android
 
 Android 仅提供 **独立 APK**（Android 11+ / ARM64）：[下载 DSH Tavern Android APK](https://github.com/flizzywine/dsh-tavern/releases/latest/download/dsh-tavern-android-release.apk)。它内置 DSHA v0.2.0-rc2 与 DSH 0.2.0-rc.2，只运行酒馆自己的 `tavern` Profile，手机上只有一个 DSH 服务，内存和电量开销最低。首次按引导完成环境部署后自动安装并进入；酒馆更新在应用内完成。包名独立，可与旧版 v2.1 APK、原版 DSHA 并存，旧包数据需先导出再导入。详见 [Android 安装说明](docs/android-install.md)。
+
+不想装 APK、或想自己掌控运行环境（Node 版本、数据目录、与电脑上的命令行版共用一套玩法），也可以在 **Termux** 里跑命令行版：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/scripts/termux/termux-tavern.sh -o ~/termux-tavern.sh && bash ~/termux-tavern.sh
+```
+
+一条命令跑完，始终取 `main` 的最新版；这条命令会完成安装并进入酒馆：脚本会装 Ubuntu 容器、Node、酒馆与移动版布局，启动后打开浏览器。两种方式在手机上的差异、以及 Termux 版的注意事项见 [Termux 一节](docs/android-install.md#termux在手机里跑命令行版)。
 
 ### macOS
 

@@ -14,6 +14,21 @@ import { STAGE_LEASE_ORIGIN } from '../domain/stage-material.js'
 const LEASE_STATUS = Object.freeze({ FORBIDDEN: 403, INVALID_INPUT: 400, LIMIT_EXCEEDED: 413, REVISION_CONFLICT: 409, ASSET_UNAVAILABLE: 503, RECOVERY_REQUIRED: 503, NOT_FOUND: 404 })
 const LEASE_HEADERS = ['range', 'if-range', 'if-none-match']
 
+// A response that fills its socket wakes us on 'drain', a client that left wakes us on 'close'.
+// Whichever fires has to drop both listeners: a stream does this once per backpressure wait, so
+// leftovers pile up on the same ServerResponse until Node warns about a listener leak.
+function waitForWritable(res) {
+  return new Promise(resolve => {
+    const settle = () => {
+      res.off('drain', settle)
+      res.off('close', settle)
+      resolve()
+    }
+    res.once('drain', settle)
+    res.once('close', settle)
+  })
+}
+
 // Asset library media by lease (docs/design/asset-library.md). The page's origin passes Tavern's
 // own check here; the service then checks resource, expiry and authorization on every request
 // and yields the body in bounded chunks.
@@ -43,7 +58,7 @@ export async function respondAssetLease(assetLibrary, req, res) {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
-      if (!res.write(value)) await new Promise(resolve => { res.once('drain', resolve); res.once('close', resolve) })
+      if (!res.write(value)) await waitForWritable(res)
       if (res.destroyed) return
     }
     res.end()
@@ -62,6 +77,7 @@ export function registerTavernHttpRoutes({
   sceneIllustrations,
   readPluginMediaFile,
   pluginAssets,
+  fontLibrary,
   sessionResources,
   str,
   tavernRemoteAssets,
@@ -72,6 +88,7 @@ export function registerTavernHttpRoutes({
   exportCardFile,
   assetPacks,
   uploads,
+  transferExports,
   exposeHandler,
 }) {
   const webServer = ctx.get('webServer')
@@ -94,7 +111,7 @@ export function registerTavernHttpRoutes({
     ctx.effect(() => webServer.register({
       kind: 'prefix',
       path: '/api/dsh-tavern',
-      handler: handleTavernRequest
+      handler: (req, res) => handleTavernRequest(req, res, true)
     }), 'dsh-tavern: web route')
     if (assetLibrary) ctx.effect(() => webServer.register({
       kind: 'prefix',
@@ -105,7 +122,7 @@ export function registerTavernHttpRoutes({
   // In-process callers (the server script runtime) share these exact routes.
   exposeHandler?.(handleTavernRequest)
 
-  async function handleTavernRequest(req, res) {
+  async function handleTavernRequest(req, res, external = false) {
       {
         const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
         const cachedAssetMatch = /^\/api\/dsh-tavern\/remote-assets\/([0-9a-f]{64})(?:\/[^/]*)?$/i.exec(pathname)
@@ -156,16 +173,32 @@ export function registerTavernHttpRoutes({
           return
         }
         const readsCachedAsset = req.method === 'GET' && cachedAssetMatch
-        const localOrOpaqueOrigin = origin === undefined || origin === '' || origin === 'null' || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)
+        // Compare authority under either HTTP scheme: TLS may terminate at the proxy.
+        // External operation requests also pass DSH's trusted-Host and session checks below.
+        const sameHostOrigin = typeof origin === 'string' && origin !== ''
+          && (origin === 'http://' + req.headers.host || origin === 'https://' + req.headers.host)
+        const localOrOpaqueOrigin = origin === undefined || origin === '' || origin === 'null' || sameHostOrigin || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)
         if (readsStaticAsset && !localOrOpaqueOrigin) {
           res.writeHead(403)
           res.end('forbidden')
           return
         }
-        if (!readsCachedAsset && !readsStaticAsset && !readsOfficialMvu && !readsFullTemplate && !readsRuntimeAsset && !readsClientAsset && !readsPluginAsset && !sceneSameOrigin && typeof origin === 'string' && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+        if (!readsCachedAsset && !readsStaticAsset && !readsOfficialMvu && !readsFullTemplate && !readsRuntimeAsset && !readsClientAsset && !readsPluginAsset && !sceneSameOrigin && typeof origin === 'string' && origin !== '' && !sameHostOrigin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
           res.writeHead(403)
           res.end('forbidden')
           return
+        }
+        // Capability-protected resource routes return above; sandbox-readable assets
+        // keep their existing policy. Never expose the in-process caller's trust to HTTP.
+        const readsSandboxAsset = readsCachedAsset || readsStaticAsset || readsOfficialMvu || readsFullTemplate || readsRuntimeAsset || readsClientAsset || readsPluginAsset
+        if (external && !readsSandboxAsset) {
+          const connection = ctx.get('connection')
+          const rejection = typeof connection?.requestRejection === 'function' ? connection.requestRejection(req) : 503
+          if (rejection !== undefined) {
+            res.writeHead(rejection, { 'Cache-Control': 'no-store' })
+            res.end(rejection === 401 ? 'authentication required' : rejection === 503 ? 'authentication unavailable' : 'forbidden')
+            return
+          }
         }
         if (req.method === 'GET' && pathname === '/api/dsh-tavern/runtime-generation') {
           res.writeHead(200, {
@@ -238,6 +271,7 @@ export function registerTavernHttpRoutes({
           }
           const readiness = await runtimeReadiness
           if (!readiness.ok) throw readiness.error
+          if (fontLibrary && await fontLibrary.serve(req, res)) return
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/cast-asset') {
             const query = new URL(req.url, 'http://x').searchParams
             const image = castAssets ? await castAssets.readImage(query.get('card'), query.get('file')) : undefined
@@ -279,6 +313,27 @@ export function registerTavernHttpRoutes({
             } else res.writeHead(200, { ...headers, 'Content-Length': found.size })
             if (req.method === 'HEAD' || found.size === 0) { res.end(); return }
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
+            return
+          }
+          if (req.method === 'GET' && pathname === '/api/dsh-tavern/transfer-export') {
+            const token = new URL(req.url, 'http://x').searchParams.get('token') || ''
+            const found = transferExports ? transferExports.take(token) : null
+            if (!found) {
+              res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+              res.end('export expired')
+              return
+            }
+            const name = String(found.filename || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
+            res.writeHead(200, {
+              'Content-Type': 'application/zip',
+              'Content-Length': found.bytes,
+              'Cache-Control': 'no-store',
+              'X-Content-Type-Options': 'nosniff',
+              'Content-Disposition': 'attachment; filename="backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
+            })
+            const stream = found.stream()
+            res.on('close', () => { void transferExports.remove(token); stream.destroy() })
+            stream.on('error', () => res.destroy()).pipe(res)
             return
           }
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-export') {
@@ -360,7 +415,7 @@ export function registerTavernHttpRoutes({
             res.writeHead(range ? 206 : 200, { ...headers, 'Accept-Ranges': 'bytes', 'Content-Length': Math.max(0, end - start + 1), ...(range ? { 'Content-Range': 'bytes ' + start + '-' + end + '/' + file.length } : {}) })
             try {
               for await (const chunk of slicePluginMediaStream(file.stream(aborter.signal), start, end)) {
-                if (!res.write(chunk)) await new Promise(resolve => { res.once('drain', resolve); res.once('close', resolve) })
+                if (!res.write(chunk)) await waitForWritable(res)
                 if (aborter.signal.aborted) return
               }
               res.end()

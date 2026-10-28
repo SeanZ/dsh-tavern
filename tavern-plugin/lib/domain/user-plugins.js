@@ -2,6 +2,7 @@ import { existsSync, watch } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, realpath, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 import { parseDocument, YAMLSeq } from 'yaml'
+import { pluginManifestProblem } from './plugin-manifest.js'
 
 // Entries Tavern writes for folders in <data>/plugins. Every other patch entry belongs to the user.
 const ID_PREFIX = 'tavern-user-plugin-'
@@ -104,6 +105,8 @@ export async function scanUserPlugins(pluginsDir, { installed = () => false } = 
     let pkg
     try { pkg = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8')) }
     catch (error) { problems.push({ folder, reason: error.code === 'ENOENT' ? '缺少 package.json' : 'package.json 无法解析：' + error.message }); continue }
+    const manifestProblem = pluginManifestProblem(pkg)
+    if (manifestProblem) { problems.push({ folder, reason: manifestProblem + '；请补全后重新启用插件' }); continue }
     const main = hostEntry(pkg)
     if (!main) { problems.push({ folder, reason: 'package.json 没有写 exports "." 或 main（宿主入口）' }); continue }
     const entry = path.resolve(dir, main)

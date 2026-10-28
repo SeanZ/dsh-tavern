@@ -59,6 +59,21 @@ async function fixture(t, bounded) {
   const agent = { session, phase: { kind: 'idle', lastTurn: 81 }, followup(message) { agent.input = message }, async whenIdle() {
     if (!agent.input) return
     if (hooks.failGeneration) { agent.input = null; throw new Error('fixture generation failed') }
+    // A turn the provider failed mid-reply: the text streamed, but the host only
+    // kept the raw attempt (no assistant/message) and never committed the round.
+    if (hooks.partialGeneration !== undefined) {
+      const turn = ++agent.phase.lastTurn, userText = agent.input.content[0].text
+      agent.input = null
+      session.append('user/message', { turn, role: 'user', content: [{ type: 'text', text: userText }], source: { kind: 'plugin', plugin: 'dsh-tavern-regen' } }, { surfaceOp: 'append' })
+      session.append('assistant/attempt', { turn, step: 1, stream: [
+        { type: 'chunk', chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+        { type: 'text-chunks', index: 0, dt: [120, 90], texts: [hooks.partialGeneration.slice(0, 2), hooks.partialGeneration.slice(2)] },
+        { type: 'chunk', chunk: { type: 'block-end', index: 0, block: { type: 'text', text: hooks.partialGeneration } } },
+        { type: 'chunk', chunk: { type: 'finish', reason: { kind: 'error', failure: { message: 'Provider finish_reason: error', code: 'PI_AI_ERROR' } } } }
+      ] })
+      session.append('turn/end', { turn, reason: { kind: 'error', error: { message: 'Provider finish_reason: error', code: 'PI_AI_ERROR' } } })
+      throw new Error('fixture generation failed')
+    }
     const turn = ++agent.phase.lastTurn, userText = agent.input.content[0].text, text = '重写正文' + turn
     agent.input = null
     let current = await p.read('chat')
@@ -249,4 +264,34 @@ test('a failed bounded regeneration restores the same Chat as the complete abort
     assert.deepEqual(after.variables, before.variables)
   }
   assert.deepEqual(comparable(results[0].after), comparable(results[1].after))
+})
+
+test('被截断的重新生成保留已生成的部分正文，两种路径结果一致', async t => {
+  const results = []
+  for (const bounded of [true, false]) {
+    const h = await fixture(t, bounded)
+    const before = await h.p.read('chat')
+    h.hooks.partialGeneration = '半截正文'
+    const view = await h.rounds.regenerate('chat', '', 'session')
+    const after = await h.p.read('chat')
+    assert.equal(view.adopted.text, '半截正文')
+    assert.match(view.regenerationWarning, /已保留生成到的部分正文/)
+    // The round keeps its original number and the player's input; only the body is new.
+    assert.equal(after.messages.length, before.messages.length)
+    assert.deepEqual(after.messages.slice(0, -2), before.messages.slice(0, -2))
+    assert.equal(after.messages.at(-2).text, before.messages.at(-2).text)
+    assert.equal(after.messages.at(-1).turn, 81)
+    assert.equal(after.messages.at(-1).text, '半截正文')
+    assert.equal(after.messages.at(-1).incomplete, true)
+    assert.equal(after.regenInProgress, undefined)
+    assert.equal(after.regenRecovery, undefined)
+    results.push(after)
+  }
+  const strip = chat => {
+    const value = comparable(chat)
+    if (value.nativeSync) value.nativeSync.at = 0
+    for (const op of Object.values(value.timeline.operations)) if (op.regenerationId) op.regenerationId = 'R'
+    return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
+  }
+  assert.deepEqual(strip(results[0]), strip(results[1]))
 })

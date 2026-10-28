@@ -66,3 +66,14 @@ test('panel subscriptions release and matching candidate refresh retains collaps
   release(); h.flow.candidates.set(null)
   assert.equal(snapshots.length, 2)
 })
+
+test('被截断的重新生成在正文落地后给出保留提示，而不是当成失败', async () => {
+  const warning = '这次重新生成没有完成（可能被内容审核拦截或已停止），已保留生成到的部分正文。'
+  const h = harness(async () => ({ view: { chatId: 'a', regenerationWarning: warning } }))
+  const panel = h.flow.regeneration.set({ sessionId: 'a', phase: 'input', tail: 'tail' })
+  await h.flow.regenerateBody(panel, '')
+  // The body is applied first: the partial text is the round's text now.
+  assert.deepEqual(h.bodies, [['a', { chatId: 'a', regenerationWarning: warning }, 'tail']])
+  assert.deepEqual(h.errors.map(([source, error]) => [source, error.message]), [['重新生成提示', warning]])
+  assert.equal(h.flow.regeneration.getSnapshot(), null)
+})

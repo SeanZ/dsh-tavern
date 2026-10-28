@@ -182,7 +182,7 @@ export function createBackgroundAgentTask(options) {
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search'] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
         if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
@@ -195,8 +195,8 @@ export function createBackgroundAgentTask(options) {
           return assembly
         }
         if (state.input.webSearchEnabled === true) return assembly
-        assembly.sections = (assembly.sections || []).filter(function (section) { return section && section.name !== 'tool:web_search' })
-        assembly.tools = (assembly.tools || []).filter(function (tool) { return tool && tool.name !== 'web_search' })
+        assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })
+        assembly.tools = (assembly.tools || []).filter(function (tool) { return tool && !['web_search', 'web_fetch'].includes(tool.name) })
         return assembly
       })
       state.refreshConfiguredTools = function () {

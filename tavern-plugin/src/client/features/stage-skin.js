@@ -10,10 +10,45 @@ function stageSkinTokens(document) {
 		"--gal-skin-name-bg": n.paint.bg, "--gal-skin-name-fg": n.paint.fg, "--gal-skin-name-rotate": (n.rotate || 0) + "deg",
 		"--gal-skin-name-radius": n.shape === "pill" ? "99px" : "2px",
 		"--gal-skin-weight": String(document.textStyle?.weight || 400), "--gal-skin-spacing": (document.textStyle?.letterSpacing ?? 0.03) + "em",
-		"--gal-skin-line-height": String(document.textStyle?.lineHeight || 1.7), ...stageSkinQuickMenu(document) };
+		"--gal-skin-line-height": String(document.textStyle?.lineHeight || 1.7),
+		// textFx: the ink a glyph enters in (flash) and the side a stamp drops from (tavern.css 「stage typewriter」).
+		"--gal-skin-flash": document.textFx.flash || document.textStyle?.emphasis || p.fg, "--gal-skin-stamp-y": document.textFx.from === "bottom" ? "16px" : "-16px",
+		...stageSkinGlyphPoses(document.textFx), ...stageSkinQuickMenu(document), ...stageSkinNarrationTokens(document.art),
+		// textStyle.narration: narration's own ink in the box (data-fk-skin-narration-ink).
+		...(document.textStyle?.narration ? { "--gal-skin-narration": document.textStyle.narration } : {}) };
 	let spread = 0;
 	tokens["--gal-skin-rings"] = (shape.rings || []).map(ring => `0 0 0 ${spread += ring.width}px ${ring.color}`).join(",") || "none";
 	return Object.assign(tokens, stageSkinPanelTokens(document));
+}
+
+// textFx.poses as the glyph copy's tokens (tavern.css 「stage typewriter」): per pose its transform, filter and ink.
+function stageSkinGlyphPoses(fx) {
+	const tokens = {};
+	(fx.poses || []).forEach((pose, i) => {
+		const scale = pose.scale ?? 1, p = "--gal-hop-" + i;
+		tokens[p + "-t"] = `translate(${pose.dx || 0}em, ${pose.dy || 0}em) rotate(${pose.rot || 0}deg) scale(${(pose.sx ?? 1) * scale}, ${(pose.sy ?? 1) * scale}) skewX(${pose.skew || 0}deg)`;
+		tokens[p + "-f"] = pose.blur ? `blur(${pose.blur}em)` : "none";
+		tokens[p + "-c"] = pose.ink === "flash" ? "var(--gal-skin-flash)" : pose.ink === "accent" ? "var(--gal-skin-accent)" : "var(--gal-skin-fg)";
+	});
+	return tokens;
+}
+
+// art.narration (tavern.css 「stage narration」): the boxless narration in px of the design screen - its size, pitch, veil and
+// centre (y, by default the middle), and the band's (by default 30 / 43 px, veil 80/255, on the bottom edge). The design width
+// bounds the px as it does the art layer's; without art.screenWidth the screen is 16:9. It needs no image, so it is drawn
+// from the document alone. The boxless words take ink (by default a light subtitle ink) and halo (by default a dark glow;
+// false = none; a declared halo is one shadow in design px), and the veil is veilColor (by default black) at veil / band.veil.
+function stageSkinNarrationTokens(art) {
+	const narration = art && art.narration;
+	if (!narration) return {};
+	const band = narration.band || {}, halo = narration.halo, rgb = color => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16)).join(" ");
+	const ink = narration.ink || STAGE_NARRATION_INK, u = value => "calc(" + (value || 0) + " * var(--nar-u))";
+	return { "--art-nar-ink": ink, "--art-nar-ink-rgb": rgb(ink), "--art-nar-veil-rgb": rgb(narration.veilColor || "#000000"),
+		"--art-nar-halo": halo === false ? "none" : halo ? [u(halo.x), u(halo.y), u(halo.blur), "rgb(" + rgb(halo.color) + " / " + (halo.alpha ?? 1) + ")"].join(" ")
+			: "0 0 2px #000, 0 1px 3px rgb(0 0 0 / .95), 0 0 14px rgb(0 0 0 / .65)", "--nar-screen": String(art.screen), "--nar-screen-w": String(art.screenWidth || Math.round(art.screen * 16 / 9)),
+		"--art-nar-font": String(narration.font), "--art-nar-pitch": String(narration.pitch), "--art-nar-veil": String(narration.veil), "--art-nar-y": String(narration.y ?? art.screen / 2),
+		"--art-nar-band-font": String(band.font ?? 30), "--art-nar-band-pitch": String(band.pitch ?? 43), "--art-nar-band-veil": String(band.veil ?? Math.round(80 / 255 * 1000) / 1000),
+		"--art-nar-band-bottom": String(band.bottom ?? 0) };
 }
 
 // The control row sits on the text box with no plate of its own: the skin's own ink at rest (quickMenu.fg, else fgMuted,
@@ -39,17 +74,79 @@ function stageSkinPanelTokens(document) {
 		"--gal-ui-radius": (document.ui?.radius ?? document.textbox.shape?.radius ?? 10) + "px" };
 }
 
+// font (tavern.css 「stage skin: fonts」): the stage's three type roles - body the reading text, name the speaker's name, ui
+// the rest of the stage. A role's id is one of the skin's own faces (font.faces) or a family of the font library (`library`,
+// the families listed so far: tavernFontLibrary); the first of [the role's own id, body] that resolves draws it, ahead of
+// the stage's stack. A face's fallback (a library family) follows it, for the glyphs the face lacks. Nothing that resolves:
+// the stack alone. useStageSkinFonts loads what the roles name.
+const STAGE_FONT_STACK = '"Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif';
+const stageSkinFaceFamily = id => "DSH Skin " + id;
+// role -> the families it is drawn in, in order: {family, face: the face id} or a library family entry.
+function stageSkinFontRoles(font, library) {
+	const faces = font.faces || {}, family = id => library.find(item => item.id === id);
+	const pick = id => {
+		if (!id) return null;
+		if (!Object.hasOwn(faces, id)) return family(id) ? [family(id)] : null;
+		const backup = faces[id].fallback && family(faces[id].fallback);
+		return [{ family: stageSkinFaceFamily(id), face: id }, ...(backup ? [backup] : [])];
+	};
+	return Object.fromEntries([["body", [font.body]], ["name", [font.name, font.body]], ["ui", [font.ui, font.body]]]
+		.map(([role, ids]) => [role, ids.map(pick).find(Boolean) || []]));
+}
+function stageSkinFontTokens(font, library) {
+	return Object.fromEntries(Object.entries(stageSkinFontRoles(font, library))
+		.map(([role, families]) => ["--gal-skin-font-" + role, [...families.map(item => JSON.stringify(item.family)), STAGE_FONT_STACK].join(", ")]));
+}
+
 // The root's style and marks for a skin: data-fk-skin names the drawn skin; the control row's place (quickMenu.place: the box's
 // top-right or bottom-right corner), where it stands on phones (narrow top / edge; bottom is the placed default) and whether
 // it is drawn from the skin's icons. A folded menu (layout capsule / orb) has no row to place.
-function stageSkinRoot(document) {
-	const root = { style: stageSkinTokens(document), "data-fk-skin": document.id }, menu = document.quickMenu;
+function stageSkinRoot(document, library = []) {
+	const tx = stageSkinTransitions(document);
+	const root = { style: { ...stageSkinTokens(document), ...stageSkinFontTokens(document.font, library), ...tx.tokens }, "data-fk-skin": document.id }, menu = document.quickMenu;
+	if (tx.marks) root["data-fk-tx"] = tx.marks;
+	if (document.textStyle?.narration) root["data-fk-skin-narration-ink"] = "";
 	if (menu && (!menu.layout || menu.layout === "bar")) {
 		if (menu.place) root["data-fk-skin-controls-place"] = menu.place;
 		if (menu.place && ["top", "edge"].includes(menu.narrow)) root["data-fk-skin-controls-narrow"] = menu.narrow;
 		if (menu.icons) root["data-fk-skin-controls-icons"] = "";
 	}
 	return root;
+}
+
+// transitions (tavern.css 「stage choices」): per declared surface and phase (data-fk-tx lists them, e.g. "choices-enter") its
+// duration, ease, delay and row stagger, and where it moves from - the pose, the fade and the wipe's closed shape (and the open
+// one it grows to) - as tokens one keyframe reads. choices.leave holds the pick for its delay + ms before it is sent.
+const STAGE_SKIN_TX_EASE = Object.freeze({ linear: "linear", out: "cubic-bezier(.2,.7,.3,1)", "in-out": "cubic-bezier(.65,0,.35,1)", back: "cubic-bezier(.34,1.56,.64,1)", snap: "cubic-bezier(.86,0,.07,1)",
+	"expo-out": "cubic-bezier(.16,1,.3,1)", "quint-out": "cubic-bezier(.22,1,.36,1)", emphasized: "cubic-bezier(.2,0,0,1)", "emphasized-out": "cubic-bezier(.05,.7,.1,1)", "emphasized-in": "cubic-bezier(.3,0,.8,.15)", spring: "cubic-bezier(.3,1.3,.5,1)" });
+// A wipe's clip path, open (the row whole) or closed (nothing shown), in % of the row; the closed shapes grow from `at`
+// far enough to cover the row from any point.
+function stageSkinWipeClip(wipe, open) {
+	const [x, y] = (wipe.at || [.5, .5]).map(v => Math.round(v * 1000) / 10), r = (n, k) => Math.round((n + k) * 10) / 10 + "%", k = open ? 1 : 0;
+	const poly = points => "polygon(" + points.map(([dx, dy]) => r(x, dx) + " " + r(y, dy)).join(",") + ")";
+	switch (wipe.shape) {
+	case "circle": return `circle(${open ? 150 : 0}% at ${x}% ${y}%)`;
+	case "rect": return poly([[-100 * k, -100 * k], [100 * k, -100 * k], [100 * k, 100 * k], [-100 * k, 100 * k]]);
+	case "diamond": return poly([[0, -200 * k], [200 * k, 0], [0, 200 * k], [-200 * k, 0]]);
+	case "triangle": return poly([[0, -420 * k], [370 * k, 260 * k], [-370 * k, 260 * k]]);
+	case "left": return open ? "inset(0 0 0 0)" : "inset(0 100% 0 0)";
+	case "right": return open ? "inset(0 0 0 0)" : "inset(0 0 0 100%)";
+	case "up": return open ? "inset(0 0 0 0)" : "inset(100% 0 0 0)";
+	default: return open ? "inset(0 0 0 0)" : "inset(0 0 100% 0)";
+	}
+}
+function stageSkinTransitions(document) {
+	const tokens = {}, phases = [], choices = document.transitions?.choices || {};
+	for (const [phase, t] of Object.entries(choices)) {
+		const p = "--tx-choices-" + phase, pose = t.pose || {};
+		phases.push("choices-" + phase);
+		Object.assign(tokens, { [p + "-ms"]: t.ms + "ms", [p + "-ease"]: Array.isArray(t.ease) ? "cubic-bezier(" + t.ease.join(",") + ")" : STAGE_SKIN_TX_EASE[t.ease || "out"],
+			[p + "-delay"]: (t.delay || 0) + "ms", [p + "-stagger"]: (t.stagger || 0) + "ms", [p + "-o"]: t.fade ? "0" : "1",
+			[p + "-t"]: t.pose ? `translate(${pose.dx || 0}%, ${pose.dy || 0}%) rotate(${pose.rot || 0}deg) scale(${pose.scale ?? 1})` : "none",
+			[p + "-clip"]: t.wipe ? stageSkinWipeClip(t.wipe, false) : "none", [p + "-open"]: t.wipe ? stageSkinWipeClip(t.wipe, true) : "none" });
+	}
+	if (choices.leave) tokens["--tx-choices-pick-ms"] = String(choices.leave.ms + (choices.leave.delay || 0));
+	return { tokens, marks: phases.join(" ") };
 }
 
 // quickMenu.icons / button: each control the skin draws, by action (auto, skip, back, ...), from the decoded files - its image,
@@ -83,8 +180,10 @@ function stageSkinQuickImages(document) {
 function stageSkinArtImages(document) {
 	const box = document.art?.textbox, plate = document.art?.nameplate, frame = stageSkinPortrait(document)?.frame;
 	if (!box) return [];
+	const choices = document.art.choices;
 	return [...new Set([...Object.values(box.images), box.next && stageSkinImageOf(box.next), box.lamp?.image, plate?.image,
-		...(frame ? [frame.image, frame.glass, frame.back, frame.speaking] : [])].filter(Boolean))];
+		...(frame ? [frame.image, frame.glass, frame.back, frame.speaking] : []),
+		...(choices ? [...Object.values(choices.images), choices.focus?.image, choices.focus?.alt] : [])].filter(Boolean))];
 }
 // The face window the stage draws (art.portrait with the speaker's avatar; a bust cut from the stage figure is not drawn here).
 function stageSkinPortrait(document) {
@@ -190,8 +289,45 @@ function stageSkinArt(document, files) {
 		marks["data-fk-skin-art-controls"] = "";
 		Object.assign(tokens, { "--art-qc-x": n(c.x), "--art-qc-y": n(c.y), "--art-qc-size": n(c.size), "--art-qc-w": n(c.w || c.size), "--art-qc-gap": n(c.gap || 0) });
 	}
+	stageSkinChoiceArt(art, art.screen - box.bottom - h, size, url, n, marks, tokens);
 	const faceName = stageSkinPortraitArt(document, size, url, n, marks, tokens);
 	return { marks, tokens, frames, faceName };
+}
+
+// art.choices (tavern.css 「stage skin: art choices」): the round-end menu as the skin's bar image, 9-sliced, its words in the
+// text column [l, r] centred on y within band; stacked on the design centre (center, or anchor stage / above-box: the middle
+// of the room above the box image, whose top is `boxTop`), gap px apart, at x; odd / even rows tilted and shifted. focus: the
+// bar (and its ink, and dx aside) under the pointer or keyboard focus; alt: the even rows' own bar and focus bar.
+function stageSkinChoiceArt(art, boxTop, size, url, n, marks, tokens) {
+	const c = art.choices;
+	if (!c) return;
+	const [w, h] = size(c.images.plain), [st, sr, sb, sl] = stageSkinSliceEdges(c.slice), [left, right, middle] = c.text;
+	marks["data-fk-skin-choices"] = "";
+	Object.assign(tokens, { "--art-choice": url(c.images.plain), "--art-choice-off": url(c.images.off || c.images.plain), "--art-choice-w": n(w), "--art-choice-h": n(h),
+		"--art-choice-st": n(st), "--art-choice-sr": n(sr), "--art-choice-sb": n(sb), "--art-choice-sl": n(sl), "--art-choice-l": n(left), "--art-choice-r": n(right), "--art-choice-y": n(middle),
+		"--art-choice-font": n(c.font), "--art-choice-pitch": n(c.pitch), "--art-choice-gap": n(c.gap),
+		"--art-choice-center": n(c.anchor === "above-box" ? Math.round(Math.max(0, boxTop) / 2) : c.anchor === "stage" ? art.screen / 2 : c.center) });
+	if (c.anchor === "above-box") marks["data-fk-skin-choices-anchor"] = "above-box";
+	if (c.band) Object.assign(tokens, { "--art-choice-top": n(c.band[0]), "--art-choice-bottom": n(c.band[1]) });
+	if (c.x != null) tokens["--art-choice-x"] = n(c.x);
+	if (c.align) Object.assign(tokens, { "--art-choice-align": c.align, "--art-choice-justify": c.align === "center" ? "center" : c.align === "left" ? "flex-start" : "flex-end" });
+	["odd", "even"].forEach((side, i) => {
+		if (c.tilt) tokens["--art-choice-tilt-" + side] = c.tilt[i] + "deg";
+		if (c.stagger) tokens["--art-choice-shift-" + side] = n(c.stagger[i]);
+	});
+	if (c.ink) tokens["--art-choice-ink"] = c.ink;
+	if (c.weight) tokens["--art-choice-weight"] = String(c.weight);
+	if (c.spacing) tokens["--art-choice-spacing"] = c.spacing + "em";
+	if (c.focus) {
+		marks["data-fk-skin-choices-focus"] = "";
+		Object.assign(tokens, { "--art-choice-focus": url(c.focus.image), "--art-choice-focus-dx": n(c.focus.dx || 0) });
+		if (c.focus.ink) tokens["--art-choice-focus-ink"] = c.focus.ink;
+	}
+	if (c.images.alt || c.focus?.alt) {
+		marks["data-fk-skin-choices-alt"] = "";
+		tokens["--art-choice-alt"] = url(c.images.alt || c.images.plain);
+		if (c.focus) tokens["--art-choice-focus-alt"] = url(c.focus.alt || c.focus.image);
+	}
 }
 
 // The face window (art.portrait): the speaker's avatar in a square on the design screen (left / bottom / size). frame: the
@@ -248,6 +384,29 @@ function stageSkinPortraitArt(document, size, url, n, marks, tokens) {
 			"--art-face-nx": n(nw.x), "--art-face-ny": n(nw.y), "--art-face-nsw": n(sw) });
 	}
 	return faceName;
+}
+
+// What the stage's font roles name while the stage shows the skin (skinDocument; skin: the pack skin with its lease base,
+// else null). The library families they use join the page once each (tavernFontLibrary.ensure). The skin's own faces
+// (font.faces) load from its lease: each joins document.fonts at its declared weight and its text swaps in once the file has
+// loaded (until then, or if it fails, the next family of the role); they leave with the skin.
+function useStageSkinFonts(skin, skinDocument, library) {
+	const families = Object.values(stageSkinFontRoles(skinDocument.font, library)).flat();
+	const libraryKey = families.filter(item => !item.face).map(item => item.id).join(" ");
+	React.useEffect(() => { libraryKey.split(" ").filter(Boolean).forEach(id => tavernFontLibrary.ensure(id)); }, [libraryKey]);
+	const faces = skin && skin.base ? Object.entries(skin.document.font.faces || {}) : [];
+	const key = faces.length ? JSON.stringify([skin.base, faces]) : "";
+	React.useEffect(() => {
+		if (!key) return undefined;
+		const added = faces.map(([id, face]) => {
+			const url = skin.base + face.file.split("/").map(encodeURIComponent).join("/");
+			const font = new FontFace(stageSkinFaceFamily(id), "url(" + JSON.stringify(url) + ") format(\"woff2\")", { weight: String(face.weight), display: "swap" });
+			document.fonts.add(font);
+			font.load().catch(() => console.warn("Stage skin font unavailable: " + face.file));
+			return font;
+		});
+		return () => added.forEach(font => document.fonts.delete(font));
+	}, [key]);
 }
 
 // The decoded images of the skin on stage (its art and quick menu icons): files once every image has loaded from the skin's

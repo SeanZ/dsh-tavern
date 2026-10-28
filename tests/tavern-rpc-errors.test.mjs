@@ -9,7 +9,7 @@ test('POST API 保留错误码而不泄漏错误对象中的额外数据', async
     code: 'MVU_SETTLEMENT_EVENT_MISMATCH', privateState: 'PRIVATE-STORY'
   })
   registerTavernHttpRoutes({
-    ctx: { get: name => name === 'webServer' ? webServer : undefined, effect(callback) { callback() } },
+    ctx: { get: name => name === 'webServer' ? webServer : { requestRejection: () => undefined }, effect(callback) { callback() } },
     dispatch: async () => { throw failure }, str: value => String(value ?? ''),
     performanceDiagnostics: { http() {} }, runtimeGeneration: 'test-generation',
     runtimeReadiness: Promise.resolve({ ok: true })

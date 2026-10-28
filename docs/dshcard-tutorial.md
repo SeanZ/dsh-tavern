@@ -130,6 +130,7 @@
 ```json
 {
   "name": "dsh-card-dafeiyu-galgame",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -144,6 +145,8 @@
   }
 }
 ```
+
+`name` 和 `version` 都必须是非空字符串；卡清单里的 `card.version` 不能代替插件自己的版本，`private: true` 也不例外。
 
 插件名按约定写成 `dsh-card-<卡标识>-<插件名>`。Tavern 按这个名字识别插件，同名而内容不同的插件同时只能启用一个：撞名时后导入的卡照常导入，但它的插件不会启用。
 

@@ -128,7 +128,7 @@ test('real HTTP routes serve legacy images, reject hostile origins, and dispatch
   const calls = [], registered = new Map()
   let handler
   const webServer = { register(route) { registered.set(route.path, route.handler); return () => registered.delete(route.path) } }
-  const ctx = { get: name => name === 'webServer' ? webServer : undefined, effect(callback) { callback() } }
+  const ctx = { get: name => name === 'webServer' ? webServer : { requestRejection: () => undefined }, effect(callback) { callback() } }
   const sceneIllustrations = {
     async readImage(...args) { calls.push(['readImage', ...args]); return { data: png, ref: { mediaType: 'image/png' } } },
     async readStoredImage(...args) { calls.push(['readStoredImage', ...args]); return { data: png, ref: { mediaType: 'image/webp' } } }

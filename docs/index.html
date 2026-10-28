@@ -765,16 +765,16 @@
 <h2 id="d10--section-4">注意事项</h2>
 <p>生成或后台忙碌时不可发起。人物姿势是当前场景状态，档案是人物设计；设计中的未来可能性不等于已经发生。普通卡不会因此自动拥有 MVU 状态栏。</p>
 <h2 id="d10--section-5">相关说明</h2>
-<ul><li><a href="#d01">人物姿势</a></li><li><a href="#d02">MVU 变量与常驻状态栏</a></li><li><a href="#h04">修改人物卡中不喜欢的内容</a></li></ul><nav class="pagination" aria-label="相邻文档"><a class="" href="#m05">← 创建并保存可复用 Skill</a><a class="" href="#m02">联网搜索 →</a></nav><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="m02" data-group="advanced" data-title="联网搜索"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#advanced">高级功能</a> <span>/</span> 功能说明</div><h1 tabindex="-1">联网搜索</h1><p class="lead">联网搜索让 Agent 按需查阅外部资料，适合涉及现实地点、知识或其他需要核实的信息。</p><figure class="manual-screenshot"><a href="images/manual/advanced-network-20261010.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看本局联网搜索（新窗口）"><img src="images/manual/advanced-network-20261010.jpg" alt="本局设置中的后台结算开关、联网搜索开关与写作 Skill" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>本局联网搜索</strong> · 在本局设置中切换，后续请求生效；图中联网搜索保持关闭。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><p class="screenshot-source">实际应用截图 · DSH 0.1.5-rc.2 / DSH Tavern 2.5.0 · 49ff11b。<a href="examples/manual-demo/README.txt" target="_blank" rel="noopener noreferrer">样例说明 ↗</a> · <a href="examples/manual-demo/lighthouse-card.json" download>下载样例人物卡</a></p><h2 id="m02--section-1">在哪里</h2>
+<ul><li><a href="#d01">人物姿势</a></li><li><a href="#d02">MVU 变量与常驻状态栏</a></li><li><a href="#h04">修改人物卡中不喜欢的内容</a></li></ul><nav class="pagination" aria-label="相邻文档"><a class="" href="#m05">← 创建并保存可复用 Skill</a><a class="" href="#m02">联网搜索 →</a></nav><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="m02" data-group="advanced" data-title="联网搜索"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#advanced">高级功能</a> <span>/</span> 功能说明</div><h1 tabindex="-1">联网搜索</h1><p class="lead">联网搜索让 Agent 按需查阅外部资料；卡片工作台还可整理作品资料与网页出处。</p><figure class="manual-screenshot"><a href="images/manual/advanced-network-20261010.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看本局联网搜索（新窗口）"><img src="images/manual/advanced-network-20261010.jpg" alt="本局设置中的后台结算开关、联网搜索开关与写作 Skill" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>本局联网搜索</strong> · 在本局设置中切换，后续请求生效；图中联网搜索保持关闭。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><p class="screenshot-source">实际应用截图 · DSH 0.1.5-rc.2 / DSH Tavern 2.5.0 · 49ff11b。<a href="examples/manual-demo/README.txt" target="_blank" rel="noopener noreferrer">样例说明 ↗</a> · <a href="examples/manual-demo/lighthouse-card.json" download>下载样例人物卡</a></p><h2 id="m02--section-1">在哪里</h2>
 <p>界面：本局设置 → 联网搜索</p>
 <h2 id="m02--section-2">如何使用</h2>
-<ol><li>打开游戏顶栏“本局设置”，找到“联网搜索”。</li><li>切换后自动保存，从后续请求生效；不需要重新开局。</li><li>提出具体需求，例如：“查一下这个地点的公开背景资料，再用于场景描述。”</li><li>在轨迹中查看是否实际搜索及返回了什么资料；不再需要时可关闭，修改会自动保存。</li></ol>
+<ol><li>在全局设置 → 卡片工作台搜索中选择搜索源与回退顺序。内置 Bing、DuckDuckGo，也可填写自己的 SearXNG 实例与引擎。默认直连，高级设置支持搜索代理与各源覆盖。</li><li>点击“保存并测试搜索”检查当前网络；已选择的第三方搜索后端会保留，也可点“使用内置搜索”切回。</li><li>游玩时在顶栏“本局设置”开启“联网搜索”，前后台按任务需要使用；前台工具可单独关闭。</li><li>需要读取网页原文时，开启全局“允许读取网页正文”；网页读取沿用 DSH 网页服务与代理设置。</li><li>在卡片工作台提出：“查找这部作品的人物设定，附来源并区分原文与搜索摘要，再整理补卡建议。”资料工具最多搜索 3 条关键词、读取 3 个网页，不直接修改人物卡。</li></ol>
 <h2 id="m02--section-3">结果与生效范围</h2>
-<p>本局前台和后台可按任务需要使用搜索，开启不代表每轮都会联网。</p>
+<p>搜索结果保留来源；工作台资料包区分已读取正文与仅搜索摘要，并标注时间、缓存状态和截断情况。</p>
 <h2 id="m02--section-4">注意事项</h2>
-<p>依赖 DSH 搜索能力和网络。切换会使缓存失效，首次请求可能增加耗时和费用；搜索结果仍需判断。回忆本局剧情应使用历史检索，虚构设定应以人物卡和世界书为准。</p>
+<p>免费源可能限流或失效；未默认配置公共 SearXNG 实例或代理。网页读取不自动运行浏览器，需登录或依赖脚本的页面可能读不到正文。已读取也不等于已核实，应核对来源和设定冲突。回忆本局剧情请用历史检索。</p>
 <h2 id="m02--section-5">相关说明</h2>
-<ul><li><a href="#d06">按需找回历史细节</a></li><li><a href="#m01">前台与后台模型分工</a></li></ul><nav class="pagination" aria-label="相邻文档"><a class="" href="#d10">← 人物档案设计</a><a class="" href="#m01">前台与后台模型分工 →</a></nav><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="m01" data-group="advanced" data-title="前台与后台模型分工"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#advanced">高级功能</a> <span>/</span> 功能说明</div><h1 tabindex="-1">前台与后台模型分工</h1><p class="lead">正文与后台任务可以使用不同模型，也可以让后台跟随前台。</p><figure class="manual-screenshot"><a href="images/manual/tavern-settings.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看默认模型与新游戏默认（新窗口）"><img src="images/manual/tavern-settings.jpg" alt="默认模型与新游戏默认：设置 → DSH Tavern 中分别为前台、后台、卡片工作台和生图 Agent 选择默认模型；新游戏开局时继承，已有对话保持当前配置。下方“新游戏默认”可在开局后到本局设置单独修改。" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>默认模型与新游戏默认</strong> · 设置 → DSH Tavern 中分别为前台、后台、卡片工作台和生图 Agent 选择默认模型；新游戏开局时继承，已有对话保持当前配置。下方“新游戏默认”可在开局后到本局设置单独修改。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><figure class="manual-screenshot"><a href="images/manual/background-trace.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看后台 Agent 工具记录（新窗口）"><img src="images/manual/background-trace.jpg" alt="后台 Agent 工具记录：从顶部子代理菜单打开“酒馆后台 Agent”的轨迹，可按轮查看人物姿势、变量和候选的工具调用。由独立本地模拟服务提供预写内容，工具与界面由实际应用执行；不代表真实模型质量。" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>后台 Agent 工具记录</strong> · 从顶部子代理菜单打开“酒馆后台 Agent”的轨迹，可按轮查看人物姿势、变量和候选的工具调用。由独立本地模拟服务提供预写内容，工具与界面由实际应用执行；不代表真实模型质量。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><p class="screenshot-source">实际应用截图 · DSH 0.1.5-rc.2 / DSH Tavern 2.5.0 · 49ff11b。<a href="examples/manual-demo/README.txt" target="_blank" rel="noopener noreferrer">样例说明 ↗</a> · <a href="examples/manual-demo/lighthouse-card.json" download>下载样例人物卡</a></p><h2 id="m01--section-1">在哪里</h2>
+<ul><li><a href="#d06">按需找回历史细节</a></li><li><a href="#m01">前台与后台模型分工</a></li><li><a href="#h03">从剧本、小说与素材中提取新人物卡</a></li></ul><nav class="pagination" aria-label="相邻文档"><a class="" href="#d10">← 人物档案设计</a><a class="" href="#m01">前台与后台模型分工 →</a></nav><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="m01" data-group="advanced" data-title="前台与后台模型分工"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#advanced">高级功能</a> <span>/</span> 功能说明</div><h1 tabindex="-1">前台与后台模型分工</h1><p class="lead">正文与后台任务可以使用不同模型，也可以让后台跟随前台。</p><figure class="manual-screenshot"><a href="images/manual/tavern-settings.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看默认模型与新游戏默认（新窗口）"><img src="images/manual/tavern-settings.jpg" alt="默认模型与新游戏默认：设置 → DSH Tavern 中分别为前台、后台、卡片工作台和生图 Agent 选择默认模型；新游戏开局时继承，已有对话保持当前配置。下方“新游戏默认”可在开局后到本局设置单独修改。" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>默认模型与新游戏默认</strong> · 设置 → DSH Tavern 中分别为前台、后台、卡片工作台和生图 Agent 选择默认模型；新游戏开局时继承，已有对话保持当前配置。下方“新游戏默认”可在开局后到本局设置单独修改。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><figure class="manual-screenshot"><a href="images/manual/background-trace.jpg" target="_blank" rel="noopener noreferrer" aria-label="放大查看后台 Agent 工具记录（新窗口）"><img src="images/manual/background-trace.jpg" alt="后台 Agent 工具记录：从顶部子代理菜单打开“酒馆后台 Agent”的轨迹，可按轮查看人物姿势、变量和候选的工具调用。由独立本地模拟服务提供预写内容，工具与界面由实际应用执行；不代表真实模型质量。" width="1280" height="720" loading="lazy" decoding="async"></a><figcaption><strong>后台 Agent 工具记录</strong> · 从顶部子代理菜单打开“酒馆后台 Agent”的轨迹，可按轮查看人物姿势、变量和候选的工具调用。由独立本地模拟服务提供预写内容，工具与界面由实际应用执行；不代表真实模型质量。<small>原创公开样例 · 灯塔小镇（CC0） · 2026-10-10 · 点击图片放大</small></figcaption></figure><p class="screenshot-source">实际应用截图 · DSH 0.1.5-rc.2 / DSH Tavern 2.5.0 · 49ff11b。<a href="examples/manual-demo/README.txt" target="_blank" rel="noopener noreferrer">样例说明 ↗</a> · <a href="examples/manual-demo/lighthouse-card.json" download>下载样例人物卡</a></p><h2 id="m01--section-1">在哪里</h2>
 <p>界面：酒馆设置 / DSH</p>
 <h2 id="m01--section-2">如何使用</h2>
 <ol><li>前台模型和推理强度在输入框旁的模型选择器中调整。</li><li>在顶栏“本局设置”中选择后台独立模型和推理强度，或选择跟随前台。</li><li>建议前台和后台使用 High 推理强度，优先保证正文输出和后台任务的质量。不推荐 Max，以免过度思考、增加等待。若更在意响应速度，可按需降低。</li></ol>
@@ -1122,7 +1122,7 @@
 <p>卡内插件就是普通的 DSH Tavern 插件，写法和接口与全局插件相同，见<a href="#plugin-api">插件开发：接口总览</a>。区别只在于它跟着卡走：</p>
 <ul><li>导入卡时随卡启用，不需要玩家另装；删除卡时一起卸载。</li><li>只在这张卡的局里生效：回调只对这张卡的局触发，带别的局的 <code>gameId</code> 调接口会被拒绝，浏览器侧注册的界面只在这张卡的局里出现。</li><li>在这张卡的局里，插件是这一局的一部分：总是启用。玩家要停用，就在卡片详情里整体停用。</li><li>Tavern 按插件 <code>package.json</code> 的 <code>name</code> 识别插件，同名而内容不同的插件同时只能启用一个：撞名时后导入的卡照常导入，但它的插件不会启用。所以插件名按约定写成 <code>dsh-card-&lt;卡标识&gt;-&lt;插件名&gt;</code>，例如大肥鱼的 <code>dsh-card-dafeiyu-galgame</code>；<code>dsh.json</code> 里的 <code>name</code> 写成同一个。</li></ul>
 <p>一个插件文件夹有三个文件：</p>
-<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">文件</th><th scope="col">作用</th></tr></thead><tbody><tr><td><code>package.json</code></td><td><code>name</code> 是插件名（与 <code>dsh.json</code> 里的 <code>name</code> 相同），<code>exports</code> 指向宿主侧和浏览器侧入口</td></tr><tr><td><code>index.mjs</code></td><td>宿主侧：在 Tavern 进程里运行，可以读写每轮数据、参与后台结算</td></tr><tr><td><code>client.js</code></td><td>浏览器侧：画舞台、面板，由页面直接加载，不需要打包</td></tr></tbody></table></div>
+<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">文件</th><th scope="col">作用</th></tr></thead><tbody><tr><td><code>package.json</code></td><td><code>name</code> 是插件名（与 <code>dsh.json</code> 里的 <code>name</code> 相同），<code>name</code>、<code>version</code> 必须是非空字符串（如 <code>&quot;version&quot;: &quot;1.0.0&quot;</code>，不同于 <code>card.version</code>），<code>exports</code> 指向宿主侧和浏览器侧入口</td></tr><tr><td><code>index.mjs</code></td><td>宿主侧：在 Tavern 进程里运行，可以读写每轮数据、参与后台结算</td></tr><tr><td><code>client.js</code></td><td>浏览器侧：画舞台、面板，由页面直接加载，不需要打包</td></tr></tbody></table></div>
 <p>示例卡的 <a href="https://github.com/flizzywine/dsh-tavern/tree/main/examples/dshcard-hello/plugin">plugin</a> 文件夹可以直接复制改。</p>
 <h3>常用写法</h3>
 <div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">想做的事</th><th scope="col">用哪些接口</th></tr></thead><tbody><tr><td>每轮按剧情做个判断（换场景、记氛围），不额外调用模型</td><td>宿主侧 <code>settlementSection</code> 告诉结算模型要做什么，<code>settlementTool</code> 接收结果</td></tr><tr><td>把每轮的结果存下来，回退、重新生成时自动对上正文</td><td><code>saveTurnData</code>、<code>readTurnData</code></td></tr><tr><td>浏览器侧读宿主侧的结果</td><td>宿主侧 <code>handle</code>，浏览器侧 <code>tavernUi.callHost</code></td></tr><tr><td>自己画舞台</td><td>浏览器侧 <code>tavernUi.registerStageView</code>；翻页、朗读、全屏由 Tavern 负责</td></tr><tr><td>新一轮结束后刷新画面</td><td>浏览器侧 <code>tavernUi.watchTurnState</code></td></tr><tr><td>播放背景音乐</td><td>浏览器侧 <code>tavernUi.playMusic</code>；玩家的静音开关由 Tavern 管</td></tr><tr><td>让正文头像跟着情绪换图</td><td>宿主侧 <code>castAssetSource</code></td></tr><tr><td>在本局设置里加选项</td><td>宿主侧 <code>gameSettings</code>、<code>getGameSettings</code>，浏览器侧 <code>tavernUi.watchGameSettings</code></td></tr><tr><td>读卡带的素材包</td><td><code>listCardPacks</code>、<code>readCardPackFile</code>，浏览器侧 <code>tavernUi.getCardPacks</code></td></tr></tbody></table></div>
@@ -1132,7 +1132,7 @@
 <h2 id="dshcard-guide--section-9">打包与调试</h2>
 <ol><li>把文件按「一张卡里有什么」的结构放好，打成 ZIP，后缀改成 <code>.dshcard</code>。</li><li>在 Tavern 的人物卡库「导入人物卡」，选这个文件。导入完成后刷新页面，插件的浏览器侧才会加载。</li><li>用这张卡开一局，确认舞台、立绘、插件的效果。</li><li>改了插件：在卡片详情删掉这张卡，重新打包导入；或者开发时直接改 Tavern 数据目录 <code>plugins/</code> 下这张卡的插件文件夹，刷新页面即可看到浏览器侧的改动，宿主侧的改动要重启 Tavern。</li><li>插件加载或运行出错时，Tavern 日志里有「插件 … 加载失败 / 出错」的记录；结算里的错误也会显示在本局设置。</li></ol>
 <p>导入时常见的提示：</p>
-<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">提示</th><th scope="col">原因</th></tr></thead><tbody><tr><td>dsh.json 的 format 不是 dshcard</td><td><code>format</code> 写错或缺失</td></tr><tr><td>格式版本较新，请先更新 Tavern</td><td><code>formatVersion</code> 大于 1</td></tr><tr><td>素材包路径应为 assets/&lt;包名&gt;/</td><td><code>packs[].path</code> 不是一层目录，或包名是保留名</td></tr><tr><td>插件路径应为 plugins/&lt;文件夹&gt;/</td><td>插件文件夹名只能用小写字母、数字、点、下划线、连字符</td></tr><tr><td>插件 … 缺少可读的 package.json / 没有 name</td><td>插件文件夹里的 <code>package.json</code> 缺失或没写 <code>name</code></td></tr><tr><td>已经有同名插件 … 在用</td><td>另一张卡或全局插件用了同样的插件名；卡已导入，插件没有启用</td></tr><tr><td>defaults.preset 应指向包内 presets/ 下的 JSON 预设</td><td>预设路径写错或文件不在包里</td></tr></tbody></table></div>
+<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">提示</th><th scope="col">原因</th></tr></thead><tbody><tr><td>dsh.json 的 format 不是 dshcard</td><td><code>format</code> 写错或缺失</td></tr><tr><td>格式版本较新，请先更新 Tavern</td><td><code>formatVersion</code> 大于 1</td></tr><tr><td>素材包路径应为 assets/&lt;包名&gt;/</td><td><code>packs[].path</code> 不是一层目录，或包名是保留名</td></tr><tr><td>插件路径应为 plugins/&lt;文件夹&gt;/</td><td>插件文件夹名只能用小写字母、数字、点、下划线、连字符</td></tr><tr><td>插件 … 缺少可读的 package.json / name 或 version 无效</td><td>检查插件 <code>package.json</code> 的 <code>name</code>、<code>version</code>，两者都要写非空字符串；旧包请补上作者确认的版本后重新打包</td></tr><tr><td>已经有同名插件 … 在用</td><td>另一张卡或全局插件用了同样的插件名；卡已导入，插件没有启用</td></tr><tr><td>defaults.preset 应指向包内 presets/ 下的 JSON 预设</td><td>预设路径写错或文件不在包里</td></tr></tbody></table></div>
 <h2 id="dshcard-guide--section-10">体积与分发</h2>
 <ul><li>图片用 WebP，音乐用 Ogg（Opus 或 Vorbis），体积通常能减半以上。大肥鱼的分发版就是这样从 270 MB 压到 90 MB，压缩脚本见 <a href="https://github.com/flizzywine/dsh-tavern/blob/main/examples/dafeiyu-card/compress.mjs">examples/dafeiyu-card/compress.mjs</a>。</li><li>大文件建议放 GitHub Releases（单文件上限 2 GB），再配一份国内网盘；Discord 免费用户单文件只有 10 MB。</li><li>用到别人的素材，先取得授权，按许可要求署名，并在 <code>credits/</code> 里注明你做了哪些改动。</li></ul>
 <h2 id="dshcard-guide--section-11">参考</h2>
@@ -1209,6 +1209,7 @@
 <p><code>package.json</code> 指明两个入口：</p>
 <div class="code-block"><div class="code-heading"><span>json</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
   &quot;name&quot;: &quot;dsh-card-dafeiyu-galgame&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
   &quot;private&quot;: true,
   &quot;type&quot;: &quot;module&quot;,
   &quot;exports&quot;: {
@@ -1222,6 +1223,7 @@
     }
   }
 }</code></pre></div>
+<p><code>name</code> 和 <code>version</code> 都必须是非空字符串；卡清单里的 <code>card.version</code> 不能代替插件自己的版本，<code>private: true</code> 也不例外。</p>
 <p>插件名按约定写成 <code>dsh-card-&lt;卡标识&gt;-&lt;插件名&gt;</code>。Tavern 按这个名字识别插件，同名而内容不同的插件同时只能启用一个：撞名时后导入的卡照常导入，但它的插件不会启用。</p>
 <h3>宿主侧：导演</h3>
 <p>入口导出 <code>name</code>、<code>inject</code> 和 <code>apply</code>，接口都在 <code>ctx.tavern</code> 上：</p>
@@ -1513,8 +1515,8 @@ ctx.tavernUi.registerComposerAction({
 
 打开 DSH Tavern → 设置 → DSH Tavern → 插件，粘贴本仓库地址，点「安装」，刷新页面。
 连不上 GitHub 时，下载本仓库 ZIP，在同一处点「上传 ZIP」。</code></pre></div>
-<p>发布前在自己的酒馆里按这段装一次，列表显示「已加载」即可。</p><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="plugin-api" data-group="plugins" data-title="插件开发：接口总览"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#plugins">插件</a> <span>/</span> 功能说明</div><h1 tabindex="-1">插件开发：接口总览</h1><p class="lead">插件怎么写、怎么拿到接口，以及各页接口的索引。</p><p>接口版本：<strong>3</strong></p>
-<p>DSH Tavern 把扩展功能交给第三方 <strong>DSH 插件</strong>：文生图、文生视频、配音，以及记忆、叙事锚点这类需要参与提示词和后台结算的功能。Tavern 提供一层稳定的接口：让插件知道「这一轮写完了、写了什么」，把图片或别的内容「挂回这一轮」，并往正文请求和后台结算里<strong>添加</strong>内容。多数是添加类接口，插件出错只会丢掉它自己那一份，游戏照常进行；少数替换类接口（如 <code>replaceSettlement</code>）让插件接管某个流程，插件失败时自动退回 Tavern 自己的做法。</p>
+<p>发布前在自己的酒馆里按这段装一次，列表显示「已加载」即可。</p><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="plugin-api" data-group="plugins" data-title="插件开发：接口总览"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#plugins">插件</a> <span>/</span> 功能说明</div><h1 tabindex="-1">插件开发：接口总览</h1><p class="lead">插件怎么写、怎么拿到接口，以及各页接口的索引。</p><p>接口版本：<strong>4</strong>（宿主侧；浏览器侧 <code>tavernUi.apiVersion</code> 仍为 <strong>5</strong>）</p>
+<p>DSH Tavern 把扩展功能交给第三方 <strong>DSH 插件</strong>：文生图、文生视频、配音，以及记忆、叙事锚点这类需要参与提示词和后台结算的功能。Tavern 提供一层稳定的接口：让插件知道「这一轮写完了、写了什么」，把图片或别的内容「挂回这一轮」，并往正文请求和后台结算里<strong>添加</strong>内容。v4 另提供仅对当前人物卡卡内插件开放的官方 MVU 变量结算 provider。多数是添加类接口，插件出错只会丢掉它自己那一份，游戏照常进行；少数替换类接口（如 <code>replaceSettlement</code>）让插件接管某个流程，插件失败时自动退回 Tavern 自己的做法。</p>
 <h2 id="plugin-api--section-1">三条承诺</h2>
 <ol><li><strong>方便</strong>：插件不需要改 Tavern 源码、不需要读 Tavern 的数据文件、不需要打补丁。</li><li><strong>稳定</strong>：接口带版本号，只加不改。Tavern 内部怎么重构，都不影响按本文写的插件。要废弃的东西先标记废弃，至少保留 6 个月。</li><li><strong>自由</strong>：挂什么、何时挂、挂几个、用什么模型和服务，全由插件决定。Tavern 只负责显示、和正文版本绑定、回退时隐藏。</li></ol>
 <p>反过来，插件也只用本文列出的东西。Tavern 的内部模块、数据目录、内部请求、页面结构都不是接口，随时会变。</p>
@@ -1531,11 +1533,12 @@ ctx.tavernUi.registerComposerAction({
 <p><code>package.json</code> 的写法：</p>
 <div class="code-block"><div class="code-heading"><span>json</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
   &quot;name&quot;: &quot;dsh-tavern-xxx&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
   &quot;type&quot;: &quot;module&quot;,
   &quot;exports&quot;: { &quot;.&quot;: &quot;./index.mjs&quot;, &quot;./client&quot;: &quot;./client.js&quot; },
   &quot;dsh&quot;: { &quot;client&quot;: { &quot;platform&quot;: &quot;web&quot;, &quot;inject&quot;: [&quot;dsh-tavern-plugin&quot;] } }
 }</code></pre></div>
-<ul><li>宿主侧入口必须有（<code>exports</code> 的 <code>&quot;.&quot;</code>，或 <code>main</code>）。只做界面的插件也要放一个空的 <code>index.mjs</code>（<code>export function apply() {}</code>）。</li><li>没有浏览器侧时，去掉 <code>&quot;./client&quot;</code> 和整个 <code>dsh</code> 字段。</li><li>插件名建议叫 <code>dsh-tavern-xxx</code>，方便用户辨认；不能和已安装的包同名（例如 <code>dsh-tavern-plugin</code>），否则会被跳过。</li><li>插件被删除或卸载时要释放的东西（定时器、连接），用 <code>ctx.effect(() =&gt; () =&gt; { /* 清理 */ })</code> 注册。</li></ul>
+<ul><li><code>name</code> 和 <code>version</code> 必须是非空字符串（例如 <code>&quot;version&quot;: &quot;1.0.0&quot;</code>）；<code>private: true</code> 也不能省略版本。DSH 会读取插件包身份，缺少版本可能使官方 DeepSeek 请求在发送前失败。</li><li>宿主侧入口必须有（<code>exports</code> 的 <code>&quot;.&quot;</code>，或 <code>main</code>）。只做界面的插件也要放一个空的 <code>index.mjs</code>（<code>export function apply() {}</code>）。</li><li>没有浏览器侧时，去掉 <code>&quot;./client&quot;</code> 和整个 <code>dsh</code> 字段。</li><li>插件名建议叫 <code>dsh-tavern-xxx</code>，方便用户辨认；不能和已安装的包同名（例如 <code>dsh-tavern-plugin</code>），否则会被跳过。</li><li>插件被删除或卸载时要释放的东西（定时器、连接），用 <code>ctx.effect(() =&gt; () =&gt; { /* 清理 */ })</code> 注册。</li></ul>
 <p>浏览器侧的 <code>client.js</code> 由浏览器直接加载，不需要打包，固定写成下面的样子；<code>id</code> 必须和 <code>package.json</code> 的 <code>name</code> 一致，React 用 <code>require(&#39;react&#39;)</code> 取：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>window.__ModuleLoader__.load({
   id: &#39;dsh-tavern-xxx&#39;,
@@ -1550,7 +1553,8 @@ ctx.tavernUi.registerComposerAction({
 })</code></pre></div>
 <p>什么时候生效：</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">操作</th><th scope="col">生效方式</th></tr></thead><tbody><tr><td>往 <code>plugins/</code> 放进一个新插件</td><td>不用重启：宿主侧几秒内加载，浏览器侧刷新一次页面后出现</td></tr><tr><td>修改 <code>client.js</code></td><td>不用刷新：几秒内自动换成新代码</td></tr><tr><td>修改 <code>index.mjs</code></td><td>要重启 DSH</td></tr><tr><td>删除插件文件夹</td><td>宿主侧不再加载；刷新页面后浏览器侧消失</td></tr></tbody></table></div>
-<p>Tavern 把 <code>plugins/</code> 下的插件登记在 DSH 的 Tavern 配置（<code>~/.dsh/profiles/tavern/cordis.patch.yml</code>）里，以 <code>tavern-user-plugin-</code> 开头的条目由 Tavern 自动维护，不要手改。插件文件夹缺 <code>package.json</code> 或宿主入口时会被跳过，原因写在 Tavern 日志里。Tavern 通过插件文件夹里自动生成的 <code>.tavern-entry.mjs</code> 加载宿主侧：插件代码有语法错误、导入失败或 <code>apply</code> 抛错时，只在日志里记一条「plugins/&lt;文件夹&gt; 加载失败 / 启动失败」，不会让 DSH 起不来。这个文件不要改，也不用提交到插件仓库。</p>
+<p>Tavern 把 <code>plugins/</code> 下的插件登记在 DSH 的 Tavern 配置（<code>~/.dsh/profiles/tavern/cordis.patch.yml</code>）里，以 <code>tavern-user-plugin-</code> 开头的条目由 Tavern 自动维护，不要手改。插件文件夹缺 <code>package.json</code>、有效的 <code>name</code> / <code>version</code> 或宿主入口时会被跳过，原因写在 Tavern 日志里。Tavern 通过插件文件夹里自动生成的 <code>.tavern-entry.mjs</code> 加载宿主侧：插件代码有语法错误、导入失败或 <code>apply</code> 抛错时，只在日志里记一条「plugins/&lt;文件夹&gt; 加载失败 / 启动失败」，不会让 DSH 起不来。这个文件不要改，也不用提交到插件仓库。</p>
+<p>升级后，已有但缺少有效 <code>name</code> / <code>version</code> 的插件会保留在磁盘上，但不再登记加载，插件管理和日志会说明原因。请补齐作者确认的版本，或安装作者修正后的插件 / 人物卡，再启用；旧卡暂存副本仍无效时需重新导入修正后的卡。不要为第三方插件随意编造版本。</p>
 <p>写好之后怎样发布，才能让别人在设置里一键安装，见<a href="#plugin-publishing">发布与一键安装</a>。</p>
 <blockquote><p>不要把插件放进 <code>tools/</code> 和 <code>tools.cordis.yml</code>：那里是卡片工作台的自创工具，挂在 Agent 预设里，要等第一局开始才加载，浏览器侧也永远不会加载。</p></blockquote>
 <h3>卡内插件</h3>
@@ -1567,28 +1571,68 @@ export function apply(ctx) {
   ctx.tavern.onTurnSettled(async (turn) =&gt; { /* ... */ })
 }</code></pre></div>
 <p>两条规则：</p>
-<ul><li><strong>用 <code>ctx.tavern.方法名()</code> 的形式调用</strong>，不要把方法单独取出来（<code>const { attach } = ctx.tavern</code> 会报错）。Tavern 靠调用方式认出是哪个插件，从而让各插件只能看到、修改自己的内容。</li><li><strong>注册类的方法（<code>onTurnSettled</code>、<code>onTimelineChanged</code>、<code>promptSection</code>、<code>turnSection</code>、<code>settlementSection</code>、<code>settlementTool</code>、<code>worldbookSource</code>、<code>register…</code>）在插件卸载时自动撤销</strong>，也会返回一个撤销函数，可以提前调用。</li></ul>
+<ul><li><strong>用 <code>ctx.tavern.方法名()</code> 的形式调用</strong>，不要把方法单独取出来（<code>const { attach } = ctx.tavern</code> 会报错）。Tavern 靠调用方式认出是哪个插件，从而让各插件只能看到、修改自己的内容。</li><li><strong>注册类的方法（<code>onTurnSettled</code>、<code>onTimelineChanged</code>、<code>promptSection</code>、<code>turnSection</code>、<code>settlementSection</code>、<code>settlementTool</code>、<code>worldbookSource</code>、<code>mvuSettlementProvider</code>、<code>register…</code>）在插件卸载时自动撤销</strong>，也会返回一个撤销函数，可以提前调用。</li></ul>
 <h2 id="plugin-api--section-4">基本概念</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">名词</th><th scope="col">含义</th></tr></thead><tbody><tr><td><code>gameId</code></td><td>一局游戏。等于 DSH 的会话编号。</td></tr><tr><td><code>turn</code></td><td>轮次编号，开场白是第 1 轮，玩家的第一轮是第 2 轮。编号只增不减：回退后重新生成的正文用新编号，所以编号可能不连续；被回退的轮次读不到，撤销回退后恢复。区分同一轮的不同正文请用 <code>textVersion</code>。</td></tr><tr><td><code>textVersion</code></td><td>这一轮正文的某个版本。重写、编辑、切换版本、回退后重新生成，都会得到新的 <code>textVersion</code>。不透明字符串，不要解析。</td></tr><tr><td>媒体项</td><td>插件挂到某个 <code>textVersion</code> 上的一样东西：图片、视频、音频，或插件自定义的类型。</td></tr></tbody></table></div>
 <p><strong>绑定规则</strong>：媒体项只在它绑定的 <code>textVersion</code> 是当前显示的版本时出现。回退或切到别的版本时隐藏，切回来又出现。Tavern 不会因为回退而删除媒体项。</p>
 <h2 id="plugin-api--section-5">接口分页</h2>
-<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">页面</th><th scope="col">内容</th></tr></thead><tbody><tr><td><a href="#plugin-api-game">读取游戏</a></td><td>回合写完、读正文与人物卡、历史、时间线变化、改最新一轮</td></tr><tr><td><a href="#plugin-api-prompt">正文、结算与任务</a></td><td>往正文请求、世界书、后台结算、候选、压缩里添加内容；结算任务、手动任务、<code>runTask</code>、<code>handle</code></td></tr><tr><td><a href="#plugin-api-data">媒体与数据</a></td><td>挂图片等媒体、按轮与整局数据、插件数据、本局配置项、插件在哪些局生效</td></tr><tr><td><a href="#plugin-api-cards">人物卡、Skill 与演出</a></td><td>人物卡库、改卡、Skill、台词标注、角色素材</td></tr><tr><td><a href="#plugin-api-ui">浏览器侧 tavernUi 与 fork 故事契约</a></td><td>显示媒体、正文标记、按钮、面板、舞台、配音与音乐；独立故事视图的 <code>tavernStory</code></td></tr></tbody></table></div>
+<div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">页面</th><th scope="col">内容</th></tr></thead><tbody><tr><td><a href="#plugin-api-game">读取游戏</a></td><td>回合写完、读正文与人物卡、历史、时间线变化、改最新一轮、MVU provider</td></tr><tr><td><a href="#plugin-api-prompt">正文、结算与任务</a></td><td>往正文请求、世界书、后台结算、候选、压缩里添加内容；结算任务、手动任务、<code>runTask</code>、<code>handle</code></td></tr><tr><td><a href="#plugin-api-data">媒体与数据</a></td><td>挂图片等媒体、按轮与整局数据、插件数据、本局配置项、插件在哪些局生效</td></tr><tr><td><a href="#plugin-api-cards">人物卡、Skill 与演出</a></td><td>人物卡库、改卡、Skill、台词标注、角色素材</td></tr><tr><td><a href="#plugin-api-ui">浏览器侧 tavernUi 与 fork 故事契约</a></td><td>显示媒体、正文标记、按钮、面板、舞台、配音与音乐；独立故事视图的 <code>tavernStory</code></td></tr></tbody></table></div>
 <h2 id="plugin-api--section-6">插件自建 Agent 的请求记录</h2>
 <p>插件用 DSH 的 <code>agents</code> 服务为某局游戏建子 Agent 时（例如自己做结算），只要创建时把 <code>meta.parentSession</code> 设为这局的 <code>gameId</code>，这个 Agent 发出的模型请求就会自动记进这局的请求记录：作为后台请求，归在当时最新的一轮，和 Tavern 自己的请求一样只保留最近 30 轮原文。在该子 Agent 的会话里打开「完整上下文」即可查看。插件不需要调用任何接口，也不要自己写 Tavern 的请求记录文件。</p>
 <p>Tavern 只给顶层会话（玩家的游戏会话）加回合上下文和「【酒馆状态】」这类提示；带 <code>parentSession</code> 的子 Agent 会话一律不加，插件 Agent 收到的只有插件自己给的内容。</p>
-<h2 id="plugin-api--section-7">暂时没有的</h2>
+<h2 id="plugin-api--section-7">注册世界书召回策略</h2>
+<p><code>ctx.tavern.worldbookStrategy({ name, label, description, select })</code> 注册一种可在本局设置中选择的策略。<code>name</code> 是插件内唯一的名称（规则同 <code>worldbookSource</code>）；宿主自动添加插件命名空间，插件卸载时自动移除。调用返回移除注册的函数。注册本身不切换任何游戏；默认仍为现有关键词注入策略。</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.worldbookStrategy({
+  name: &#39;first-match&#39;,
+  label: &#39;首个匹配条目&#39;,
+  description: &#39;用于与现有召回策略进行对比&#39;,
+  select({ gameId, userText, purpose, entries }) {
+    const entry = entries.find(entry =&gt; entry.primaryKeys?.some(key =&gt; userText.includes(key)))
+    return entry ? [entry.ref] : []
+  }
+})</code></pre></div>
+<p><code>select</code> 可以异步执行，最多 5 秒。输入是独立副本，不包含 Chat 内部状态；<code>entries</code> 只含本局启用且非 MVU 更新规则的条目，字段为 <code>ref</code>、<code>sourceUid</code>、<code>sourcePath</code>、<code>title</code>、<code>content</code>、<code>constant</code>、<code>primaryKeys</code>、<code>secondaryKeys</code>、<code>order</code>、<code>position</code>、<code>depth</code>、<code>role</code>。返回该数组内的 <code>ref</code> 字符串数组，不能返回任意正文。Tavern 负责模板渲染以及常驻、强制激活条目的保留；策略不能通过省略它们取消强制规则。此模式不消耗现有关键词召回的冷却记录，也不调用“世界书模型筛选”。</p>
+<p>卡内插件只能参与所属人物卡的游戏；异步回调结束时再次核对作用域和卸载状态。异常、超时、非法引用、插件不可用时退回现有召回，不覆盖玩家保存的策略选择。插件代码不得在选择回调中产生游戏外副作用。可以用 <code>tavern.capabilities.worldbookStrategy === 1</code> 检查支持情况。</p>
+<h2 id="plugin-api--section-8">暂时没有的</h2>
 <p>下面这些目前还没有接口，不代表不能开放。有实际需要时请提<a href="https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml">插件接口需求</a>，写清要做的插件和卡在哪一步，能开放的会按需补上。</p>
-<ul><li>修改更早的轮次（<code>setVariables</code>、<code>editTurn</code> 目前只改最新一轮）。</li><li>直接使用 Tavern 自己的常驻后台会话：它带着整局的结算历史，插件任务混进去会影响之后的结算。需要游戏背景的后台工作请用 <code>runTask</code>。</li><li>替换 Tavern 的其他流程（提示词组装、世界书召回、候选、压缩、MVU 变量结算）。替换类接口会约定插件要交回的结果，插件失败时退回 Tavern 自己的做法。</li></ul>
+<ul><li>修改更早的轮次（<code>setVariables</code>、<code>editTurn</code> 目前只改最新一轮）。</li><li>直接使用 Tavern 自己的常驻后台会话：它带着整局的结算历史，插件任务混进去会影响之后的结算。需要游戏背景的后台工作请用 <code>runTask</code>。</li><li>替换 Tavern 的其他流程（提示词组装、候选、压缩）。替换类接口会约定插件要交回的结果，插件失败时退回 Tavern 自己的做法。</li></ul>
 <p>直接读写 Tavern 的数据目录和人物卡文件不属于接口：这些文件的格式会随版本变化，插件这样做，Tavern 一更新就可能失效。需要里面的数据，请按上面的方式提需求，由 Tavern 提供读取接口。</p>
-<h2 id="plugin-api--section-8">用 DSH 自带的</h2>
+<h2 id="plugin-api--section-9">用 DSH 自带的</h2>
 <ul><li>插件设置页：用 DSH 的设置区（<code>settings.section</code>）。</li><li>模型调用、凭据、附件存储：用 DSH 的 <code>llm</code>、<code>credentials</code>、<code>attachments</code> 服务。</li></ul>
-<h2 id="plugin-api--section-9">已知限制</h2>
+<h2 id="plugin-api--section-10">已知限制</h2>
 <ul><li>修改插件的宿主侧代码（<code>index.mjs</code>）后要重启 DSH 才生效。这是 DSH 的机制。</li><li>开场白不触发 <code>onTurnSettled</code>。</li></ul>
-<h2 id="plugin-api--section-10">缺接口怎么办</h2>
+<h2 id="plugin-api--section-11">缺接口怎么办</h2>
 <p>Tavern 尽量开放接口，并保持每个接口简单、稳定；接口按插件实际用到的内容补充，实在不能开放的会说明原因。现有接口和 DSH 自带的服务都做不到时，请提一个<a href="https://github.com/flizzywine/dsh-tavern/issues/new?template=plugin-api.yml">插件接口需求</a>，写清要做的插件、卡在哪一步、试过什么办法。请不要靠改 Tavern 源码或读 Tavern 数据文件绕过去，那样 Tavern 一更新插件就会失效。</p><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="plugin-api-game" data-group="plugins" data-title="接口：读取游戏"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#plugins">插件</a> <span>/</span> 功能说明</div><h1 tabindex="-1">接口：读取游戏</h1><p class="lead">回合写完、读正文与人物卡、历史、时间线变化、改最新一轮。</p><p>宿主侧 <code>ctx.tavern</code> 中读取游戏状态、监听回合与时间线变化的接口。</p>
 <h2 id="plugin-api-game--section-1"><code>apiVersion</code></h2>
-<p>当前为 <code>3</code>。以后新增能力时会增大，旧能力保持不变。浏览器侧的 <code>tavernUi.apiVersion</code> 单独计数，当前是 <code>5</code>。标着「第 3 版」的接口，先判断 <code>apiVersion &gt;= 3</code> 再用；旧版 Tavern 上没有时，关掉插件里对应的功能即可。</p>
-<h2 id="plugin-api-game--section-2"><code>onTurnSettled(handler)</code></h2>
+<p>当前为 <code>4</code>。v4 向后兼容旧版接口；浏览器侧的 <code>tavernUi.apiVersion</code> 单独计数，当前是 <code>5</code>，不受影响。调用新增的 provider 接口前同时检查 <code>apiVersion &gt;= 4</code> 和对应能力标记；旧版 Tavern 上没有时，关闭该插件功能并沿用原生处理。</p>
+<h2 id="plugin-api-game--section-2">Provider 能力检查</h2>
+<p><code>tavern.capabilities</code> 只声明宿主实现了哪些 provider 接口，不代表某个插件已注册，也不代表当前游戏会选择它。检查该能力值为 <code>1</code>，并保留旧宿主的降级路径：</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>const api = ctx.tavern
+const canSettleMvu = api.apiVersion &gt;= 4 &amp;&amp; api.capabilities?.mvuSettlementProvider === 1
+if (canSettleMvu) api.mvuSettlementProvider({ name: &#39;my-mvu&#39;, settle })</code></pre></div>
+<p>MVU provider 仅供<strong>当前人物卡绑定的卡内插件</strong>使用；普通全局插件不能接管其他卡的游戏。卡内插件停用或卸载时注册会撤销。若同一游戏有多个候选 provider，Tavern 不会任意挑选一个，会走原生结算。</p>
+<h2 id="plugin-api-game--section-3"><code>mvuSettlementProvider({ name, settle })</code>（第 4 版）</h2>
+<p>为当前卡的官方 MVU 变量结算提供替代结果。注册返回清理函数；卸载时也会自动撤销。<code>settle</code> 收到：</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
+  gameId, turn, textVersion,
+  input,                 // 玩家本轮输入
+  storyText,              // 本轮正文
+  currentVariables,       // 当前完整变量快照
+  variableSchema,         // MVU 变量结构
+  swipe, branch,
+  lifecycleRevision, storageRevision,
+  signal
+}</code></pre></div>
+<p>返回 <code>null</code> 或 <code>false</code> 表示不接管，继续 Tavern 原生 MVU 结算；接管时返回 <code>{ operations }</code>：</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>async function settle({ currentVariables, signal }) {
+  signal.throwIfAborted()
+  const hp = currentVariables.stat_data.角色.体力
+  return { operations: [{ op: &#39;replace&#39;, path: &#39;/stat_data/角色/体力&#39;, value: hp - 1 }] }
+}</code></pre></div>
+<p><code>textVersion</code> 是宿主从当前轮 canonical <code>readPendingTurn().key</code> 读取后附给回调的正文版本。把回调当作纯计算：不要修改输入快照，也不要在里面写游戏状态或执行不可重复的外部副作用。回调可能在操作尚未持久化前因结算重试再次运行。</p>
+<p><code>operations</code> 使用官方 MVU JSON Patch 方言（<code>replace</code>、<code>insert</code>、<code>add</code>、<code>delta</code>、<code>remove</code>、<code>move</code>），<code>path</code> 和 <code>move</code> 的 <code>from</code> 都是以 <code>/stat_data/</code> 开头的绝对 JSON Pointer。宿主会校验变量路径和值，通过官方 MVU 运行时应用、审计并原子提交；插件不要调用 <code>setVariables</code> 写回快照来模拟结算。<code>textVersion</code>、<code>swipe</code>、<code>branch</code>、<code>lifecycleRevision</code> 和 <code>storageRevision</code> 标识本次结算目标；回调应按这些字段及 <code>gameId</code>、<code>turn</code> 实现幂等。宿主会在投递操作前持久化它们；中断后恢复时复用已保存操作，不会为同一份已保存提交再次调用 provider。<code>signal</code> 中止时应停止计算，本次结果不提交。返回 <code>null</code> 或 <code>false</code>（包括多个 provider 候选时）继续原生结算。provider 抛错、返回格式错误或 patch 校验失败时不会形成变量提交，错误会记录并使本次变量结算失败，不会自动改走原生结算；用户重试时 provider 可能再次运行。若操作已持久化，恢复会重投已保存操作；若 provider 已卸载、停用或不再绑定当前卡，宿主拒绝投递这些操作。</p>
+<p>该接口只接管变量，姿势与人物设计仍按原有开关运行，不改变现有对白处理。它不是 <code>replaceSettlement</code>，也不用于没有官方 MVU 状态的游戏。启用正式 MVU 变量结算仍需人物卡启用了官方 MVU，且游戏的后台变量结算开关开启。</p>
+<h2 id="plugin-api-game--section-4"><code>onTurnSettled(handler)</code></h2>
 <p>一轮正文写完、后台变量结算结束（成功或失败）后调用一次。同一个 <code>textVersion</code> 只通知一次；插件没加载时发生的轮次不补发；开场白不触发，需要时用 <code>getTurn</code> 读第 1 轮。</p>
 <p><code>handler</code> 收到：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
@@ -1602,9 +1646,9 @@ export function apply(ctx) {
 }</code></pre></div>
 <p><code>variables</code> 与 SillyTavern 的消息变量同一结构：使用 MVU 变量的卡，变量在 <code>variables.stat_data</code> 下。它跟着正文版本走：回退、重新生成、切换版本后读到的是当前显示版本的变量。这是副本，直接改它不影响游戏，要改请用 <code>setVariables</code>；Tavern 不解释其中的内容（例如游戏日期），由插件按卡自己的变量名读取。</p>
 <p>处理函数里抛错不会影响游戏，错误会写进日志。处理函数不必等生图完成才返回。</p>
-<h2 id="plugin-api-game--section-3"><code>getTurn({ gameId, turn })</code></h2>
+<h2 id="plugin-api-game--section-5"><code>getTurn({ gameId, turn })</code></h2>
 <p>读某一轮<strong>当前显示版本</strong>的同一份内容（含 <code>variables</code>，不含 <code>settledAt</code>）。这一轮不存在、或者是还没结算完的最新一轮时返回 <code>null</code>。用于插件自己的「手动生成」按钮。只读这一轮，不读整局历史，可以按需随时调用。</p>
-<h2 id="plugin-api-game--section-4"><code>getTurnState({ gameId })</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-6"><code>getTurnState({ gameId })</code>（第 2 版）</h2>
 <p>这一局现在的状态，供需要知道「当前是哪一轮、能不能操作」的插件使用：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
   gameId,
@@ -1617,7 +1661,7 @@ export function apply(ctx) {
   settled,       // 最新一轮已写完、后台结算已结束
 }</code></pre></div>
 <p>回退、撤销回退、重新生成后读到的是回退后的当前状态。浏览器侧用 <code>tavernUi.getTurnState</code> / <code>watchTurnState</code>。</p>
-<h2 id="plugin-api-game--section-5"><code>getCardContext({ gameId, turn })</code></h2>
+<h2 id="plugin-api-game--section-7"><code>getCardContext({ gameId, turn })</code></h2>
 <p>读这一轮可用的设定材料，供插件写画面提示词：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
   description,   // 人物卡描述
@@ -1626,7 +1670,7 @@ export function apply(ctx) {
   lore,          // 这一轮正文生成时启用的世界书条目：[{ title, keys, constant, content }]
 }</code></pre></div>
 <p><code>lore</code> 是生成那一刻保存的快照，后来改世界书不影响已写完的轮次；是否与正文相关由插件自己按 <code>keys</code> 和 <code>constant</code> 判断。没有快照的旧轮次返回空数组。这一轮不可读时抛错。只读这一轮的设定材料，不读整局历史。</p>
-<h2 id="plugin-api-game--section-6"><code>getRequestContext({ gameId, turn })</code>（第 3 版）</h2>
+<h2 id="plugin-api-game--section-8"><code>getRequestContext({ gameId, turn })</code>（第 3 版）</h2>
 <p>读 Tavern 为这一轮<strong>正文请求</strong>准备的本轮上下文，供导演、配图这类后台任务拿到和正文模型同一份材料，不用自己从人物卡、世界书里再拼一遍：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{
   turn,
@@ -1637,24 +1681,24 @@ export function apply(ctx) {
   ],
 }</code></pre></div>
 <ul><li><code>slot</code> 是这段在请求里的位置：<code>cardContext</code>（人物卡材料）、<code>activeWorldbook</code>（本轮世界书）、<code>currentStateProjection</code>（现场状态）、<code>scriptReference</code>（剧本）、<code>guide</code>、<code>writingRules</code>（写作要求）。</li><li><code>origin</code> 说明来源：<code>tavern:&lt;种类&gt;</code> 是 Tavern 自己的，<code>preset</code> 来自预设，<code>plugin</code> 来自插件的 <code>turnSection</code> / <code>worldbookSource</code>（带 <code>plugin</code>、<code>name</code>）。</li><li>只含<strong>本轮上下文</strong>，不含固定前缀（人物卡描述等，用 <code>getCard</code>、<code>getCardContext</code> 读）和历史消息（用 <code>getHistory</code>）。</li><li>是这一轮在当前剧情分支上<strong>最近一次</strong>准备的请求；Tavern 只保留最近 40 次准备，更早的轮次返回 <code>null</code>。重新生成后读到的是新请求的。</li></ul>
-<h2 id="plugin-api-game--section-7"><code>getCard({ gameId })</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-9"><code>getCard({ gameId })</code>（第 2 版）</h2>
 <p>读这局正在玩的人物卡，返回 SillyTavern 角色卡的数据（<code>name</code>、<code>description</code>、<code>personality</code>、<code>scenario</code>、<code>first_mes</code>、<code>character_book</code>、<code>extensions</code> 等，以卡里实际有的字段为准）。开局时保存了人物卡快照的游戏，读到的是快照，和正文生成用的是同一份。返回的是副本，改它不影响游戏。</p>
-<h2 id="plugin-api-game--section-8"><code>getCardImage({ gameId })</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-10"><code>getCardImage({ gameId })</code>（第 2 版）</h2>
 <p>读这局人物卡的图片，返回 <code>{ url, mediaType }</code>，卡没有图片（例如 JSON 格式的卡）时返回 <code>null</code>。<code>url</code> 是酒馆页面里可以直接显示的地址（例如 <code>&lt;img src&gt;</code>），只读；读到的是人物卡库里这张卡当前的图片，卡从卡库删除后返回 <code>null</code>。浏览器侧经 <code>callHost</code> 让宿主侧调用即可。</p>
-<h2 id="plugin-api-game--section-9"><code>getHistory({ gameId, from, to })</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-11"><code>getHistory({ gameId, from, to })</code>（第 2 版）</h2>
 <p>读第 <code>from</code> 到 <code>to</code> 轮已经写完的正文，一次最多 50 轮（省略 <code>to</code> 时读 50 轮）。返回 <code>[{ turn, input, text, rawText }]</code>：<code>input</code> 是玩家这一轮发的话（开场白为空），<code>text</code>、<code>rawText</code> 的含义同 <code>onTurnSettled</code>。还在生成、结算中的最新一轮不返回。只读要的那几轮，长局也不会读整局历史。</p>
-<h2 id="plugin-api-game--section-10"><code>getCharacterDesigns({ gameId })</code>、<code>saveCharacterDesign({ gameId, name, ... })</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-12"><code>getCharacterDesigns({ gameId })</code>、<code>saveCharacterDesign({ gameId, name, ... })</code>（第 2 版）</h2>
 <p>这一局的人物设计档案（酒馆状态里的「人物设计档案」）：正文、结算和插件读同一份，生图插件画人物时用它，文字和图片的人物设定就不会各说各的。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>const { characters } = await ctx.tavern.getCharacterDesigns({ gameId })
 // [{ name, aliases, identity, narrativeRole, updatedAt, sections: [{ key, label, text }] }]
 const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sections.find(section =&gt; section.key === &#39;appearance&#39;)?.text</code></pre></div>
 <ul><li><code>sections</code> 的 <code>key</code> 为 <code>identity</code>（身份）、<code>personality</code>（性格）、<code>appearance</code>（外貌）、<code>speechStyle</code>（说话方式）、<code>narrativeRole</code>（剧情作用），只列出有内容的项。还没有档案时 <code>characters</code> 为空数组。</li><li><code>saveCharacterDesign</code> 新建或更新一个人物，规则和后台结算自己建档时相同：<code>name</code>、<code>identity</code>、<code>personality</code>、<code>appearance</code>、<code>speechStyle</code>、<code>narrativeRole</code> 都要写完整，<code>aliases</code> 可选；同名人物会被更新。保存后这个人物同步进本局世界书，后续正文和结算都会用到。适合生图插件根据参考图修订外貌后写回，让文字跟着同一份设定走。</li><li>档案在后台结算时也会更新，需要最新内容时在 <code>onTurnSettled</code> 里重新读取。插件不在这一局生效时，保存会被拒绝。</li></ul>
-<h2 id="plugin-api-game--section-11"><code>backgroundModel({ gameId })</code></h2>
+<h2 id="plugin-api-game--section-13"><code>backgroundModel({ gameId })</code></h2>
 <p>返回这一局 Tavern 使用的后台模型 <code>{ provider, model, reasoningEffort? }</code>，没有时为 <code>null</code>。<code>reasoningEffort</code> 是这局设置的后台推理强度，没设置时不含这个字段。插件可以用它通过 DSH 的 <code>llm</code> 服务做自己的规划，不必让用户再选一次模型。</p>
-<h2 id="plugin-api-game--section-12"><code>onTimelineChanged(handler)</code>（第 2 版）</h2>
+<h2 id="plugin-api-game--section-14"><code>onTimelineChanged(handler)</code>（第 2 版）</h2>
 <p>这一局的剧情线变了之后调用：回退、撤销回退、重新生成、编辑正文、分叉。<code>handler</code> 收到 <code>{ gameId, kind, turn?, textVersion?, fromGameId? }</code>，<code>kind</code> 是 <code>rollback</code>、<code>undo-rollback</code>、<code>regenerate</code>、<code>edit</code>、<code>fork</code> 之一；<code>textVersion</code>（第 3 版）是变化之后第 <code>turn</code> 轮当前显示的正文版本，这一轮已不存在时没有这个字段；<code>fork</code> 时 <code>gameId</code> 是新游戏，<code>fromGameId</code> 是原游戏。以后可能增加新的 <code>kind</code>，不认识的请忽略。通知在变化保存之后发出。</p>
 <p>这个通知只是告知。插件的按轮数据会自动跟着剧情线走（见<a href="#plugin-api-data">媒体与数据</a>的「插件存档数据」），不需要在这里同步。编辑正文后，Tavern 还会对新的正文版本再发一次 <code>onTurnSettled</code>，插件可以据此重算这一轮。</p>
-<h2 id="plugin-api-game--section-13"><code>versionSignal({ gameId, turn, textVersion })</code>（第 3 版）</h2>
+<h2 id="plugin-api-game--section-15"><code>versionSignal({ gameId, turn, textVersion })</code>（第 3 版）</h2>
 <p>返回一个 <code>AbortSignal</code>：这一轮的 <code>textVersion</code> 一旦不再是当前显示的版本（回退、重新生成、编辑正文、删局），它就中止，<code>signal.reason.code</code> 为 <code>TAVERN_PLUGIN_STALE_VERSION</code>。传入时已经不是当前版本的，直接返回已中止的信号。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.onTurnSettled(async ({ gameId, turn, textVersion, text }) =&gt; {
   const signal = await ctx.tavern.versionSignal({ gameId, turn, textVersion })
@@ -1662,9 +1706,9 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
   await ctx.tavern.saveTurnData({ gameId, turn, textVersion, data: plan })  // 版本失效时这里也会被拒
 })</code></pre></div>
 <ul><li>适合插件自己开的长任务（导演、生图、配音预合成）：剧情一变就停，不用自己监听 <code>onTimelineChanged</code> 再比对版本。</li><li>结算任务 <code>run</code> 收到的 <code>signal</code> 已经包含它，不用再取。</li><li>只负责「停」：迟到的写入照样由 <code>textVersion</code> 拦下（<code>saveTurnData</code>、<code>attach</code>、<code>setVariables</code>、<code>editTurn</code> 都会拒绝旧版本），插件不需要另做提交、回滚。</li><li>插件卸载后，它取的信号不再更新。</li></ul>
-<h2 id="plugin-api-game--section-14"><code>onGameRemoved(handler)</code></h2>
+<h2 id="plugin-api-game--section-16"><code>onGameRemoved(handler)</code></h2>
 <p>一局游戏被删除时调用，收到 <code>{ gameId }</code>，供插件清理自己按局保存的数据。插件挂到这局上的媒体项由 Tavern 一并清理。</p>
-<h2 id="plugin-api-game--section-15">改最新一轮（第 2 版）</h2>
+<h2 id="plugin-api-game--section-17">改最新一轮（第 2 版）</h2>
 <p>两个接口都只能改<strong>最新一轮</strong>，并且要等这一轮写完、后台结算结束；适合在 <code>onTurnSettled</code> 里调用。都要带上 <code>textVersion</code>：期间玩家回退、重新生成或已经改过，会报 <code>TAVERN_PLUGIN_STALE_VERSION</code>，什么也不改。插件不在这一局生效时也会被拒绝。</p>
 <h3><code>setVariables({ gameId, turn, textVersion, variables })</code></h3>
 <p>用 <code>variables</code> 整个替换这一轮当前版本的消息变量（结构同 <code>onTurnSettled</code> 收到的 <code>variables</code>，MVU 卡的数据在 <code>stat_data</code> 下）。先读、改、再整个写回：</p>
@@ -1729,7 +1773,18 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
   },
 })</code></pre></div>
 <ul><li><strong>必须交回什么</strong>：一个对象。本局开启了姿势结算时，<code>posture</code> 必须是非空字符串（最多 8000 字），它会成为下一轮正文看到的【现场】；没开启时可以不返回 <code>posture</code>。</li><li><strong>失败时退回</strong>：<code>settle</code> 抛错、120 秒没有返回、或者交回的东西不合格，这一轮自动改用 Tavern 自己的结算，并把原因记进 Tavern 日志。</li><li><strong>停止</strong>：<code>signal</code> 是一个 <code>AbortSignal</code>。玩家点「停止后台」时它会中止，Tavern 立刻停止等待，这一轮按玩家停止处理，不会改用 Tavern 自己的结算，也不记为插件错误。插件应据此取消自己的模型请求或子 Agent（例如 <code>agent.cancel()</code>）。</li><li><strong>进度</strong>：结算进行中，Tavern 的后台等待提示会写明「插件「名称」正在结算」。插件为这局建的子 Agent（见下文「插件自建 Agent 的请求记录」）在输出时，提示会区分「模型仍在输出」和「等待模型有效输出」，与 Tavern 自己的结算一样。</li><li><strong>范围</strong>：只替换普通卡的姿势结算（以及同一步里的人物设计）。使用官方 MVU 变量的卡，变量结算仍由 Tavern 负责，不会调用 <code>settle</code>。玩家关掉了所有后台结算项时，这一轮不结算，也不调用 <code>settle</code>。</li><li><strong>只有一个生效</strong>：每个插件只能注册一次。只有一个插件注册时，它自动生效；有多个时都不生效，用 Tavern 自己的结算。</li></ul>
-<h2 id="plugin-api-prompt--section-10"><code>settlementTask({ name, title?, phase?, run })</code>（第 2 版）</h2>
+<h2 id="plugin-api-prompt--section-10"><code>replaceLedger({ consolidate })</code>（第 6 版）</h2>
+<p>由插件<strong>接管</strong>玩家手动发起的「整理台账」（替换类接口）。适合想用自己的办法挑选上下文、查询旧条目或校验提交的插件。Tavern 仍负责发起、计算待整理的剧情、校验并保存结果，以及下一轮把台账给正文看一次。</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.replaceLedger({
+  async consolidate({ gameId, from, through, text, ledger, rules, tool, signal }) {
+    // text：第 from–through 轮待整理的剧情；ledger：当前完整台账
+    // rules、tool：Tavern 自己整理时用的规则和 ledger_submit 工具定义，可直接复用
+    const delta = await myConsolidation({ text, ledger, rules, tool, signal })
+    return { delta }  // 格式同 ledger_submit 的参数；返回 null 表示这次交给 Tavern 自己整理
+  },
+})</code></pre></div>
+<ul><li><strong>必须交回什么</strong>：<code>{ delta }</code>，格式同 <code>ledger_submit</code> 的参数（物品、人物、地点的 add / update / remove，地点还有 reparent），无变化交 <code>{ delta: {} }</code>。Tavern 按自己的规则原子校验并保存，并记下整理到第 <code>through</code> 轮。</li><li><strong>失败时退回</strong>：<code>consolidate</code> 抛错、120 秒没有返回、或者 <code>delta</code> 校验不通过，这次自动改用 Tavern 自己的整理，并把原因记进 Tavern 日志。返回 <code>null</code> 也由 Tavern 自己整理，但不记错误。</li><li><strong>停止</strong>：玩家点「停止后台」时 <code>signal</code> 中止，这次整理按失败处理，不会改用 Tavern 自己的整理。</li><li><strong>模型</strong>：Tavern 不替插件调用模型。可以用 <code>runTask</code> 让 Tavern 开一个带自定义工具的后台 Agent（整理期间可以调用；它的 <code>prompt</code> 最多 2 万字，而 <code>text</code> 最多 4 万字，需要自己挑选或分段），也可以用插件自己的模型或子 Agent。</li><li><strong>只有一个生效</strong>：规则同 <code>replaceSettlement</code>。</li></ul>
+<h2 id="plugin-api-prompt--section-11"><code>settlementTask({ name, title?, phase?, run })</code>（第 2 版）</h2>
 <p>注册一个<strong>结算任务</strong>：每轮正文写完后，和 Tavern 自己的结算排在一起依次运行。适合记忆整理、世界推演、写作建议这类每轮都要做、有自己的提示词和流程的后台工作。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.settlementTask({
   name: &#39;world-events&#39;,
@@ -1741,7 +1796,7 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
   },
 })</code></pre></div>
 <ul><li><strong>顺序</strong>：每轮先跑所有 <code>before</code> 任务，再跑 Tavern 自己的结算，最后跑所有 <code>after</code> 任务。<code>parallel</code> 任务（第 3 版）在 Tavern 自己的结算开始时启动、和它同时运行，<code>after</code> 任务等它们和结算都结束才开始；适合导演、配音预合成这类只读正文、想尽早开工的工作。同一阶段的任务一个接一个运行，按插件名、任务名排序。</li><li><strong>下一轮会等它们跑完</strong>：玩家发下一轮时，Tavern 先等这些任务结束，所以这一轮的产出（存进 <code>saveTurnData</code>，再用 <code>turnSection</code> 注入）一定赶得上下一轮。任务越慢，玩家等得越久。</li><li><strong><code>run</code> 收到</strong>：这一轮的 <code>gameId</code>、<code>turn</code>、<code>textVersion</code>、<code>text</code>、<code>rawText</code>、<code>card</code>、<code>variables</code>（同 <code>onTurnSettled</code>），以及 <code>phase</code>、<code>signal</code>、<code>runAgent</code>。<code>before</code>、<code>parallel</code> 任务看到的是结算前的变量；<code>after</code> 任务看到的是 Tavern 结算之后的变量，前面的任务改过变量时，后面的任务读到的是改过的。</li><li><strong><code>runAgent(input)</code></strong>：等同 <code>runTask</code>，参数相同（<code>prompt</code>、<code>tools</code>），<code>gameId</code> 和 <code>signal</code> 已经替你填好。提示词、工具、流程都由插件自己决定，也可以不用它，改用 DSH 的 <code>llm</code> 服务。</li><li><strong>每个正文版本只跑一次</strong>：同一个 <code>textVersion</code> 的同一阶段不会重复运行（例如重试结算时）。编辑正文、重新生成产生新版本后会再跑。</li><li><strong>停止与超时</strong>：玩家点「停止后台」、或这一轮的正文版本被替换（回退、重新生成、编辑）时 <code>signal</code> 中止，这一阶段剩下的任务不再运行，不记为错误。单个任务 5 分钟没结束按出错处理。</li><li><strong>出错</strong>：只记进 Tavern 日志，接着跑下一个任务；不影响 Tavern 自己的结算和下一轮。</li><li><strong>进度</strong>：运行中，后台等待提示会写明「插件「插件名 · 任务名」正在结算」，期间本局显示后台忙，候选、编辑等操作要等它结束。</li><li><code>before</code>、<code>parallel</code> 任务运行时这一轮还没结算完：可以 <code>saveTurnData</code>，不能用 <code>setVariables</code>、<code>editTurn</code>（它们要等结算结束）。想让 Tavern 的结算用上 <code>before</code> 任务的产出，配合 <code>settlementSection</code> 把它写进结算说明。</li><li>开场白不触发结算任务。</li></ul>
-<h2 id="plugin-api-prompt--section-11"><code>manualTask({ name, title?, description?, input?, run })</code>（第 2 版）</h2>
+<h2 id="plugin-api-prompt--section-12"><code>manualTask({ name, title?, description?, input?, run })</code>（第 2 版）</h2>
 <p>注册一个<strong>手动任务</strong>：游玩时状态栏的「插件任务」里出现一个按钮，玩家点了才运行。适合「整理一下记忆」「生成本章总结」这类按需的后台工作。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.manualTask({
   name: &#39;chapter-summary&#39;,
@@ -1754,9 +1809,9 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
   },
 })</code></pre></div>
 <ul><li><code>run</code> 收到最新一轮（结算结束后的）内容，字段同结算任务；还没有正文时 <code>turn</code> 为 <code>null</code>。<code>input</code> 是玩家在输入框里填的文字（最多 4000 字，可能为空字符串）。</li><li>和 Tavern 自己的手动任务（设计人物、整理台账）一样独占后台：正文生成中、后台结算或别的任务运行时不能启动；运行期间本局显示后台忙，玩家可以点「停止后台」中止，下一轮会等它结束。</li><li>10 分钟没结束按出错处理；出错记进 Tavern 日志。</li></ul>
-<h2 id="plugin-api-prompt--section-12"><code>startTask({ gameId, name, input? })</code>（第 2 版）</h2>
+<h2 id="plugin-api-prompt--section-13"><code>startTask({ gameId, name, input? })</code>（第 2 版）</h2>
 <p>替玩家启动本插件的一个手动任务，效果和玩家点按钮一样，任务开始后立即返回 <code>{ started: true }</code>。适合插件在自己的面板里放按钮。不能启动时（例如后台正忙）抛错。</p>
-<h2 id="plugin-api-prompt--section-13"><code>runTask({ gameId, prompt, tools?, signal? })</code>（第 2 版）</h2>
+<h2 id="plugin-api-prompt--section-14"><code>runTask({ gameId, prompt, tools?, signal? })</code>（第 2 版）</h2>
 <p>让 Tavern 为这局开一个一次性的后台 Agent，替插件完成一项任务，返回 <code>{ text }</code>。它用这局的后台模型，带着和 Tavern 自己的后台任务一样的背景：人物卡、世界书、最近两轮剧情，也能查世界书、查历史原文。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>const { text } = await ctx.tavern.runTask({
   gameId,
@@ -1765,7 +1820,7 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
     execute: async ({ text }) =&gt; { events.push(text); return { ok: true } } }],
 })</code></pre></div>
 <ul><li>每次都是新的会话，用完即弃，不会进入 Tavern 结算、候选用的那个常驻后台会话，也不影响它们的上下文。</li><li><code>tools</code> 最多 8 个，格式同 <code>settlementTool</code>（多一个 <code>execute</code>），工具名不能和 Tavern 自己的工具重名；一次任务最多调用 16 次。工具出错时把错误交给模型，同时记进 Tavern 日志。</li><li>请求会记进这局的请求记录，「完整上下文」里可以查看。用 <code>signal</code>（<code>AbortSignal</code>）可以中途停止；10 分钟没结束会自动停止并抛错。</li><li>这局没有后台模型，或插件不在这一局生效时，直接抛错。花的是玩家后台模型的额度，请只在需要时调用。</li><li>只需要一次普通的模型调用、不需要游戏背景时，直接用 DSH 的 <code>llm</code> 服务更省。</li></ul>
-<h2 id="plugin-api-prompt--section-14"><code>handle(name, handler)</code>（第 2 版）</h2>
+<h2 id="plugin-api-prompt--section-15"><code>handle(name, handler)</code>（第 2 版）</h2>
 <p>注册一个处理函数，供插件自己的浏览器侧用 <code>tavernUi.callHost(name, args)</code> 调用，例如浏览器侧的「重画」按钮让宿主侧去生成。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.handle(&#39;dsh-tavern-xxx/redraw&#39;, async ({ gameId, turn }) =&gt; {
   const current = await ctx.tavern.getTurn({ gameId, turn })
@@ -1793,19 +1848,26 @@ const look = characters.find(person =&gt; person.name === &#39;林岚&#39;)?.sec
 <p>常见流程：先 <code>attach</code> 一个 <code>status: &#39;pending&#39;</code> 的占位，生成完成后 <code>update</code> 成 <code>ready</code>。</p>
 <h2 id="plugin-api-data--section-2"><code>update(id, changes)</code></h2>
 <p>修改自己挂的媒体项，<code>changes</code> 只需写要改的字段，返回修改后的媒体项。不能修改 <code>id</code>、<code>turn</code>、<code>textVersion</code>。</p>
-<p>图片换成新的 <code>attachment</code> 时（比如重画），旧图自动保留为早期版本，最多 8 个，在返回值的 <code>history</code> 里（<code>{ caption, prompt, createdAt }</code>）。玩家可以在插图卡上翻看和删除这些版本。</p>
-<h2 id="plugin-api-data--section-3"><code>remove(id)</code></h2>
+<p>图片换成新的 <code>attachment</code> 时（比如重画），旧图自动保留为早期版本，最多 8 个，在返回值的 <code>history</code> 里（<code>{ caption, prompt, createdAt, data? }</code>）。旧图当时的 <code>data</code> 也随版本保存（第 5 版），插件可据此找到要删的版本，玩家删除时也原样还给插件（见 <code>onMediaRemoved</code>）；删掉当前图、由上一版顶上时，<code>data</code> 也换回上一版的。玩家可以在插图卡上翻看和删除这些版本。</p>
+<h2 id="plugin-api-data--section-3"><code>remove(id, { version? })</code></h2>
 <p>删除自己挂的媒体项，删掉返回 <code>true</code>，不存在或不属于本插件返回 <code>false</code>。</p>
-<h2 id="plugin-api-data--section-4"><code>list({ gameId, turn? })</code></h2>
+<p><code>version</code>（第 5 版）只删一张图：<code>&#39;current&#39;</code> 删当前图，由最近的早期版本顶上；数字是 <code>history</code> 里的下标。删掉最后一张时整项删除。</p>
+<h2 id="plugin-api-data--section-4"><code>onMediaRemoved(handler)</code>（第 5 版）</h2>
+<p>玩家在对话或画廊里删掉本插件挂的图时调用，只通知这张图的主人；插件自己 <code>remove</code> 不会触发。收到：</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>{ gameId, itemId, kind, turn, textVersion,
+  itemRemoved,  // 整项都没了时为 true；只删了一个版本时为 false
+  pictures: [{ caption, prompt, createdAt, data? }] }  // 被删的每张图，data 是挂图或重画时写入的那份</code></pre></div>
+<p>插件自己另存了图（生成记录、缓存文件）时，在这里一并删掉，让两边同进同退。</p>
+<h2 id="plugin-api-data--section-5"><code>list({ gameId, turn? })</code></h2>
 <p>列出本插件在这一局（或这一轮）挂的全部媒体项，包括其他版本上的；每项带 <code>current</code> 表示是否属于当前显示的版本。</p>
-<h2 id="plugin-api-data--section-5"><code>publishState({ gameId, name, data })</code>（第 3 版）</h2>
+<h2 id="plugin-api-data--section-6"><code>publishState({ gameId, name, data })</code>（第 3 版）</h2>
 <p>把插件的最新状态推给自己的浏览器侧，浏览器侧用 <code>tavernUi.watchState(gameId, name, listener)</code> 收到。适合导演定下这一幕后让舞台立刻换景，不用浏览器侧反复 <code>callHost</code> 轮询。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>// 宿主侧
 await ctx.tavern.publishState({ gameId, name: &#39;stage&#39;, data: { turn, textVersion, scene } })
 // 浏览器侧
 ctx.tavernUi.watchState(gameId, &#39;stage&#39;, state =&gt; render(state))</code></pre></div>
 <ul><li>只保留每个 <code>name</code> 最新的一份（不是事件队列）；<code>data</code> 是 JSON 值，最多 256 KB，<code>null</code> 表示清空。<code>name</code> 规则同 <code>promptSection</code>。</li><li>只有本插件自己的浏览器侧收得到。插件不在这一局生效时不能发布，浏览器侧读到 <code>null</code>。</li><li>只存在内存里：DSH 重启或删局后没有了。要跟剧情走、要随存档保存的状态，存进 <code>saveTurnData</code>，这里只放给页面显示的那一份；建议带上 <code>textVersion</code>，浏览器侧据此判断是不是当前版本。</li></ul>
-<h2 id="plugin-api-data--section-6">插件存档数据（第 2 版）</h2>
+<h2 id="plugin-api-data--section-7">插件存档数据（第 2 版）</h2>
 <p>记忆、叙事锚点这类插件需要按轮保存状态。Tavern 提供两种存储，每个插件只能读写自己的那一份：</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="说明表格"><table><thead><tr><th scope="col">存储</th><th scope="col">随回退、重新生成变化</th><th scope="col">用来放</th></tr></thead><tbody><tr><td>按轮数据</td><td>是，自动</td><td>记忆、状态、锚点等跟剧情走的东西</td></tr><tr><td>整局数据</td><td>否</td><td>这一局的缓存、跨分支的统计</td></tr></tbody></table></div>
 <h3><code>saveTurnData({ gameId, turn, textVersion?, data })</code></h3>
@@ -1837,7 +1899,7 @@ ctx.tavern.onGameSettingsChanged(({ gameId, values }) =&gt; { /* 玩家在本局
 <ul><li>每个插件声明一次；<code>title</code> 最多 20 字，默认用插件名。<code>fields</code> 1–20 项，<code>key</code> 用字母、数字和下划线；<code>label</code> 1–40 字，<code>description</code> 最多 200 字。</li><li><code>type</code>：<code>boolean</code> 开关；<code>select</code> 单选（<code>options</code> 1–20 项，写成字符串或 <code>{ value, label }</code>）；<code>number</code> 数字（可选 <code>min</code>、<code>max</code>、<code>step</code>）；<code>text</code> 一行文本（<code>maxLength</code> 最多 500，默认 200）。不写 <code>default</code> 时分别默认为关、第一个选项、<code>min</code> 或 0、空字符串。</li><li><code>getGameSettings</code> 返回这一局实际生效的值：玩家改过的用玩家的，没改过或已不合法（例如插件更新后选项变了）的用默认值。</li><li>卡内插件的配置项只在它那张卡的局里显示。</li><li>浏览器侧用 <code>tavernUi.getGameSettings(gameId)</code> 读同样的值，<code>tavernUi.watchGameSettings(gameId, listener)</code> 在现在和每次改动后收到最新的值。</li></ul>
 <p>分叉、导出存档时，插件挂的媒体项也按同样规则带走，媒体用到的图片、音视频文件一并打进存档包。</p>
 <p>这两种数据由 Tavern 存在每局一个的插件数据文件里，插件不用自己找地方存，也不要自己写文件：自己写的文件不会随存档、分叉带走，回退时也不会跟着变。插件自己的设置、跨局共享的东西不属于某一局，用 DSH 的设置区或插件自己的存储。</p>
-<h2 id="plugin-api-data--section-7">插件在哪些局生效</h2>
+<h2 id="plugin-api-data--section-8">插件在哪些局生效</h2>
 <p>装好并启用的插件在每一局都生效，玩家要停用就在「设置 → 酒馆插件」里整体停用；卡内插件只在它那张卡的局里生效。插件出错时 Tavern 改用自己的做法，并把原因记进 Tavern 日志。</p><footer class="article-footer"><span>DSH Tavern 使用文档</span><a class="" href="#help">需要帮助？</a></footer></article><article class="doc-page" id="plugin-api-cards" data-group="plugins" data-title="接口：人物卡、Skill 与演出"><div class="breadcrumb">使用文档 <span>/</span> <a class="" href="#plugins">插件</a> <span>/</span> 功能说明</div><h1 tabindex="-1">接口：人物卡、Skill 与演出</h1><p class="lead">人物卡库、改卡、Skill、台词标注与角色素材。</p><p>宿主侧 <code>ctx.tavern</code> 中读写人物卡库与 Skill、台词标注与角色素材的接口。</p>
 <h2 id="plugin-api-cards--section-1">人物卡库、改卡与 Skill（第 2 版）</h2>
 <p>不进游戏也能用：卡片工作台类插件（调卡、批量装脚本、整理经验）靠这几个接口读写人物卡和 Skill，不用直接读写 Tavern 的数据目录。</p>
@@ -1873,6 +1935,11 @@ await ctx.tavern.updateCardRaw({ card, operations, expectedRevision: revision })
   async imported({ card }) { /* 可选：卡已存好，card 是它在人物卡库的 id，可以接着 setCastImage 等 */ },
 })</code></pre></div>
 <ul><li><code>extensions</code> 1–10 个，写成 <code>.xxx</code>，大小写不敏感。<code>.png</code>、<code>.json</code>、<code>.charx</code>、<code>.dshcard</code> 始终由 Tavern 自己导入，插件不能接管；同一扩展名只能有一个插件。</li><li><code>card</code> 里 CCv3 的 <code>data.assets</code>（封面、表情、背景）按 <code>files</code> 里的文件导入，和 CHARX 一样进角色素材；<code>packs</code> 存成素材包挂到这张卡上。</li><li>同一个文件再次导入时直接打开已导入的卡，不再调用 <code>convert</code>。</li><li><code>convert</code> 抛错、120 秒没返回或交回的东西不合格时，这次导入失败并把原因告诉玩家。<code>imported</code> 出错只记进 Tavern 日志，不影响已经导入的卡。</li><li>卡内插件不能注册导入器。</li></ul>
+<h3><code>toolNetwork({ name, capability })</code></h3>
+<p>插件用 DSH 注册工具后，可以声明它需要联网：</p>
+<div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.toolNetwork({ name: &#39;reference_lookup&#39;, capability: &#39;search&#39; })</code></pre></div>
+<p><code>capability</code> 为 <code>search</code>（默认）或 <code>fetch</code>。游玩时随本局联网开关和前台逐工具开关过滤；卡片工作台允许搜索，<code>fetch</code> 还需全局开启网页读取。Tavern 在组装工具列表和实际执行前均检查。后台仍受任务自己的工具白名单与联网限制，不会因为声明而自动获得工具。插件子会话继承可识别的父会话联网开关；非酒馆会话不受影响。</p>
+<p>此接口只声明插件自己的工具，不能覆盖 <code>web_search</code>、<code>web_fetch</code> 等内置工具。返回注销函数，卸载插件时也会自动清理。无需读取 Tavern 的存储文件。<code>toolModes</code> 与联网声明独立，可同时使用。</p>
 <h3><code>toolModes({ name, modes })</code></h3>
 <p>插件用 DSH 的 <code>tools</code> 服务注册的工具，默认在游玩和卡片工作台的对话里都会出现。用这个接口限定它出现在哪：<code>modes</code> 取 <code>play</code>（游玩时写正文的请求）、<code>card</code>（卡片工作台），一项或两项。</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>ctx.tavern.toolModes({ name: &#39;wrongbook_lookup&#39;, modes: [&#39;card&#39;] })  // 只给卡片工作台用</code></pre></div>
@@ -1886,13 +1953,13 @@ await ctx.tavern.updateCardRaw({ card, operations, expectedRevision: revision })
 ctx.tavern.skillSource({ dir: fileURLToPath(new URL(&#39;./skills&#39;, import.meta.url)), role: &#39;background&#39; })</code></pre></div>
 <ul><li><code>dir</code> 是绝对路径。<code>role</code> 是 SKILL.md 没写用途时给谁用：<code>&#39;card&#39;</code>（默认，卡片工作台）或 <code>&#39;background&#39;</code>（后台任务）；写了 <code>metadata.tavern.purpose</code> 的按它来。</li><li>只读：玩家可以在 Skill 页停用它、改给别的角色用，不能删改插件的文件；<code>saveSkill</code> 不能写同名 Skill。<code>listSkills</code> 里 <code>source</code> 为 <code>plugin</code>。</li><li>优先级在 Tavern 内置的之后、玩家自己的之前：和内置 Skill 同名时用内置的。</li><li>插件卸载时自动撤销。卡内插件不能添加 Skill（Skill 对所有局可见）。</li></ul>
 <h2 id="plugin-api-cards--section-2">演出：台词标注与角色素材（第 2 版）</h2>
-<p>玩家在「舞台设置」打开「对话气泡」后，后台结算会顺带标注每轮引号台词的说话人和情绪，人物卡还可以配上各人物的头像和表情立绘（见<a href="https://github.com/flizzywine/dsh-tavern/blob/main/docs/design/cast-presentation.md">角色演出</a>）。这些是给配音、立绘、Galgame 式演出这类插件用的公共数据：插件读它们，不用自己再让模型标一遍。</p>
+<p>玩家在「舞台设置」打开「对话气泡」后，正文模型把每句台词写成带说话人和情绪的对白气泡，人物卡还可以配上各人物的头像和表情立绘（见<a href="https://github.com/flizzywine/dsh-tavern/blob/main/docs/design/cast-presentation.md">角色演出</a>）。这些是给配音、立绘、Galgame 式演出这类插件用的公共数据：插件读它们，不用自己再让模型标一遍。</p>
 <h3><code>getCast({ gameId, turn })</code></h3>
 <p>读某一轮<strong>当前显示版本</strong>的台词标注，返回 <code>{ turn, textVersion, lines }</code>，没有标注时返回 <code>null</code>。<code>lines</code> 按正文顺序排列：</p>
 <div class="code-block"><div class="code-heading"><span>js</span><button type="button" class="copy-code" aria-label="复制这段命令" hidden>复制</button></div><pre tabindex="0"><code>[{ n: 1, quote: &#39;你来了。&#39;, speaker: &#39;林曦&#39;, emotion: &#39;joy&#39; }]</code></pre></div>
-<ul><li><code>quote</code> 是引号里的原话（不含引号），用它在正文里找到这句；<code>speaker</code> 是正文里的人名；<code>emotion</code> 是 SillyTavern 表情扩展的 28 个情绪名之一（<code>joy</code>、<code>anger</code>、<code>neutral</code>…），可以直接对应 ST 立绘包的文件名。</li><li>标注跟着正文版本走：重新生成、编辑后旧标注读不到，新版本要等这一轮结算完才有。没被标注的台词（看不出是谁说的）不在列表里。</li><li>玩家关掉「对话气泡」后不再产生新标注，已有的照常可读。</li></ul>
+<ul><li><code>quote</code> 是这句台词：对白气泡里的原话（更早的轮次是后台标注过的引号里的原话），用它在正文里找到这句；<code>speaker</code> 是正文里的人名；<code>emotion</code> 是 SillyTavern 表情扩展的 28 个情绪名之一（<code>joy</code>、<code>anger</code>、<code>neutral</code>…），可以直接对应 ST 立绘包的文件名。</li><li>台词跟着正文版本走：重新生成、编辑后读到的是新版本自己的台词，正文提交后就有。没写成对白气泡的台词不在列表里。</li><li>玩家关掉「对话气泡」后正文不再写对白气泡，已有的照常可读。</li></ul>
 <h3><code>onCastAnnotated(handler)</code></h3>
-<p>一轮的标注保存后调用 <code>handler({ gameId, turn, textVersion, lines })</code>，字段同 <code>getCast</code>。适合配音插件在这时合成语音、演出插件在这时编排下一幕。它在结算过程中触发，早于 <code>onTurnSettled</code>；插件不在这一局生效时不通知。</p>
+<p>一轮正文提交后、里面有对白气泡时调用 <code>handler({ gameId, turn, textVersion, lines })</code>，字段同 <code>getCast</code>。适合配音插件在这时合成语音、演出插件在这时编排下一幕。它不等后台结算，早于 <code>onTurnSettled</code>；插件不在这一局生效时不通知。</p>
 <h3><code>getCastAssets({ gameId })</code></h3>
 <p>这局人物卡的角色素材：<code>{ player, card: { name, imageUrl }, characters: [{ name, aliases, avatarUrl, avatars, sprites, voices }] }</code>。<code>player</code> 是玩家名；<code>avatars</code> 是各情绪的头像、<code>sprites</code> 是各情绪的立绘，都是 <code>{ 情绪名: 图片地址 }</code>；<code>voices</code> 是 <code>{ 配音渠道: 声音 }</code>；地址都可以直接放进 <code>&lt;img src&gt;</code>。素材由玩家在全屏舞台上传或导入 ST 立绘包，跟着人物卡走，所有用这张卡的局共用。找人物时同时比对 <code>name</code> 和 <code>aliases</code>。</p>
 <h3><code>castAssetSource({ name, characters })</code>（第 2 版）</h3>

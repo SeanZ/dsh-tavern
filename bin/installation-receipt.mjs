@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 
@@ -23,8 +23,8 @@ async function installationFingerprint(sourceRoot, dshHome, host) {
   }
   return digest.digest('hex')
 }
-export async function recordInstallationReceipt({ sourceRoot, dshHome, host, attemptId, verifiedAt = Date.now() }) {
-  const receipt = { schemaVersion: 1, sourceRoot: path.resolve(sourceRoot), dshHome: path.resolve(dshHome), host, attemptId, verifiedAt,
+export async function recordInstallationReceipt({ sourceRoot, dshHome, host, attemptId, bridgeUpdateId, verifiedAt = Date.now() }) {
+  const receipt = { schemaVersion: 1, sourceRoot: path.resolve(sourceRoot), dshHome: path.resolve(dshHome), host, attemptId, verifiedAt, ...(bridgeUpdateId ? { bridgeUpdateId } : {}),
     fingerprint: await installationFingerprint(path.resolve(sourceRoot), path.resolve(dshHome), host) }
   await createProfileDataStore({ dataRoot: path.join(dshHome, 'logs') }).writeJson(RECEIPT_FILE, receipt)
   return receipt
@@ -34,6 +34,25 @@ export async function readInstallationReceipt({ sourceRoot, dshHome, host, attem
     const receipt = await createProfileDataStore({ dataRoot: path.join(dshHome, 'logs') }).readJson(RECEIPT_FILE)
     if (receipt?.schemaVersion !== 1 || receipt.sourceRoot !== path.resolve(sourceRoot) || receipt.dshHome !== path.resolve(dshHome)
       || receipt.host !== host || receipt.verifiedAt <= after || (attemptId && receipt.attemptId !== attemptId)) return null
+    if (host === 'desktop') {
+      const state = path.join(dshHome, 'profile-bridge')
+      for (const name of ['install.json', 'bridge-update.json', 'installation-operation.json']) {
+        const file = path.join(state, name)
+        let journal
+        try {
+          if ((await lstat(file)).isSymbolicLink() || await realpath(state) !== path.resolve(state)) return null
+          journal = JSON.parse(await readFile(file, 'utf8'))
+        } catch (error) {
+          if (error.code !== 'ENOENT' || (name === 'bridge-update.json' && receipt.bridgeUpdateId)) return null
+          continue
+        }
+        if (!['completed', 'rolled-back'].includes(journal.phase) || (name !== 'install.json' && journal.schemaVersion !== 1)) return null
+        // A receipt written just before a failed bridge commit is not success.
+        // Bind only refresh receipts so a later first-install can supersede an
+        // older rolled-back refresh without deleting its diagnostic journal.
+        if (name === 'bridge-update.json' && receipt.bridgeUpdateId && (journal.schemaVersion !== 1 || journal.phase !== 'completed' || path.basename(journal.backup || '') !== receipt.bridgeUpdateId)) return null
+      }
+    }
     return receipt.fingerprint === await installationFingerprint(path.resolve(sourceRoot), path.resolve(dshHome), host) ? receipt : null
   } catch { return null }
 }

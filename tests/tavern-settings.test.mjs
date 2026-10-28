@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises"
 
 import test from 'node:test'
 
-import { applyTavernSettingsPatch, presentTavernSettings } from '../tavern-plugin/lib/domain/tavern-settings.js'
+import { applyTavernSettingsPatch, normalizeBackgroundTasks, normalizePlayDefaults, presentTavernSettings } from '../tavern-plugin/lib/domain/tavern-settings.js'
+import { patchConversationBackground } from '../tavern-plugin/lib/domain/conversation-background.js'
 
 const serverSource = await readFile(new URL('../tavern-plugin/lib/index.js', import.meta.url), 'utf8')
 
@@ -151,4 +152,11 @@ test('精修后台预审是全局开关，默认关闭，只接受布尔值', ()
   assert.equal(presentTavernSettings({}, {}).polishPrereview, false)
   assert.equal(presentTavernSettings(applyTavernSettingsPatch({}, { polishPrereview: true }), {}).polishPrereview, true)
   assert.throws(() => applyTavernSettingsPatch({}, { polishPrereview: 'yes' }), /精修预审/)
+})
+
+test('世界书模型筛选是本局开关，默认关闭', () => {
+  assert.equal(normalizeBackgroundTasks({}).worldbookScreening, false)
+  assert.equal(normalizePlayDefaults({}).backgroundTasks.worldbookScreening, false)
+  const saved = patchConversationBackground({ backgroundTasks: { styleReference: true } }, { backgroundTasks: { worldbookScreening: true } })
+  assert.deepEqual([saved.backgroundTasks.worldbookScreening, saved.backgroundTasks.styleReference], [true, true])
 })

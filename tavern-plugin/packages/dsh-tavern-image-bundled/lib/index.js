@@ -28,7 +28,7 @@ import { createReadStream } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildAutoImageGenPrompt } from './prompts.js'
-import { installTavernBridge } from './tavern-bridge.js'
+import { installTavernBridge, removeMountedPicture } from './tavern-bridge.js'
 import { createPluginUpdater } from './updater.js'
 import { IMAGE_PROVIDERS, generateImage, testImageChannel } from './image-providers.js'
 import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch } from './image-channels.js'
@@ -585,7 +585,7 @@ export function apply(ctx, config = {}) {
           deps.bridge = installTavernBridge({
             tavern,
             attachments: attachmentApi,
-            engine: { planMessage: engine.planMessage, getJob: id => engine.getJob(id), cancelJob: id => engine.cancelJob(id) },
+            engine: { planMessage: engine.planMessage, getJob: id => engine.getJob(id), cancelJob: id => engine.cancelJob(id), deleteJob: id => engine.deleteJob(id, { withMedia: false }) },
             getConfig: () => engine.currentConfig(),
             logger,
             readFileAsBytes: async file => new Uint8Array(await readFile(file)),
@@ -1492,6 +1492,33 @@ function createRuntime(ctx, overrides, logger, deps) {
     }
 
     function getJob(id) { return jobs.get(id) ?? null }
+
+    /**
+     * 删一张图：作业记录、缓存文件、计划里的引用，以及挂在对话里的那张（同进同退）。
+     * 玩家在对话里删图时 Tavern 通知过来（onMediaRemoved），那边已经删了，传 withMedia: false。
+     * 返回删掉的作业数（0 或 1）。
+     */
+    async function deleteJob(id, { withMedia = true } = {}) {
+      const job = jobs.get(id)
+      job?.controller?.abort()
+      if (withMedia && job?.gameId) await removeMountedPicture(deps.tavern, job).catch(error => logger.warn?.('dsh-tavern-image: 撤下对话里的图失败：' + (error?.message ?? error)))
+      if (job?.file) await rm(job.file, { force: true }).catch(() => {})
+      // 接住返回值：不存在的话就是 0，别报假成功
+      const existed = jobs.delete(id) ? 1 : 0
+      persistJobs()
+      // 从所有计划里摘掉这个 jobId（重画版本链也要清）
+      let touched = 0
+      for (const [key, plan] of plansByMessage) {
+        const list = plan?.plans
+        if (!Array.isArray(list)) continue
+        const kept = list.filter(item => String(item.jobId) !== id)
+        if (kept.length !== list.length) { plansByMessage.set(key, Object.assign({}, plan, { plans: kept })); touched++ }
+      }
+      if (touched) persistPlans()
+      logger.info?.('dsh-tavern-image: 已删除历史图 ' + id.slice(0, 8))
+      return existed
+    }
+
 
     function replacementConfigFor(source, requestedChannelId) {
       const next = structuredClone(config)
@@ -3293,22 +3320,7 @@ let worldbookCache = null
           try {
             const id = String(body?.jobId ?? '')
             if (!id) { sendJson(response, 400, { ok: false, error: '缺少 jobId' }); return }
-            const job = jobs.get(id)
-            job?.controller?.abort()
-            if (job?.file) await rm(job.file, { force: true }).catch(() => {})
-            // 接住返回值：不存在的话就是 0，别报假成功
-            const existed = jobs.delete(id) ? 1 : 0
-            persistJobs()
-            // 从所有计划里摘掉这个 jobId（重画版本链也要清）
-            let touched = 0
-            for (const [key, plan] of plansByMessage) {
-              const list = plan?.plans
-              if (!Array.isArray(list)) continue
-              const kept = list.filter(item => String(item.jobId) !== id)
-              if (kept.length !== list.length) { plansByMessage.set(key, Object.assign({}, plan, { plans: kept })); touched++ }
-            }
-            if (touched) persistPlans()
-            logger.info?.('dsh-tavern-image: 已删除历史图 ' + id.slice(0, 8))
+            const existed = await deleteJob(id)
             sendJson(response, 200, { ok: true, removed: existed, existed: Boolean(existed) })
           } catch (error) {
             sendJson(response, 400, { ok: false, error: String(error?.message ?? error) })
@@ -4380,7 +4392,7 @@ let worldbookCache = null
 
     return {
       consoleHtml, consoleState, handleConsole, readBody, sendImage,
-      startJob, startReplacement, revisePrompt, cancelJob, refresh, getJob: id => (id ? getJob(id) : null), findJob, publicJob,
+      startJob, startReplacement, revisePrompt, cancelJob, refresh, getJob: id => (id ? getJob(id) : null), findJob, publicJob, deleteJob,
       planMessage,
       currentConfig: () => config,
       // 手动配图：读这一轮的 textVersion 与正文，再交给官方桥 attach

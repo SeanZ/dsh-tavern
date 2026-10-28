@@ -186,6 +186,28 @@ replace_source() {
   SOURCE_SWAPPED=1
 }
 
+# 把 SOURCE_BACKUP 换回 APP_DIR。调用方先确认可以动这两个目录。
+swap_in_previous() {
+  [ -n "${SOURCE_BACKUP}" ] && [ -d "${SOURCE_BACKUP}" ] || return 0
+  # 复用过去的 node_modules 跟着新源码一起回滚，别让旧版本失去可用依赖。
+  if [ "${NODE_MODULES_CARRIED}" = 1 ] && [ -d "${APP_DIR}/node_modules" ] \
+    && [ ! -e "${SOURCE_BACKUP}/node_modules" ]; then
+    mv -- "${APP_DIR}/node_modules" "${SOURCE_BACKUP}/node_modules" 2>/dev/null || true
+  fi
+  if [ -e "${APP_DIR}" ]; then
+    local target="${TEMP_ROOT}/failed-source"
+    local suffix=1
+    while [ -e "${target}" ]; do
+      target="${TEMP_ROOT}/failed-source.${suffix}"
+      suffix=$((suffix + 1))
+    done
+    mv -- "${APP_DIR}" "${target}"
+  fi
+  mv -- "${SOURCE_BACKUP}" "${APP_DIR}"
+  SOURCE_BACKUP=""
+  SOURCE_SWAPPED=0
+}
+
 rollback_source() {
   [ "${SOURCE_SWAPPED}" -eq 1 ] || return 0
   # Never move code out from underneath a still-running service. Keep both
@@ -204,14 +226,48 @@ NODE
     TEMP_ROOT=""
     return 1
   fi
-  # 复用过去的 node_modules 跟着新源码一起回滚，别让旧版本失去可用依赖。
-  if [ "${NODE_MODULES_CARRIED}" = 1 ] && [ -d "${APP_DIR}/node_modules" ] \
-    && [ -n "${SOURCE_BACKUP}" ] && [ -d "${SOURCE_BACKUP}" ] && [ ! -e "${SOURCE_BACKUP}/node_modules" ]; then
-    mv -- "${APP_DIR}/node_modules" "${SOURCE_BACKUP}/node_modules" 2>/dev/null || true
+  swap_in_previous
+}
+
+# 更新被取消时，整棵安装进程树会被直接结束，脚本自己的回滚往往来不及跑，
+# 上一次的源码就留在 <父目录>/.dsh-tavern-download.*/previous-source 里。
+# 更新器确认执行链已停止后用 --restore-previous 调这里，把备份换回原位：
+# 退出码 0 表示已恢复，3 表示没有可恢复的备份。
+restore_previous() {
+  local app="$1"
+  local parent directory backup="" temp=""
+  parent="$(dirname -- "${app}")"
+  while IFS= read -r directory; do
+    [ -n "${directory}" ] || continue
+    if [ -f "${directory}/previous-source/package.json" ]; then
+      temp="${directory}"
+      backup="${directory}/previous-source"
+      break
+    fi
+  done < <(ls -1dt -- "${parent}"/.dsh-tavern-download.* 2>/dev/null || true)
+  if [ -z "${backup}" ]; then
+    printf '没有可恢复的更新前源码备份。\n' >&2
+    exit 3
   fi
-  if [ -e "${APP_DIR}" ]; then mv -- "${APP_DIR}" "${TEMP_ROOT}/failed-source"; fi
-  if [ -n "${SOURCE_BACKUP}" ] && [ -d "${SOURCE_BACKUP}" ]; then mv -- "${SOURCE_BACKUP}" "${APP_DIR}"; fi
-  SOURCE_SWAPPED=0
+  APP_DIR="${app}"
+  TEMP_ROOT="${temp}"
+  # 取消时旧服务通常还在跑（独立 APK 更新期间它本来就不停），替换源码本身
+  # 不影响已经加载进内存的进程，所以这里不套用 rollback_source 的进程检查。
+  if [ -d "${app}/node_modules" ] && [ ! -e "${backup}/node_modules" ] \
+    && cmp -s "${backup}/pnpm-lock.yaml" "${app}/pnpm-lock.yaml" 2>/dev/null; then
+    NODE_MODULES_CARRIED=1
+  else
+    NODE_MODULES_CARRIED=0
+  fi
+  SOURCE_BACKUP="${backup}"
+  SOURCE_SWAPPED=1
+  swap_in_previous
+  local version=""
+  version="$(node -e 'try { process.stdout.write(String(require(process.argv[1]).version || "")) } catch (error) {}' "${app}/package.json" 2>/dev/null || true)"
+  # 保留换下来的那份源码，便于事后排查；下次更新不会把它当成备份。
+  printf '换下来的源码保留在：%s\n' "${TEMP_ROOT}"
+  TEMP_ROOT=""
+  printf 'DSH_STATUS 已恢复更新前的源码%s\n' "${version:+ v${version}}"
 }
 
 # 增量更新：按 jsDelivr 运行清单逐文件比对，只下载有变化的文件，其余直接复用
@@ -249,10 +305,16 @@ install_from_tarball() {
   prepare_temp_root
   local archive="${TEMP_ROOT}/dsh-tavern.tar.gz"
   local candidate="${TEMP_ROOT}/tarball-source"
-  printf 'Git 下载失败，正在改用 GitHub 压缩包……\n'
-  download_file "${TARBALL_URL}" "${archive}" || fail "Git 与压缩包下载均失败，请检查网络后重试。"
+  printf '正在改用 GitHub 压缩包下载源码……\n'
+  if ! download_file "${TARBALL_URL}" "${archive}"; then
+    info 'GitHub 压缩包下载失败。'
+    return 1
+  fi
   mkdir -p "${candidate}"
-  tar -xzf "${archive}" -C "${candidate}" --strip-components=1 --exclude='*/docs' --exclude='*/docs/*' || fail "压缩包无法解压，旧版本未被修改。"
+  if ! tar -xzf "${archive}" -C "${candidate}" --strip-components=1 --exclude='*/docs' --exclude='*/docs/*'; then
+    info 'GitHub 压缩包无法解压，旧版本未被修改。'
+    return 1
+  fi
   verify_source "${candidate}"
   printf '%s\n' "${TARBALL_URL}" > "${candidate}/${SOURCE_MARKER}"
   replace_source "${candidate}"
@@ -278,7 +340,9 @@ install_source() {
   else
     printf '未检测到 Git，直接使用 GitHub 压缩包。\n'
   fi
-  install_from_tarball
+  if install_from_tarball; then return; fi
+  if install_from_cdn; then return; fi
+  fail "Git、GitHub 压缩包与 jsDelivr 均未能取到源码，请检查网络后重试。"
 }
 
 is_disposable_upgrade_residue() {
@@ -332,9 +396,11 @@ update_source() {
       git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
       return
     fi
-    # Git 走不通时优先按清单增量替换（jsDelivr 通常比 codeload 更容易连通）。
+    # Git 走不通时先整包下载（GitHub 的 codeload），最后才用 jsDelivr 清单增量替换：
+    # CDN 的 @main 会滞后十几小时，把它当兜底比当首选更安全。
+    if install_from_tarball; then return; fi
     if install_from_cdn; then return; fi
-    install_from_tarball
+    fail "Git、GitHub 压缩包与 jsDelivr 均未能取到源码，请检查网络后重试。"
     return
   fi
   if [ -f "${APP_DIR}/${SOURCE_MARKER}" ]; then
@@ -342,8 +408,9 @@ update_source() {
       TARBALL_URL="$(sed -n '1p' "${APP_DIR}/${SOURCE_MARKER}")"
       [ -n "${TARBALL_URL}" ] || TARBALL_URL="${DEFAULT_TARBALL_URL}"
     fi
+    if install_from_tarball; then return; fi
     if install_from_cdn; then return; fi
-    install_from_tarball
+    fail "GitHub 压缩包与 jsDelivr 均未能取到源码，请检查网络后重试。"
     return
   fi
   if is_disposable_upgrade_residue; then
@@ -353,6 +420,12 @@ update_source() {
   fi
   fail "${APP_DIR} 已存在但不是受支持的 Git 或压缩包安装，请备份并移走该目录后重试。"
 }
+
+# 恢复模式：只把更新前的源码换回来，不下载、不安装。
+if [ "${1:-}" = "--restore-previous" ]; then
+  restore_previous "${2:-${APP_DIR}}"
+  exit 0
+fi
 
 require_command bash
 require_command node

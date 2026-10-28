@@ -8,6 +8,7 @@ const str = value => value == null ? '' : String(value)
 /** Own import admission, publication and compensating cleanup. A game is published only after all restores succeed. */
 export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prepareGameSaveResources, getAttachments,
   rawWriteChat, conversationRegistry, sessions, profileData, sceneWorldbookArchive, pluginApi,
+  restorePresetSnapshot = async chat => chat,
   newChatId = () => 'chat-' + randomUUID(), newSessionId = () => 'session-' + randomUUID() }) {
   const importingGameSaves = new Set()
   async function importGameSave(args) {
@@ -37,12 +38,14 @@ export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prep
       let written = false, created = false, saved
       const cwd = path.join(dataRoot, 'resources')
       try {
+        // A save that came without its preset snapshot re-freezes it from the preset it points
+        // at: the bundle installed that preset just before these games.
         for (const { revision, state } of save.revisions) {
-          const historyState = await rawWriteChat(prepare(state), { source: 'game-save.import.history' })
+          const historyState = await rawWriteChat(await restorePresetSnapshot(prepare(state)), { source: 'game-save.import.history' })
           written = true
           content.recordRevision(revision, historyState._storageRevision)
         }
-        const current = prepare(save.chat)
+        const current = await restorePresetSnapshot(prepare(save.chat))
         current.title = (sessionTitleOf(save.session.events) || str(save.chat.title) || str(save.chat.cardName) || '游戏') + '（导入）'
         current.lastOpenedAt = Date.now()
         current.importedSave = { sourceChatId, exportedAt: save.manifest.exportedAt, tavernVersion: save.manifest.tavernVersion }

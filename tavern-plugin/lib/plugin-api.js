@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { isMvuUpdateEntry } from './domain/worldbook-recall.js'
 import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
 import { bounded, untilAborted } from './domain/plugin-callback.js'
 import path from 'node:path'
@@ -7,7 +9,7 @@ import { normalizeGameSettings, coerceSetting, settingValues } from './domain/pl
 // The public `tavern` service for third-party DSH plugins (docs/plugin-api.md).
 // Only additive changes are allowed here: published plugins depend on every
 // name and field. Internals are reached through `deps`, never exposed.
-export const TAVERN_PLUGIN_API_VERSION = 3
+export const TAVERN_PLUGIN_API_VERSION = 6
 const TRACKER = Symbol.for('cordis.tracker')
 const SECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const MAX_SECTION_TEXT = 8000
@@ -83,9 +85,26 @@ function gameIdOf(value) {
   return value
 }
 
+function boundedWithSignal(promise, label, signal, ms = PLUGIN_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let timer
+    const finish = (callback, value) => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      callback(value)
+    }
+    const abort = () => finish(reject, signal.reason || new Error(label + ' 已取消'))
+    if (signal?.aborted) return abort()
+    timer = setTimeout(() => finish(reject, new Error(label + ' 超过 ' + ms / 1000 + ' 秒未返回')), ms)
+    signal?.addEventListener('abort', abort, { once: true })
+    Promise.resolve(promise).then(value => finish(resolve, value), error => finish(reject, error))
+  })
+}
+
 export function createTavernPluginApi(deps) {
   const settledHandlers = new Set()
   const removedHandlers = new Set()
+  const mediaRemovedHandlers = new Set()
   const timelineHandlers = new Set()
   const castHandlers = new Set()
   const cardHandlers = new Set()
@@ -94,6 +113,8 @@ export function createTavernPluginApi(deps) {
   const gameSettingDefs = new Map()
   const settingHandlers = new Set()
   const speechProviders = new Map()
+  const mvuSettlementProviders = new Map()
+  const capabilities = Object.freeze({ mvuSettlementProvider: 1, worldbookStrategy: 1 })
   const sections = new Map()
   const turnSections = new Map()
   const settlementSections = new Map()
@@ -104,10 +125,12 @@ export function createTavernPluginApi(deps) {
   const handlers = new Map()
   const candidateSections = new Map()
   const compactionSections = new Map()
-  const replacements = { settlement: new Map() }
+  const replacements = { settlement: new Map(), ledger: new Map() }
+  const ledgerRuns = new Map()  // gameId → AbortController of a running ledger replacement
   const settlementTasks = new Map()
   const manualTasks = new Map()
   const toolScopes = new Map()
+  const toolNetworks = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
   const notified = new Set()
   // The latest state each plugin published for its page side, per game and name (memory only).
@@ -251,6 +274,16 @@ export function createTavernPluginApi(deps) {
   const service = {
     ctx: deps.ctx,
     apiVersion: TAVERN_PLUGIN_API_VERSION,
+    capabilities,
+
+    mvuSettlementProvider({ name, settle } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      if (typeof settle !== 'function') throw new TypeError('settle 必须是函数')
+      const entry = { owner, name, settle }
+      return register.call(this, mvuSettlementProviders, owner + '\u0000' + name, entry,
+        'tavern.mvuSettlementProvider()', 'MVU 提供器 ' + name + ' 已注册')
+    },
 
     onTurnSettled(handler) {
       if (typeof handler !== 'function') throw new TypeError('onTurnSettled 需要一个函数')
@@ -262,6 +295,13 @@ export function createTavernPluginApi(deps) {
       if (typeof handler !== 'function') throw new TypeError('onGameRemoved 需要一个函数')
       const entry = { owner: ownerOf(this), handler }
       return owned(this, () => { removedHandlers.add(entry); return () => removedHandlers.delete(entry) }, 'tavern.onGameRemoved()')
+    },
+
+    // The player removed pictures this plugin attached (第 5 版): drop the plugin's own copies.
+    onMediaRemoved(handler) {
+      if (typeof handler !== 'function') throw new TypeError('onMediaRemoved 需要一个函数')
+      const entry = { owner: ownerOf(this), handler }
+      return owned(this, () => { mediaRemovedHandlers.add(entry); return () => mediaRemovedHandlers.delete(entry) }, 'tavern.onMediaRemoved()')
     },
 
     onTimelineChanged(handler) {
@@ -600,6 +640,12 @@ export function createTavernPluginApi(deps) {
 
     // Where a tool this plugin registered with DSH shows: in play, in the card workbench, or both.
     // Tavern's own tools are not affected.
+    toolNetwork({ name, capability = 'search' } = {}) {
+      if (typeof name !== 'string' || !/^[A-Za-z0-9_.:-]{1,120}$/.test(name) || reservedToolNames.has(name) || name === 'web_fetch' || deps.isControlledTool?.(name)) throw new TypeError('toolNetwork 只能声明插件自己的工具')
+      if (!['search', 'fetch'].includes(capability)) throw new TypeError('capability 只能是 search 或 fetch')
+      return register.call(this, toolNetworks, name, { owner: ownerOf(this), capability }, 'tavern.toolNetwork()', '工具 ' + name + ' 的联网能力已被声明')
+    },
+
     toolModes({ name, modes } = {}) {
       if (typeof name !== 'string' || !name || (deps.isControlledTool && deps.isControlledTool(name))) throw new TypeError('toolModes 只能设置插件自己注册的工具')
       if (!Array.isArray(modes) || !modes.length || modes.some(mode => !TOOL_MODES.includes(mode))) throw new TypeError('modes 只能是 play、card 中的一项或两项')
@@ -742,13 +788,22 @@ export function createTavernPluginApi(deps) {
       return publicPluginMedia(record)
     },
 
-    async remove(itemId) {
+    // `version` (第 5 版) removes one picture: 'current' (the latest earlier version takes its
+    // place) or an index into `history`; the item goes with its last picture.
+    async remove(itemId, { version } = {}) {
       const owner = ownerOf(this)
       const located = await locateItem(itemId).catch(() => null)
       if (!located) return false
-      const removed = await deps.media.remove({ chatId: located.chatId, owner, itemId })
-      if (removed) await changed(located.sessionId)
-      return removed
+      if (version === undefined) {
+        const removed = await deps.media.remove({ chatId: located.chatId, owner, itemId })
+        if (removed) await changed(located.sessionId)
+        return removed
+      }
+      const item = await deps.media.find(located.chatId, itemId)
+      if (!item || item.owner !== owner) return false
+      await deps.media.removeVersion({ chatId: located.chatId, itemId, version: version === 'current' ? null : version })
+      await changed(located.sessionId)
+      return true
     },
 
     async list({ gameId, turn } = {}) {
@@ -809,12 +864,58 @@ export function createTavernPluginApi(deps) {
       return register.call(this, replacements.settlement, owner, { owner, settle }, 'tavern.replaceSettlement()', '本插件已经注册了结算替换')
     },
 
+    // Take over the player's manual ledger consolidation (第 6 版); Tavern still applies the delta.
+    replaceLedger({ consolidate } = {}) {
+      const owner = ownerOf(this)
+      if (typeof consolidate !== 'function') throw new TypeError('consolidate 必须是函数')
+      return register.call(this, replacements.ledger, owner, { owner, consolidate }, 'tavern.replaceLedger()', '本插件已经注册了台账整理替换')
+    },
+
     // Browser halves call their own host half through tavernUi.callHost(name, args).
     handle(name, handler) {
       const owner = ownerOf(this)
       if (typeof name !== 'string' || !HANDLER_NAME.test(name)) throw new Error('handle 的 name 只能用小写字母、数字和 . _ : / -，最多 96 个字符')
       if (typeof handler !== 'function') throw new TypeError('handle 需要一个函数')
       return register.call(this, handlers, name, { owner, handler }, 'tavern.handle()', '处理函数 ' + name + ' 已被注册，请在名字前加上插件名')
+    },
+
+    // Select references only; Tavern retains source ownership, rendering and mandatory entries.
+    worldbookStrategy({ name, label, description = '', select } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      if (typeof select !== 'function') throw new TypeError('select 必须是函数')
+      if (!deps.worldbookStrategies || !deps.worldbookStrategyEntries || !deps.projectWorldbookSelection) throw new Error('世界书策略服务不可用')
+      const id = 'plugin-' + createHash('sha256').update(owner).digest('hex').slice(0, 16) + '-' + name
+      return owned(this, () => {
+        let active = true
+        const dispose = deps.worldbookStrategies.register({ id, label, description, project: async input => {
+          const gameId = input.chat?.sessionId
+          const fallback = () => deps.projectWorldbookSelection(input, null)
+          try {
+            input.signal?.throwIfAborted()
+            if (!active || !gameId || (await choicesFor(gameId)).disabled.has(owner)) return fallback()
+            await guardScope(owner, { gameId })
+            const worldBook = await deps.worldbookStrategyEntries(input)
+            const entries = (worldBook?.view?.entries || []).filter(entry => entry.enabled !== false && !isMvuUpdateEntry(entry))
+              .map(({ ref, sourceUid, sourcePath, title, content, constant, primaryKeys, secondaryKeys, order, position, depth, role }) =>
+                ({ ref, sourceUid, sourcePath, title, content, constant, primaryKeys, secondaryKeys, order, position, depth, role }))
+            const request = select(structuredClone({ gameId, userText: input.userText || '', purpose: input.purpose || 'generation', entries }))
+            const result = await bounded(input.signal ? untilAborted(request, input.signal) : request, '世界书策略 ' + name, POOL_TIMEOUT_MS)
+            input.signal?.throwIfAborted()
+            if (!active || (await choicesFor(gameId)).disabled.has(owner)) return fallback()
+            await guardScope(owner, { gameId })
+            if (!Array.isArray(result) || result.some(ref => typeof ref !== 'string')) throw new Error('select 必须返回条目 ref 数组')
+            const allowed = new Set(entries.map(entry => entry.ref))
+            if (result.some(ref => !allowed.has(ref))) throw new Error('select 返回了不可用的条目 ref')
+            return deps.projectWorldbookSelection({ ...input, worldBook }, [...new Set(result)])
+          } catch (error) {
+            input.signal?.throwIfAborted()
+            recordError(gameId, owner, '世界书策略 ' + name, error)
+            return fallback()
+          }
+        } })
+        return () => { active = false; dispose() }
+      }, 'tavern.worldbookStrategy()')
     },
 
     worldbookSource({ name, entries } = {}) {
@@ -932,6 +1033,13 @@ export function createTavernPluginApi(deps) {
     catch (error) { recordError(null, converted.owner, '导入人物卡收尾', error) }
   }
 
+  /** Called by Tavern after the player removed pictures of a plugin's media item; only its owner hears. */
+  function mediaRemoved(gameId, item, pictures, itemRemoved) {
+    if (!gameId || !item?.owner || !pictures?.length) return
+    const owners = new Set([...mediaRemovedHandlers].filter(entry => entry.owner !== item.owner).map(entry => entry.owner))
+    dispatch(mediaRemovedHandlers, { gameId, itemId: item.id, kind: item.kind, turn: item.turn, textVersion: item.key, itemRemoved: itemRemoved === true, pictures }, 'onMediaRemoved', owners)
+  }
+
   function gameRemoved(gameId) {
     if (!gameId) return
     for (const key of Array.from(publishedStates.keys())) if (key.startsWith(gameId + '\u0000')) publishedStates.delete(key)
@@ -1018,6 +1126,41 @@ export function createTavernPluginApi(deps) {
     } finally {
       finish?.()
     }
+  }
+
+  /**
+   * Seam: run the ledger replacement, if any. Returns { owner, delta } for Tavern to apply,
+   * or null so Tavern consolidates by itself (no replacement, it declined, or it failed).
+   * `apply(delta)` validates without saving and throws on a bad delta.
+   */
+  async function replaceLedger(input) {
+    const entry = await replacementFor('ledger', input.gameId)
+    if (!entry) return null
+    const controller = new AbortController()
+    ledgerRuns.set(input.gameId, controller)
+    const finish = input.onStart?.(entry.owner)
+    try {
+      const fields = structuredClone({ gameId: input.gameId, from: input.from, through: input.through, text: input.text, ledger: input.ledger, rules: input.rules, tool: input.tool })
+      const value = await bounded(untilAborted(entry.consolidate({ ...fields, signal: controller.signal }), controller.signal), '台账整理替换', REPLACEMENT_TIMEOUT_MS)
+      if (value === null) return null
+      if (!value || typeof value !== 'object' || Array.isArray(value) || !value.delta || typeof value.delta !== 'object' || Array.isArray(value.delta)) throw new Error('consolidate 必须返回 { delta } 或 null')
+      input.apply(value.delta)
+      return { owner: entry.owner, delta: structuredClone(value.delta) }
+    } catch (error) {
+      // The player stopped the background: stop, do not fall back to Tavern's own.
+      if (controller.signal.aborted) throw controller.signal.reason
+      recordError(input.gameId, entry.owner, '台账整理替换（已改用 Tavern 自己的整理）', error)
+      return null
+    } finally {
+      if (ledgerRuns.get(input.gameId) === controller) ledgerRuns.delete(input.gameId)
+      finish?.()
+    }
+  }
+
+  function stopAllTasks(gameId) {
+    const ledger = ledgerRuns.get(gameId)
+    ledger?.abort(new Error('玩家停止了台账整理'))
+    return stopTasks(gameId) || Boolean(ledger)
   }
 
   /** A game's manual plugin tasks and the options plugins add to its settings. */
@@ -1214,7 +1357,52 @@ export function createTavernPluginApi(deps) {
     return entry ? entry.modes.slice() : null
   }
 
-  return Object.freeze({ service, toolModesFor, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved,
-    speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement,
-    runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
+  async function mvuProvider(input = {}) {
+    const gameId = gameIdOf(input.gameId)
+    const material = deps.readPendingTurn ? await deps.readPendingTurn(gameId).catch(() => null) : null
+    if (!material || material.turn !== Number(input.turn) || typeof material.key !== 'string') return null
+    const choices = await choicesFor(gameId)
+    const entries = Array.from(mvuSettlementProviders.values()).filter(entry => choices.own.has(entry.owner))
+      .sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
+    if (entries.length !== 1) {
+      if (entries.length > 1) recordError(gameId, entries.map(entry => entry.owner).join(', '), 'mvuSettlementProvider', new Error('多个卡内提供器候选，拒绝随机接管'))
+      return null
+    }
+    const entry = entries[0]
+    const { signal, ...payload } = input
+    let result
+    try {
+      signal?.throwIfAborted()
+      result = await boundedWithSignal(Promise.resolve().then(() => entry.settle({ ...structuredClone(payload), textVersion: material.key, ...(signal ? { signal } : {}) })),
+        'MVU 提供器 ' + entry.owner, signal)
+    } catch (error) {
+      recordError(gameId, entry.owner, 'mvuSettlementProvider', error)
+      throw error
+    }
+    // A callback may finish after unload, a card switch, or the canonical text changes.
+    if (mvuSettlementProviders.get(entry.owner + '\u0000' + entry.name) !== entry) return null
+    const latest = await choicesFor(gameId)
+    if (!latest.own.has(entry.owner) || latest.disabled.has(entry.owner)) return null
+    const current = await deps.readPendingTurn?.(gameId).catch(() => null)
+    if (!current || current.turn !== material.turn || current.key !== material.key) return null
+    if (result === null || result === false) return null
+    if (!result || typeof result !== 'object' || !Array.isArray(result.operations)) {
+      throw new Error('MVU 提供器必须返回 { operations } 或 null')
+    }
+    return { owner: entry.owner, operations: structuredClone(result.operations) }
+  }
+
+  async function mvuProviderActive({ gameId, owner } = {}) {
+    const choices = await choicesFor(gameId)
+    const entries = Array.from(mvuSettlementProviders.values()).filter(entry => choices.own.has(entry.owner))
+    return entries.length === 1 && entries[0].owner === owner && !choices.disabled.has(owner)
+  }
+
+  function mvuProviderRegistered(owner) {
+    return typeof owner === 'string' && Array.from(mvuSettlementProviders.values()).some(entry => entry.owner === owner)
+  }
+
+  return Object.freeze({ service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
+    speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,
+    runSettlementTasks, manualTaskFor, runManualTask, stopTasks: stopAllTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }

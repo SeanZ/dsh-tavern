@@ -54,15 +54,50 @@ test('压缩包检查：找插件根，去掉 .github；缺入口、依赖 npm �
   assert.equal(pkg.name, 'dsh-tavern-hello')
   assert.deepEqual([...files.keys()].sort(), ['README.md', 'index.mjs', 'package.json'])
   assert.throws(() => readPluginArchive(pluginZip({ 'README.md': 'x' })), /没有 package\.json/)
-  assert.throws(() => readPluginArchive(pluginZip({ 'package.json': { name: 'x' } })), /宿主入口/)
-  assert.throws(() => readPluginArchive(pluginZip({ 'package.json': { name: 'x', main: 'index.mjs' } })), /找不到宿主入口/)
+  assert.throws(() => readPluginArchive(pluginZip({ 'package.json': { name: 'x', version: '1.0.0' } })), /宿主入口/)
+  assert.throws(() => readPluginArchive(pluginZip({ 'package.json': { name: 'x', version: '1.0.0', main: 'index.mjs' } })), /找不到宿主入口/)
   assert.throws(() => readPluginArchive(hello('1.0.0', { dependencies: { sharp: '1' } })), /依赖 npm 包（sharp）/)
   // 自带 node_modules 的插件可以装。
-  const bundled = pluginZip({ 'package.json': { name: 'x', main: 'index.mjs', dependencies: { y: '1' } }, 'index.mjs': '', 'node_modules/y/index.js': '' })
+  const bundled = pluginZip({ 'package.json': { name: 'x', version: '1.0.0', main: 'index.mjs', dependencies: { y: '1' } }, 'index.mjs': '', 'node_modules/y/index.js': '' })
   assert.ok(readPluginArchive(bundled).files.has('node_modules/y/index.js'))
   // Tavern 自己的标记文件不能由压缩包带进来（否则作者能伪造加载记录或停用状态）。
-  const markers = pluginZip({ 'package.json': { name: 'x', main: 'index.mjs' }, 'index.mjs': '', '.tavern-disabled': '{}', '.tavern-status.json': '{}' })
+  const markers = pluginZip({ 'package.json': { name: 'x', version: '1.0.0', main: 'index.mjs' }, 'index.mjs': '', '.tavern-disabled': '{}', '.tavern-status.json': '{}' })
   assert.deepEqual([...readPluginArchive(markers).files.keys()].sort(), ['index.mjs', 'package.json'])
+})
+
+test('插件清单必须有非空字符串 name 和 version；不强加 semver 格式', () => {
+  for (const field of ['name', 'version']) {
+    for (const value of [undefined, null, '', '   ', 1, false, {}, []]) {
+      const pkg = { name: 'valid-plugin', version: '1.0.0', main: 'index.mjs', [field]: value }
+      assert.throws(() => readPluginArchive(pluginZip({ 'package.json': pkg, 'index.mjs': '' })), error => {
+        assert.equal(error.code, 'TAVERN_PLUGIN_INSTALL')
+        assert.match(error.message, new RegExp(field + '.*非空字符串'))
+        return true
+      })
+    }
+  }
+  for (const pkg of [null, [], 'plugin', 123]) {
+    assert.throws(() => readPluginArchive(pluginZip({ 'package.json': JSON.stringify(pkg), 'index.mjs': '' })), /JSON 对象/)
+  }
+  assert.equal(readPluginArchive(hello('nightly-build')).pkg.version, 'nightly-build')
+})
+
+test('坏清单不能替换已安装插件，也不能重新启用旧的无版本插件', async t => {
+  const { installer, plugins, dataRoot, syncs } = await setup(t)
+  await installer.installFromZip(hello(), 'hello.zip')
+  const manifest = path.join(plugins, 'dsh-tavern-hello', 'package.json')
+  const original = await readFile(manifest, 'utf8')
+  await assert.rejects(installer.installFromZip(hello(undefined, { version: undefined }), 'hello.zip'), /version/)
+  assert.equal(await readFile(manifest, 'utf8'), original, '校验必须先于替换或备份')
+  assert.equal(existsSync(path.join(dataRoot, 'plugin-backups')), false)
+  assert.equal(syncs(), 1)
+  await installer.disable('dsh-tavern-hello')
+  const old = JSON.parse(original)
+  delete old.version
+  await writeFile(manifest, JSON.stringify(old))
+  await assert.rejects(installer.enable('dsh-tavern-hello'), /version/)
+  assert.ok(existsSync(path.join(plugins, 'dsh-tavern-hello', '.tavern-disabled')))
+  assert.equal(syncs(), 2, '拒绝启用时不触发加载同步')
 })
 
 test('上传 ZIP 安装、列表、删除进备份', async t => {

@@ -1,12 +1,13 @@
-import { publicPluginMedia, pluginFileMediaType } from './plugin-media.js'
+import { publicPluginMedia, pluginFileMediaType, removedPictures } from './plugin-media.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
 // What the player sees of plugin media: every read is limited to the text version on
-// screen (pluginTurns.currentKey), and every removal tells that game's pages to refresh.
-export function createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignals, attachments: getAttachments }) {
+// screen (pluginTurns.currentKey), and every removal tells that game's pages to refresh
+// and the owning plugin what went (mediaRemoved), so its own copies go with it.
+export function createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignals, attachments: getAttachments, mediaRemoved = () => {} }) {
   const publishChange = sessionId => sessionSignals.publish(sessionId, { kind: 'plugin-media', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
   // Bytes of one item, only while it belongs to the text version on screen.
   // `version` picks an earlier picture of the item (its history index); without it, the current one.
@@ -28,8 +29,10 @@ export function createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignal
   async function removePluginMediaVersion(sessionId, itemId, version) {
     const game = await pluginTurns.resolveGame(str(sessionId))
     if (!game) throw new Error('当前游戏不存在')
+    const before = await pluginMedia.find(game.chatId, str(itemId))
     const item = await pluginMedia.removeVersion({ chatId: game.chatId, itemId: str(itemId), version })
     publishChange(game.sessionId)
+    if (before) mediaRemoved(game.sessionId, before, removedPictures(before, version ?? 'current'), item === null)
     return { item: item ? publicPluginMedia(item) : null }
   }
   // Turns that hold any plugin item, so the browser asks only those turns.
@@ -69,7 +72,7 @@ export function createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignal
       try {
         const item = game ? await pluginMedia.find(game.chatId, str(id)) : null
         if (!item) throw new Error('图片不存在或已删除')
-        await pluginMedia.remove({ chatId: game.chatId, owner: item.owner, itemId: item.id })
+        if (await pluginMedia.remove({ chatId: game.chatId, owner: item.owner, itemId: item.id })) mediaRemoved(game.sessionId, item, removedPictures(item), true)
         results.push({ versionId: str(id), ok: true })
       } catch (error) { results.push({ versionId: str(id), ok: false, error: str(error?.message || error) }) }
     }

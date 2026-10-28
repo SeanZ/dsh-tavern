@@ -1,3 +1,4 @@
+import { preserveInstallationFonts } from './preserve-font-assets.mjs'
 import officialDesktopRuntime from './official-desktop-runtime.cjs'
 import { beginDesktopProfileInstallation } from './desktop-profile-installation.mjs'
 import { ensureInitialTavernShortcut } from '../tavern-plugin/packages/dsh-profile-bridge/lib/shortcut.mjs'
@@ -215,6 +216,16 @@ export async function recordInstalledRelease(options = {}) {
     if (existsSync(fetchHead)) commit = readFileSync(fetchHead, 'utf8').match(/^[0-9a-f]{40}/i)?.[0] || ''
   }
   if (!/^[0-9a-f]{40}$/i.test(commit)) {
+    // 源码里自带的运行清单就记着这次安装对应的提交号；手机/内网常常连不上
+    // GitHub，先本地取，能在没有网络时也留下安装记录（否则“检查更新”会一直
+    // 报“无法确认当前构建或提交先后”）。
+    try {
+      const metadata = JSON.parse(readFileSync(path.join(sourceRoot, 'dsh-tavern-runtime.json'), 'utf8').replace(/^\uFEFF/, ''))
+      const revision = String(metadata?.revision || '')
+      if (/^[0-9a-f]{40}$/i.test(revision)) commit = revision
+    } catch { /* 清单缺失或损坏时继续走网络 */ }
+  }
+  if (!/^[0-9a-f]{40}$/i.test(commit)) {
     const request = options.request || fetch
     const response = await request(options.commitUrl || process.env.DSH_TAVERN_COMMIT_URL || DEFAULT_COMMIT_URL, {
       cache: 'no-store', headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(5000),
@@ -286,7 +297,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
     }
     if (host === 'desktop') {
       bridge = beginDesktopProfileInstallation({ home: DSH_ROOT, sourceRoot: SOURCE_ROOT })
-      if (bridge) console.log(`Profile 完整备份：${bridge.backup}`)
+      if (bridge) console.log(`${bridge.refreshOnly ? '原版切换组件备份' : 'Profile 完整备份'}：${bridge.backup}`)
     }
     mkdirSync(PROFILE_DIR, { recursive: true })
     mkdirSync(LOG_DIR, { recursive: true })
@@ -299,6 +310,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
     for (const directory of ['cards', 'chats', 'scripts', 'sources', 'skills', 'diffs']) {
       mkdirSync(path.join(dataRoot, directory), { recursive: true })
     }
+    await preserveInstallationFonts(SOURCE_ROOT, { dataRoot, androidBackups: host === 'android' })
     await ensureUserExtensions(dataRoot)
     if (migration.migratedSources > 0) console.log(`已迁移 ${migration.migratedSources} 处旧数据；冲突保留 ${migration.conflicts} 个。`)
 
@@ -332,7 +344,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
       syncProfileDependencyPatches({ sourceRoot: SOURCE_ROOT, profileDir: PROFILE_DIR, workspaceText })
       // pnpm keeps an existing link whose target text matches, so untraversable Windows links
       // (they stop the desktop host at startup) must be replaced before it runs.
-      for (const directory of [PROFILE_DIR, bridge?.desktopStage].filter(Boolean)) {
+      for (const directory of [PROFILE_DIR, bridge?.refreshOnly ? null : bridge?.desktopStage].filter(Boolean)) {
         for (const link of repairDirectoryLinksSync(path.join(directory, 'node_modules'))) console.log(`已修复无法访问的依赖链接：${link}`)
       }
       // This generated profile changes dependencies and patch settings on upgrade.
@@ -366,8 +378,11 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
         else if (patched) console.log('已修正 DSH 对话界面：整理过正文的回合不再被当作过程收起。')
       }
       if (bridge) {
+        // Refresh publication is reversible until the installation receipt exists.
+        // Validate the newly published independent bridge, not its stale predecessor.
+        if (bridge.refreshOnly) bridge.finish()
         await runInstall('node', [path.join(SOURCE_ROOT, 'bin', 'validate-desktop-profile.mjs'), bridge.desktopStage], { label: '验证原版 Desktop 切换入口', timeoutMs: 60_000 })
-        bridge.finish()
+        if (!bridge.refreshOnly) bridge.finish()
       }
       transaction.commit()
     } catch (error) {
@@ -383,7 +398,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
 
     writeFileSync(path.join(SOURCE_ROOT, '.dsh-tavern-local.json'), JSON.stringify({ host, dshHome: DSH_ROOT }) + '\n')
     runtime?.commit()
-    const receipt = await recordInstallationReceipt({ sourceRoot: SOURCE_ROOT, dshHome: DSH_ROOT, host, attemptId })
+    const receipt = await recordInstallationReceipt({ sourceRoot: SOURCE_ROOT, dshHome: DSH_ROOT, host, attemptId, bridgeUpdateId: bridge?.bridgeUpdateId })
     bridge?.commit()
     if (host === 'desktop') {
       try {

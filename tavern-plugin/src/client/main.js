@@ -840,16 +840,36 @@ window.__ModuleLoader__.load({
 
 // @include features/music.js
 
+// @include bubble-line.cjs
+// @include-domain dialogue-bubbles.js
 // @include features/cast-presentation.js
 
 // @include-domain cast-stage-state.js
 // @include-domain stage-performance-playback.js
-// @include-domain stage-skin.js
+// @include stage-effects.cjs
+// @include-protocol stage-skin.cjs
 // @include-domain stage-entrance.js
+// @include features/font-library.js
 // @include features/stage-skin.js
 // @include modules/stage-runtime.js
+// @include modules/stage-backlog.js
+// @include modules/stage-typewriter.js
+// @include modules/stage-pager.js
+// @include modules/stage-narration.js
+// @include modules/stage-choices.js
+// @include modules/stage-effects.js
 // @include features/stage-entrance.js
+// @include stage-audio-math.js
+// @include features/stage-audio.js
+// @include features/stage-effects.js
 // @include features/stage-runtime.js
+// @include features/stage-typewriter.js
+// @include features/stage-pager.js
+// @include features/stage-narration.js
+// @include features/stage-choices.js
+// @include features/stage-mixer.js
+// @include features/stage-config.js
+// @include features/stage-backlog.js
 // @include features/stage-assets.js
 // @include features/stage-skins.js
 // @include features/stage-mode.js
@@ -898,6 +918,8 @@ window.__ModuleLoader__.load({
 
 // @include features/worldbook-switcher.js
 
+// @include features/transfer.js
+
 // @include features/card-plugins.js
 
 // @include features/card-library.js
@@ -908,6 +930,7 @@ window.__ModuleLoader__.load({
 // @include features/conversation-header.js
 // @include-domain play-interaction-flow.js
 // @include features/play-interaction-panels.js
+// @include modules/turn-rail.js
 // @include features/play-controls.js
 // @include features/story-service.js
 // @include features/story-render.js
@@ -975,7 +998,8 @@ window.__ModuleLoader__.load({
 					"dsh-tavern:cards": "人物卡库",
 					"dsh-tavern:presets": "预设",
 					"dsh-tavern:worldbooks": "世界书库",
-					"dsh-tavern:resources": "剧本与素材库"
+					"dsh-tavern:resources": "剧本与素材库",
+					"dsh-tavern:transfer": "导出与导入"
 				};
 				function visit(node) {
 					if (!node) return;
@@ -1132,7 +1156,8 @@ window.__ModuleLoader__.load({
 					}
 				});
 			}, "dsh-tavern: worldbook switcher panel");
-			cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
+cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
+			transferFeature.register({ ctx: ctx });
 			ctx.effect(function () {
 				reconcileLibraryTabTitles();
 				if (typeof ctx.betterSidebar.subscribeState !== "function") return;

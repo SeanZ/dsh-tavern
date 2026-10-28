@@ -331,7 +331,7 @@
 						h("section", { className: "dsh-tavern-status-section dsh-tavern-status-support" },
 							h("span", null, "遇到问题？卡不能玩、显示异常、太卡太慢，或者有疑问，都可以交给调试 Agent。"),
 							h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-debug-open" })),
-                        props.submitStage ? h(TavernStageStatus, { key: props.sessionId, sessionId: props.sessionId, submit: props.submitStage, generating: running }) : null,
+                        props.submitStage ? h(TavernStageStatus, { key: props.sessionId, sessionId: props.sessionId, submit: props.submitStage, choices: props.stageChoices, generating: running }) : null,
                         h(TavernBackgroundWait, {sessionId:props.sessionId, activity:view.activity}),
                         h(TavernSaveUpgrade, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
 					["story", "script"].includes(view.mode || "story") && view.requestMode !== "sillytavern" && cardReloadLine ? h("section", { className: "dsh-tavern-status-section" },
@@ -486,7 +486,7 @@
 					function () { return selector(chat.getSnapshot()); }
 				);
 			}
-			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab, submitStage: props.submitStage });
+			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab, submitStage: props.submitStage, stageChoices: props.stageChoices });
 		}
 
         const interactions = createPlayInteractionFlow({ rpc, coordinationView, coordination: tavernCoordination,
@@ -1019,13 +1019,17 @@
 			const replayTurn = state.view && state.view.canReplayFailedTurn ? Number(state.view.replayFailedTurn) || null : null;
 			const staleTurns = state.view && state.view.staleDshErrorTurns || [];
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
+			// 右侧「轮次导航」只列正文行计划里真的画了正文的轮次；点击时自己滚、缺行时自己往前翻。
+			const railPlan = React.useMemo(function () { return state.view ? tavernPlanOf(state.view) : null; }, [state.view && state.view.transcriptTurns, state.view && state.view.transcriptFrom]);
+			const railAccept = railPlan ? function (turn) { return tavernPlanShowsRow(railPlan, turn, "reply"); } : null;
+			const railKey = railPlan ? JSON.stringify(railPlan) : "";
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
 			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
 			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
-				+ ":" + staleTurns.join(",") + ":" + filteredStreak + ":" + canRewind;
+				+ ":" + staleTurns.join(",") + ":" + filteredStreak + ":" + canRewind + ":rail:" + railKey;
 			// Clearing a failed tail is the first half of both recovery actions.
 			async function clearFailedTail() {
 				const result = await rpc("rollbackTurn", { expectedTurn: null }, props.sessionId);
@@ -1042,6 +1046,7 @@
 				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
+				const rail = createTurnRailFilter(root);
 				const controls = createTurnErrorControls(root, {
                     sessionId: props.sessionId, storage: window.localStorage, hiddenTurns: hiddenTurns, replayTurn: replayTurn,
                     onToggle: !Array.isArray(hiddenTurns) ? undefined : async function (turn, hidden) {
@@ -1077,10 +1082,10 @@
                     },
                     onError: function (error) { tavernErrorHub.report("保存错误提示状态失败", error); }
                 });
-				const apply = function () { projection.apply(turns); controls.apply(); };
+				const apply = function () { projection.apply(turns); controls.apply(); rail.apply({ accept: railAccept }); };
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
-				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); };
+				return function () { observer.disconnect(); controls.dispose(); projection.dispose(); rail.dispose(); };
 			}, [props.sessionId, revision, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
 		}
@@ -1161,6 +1166,15 @@
                 input.setDraft(text);
                 return Promise.resolve(input.submit("queue"));
             };
+            // The stage's round-end menu (stage-choices.js) reads and drives the chat's own candidate panel and task.
+            const stageChoices = Object.freeze({ store: interactions.candidates, ready: readyCandidatePanel, submit: submitCandidateTask,
+                useMessageId(sessionId) {
+                    const subscribe = React.useCallback(listener => ctx.sessions.list.subscribe(listener), []);
+                    const binding = React.useSyncExternalStore(subscribe, () => ctx.sessions.binding(sessionId));
+                    const chat = React.useMemo(() => binding ? resolveConversationChatBinding(uiConversation, binding) : null, [binding]);
+                    const watch = React.useCallback(listener => chat ? chat.subscribe(listener) : () => {}, [chat]);
+                    return React.useSyncExternalStore(watch, () => chat ? latestTavernAssistantMessageId(chat.getSnapshot()) : null);
+                } });
             ctx.effect(() => ctx.betterSidebar.registerTab({
                 id: "dsh-tavern:conversation-settings", title: "本局设置", order: 8, single: true,
                 component: props => React.createElement(TavernConversationSettingsTab, { sessionId: props.scope.sessionId, sessions: ctx.sessions })
@@ -1202,7 +1216,7 @@
             )), "dsh-tavern: BGM header chip");
             ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
                 { name: "conversation.session.header.utilities", id: "dsh-tavern-stage-entry", order: 83 },
-                props => React.createElement(TavernStageEntry, { key: props.sessionId, sessionId: props.sessionId, sessions: ctx.sessions, submit: submitTavernStageInput, header: true })
+                props => React.createElement(TavernStageEntry, { key: props.sessionId, sessionId: props.sessionId, sessions: ctx.sessions, submit: submitTavernStageInput, choices: stageChoices, header: true })
             )), "dsh-tavern: fullscreen stage entry");
 			ctx.effect(() => tavernPanelRegistry.onPin(sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:status" }, { sessionId })), "dsh-tavern: reveal pinned panels");
 			ctx.effect(() => ctx.betterSidebar.registerTab({
@@ -1211,7 +1225,7 @@
 				order: 7,
 				single: true,
 				component: function (props) {
-					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, submitStage: submitTavernStageInput, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
+					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, submitStage: submitTavernStageInput, stageChoices: stageChoices, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
 				}
 			}), "dsh-tavern: Better Sidebar status tab");
 			registerTavernStagePanels(ctx);

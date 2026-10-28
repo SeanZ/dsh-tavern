@@ -2,9 +2,13 @@
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createMediaHandlers(deps) {
   const { backgroundConfigForSession, castAssets, castCardOf, castEdit, castPresentation, castStage,
-    castView, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns, removePluginGalleryItems,
+    castView, fontLibrary, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns, removePluginGalleryItems,
     removePluginMediaVersion, sceneIllustrations, speakLine, prepareVoices, speech, speechReply, stageMusicTracks, str } = deps
   return {
+    // The font library's families (font-library.js): what a skin's font ids resolve to.
+    async listFonts() {
+      return await fontLibrary.listFonts()
+    },
     async pluginMediaForTurn(args) {
       return await pluginMediaForTurn(args && args.sessionId, args && args.turn)
     },
@@ -36,6 +40,21 @@ export function createMediaHandlers(deps) {
     },
     async castSetVoice(args) {
       return await castEdit(args && args.sessionId, cardPath => castAssets.setVoice({ cardPath, name: args.name, provider: args.provider, voice: args.voice }))
+    },
+    // A character's reference clips (audio + what it says) for channels that take them inline (cast-presentation.md 22/N).
+    async castAddVoiceReference(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.addVoiceReference({ cardPath, name: args.name, text: args.text, bytes: Buffer.from(str(args.data), 'base64') }))
+    },
+    async castRemoveVoiceReference(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.removeVoiceReference({ cardPath, name: args.name, file: str(args.file) }))
+    },
+    // A character's 配音来源: one configured channel, or its clone of the character's clips; '' is the channel in use.
+    async castSetVoiceSource(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.setVoiceSource({ cardPath, name: args.name, provider: args.provider, clone: args.clone === true }))
+    },
+    // A character's 配音语言 (33/N); '' is the story's own language.
+    async castSetVoiceLanguage(args) {
+      return await castEdit(args && args.sessionId, cardPath => castAssets.setVoiceLanguage({ cardPath, name: args.name, language: args.language }))
     },
     async getSpeechSettings(args) {
       return await speech.present()

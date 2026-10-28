@@ -471,7 +471,7 @@ test('管线护栏：普通卡开姿势时，结算请求的提示词、工具�
   }
   await h.sandbox.queueSettlement('chat')
   assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '〈posture-settlement〉\n\nposture_submit 是本任务最后一步。', tools: ['posture_submit'],
-    messages: ['【上一轮结算姿势】\n（无）\n【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false } }])
+    messages: ['【上一轮结算姿势】\n（无）\n【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false } }])
   assert.equal(h.get().settleStatus, 'done')
 })
 
@@ -483,7 +483,7 @@ test('管线护栏：只开台词标注时照样跑结算（不提交姿势）�
   cast.sandbox.backgroundAgentRunner.run = async input => { requests.push(settlementRequest(input)); assert.equal(input.acceptWithoutText(), false); return { text: '完成' } }
   await cast.sandbox.queueSettlement('chat')
   assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '本轮不生成或提交姿势。完成启用的后台任务后简短回复完成。\n\n', tools: [],
-    messages: ['【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false, styleReference: false } }])
+    messages: ['【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false } }])
   assert.equal(cast.get().settleStatus, 'done')
 
   const off = await harness({ beginRunning: false, mvu: false })
@@ -506,7 +506,7 @@ test('管线护栏：官方 MVU 卡的变量结算收到的提示词与开关逐
     return { receipt: { version: 1, status: 'unchanged', changes: [] } }
   }
   await h.sandbox.queueSettlement('chat')
-  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false }, guidance: '',
+  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false }, guidance: '',
     storyText: '门开了', turn: 2, messageId: 1, swipeId: 0, webSearchEnabled: false }])
 })
 

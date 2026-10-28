@@ -5,10 +5,13 @@ import { JUDGE_KEY_REFS, validateJudgeConfig } from '../domain/engine-judge.js'
 // Tavern settings, system prompts, user profile and background model requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createSettingsHandlers(deps) {
-  const { agentRegistry, chatForSession, chatHeaderForSession, conversationBackgroundSettings, groupOfMode,
+  const { agentRegistry, autoChoices, chatForSession, chatHeaderForSession, conversationBackgroundSettings, groupOfMode,
     llm, playCardSnapshots, presentSystemPrompts, presentUserPreferenceProfile, readTavernSettings,
     sessionActivity, stageJudge, str, tavernModelCatalog, updateChat, updateTavernSettings, userPreferenceProfile } = deps
   const handlers = {
+    async getWebSearchStatus() { return deps.webAccess.status() },
+    async useBuiltinWebSearch() { await deps.webAccess.useBuiltin(); return deps.webAccess.status() },
+    async testWebSearch() { return deps.webAccess.test() },
     async getUserPreferenceProfile(args) {
       const chat = args?.sessionId && args.globalDefaults !== true ? await chatHeaderForSession(args.sessionId, ['userProfileEnabled','userProfileContextSnapshot','userProfileId','userProfileRevision']) : null
       return {
@@ -66,7 +69,10 @@ export function createSettingsHandlers(deps) {
       return { settings: await readTavernSettings(), modelCatalog: await tavernModelCatalog() }
     },
     async updateTavernSettings(args) {
-      return { settings: await updateTavernSettings(args && args.patch) }
+      const settings = await updateTavernSettings(args && args.patch)
+      // Turning it off also drops replies still waiting for background work.
+      if (!settings.candidateAutoGenerate) autoChoices.cancelAll()
+      return { settings }
     },
     // 舞台模式 › 判断模型: the key's status only, never its value.
     async getJudgeCredentialStatus(args) {

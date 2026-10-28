@@ -103,7 +103,7 @@ test('卡档案：DSH 人物卡读清单和素材包，保留名与过新版本�
   const dsh = { format: 'dshcard', formatVersion: 1, card: { version: '1.0.0', title: '鱼', author: 'a' }, requires: { tavernApi: 2 },
     plugins: [{ name: 'director', path: 'plugins/director', purpose: '导演' }],
     packs: [{ id: 'fish-1', title: '鱼', format: 'dsh-asset-pack', contentHash: 'a'.repeat(64), path: 'assets/fish/', credits: ['assets/fish/credits/C.md'] }] }
-  let zip = await openZipFile(await zipFile(dir, 'a.dshcard', { 'card.json': JSON.stringify(card), 'dsh.json': JSON.stringify(dsh), 'assets/fish/media/a.png': PNG, 'assets/fish/credits/C.md': 'cc' }))
+  let zip = await openZipFile(await zipFile(dir, 'a.dshcard', { 'card.json': JSON.stringify(card), 'dsh.json': JSON.stringify(dsh), 'assets/fish/media/a.png': PNG, 'assets/fish/credits/C.md': 'cc', 'plugins/director/package.json': JSON.stringify({ name: 'director', version: '1.0.0' }) }))
   const archive = await readCardArchive(zip)
   await zip.close()
   assert.equal(archive.kind, 'dshcard')
@@ -156,7 +156,7 @@ test('卡内插件：导入时放在一边不加载；启用后进 plugins/；�
   const dir = await temp(t)
   const pluginsDir = join(dir, 'plugins')
   const plugins = createCardPlugins({ dataRoot: dir, pluginsDir })
-  const file = await zipFile(dir, 'a.dshcard', { 'card.json': '{}', 'dsh.json': '{}', 'plugins/director/package.json': JSON.stringify({ name: 'dsh-card-fish-director', exports: { '.': './index.mjs' } }), 'plugins/director/index.mjs': 'export function apply() {}' })
+  const file = await zipFile(dir, 'a.dshcard', { 'card.json': '{}', 'dsh.json': '{}', 'plugins/director/package.json': JSON.stringify({ version: '1.0.0', name: 'dsh-card-fish-director', exports: { '.': './index.mjs' } }), 'plugins/director/index.mjs': 'export function apply() {}' })
   const zip = await openZipFile(file)
   const staged = await plugins.stage(zip, { cardKey: 'k'.repeat(64), plugins: [{ name: 'director', path: 'plugins/director/', purpose: '导演' }] })
   await assert.rejects(plugins.stage(zip, { cardKey: 'k'.repeat(64), plugins: [{ path: 'plugins/../x/' }] }), /插件路径/)
@@ -193,14 +193,14 @@ test('卡内插件：导入时放在一边不加载；启用后进 plugins/；�
 
   // 同名的用户自装插件不让位。
   await mkdir(join(pluginsDir, 'mine'), { recursive: true })
-  await writeFile(join(pluginsDir, 'mine', 'package.json'), JSON.stringify({ name: 'dsh-card-fish-director' }))
+  await writeFile(join(pluginsDir, 'mine', 'package.json'), JSON.stringify({ version: '1.0.0', name: 'dsh-card-fish-director' }))
   await assert.rejects(plugins.enable({ cardKey: 'k'.repeat(64), cardPath: 'cards/鱼.png', plugins: staged }), /同名插件.*plugins\/mine/)
   await rm(join(pluginsDir, 'mine'), { recursive: true })
 
   // 旧安装（按卡命名的目录，标记只写一张卡）照样认得，可以共用和停用。
   const legacy = join(pluginsDir, 'card-kkkkkkkkkk-director')
   await mkdir(legacy, { recursive: true })
-  await writeFile(join(legacy, 'package.json'), JSON.stringify({ name: 'dsh-card-fish-director' }))
+  await writeFile(join(legacy, 'package.json'), JSON.stringify({ version: '1.0.0', name: 'dsh-card-fish-director' }))
   await writeFile(join(legacy, '.dsh-card.json'), JSON.stringify({ cardPath: 'cards/鱼.png', sha256: staged[0].sha256 }))
   await plugins.enable({ cardKey: 'j'.repeat(64), cardPath: 'cards/鱼 (1).png', plugins: staged })
   assert.deepEqual((await plugins.scope()).get('dsh-card-fish-director'), { cards: ['cards/鱼.png', 'cards/鱼 (1).png'], folder: 'card-kkkkkkkkkk-director' })
@@ -243,4 +243,49 @@ test('素材包：插件用零散文件建包，与卡带的包同一存储；�
   await assert.rejects(packs.importFiles([{ path: 'a.png', data: PNG }, { path: 'a.png', data: PNG }], { id: 'p' }), /重复/)
   await assert.rejects(packs.importFiles([{ path: 'a.png', data: 'x' }], { id: 'p' }), /Uint8Array/)
   await assert.rejects(packs.importFiles([], { id: 'p' }), /空/)
+})
+
+for (const pkg of [null, [], { name: 'director' }, { name: 1, version: '1.0.0' }, { name: 'director', version: '' }, { name: 'director', version: ' ' }, { name: 'director', version: 1 }]) {
+  test('card import rejects incomplete package identity: ' + JSON.stringify(pkg), async t => {
+    const { createCardPlugins } = await import('../tavern-plugin/lib/domain/card-plugins.js')
+    const dir = await temp(t)
+    const plugins = createCardPlugins({ dataRoot: dir, pluginsDir: join(dir, 'plugins') })
+    const zip = await openZipFile(await zipFile(dir, 'bad.dshcard', { 'plugins/director/package.json': JSON.stringify(pkg) }))
+    t.after(() => zip.close())
+    await assert.rejects(plugins.stage(zip, { cardKey: 'card', plugins: [{ path: 'plugins/director/' }] }), { code: 'TAVERN_CARD_PLUGIN_INVALID' })
+    await assert.rejects(readdir(join(dir, 'plugins')), { code: 'ENOENT' })
+  })
+}
+
+test('old staged manifests are checked before any installed plugin is replaced', async t => {
+  const { createCardPlugins } = await import('../tavern-plugin/lib/domain/card-plugins.js')
+  const dir = await temp(t), pluginsDir = join(dir, 'plugins')
+  const plugins = createCardPlugins({ dataRoot: dir, pluginsDir })
+  const zip = await openZipFile(await zipFile(dir, 'good.dshcard', { 'plugins/director/package.json': JSON.stringify({ name: 'director', version: '1.0.0' }) }))
+  t.after(() => zip.close())
+  const staged = await plugins.stage(zip, { cardKey: 'card', plugins: [{ path: 'plugins/director/' }] })
+  await plugins.enable({ cardKey: 'card', cardPath: 'cards/a.json', plugins: staged })
+  const folder = (await plugins.scope()).get('director').folder
+  const original = await readFile(join(pluginsDir, folder, 'package.json'), 'utf8')
+  await writeFile(join(dir, 'card-plugins/card/director/package.json'), '{"name":"director"}')
+  await assert.rejects(plugins.enable({ cardKey: 'card', cardPath: 'cards/a.json', plugins: [{ ...staged[0], sha256: 'f'.repeat(64) }] }), /version/)
+  assert.equal(await readFile(join(pluginsDir, folder, 'package.json'), 'utf8'), original)
+  await writeFile(join(pluginsDir, folder, 'package.json'), '{"name":"director"}')
+  await assert.rejects(plugins.enable({ cardKey: 'card', cardPath: 'cards/b.json', plugins: staged }), /version/)
+  assert.deepEqual(JSON.parse(await readFile(join(pluginsDir, folder, '.dsh-card.json'), 'utf8')).cards, ['cards/a.json'])
+})
+
+test('enabling several old staged plugins validates the last before installing the first', async t => {
+  const { createCardPlugins } = await import('../tavern-plugin/lib/domain/card-plugins.js')
+  const dir = await temp(t), pluginsDir = join(dir, 'plugins')
+  const plugins = createCardPlugins({ dataRoot: dir, pluginsDir })
+  const zip = await openZipFile(await zipFile(dir, 'two.dshcard', {
+    'plugins/first/package.json': '{"name":"first","version":"1.0.0"}',
+    'plugins/last/package.json': '{"name":"last","version":"1.0.0"}',
+  }))
+  t.after(() => zip.close())
+  const staged = await plugins.stage(zip, { cardKey: 'card', plugins: [{ path: 'plugins/first/' }, { path: 'plugins/last/' }] })
+  await writeFile(join(dir, 'card-plugins/card/last/package.json'), '{"name":"last"}')
+  await assert.rejects(plugins.enable({ cardKey: 'card', cardPath: 'cards/a.json', plugins: staged }), /last.*version/)
+  await assert.rejects(readdir(pluginsDir), { code: 'ENOENT' })
 })

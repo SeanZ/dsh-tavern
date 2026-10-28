@@ -12,6 +12,7 @@ import { sessionEvents } from '../domain/session-events.js'
 import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
 export function registerTurnLifecycleHooks({
+  autoChoices,
   reconcileWhenIdle,
   backgroundAgentRunner,
   hookChatForSession,
@@ -83,10 +84,14 @@ export function registerTurnLifecycleHooks({
   })
 
   ctx.on('session/event', function (session, event) {
+    // A new foreground request drops the previous reply's waiting automatic candidates.
+    if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) autoChoices.cancel(session.id)
     if (!event || event.type !== 'turn/end') return
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''
     foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason })
+    const reply = assistantResultForTurn(session, event.data && event.data.turn)
+    void autoChoices.completed({ sessionId: session.id, turn: event.data && event.data.turn, messageId: String(reply?.event?.data?.message?.id || ''), reason })
     // A turn whose record went missing (#196) is adopted before the player's next
     // message, once the agent has gone idle; reconcile never blocks this hook. Only after
     // a model's reply: Tavern's own turns (rollback, undo, edit, repair) end between their

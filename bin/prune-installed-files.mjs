@@ -67,6 +67,10 @@ try { isEntryPoint = Boolean(process.argv[1]) && realpathSync(process.argv[1]) =
 if (isEntryPoint) {
   const [sourceDir, appDir] = process.argv.slice(2)
   if (!sourceDir || !appDir) { console.error('用法：node prune-installed-files.mjs <新版本源码目录> <程序目录>'); process.exit(2) }
+  // The new pruner runs even when launched by an older installer. Preserve old
+  // bundled faces before its inventory removes binaries absent from a core ZIP.
+  const { preserveInstallationFonts } = await import('./preserve-font-assets.mjs')
+  await preserveInstallationFonts(appDir)
   const removed = pruneInstalledFiles(path.resolve(sourceDir), path.resolve(appDir))
   if (removed.length) console.log(`已移除旧版本遗留文件 ${removed.length} 个`)
 }

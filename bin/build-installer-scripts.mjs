@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url'
 
 const root = new URL('../', import.meta.url)
 const modules = [
+  { file: 'bin/installation-location.cjs', targets: [
+    { file: 'install.ps1', pattern: /(\$InstallationLocationModuleSource = @'\n)[\s\S]*?(\n'@\n)/ },
+    { file: 'install.sh', pattern: /(<<'DSH_INSTALLATION_LOCATION_MODULE'\n)[\s\S]*?(\nDSH_INSTALLATION_LOCATION_MODULE\n)/ },
+  ] },
   { file: 'bin/official-desktop-runtime.cjs', targets: [
     { file: 'install.ps1', pattern: /(\$OfficialDesktopModuleSource = @'\n)[\s\S]*?(\n'@\n)/ },
     { file: 'install.sh', pattern: /(<<'DSH_OFFICIAL_DESKTOP_MODULE'\n)[\s\S]*?(\nDSH_OFFICIAL_DESKTOP_MODULE\n)/ },

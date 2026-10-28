@@ -150,3 +150,36 @@ while :; do sleep 0.02; done
   const error = await active
   assert.equal(error.code, 'INSTALLATION_ABORTED')
 })
+
+test('取消安卓更新时把更新前的源码换回来，状态不再要求修复', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t)
+  // 已换上的新版源码（3.1.0），只有装上更新前的备份才算完整。取消发生在
+  // install.sh 已经换完源码、依赖还没装完的时候（#388）。
+  const setupScript = await readFile(new URL('../android/setup.sh', import.meta.url))
+  await mkdir(path.join(f.sourceRoot, 'android'), { recursive: true })
+  await writeFile(path.join(f.sourceRoot, 'android/setup.sh'), setupScript, { mode: 0o755 })
+  await writeFile(path.join(f.sourceRoot, 'android/update.sh'), '#!/bin/sh\nprintf "== [步骤 1] 准备酒馆源码（已用 0s）==\\n"\nwhile :; do sleep 0.02; done\n')
+  await writeFile(path.join(f.sourceRoot, 'package.json'), JSON.stringify({ version: '3.1.0' }))
+  await writeFile(path.join(f.sourceRoot, 'pnpm-lock.yaml'), 'lock')
+  await writeFile(path.join(f.sourceRoot, 'pnpm-workspace.yaml'), 'packages: []')
+  const backup = path.join(f.root, 'apps/.dsh-tavern-download.fixture/previous-source')
+  await mkdir(backup, { recursive: true })
+  await writeFile(path.join(backup, 'package.json'), JSON.stringify({ version: '3.0.1' }))
+  await writeFile(path.join(backup, 'pnpm-lock.yaml'), 'lock')
+  await writeFile(path.join(backup, 'pnpm-workspace.yaml'), 'packages: []')
+  await mkdir(path.join(f.sourceRoot, 'node_modules'), { recursive: true })
+  await writeFile(path.join(f.sourceRoot, 'node_modules', 'carried'), 'dependency')
+
+  const active = updateApplication({ ...f.options, host: 'android' }).catch(error => error)
+  await until(async () => (await f.updater().status()).cancellable)
+  assert.equal((await f.updater().cancel()).phase, 'cancelling')
+  const error = await active
+  assert.equal(error.code, 'INSTALLATION_ABORTED')
+  assert.equal(JSON.parse(await readFile(path.join(f.sourceRoot, 'package.json'), 'utf8')).version, '3.0.1')
+  // 旧版本没有 node_modules 就起不来：跟着源码一起换回去。
+  assert.equal(await readFile(path.join(f.sourceRoot, 'node_modules', 'carried'), 'utf8'), 'dependency')
+  const status = JSON.parse(await readFile(f.statusFile, 'utf8'))
+  assert.equal(status.phase, 'failed')
+  assert.equal(status.repairRequired, undefined)
+  assert.match(status.error, /已恢复更新前的源码/)
+})

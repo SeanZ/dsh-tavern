@@ -20,7 +20,8 @@
     "@deepseek-ai/dsh-skill-filesystem": ">=0.2.0-rc.1 <0.3.0",
     "dsh-mnemon": "0.5.31",
     "dsh-mnemon-source-runtime": "0.5.14",
-    "dsh-mnemon-source-documents": "0.5.10"
+    "dsh-mnemon-source-documents": "0.5.10",
+    "undici": "6.29.1"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": ">=0.2.0-rc.1 <0.3.0",

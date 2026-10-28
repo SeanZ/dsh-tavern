@@ -3,6 +3,7 @@ import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { createWriteStream } from 'node:fs'
+import { pluginManifestProblem } from './plugin-manifest.js'
 
 // Plugins a DSH card carries (docs/design/dsh-card-format.md). Import keeps their files aside,
 // unused; the player turning them on copies them into <data>/plugins/, where the user-plugin
@@ -20,6 +21,15 @@ const FOLDER = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const MAX_PLUGIN_BYTES = 64 * 1024 * 1024
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'TAVERN_CARD_PLUGIN_INVALID' }) }
+
+async function readPluginManifest(dir, folder) {
+  let pkg
+  try { pkg = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8')) }
+  catch { throw invalid('插件 ' + folder + ' 缺少可读的 package.json') }
+  const problem = pluginManifestProblem(pkg)
+  if (problem) throw invalid('插件 ' + folder + ' 的 ' + problem)
+  return pkg
+}
 
 export function createCardPlugins({ dataRoot, pluginsDir, keyOf = null }) {
   const stagingRoot = path.join(path.resolve(dataRoot), 'card-plugins')
@@ -53,9 +63,7 @@ export function createCardPlugins({ dataRoot, pluginsDir, keyOf = null }) {
         hash.update(relative + '\u0000' + fileHash.digest('hex') + '\n')
         files += 1
       }
-      let name = ''
-      try { name = String(JSON.parse(await readFile(path.join(target, 'package.json'), 'utf8')).name || '') } catch { throw invalid('插件 ' + folder + ' 缺少可读的 package.json') }
-      if (!name) throw invalid('插件 ' + folder + ' 的 package.json 没有 name')
+      const { name } = await readPluginManifest(target, folder)
       staged.push({ folder, name, sha256: hash.digest('hex'), purpose: String(plugin.purpose || '').slice(0, 200), files, bytes })
     }
     return staged
@@ -93,10 +101,20 @@ export function createCardPlugins({ dataRoot, pluginsDir, keyOf = null }) {
       for (const plugin of plugins) {
         const holder = current.get(plugin.name)
         if (!holder) { plan.push({ plugin, action: 'install' }); continue }
-        if (holder.cards && holder.sha256 === plugin.sha256) { plan.push({ plugin, holder, action: 'share' }); continue }
+        if (holder.cards && holder.sha256 === plugin.sha256) {
+          await readPluginManifest(path.join(pluginsDir, holder.folder), holder.folder)
+          plan.push({ plugin, holder, action: 'share' }); continue
+        }
         // This card's own older copy (the card was re-imported over itself) gives way.
         if (holder.cards && holder.cards.every(card => card === cardPath)) { plan.push({ plugin, holder, action: 'replace' }); continue }
         throw invalid('已经有同名插件 ' + plugin.name + ' 在用' + (holder.cards ? '（属于人物卡 ' + holder.cards.join('、') + '，内容不同）' : '（plugins/' + holder.folder + '）') + '，请先停用它')
+      }
+      // Old cards may already have been staged by a version without validation.
+      // Validate the complete plan before removing or installing any plugin.
+      for (const { plugin, action } of plan) {
+        if (action === 'share') continue
+        const pkg = await readPluginManifest(path.join(stagingRoot, cardKey, plugin.folder), plugin.folder)
+        if (pkg.name !== plugin.name) throw invalid('插件 ' + plugin.folder + ' 的 package.json name 与导入记录不一致，请重新导入人物卡')
       }
       await mkdir(pluginsDir, { recursive: true })
       for (const { plugin, holder, action } of plan) {

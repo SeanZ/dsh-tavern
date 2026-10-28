@@ -22,6 +22,7 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
     }
     if (result === undefined) {
       if (method === 'getTavernSettings') result = { settings: { defaultPlaySettings: { playerName: "你", backgroundTasks: { variables: true, posture: true } } } }
+      else if (method === 'getWebSearchStatus') result = { provider: 'tavern-search', attempts: [] }
       else if (method === 'listPresets') result = { presets: [], activePresetPath: '' }
       else if (method === 'getUserPreferenceProfile') result = { userProfile: { profiles: [], defaultProfileId: '' } }
       else if (method === 'getCandidatePreferences') result = { candidateDismissMode: 'after-fill' }

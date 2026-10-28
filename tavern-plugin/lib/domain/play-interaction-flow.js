@@ -88,6 +88,9 @@ function createPlayInteractionFlow({ rpc, coordinationView, coordination, applyB
             try {
                 const result = await rpc("regenBody", Object.assign({ guidance: text }, restyle ? { restyle: true, styleGuidance: String(styleGuidance || "").trim() } : {}), panel.sessionId);
                 applyBodyResult(panel.sessionId, result.view, panel.tail);
+                // A truncated attempt keeps the text it did write; say so instead of
+                // letting the shortened body pass for a finished reply.
+                if (result && result.view && result.view.regenerationWarning) reportError("重新生成提示", new Error(result.view.regenerationWarning));
                 if (candidates.getSnapshot() === candidate) candidates.set(null);
                 if (regeneration.getSnapshot() === loading) regeneration.set(null);
             } catch (error) {

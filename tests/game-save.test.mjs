@@ -62,10 +62,10 @@ test('导出拒绝读回不支持的存档大小，不返回无法导入的备�
   const limits = { maxArchiveBytes: 2 * 1024 * 1024, maxExpandedBytes: 6 * 1024 * 1024 }
   const input = { chat: { id: 'c', sessionId: 's', messages: [] }, revisions: [], session: { events: [] }, tavernVersion: '2.7.0',
     scene: { files: [], worldbooks: [], attachments: [{ attachmentId: 'a', mediaType: 'image/png', data: randomBytes(3 * 1024 * 1024) }] } }
-  assert.throws(() => buildGameSave(input, limits), /存档包超过 2 MB（图片 3\.0 MB，/)
+  assert.throws(() => buildGameSave(input, limits), /存档包有 [0-9]+ MB，超过 2 MB（图片 3\.0 MB，/)
   const block = Buffer.alloc(3 * 1024 * 1024)
   input.scene.attachments = [1, 2, 3].map(id => ({ attachmentId: String(id), data: block }))
-  assert.throws(() => buildGameSave(input, limits), /解压后内容超过 6 MB（图片 9\.0 MB，/)
+  assert.throws(() => buildGameSave(input, limits), /解压后 [0-9]+ MB，超过 6 MB（图片 9\.0 MB，/)
   input.scene.attachments = [{ attachmentId: 'small', data: Buffer.from('small') }]
   assert.equal(readGameSave(buildGameSave(input, limits), { limits }).scene.attachments[0].data.toString(), 'small')
 })

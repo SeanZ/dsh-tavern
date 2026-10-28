@@ -71,8 +71,11 @@ export function readZipEntries(input, { label = 'ZIP', fail = message => { throw
 /** Write a plain ZIP (deflate when it helps). Entries: { path, content: string | Buffer }. */
 export function writeZipEntries(entries, { readable = false, label = 'ZIP', maxArchiveBytes = MAX_ARCHIVE_BYTES, maxExpandedBytes = MAX_EXPANDED_BYTES, oversized } = {}) {
   if (readable && entries.length > MAX_ENTRIES) throw new Error(label + '文件数量过多，无法生成可导入的压缩包')
-  if (readable && entries.reduce((size, entry) => size + (Buffer.isBuffer(entry.content) ? entry.content.length : Buffer.byteLength(String(entry.content))), 0) > maxExpandedBytes) {
-    throw new Error(label + '解压后内容超过 ' + mb(maxExpandedBytes) + (oversized ? oversized() : '，请减少附件或历史后重试'))
+  // Report what the package actually holds next to the limit: "超过 50 MB" alone leaves the
+  // player guessing which part to drop, and the number is often barely over.
+  const expanded = entries.reduce((size, entry) => size + (Buffer.isBuffer(entry.content) ? entry.content.length : Buffer.byteLength(String(entry.content))), 0)
+  if (readable && expanded > maxExpandedBytes) {
+    throw new Error(label + '解压后 ' + mb(expanded) + '，超过 ' + mb(maxExpandedBytes) + (oversized ? oversized() : '，请减少附件或历史后重试'))
   }
   const local = [], central = []
   let offset = 0
@@ -95,6 +98,6 @@ export function writeZipEntries(entries, { readable = false, label = 'ZIP', maxA
   end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10)
   end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16)
   const size = offset + directory.length + end.length
-  if (readable && size > maxArchiveBytes) throw new Error(label + '超过 ' + mb(maxArchiveBytes) + (oversized ? oversized() : '，请关闭图片导出或减少附件后重试'))
+  if (readable && size > maxArchiveBytes) throw new Error(label + '有 ' + mb(size) + '，超过 ' + mb(maxArchiveBytes) + (oversized ? oversized() : '，请关闭图片导出或减少附件后重试'))
   return Buffer.concat([...local, directory, end])
 }

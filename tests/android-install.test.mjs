@@ -152,7 +152,7 @@ test('Android 入口未安装 Tavern 时明确拒绝伪更新', async (t) => {
   await assert.rejects(() => manager.update(), /尚未安装 DSH Tavern/)
 })
 
-for (const initialVersion of ['cached', '10.34.5', 'missing', 'install-failed', 'standalone', 'restored', 'restored-failed', 'invalid-install', 'swap-failed', 'persistent-store']) {
+for (const initialVersion of ['cached', '10.34.5', 'missing', 'install-failed', 'standalone', 'restored', 'restored-failed', 'invalid-install', 'swap-failed', 'persistent-store', 'timeout-override']) {
 test(`Android 安装固定 pnpm 并先安装依赖再停止旧服务：${initialVersion}`, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'dsh-android-install-order-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
@@ -196,8 +196,8 @@ if [ "\$1" = "--version" ]; then
 fi
 [ "\$1" = "--config.update-notifier=false" ] || exit 93
 shift
-[ "\$1" = "--config.fetchTimeout=600000" ] || exit 96
-shift
+[ "\${pnpm_config_fetch_timeout:-}" = "${initialVersion === 'timeout-override' ? '180000' : '600000'}" ] || exit 96
+case " \$* " in *"--config.fetchTimeout="*|*"--fetch-timeout="*) exit 102;; esac
 [ "\${pnpm_config_store_dir:-}" = "${expectedStore}" ] || exit 97
 case " \$* " in *" --store-dir"*) exit 98;; esac
 [ "\${pnpm_config_cache_dir:-}" = "${expectedCache}" ] || exit 99
@@ -255,7 +255,7 @@ esac
 `, { mode: 0o755 })
 
   const result = spawnSync('bash', [new URL('../android/install.sh', import.meta.url).pathname], {
-    env: { ...process.env, DSH_HOME: dshHome, DSH_TAVERN_OFFLINE_DIR: offlineDir, DSH_TAVERN_ANDROID_STANDALONE: initialVersion === 'standalone' ? '1' : '0', DSH_TAVERN_FORCE_DEPENDENCIES: '1', PATH: `${mockBin}${path.delimiter}${process.env.PATH}` },
+    env: { ...process.env, pnpm_config_fetch_timeout: initialVersion === 'timeout-override' ? '180000' : '', DSH_HOME: dshHome, DSH_TAVERN_OFFLINE_DIR: offlineDir, DSH_TAVERN_ANDROID_STANDALONE: initialVersion === 'standalone' ? '1' : '0', DSH_TAVERN_FORCE_DEPENDENCIES: '1', PATH: `${mockBin}${path.delimiter}${process.env.PATH}` },
     encoding: 'utf8',
   })
   const recorded = (await readFile(events, 'utf8')).replace(/11\.25\.0\.install\.[^ \n]+/g, '11.25.0').trim().split('\n')
@@ -721,4 +721,29 @@ test('APK 升级用内置快照离线替换源码与依赖，保留用户数据'
   assert.notEqual(stale.status, 0)
   assert.match(stale.stdout, /内置快照版本变化/)
   assert.equal(await readFile(path.join(appDir, 'version.txt'), 'utf8'), 'bundle\n')
+})
+
+test('setup.sh --restore-previous 只恢复更新前的源码，没有备份时不动源码', { skip: process.platform === 'win32' }, async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), 'dsh-android-restore-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const app = path.join(home, 'apps/dsh-tavern')
+  const leftover = path.join(home, 'apps/.dsh-tavern-download.fixture')
+  await mkdir(path.join(leftover, 'previous-source'), { recursive: true })
+  await mkdir(app, { recursive: true })
+  await writeFile(path.join(app, 'package.json'), JSON.stringify({ version: '3.1.0' }))
+  await writeFile(path.join(leftover, 'previous-source/package.json'), JSON.stringify({ version: '3.0.1' }))
+  await writeFile(path.join(leftover, 'previous-source/pnpm-lock.yaml'), 'lock')
+  await writeFile(path.join(app, 'pnpm-lock.yaml'), 'lock')
+  const setup = new URL('../android/setup.sh', import.meta.url).pathname
+
+  const run = () => execute('bash', [setup, '--restore-previous', app], { env: { ...process.env, DSH_HOME: home } })
+  const { stdout } = await run()
+  assert.match(stdout, /已恢复更新前的源码 v3\.0\.1/)
+  assert.equal(JSON.parse(await readFile(path.join(app, 'package.json'), 'utf8')).version, '3.0.1')
+  // 换下来的那一份留在临时目录里，便于事后排查。
+  assert.equal(JSON.parse(await readFile(path.join(leftover, 'failed-source/package.json'), 'utf8')).version, '3.1.0')
+
+  // 再次调用时备份已经不在原位：退出码 3 表示没有可恢复的东西，且不删源码。
+  await assert.rejects(run, error => { assert.equal(error.code, 3); return true })
+  assert.equal(JSON.parse(await readFile(path.join(app, 'package.json'), 'utf8')).version, '3.0.1')
 })

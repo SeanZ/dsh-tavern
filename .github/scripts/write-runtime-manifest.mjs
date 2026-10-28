@@ -24,7 +24,10 @@ async function collect(relative) {
   const absolute = path.join(root, relative)
   const items = await readdir(absolute, { withFileTypes: true }).catch((error) => error?.code === 'ENOTDIR' ? null : Promise.reject(error))
   if (items === null) {
-    if (isDevelopmentOnly(relative.replaceAll('\\', '/'))) return
+    const portable = relative.replaceAll('\\', '/')
+    // Keep the catalog and license assets; binaries are verified and cached on demand.
+    // Source/Git archives intentionally retain them during the backward-compatible rollout.
+    if (/^tavern-plugin\/fonts\/.*\.(?:woff2?|ttf|otf)$/i.test(portable) || isDevelopmentOnly(portable)) return
     const content = await readFile(absolute)
     files.push({ path: relative.replaceAll('\\', '/'), sha256: createHash('sha256').update(content).digest('hex'), size: content.length })
     return

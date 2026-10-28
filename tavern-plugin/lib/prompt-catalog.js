@@ -27,17 +27,40 @@ function promptVersion(file) {
   return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
 }
 
+// 应用内更新会整目录换掉源码：正在跑的旧进程随后可能读到一个已经被新版删掉的
+// 提示词文件（#388 的 tavern-plugin/prompts/card-system.md、#328 的同一现象）。
+// 有上一次读到的正文就继续用，不要因为一次 ENOENT 让正在进行的对话失败。
+function missingPrompt(name, error) {
+  if (error?.code !== 'ENOENT') return null
+  const wrapped = new Error(`提示词文件 ${name}.md 不存在（${error.message}）。可能是酒馆正在更新或更新后尚未重启，重启酒馆后重试。`)
+  wrapped.code = 'ENOENT'
+  return wrapped
+}
+
 export function createPromptCatalog(directory = new URL('../prompts/', import.meta.url), { read = readFileSync, version = promptVersion } = {}) {
   const cache = new Map()
   return function promptFromFile(name) {
     if (!knownNames.has(name)) throw new Error('未知提示词: ' + String(name))
     const file = new URL(name + '.md', directory)
-    const stamp = version(file)
     const previous = cache.get(name)
+    let stamp
+    try { stamp = version(file) } catch (error) {
+      const wrapped = missingPrompt(name, error)
+      if (wrapped && previous) return previous.text
+      throw wrapped || error
+    }
     if (previous?.stamp === stamp) return previous.text
-    const text = read(file, 'utf8').trim()
+    let text
+    try { text = read(file, 'utf8').trim() } catch (error) {
+      const wrapped = missingPrompt(name, error)
+      if (wrapped && previous) return previous.text
+      throw wrapped || error
+    }
     if (text === '' && name !== 'system-append') throw new Error('提示词文件不能为空: ' + name + '.md')
-    if (version(file) === stamp) cache.set(name, { stamp, text })
+    // 读完之后再确认版本；文件在这期间被换掉就当没读到，不写进缓存。
+    let current = false
+    try { current = version(file) === stamp } catch (error) { if (!missingPrompt(name, error)) throw error }
+    if (current) cache.set(name, { stamp, text })
     return text
   }
 }

@@ -37,6 +37,8 @@ jobs:
           archive="$RUNNER_TEMP/runtime.zip"
           rm -f "$archive"
           node -e "for (const file of require('./dsh-tavern-runtime.json').files) console.log(file.path)" | zip -X -9 -q -D "$archive" -@
+          # Fail before publishing an oversized archive (jsDelivr per-file limit).
+          node .github/scripts/check-runtime-archive.mjs "$archive"
           dist="runtime-archive-${GITHUB_REF_NAME}"
           git worktree add --detach "$RUNNER_TEMP/dist"
           (

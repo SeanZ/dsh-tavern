@@ -24,6 +24,8 @@ required.push('bin/build-tavern-client.mjs')
 // In the repository and the Git package, but never read by an installed copy (lib/client.js is the
 // built client; only settings.html and the licenses of the vendored upstream sources are loaded).
 const developmentOnly = ['tavern-plugin/src/client/main.js', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/package.json', 'tavern-plugin/lib/vendor/magvarupdate/upstream/package.json']
+const lazyFontBinaries = ['tavern-plugin/fonts/example/face.woff2', 'tavern-plugin/fonts/example/face.ttf', 'tavern-plugin/fonts/example/face.otf']
+const fontMetadata = ['tavern-plugin/fonts/example/index.json', 'tavern-plugin/fonts/example/OFL.txt', 'tavern-plugin/fonts/example/LICENSE']
 const keptUpstream = ['tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/LICENSE', 'tavern-plugin/lib/vendor/magvarupdate/upstream/LICENSE']
 
 // Git emits USTAR/PAX UTF-8 names; Windows tar's listing and extraction depend on locale.
@@ -141,6 +143,10 @@ test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
     await mkdir(path.dirname(path.join(fixture, file)), { recursive: true })
     await writeFile(path.join(fixture, file), await readFile(path.join(root, file)))
   }
+  for (const file of [...lazyFontBinaries, ...fontMetadata]) {
+    await mkdir(path.dirname(path.join(fixture, file)), { recursive: true })
+    await writeFile(path.join(fixture, file), 'fixture')
+  }
   for (const directory of ['docs', 'tests', '__tests__', 'testsets']) {
     await mkdir(path.join(fixture, 'tavern-plugin', directory))
     await writeFile(path.join(fixture, 'tavern-plugin', directory, 'unused.txt'), 'development only')
@@ -152,6 +158,8 @@ test('CDN 清单生成器包含全部依赖补丁及其校验值', async t => {
   assert.equal(manifest.releaseSequence, 42)
   assert.equal(manifest.version, JSON.parse(await readFile(path.join(fixture, 'package.json'), 'utf8')).version)
   assert.ok(manifest.files.some(file => file.path === 'android/setup.sh'), 'CDN 清单需要 android/ 才能增量更新 APK 端的安装脚本')
+  for (const file of lazyFontBinaries) assert.ok(!manifest.files.some(entry => entry.path === file), `Lazy font must not enter core: ${file}`)
+  for (const file of fontMetadata) assert.ok(manifest.files.some(entry => entry.path === file), `Font metadata/license must remain: ${file}`)
   for (const file of developmentOnly) assert.ok(!manifest.files.some(entry => entry.path === file), `CDN 清单不应下载开发用文件：${file}`)
   for (const file of [...required, ...keptUpstream]) {
     const entry = manifest.files.find(entry => entry.path === file)
@@ -186,11 +194,12 @@ test('Git 增量归档在用户开启 CRLF 转换时仍保持运行文件原始�
 // Both formats must retain every runtime byte while excluding development data.
 for (const format of ['tar', 'zip']) {
   test(`兜底 ${format} 下载包只移除开发资料，保留完整运行文件`, async t => {
-    const archive = execFileSync('git', ['archive', `--format=${format}`, process.env.DSH_TEST_ARCHIVE_TREE || 'HEAD'], { cwd: root, maxBuffer: 100 * 1024 * 1024 })
     const directory = await mkdtemp(path.join(os.tmpdir(), 'tavern-archive-'))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const file = path.join(directory, `app.${format}`)
-    await writeFile(file, archive)
+    // Write directly to disk: the source archive intentionally still includes bundled fonts
+    // for old installers and exceeds Node's former 100 MB stdout buffer cap.
+    execFileSync('git', ['archive', `--format=${format}`, `--output=${file}`, process.env.DSH_TEST_ARCHIVE_TREE || 'HEAD'], { cwd: root })
     // ZIP readers may stop before consuming all stdin bytes; use a seekable file
     // to avoid EPIPE or a blocked synchronous pipe on macOS.
     // Windows bsdtar uses the legacy system locale to decode ZIP names; .NET reads UTF-8 names directly.

@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { preserveInstallationFonts } from './preserve-font-assets.mjs'
 import { INVENTORY, sourceFiles } from './prune-installed-files.mjs'
 import { copyTreeSync, removeTreeSync } from './portable-fs.mjs'
 
@@ -181,6 +182,8 @@ if (isEntryPoint) {
   const app = argument(args, 'app')
   try {
     if (!app) throw new Error('缺少 --app')
+    // prepare may clean an interrupted .previous; commit removes the old release.
+    if (command === 'prepare' || command === 'commit') await preserveInstallationFonts(app)
     if (command === 'prepare') console.log(prepare({ app, source: argument(args, 'source'), commit: argument(args, 'commit') || '' }))
     else if (command === 'swap') { const moved = swap(app); console.log(`已切换到新版本，保留用户文件 ${moved.length} 项。`) }
     else if (command === 'rollback') { if (rollback(app)) console.log('已恢复原版本。') }

@@ -92,9 +92,19 @@ export function assertConversationForkable(chat, options = {}) {
   // the live source's in-flight work blocks forking.
   if (options.historical !== true && (options.agentRunning === true || chat.regenInProgress === true)) throw new Error('当前正文仍在生成，请等待完成后再分叉')
   const timeline = object(chat.timeline)
+  // Only a live foreground Agent advances a body operation. A body still marked
+  // 'running' while nothing runs is an aborted round (page reloaded, host
+  // restarted, a discarded parallel variant): nothing will ever finish it, and
+  // the save it belongs to must still be exportable. Settlement phases do block:
+  // background work advances them on its own schedule.
+  const live = options.agentRunning === true
   const unfinished = options.historical === true ? undefined : Object.values(object(timeline.operations)).find(function (operation) {
-    return operation && (operation.status === 'running' || (operation.kind === 'body' && operation.status === 'completed' &&
-      ['pending', 'running'].includes(str(object(operation.background).phase))))
+    if (!operation) return false
+    if (operation.kind === 'body') {
+      if (operation.status === 'running') return live
+      return operation.status === 'completed' && ['pending', 'running'].includes(str(object(operation.background).phase))
+    }
+    return operation.status === 'running'
   })
   if (unfinished) throw new Error('当前轮次尚未完成生成或状态结算，请等待完成后再分叉')
   if (['pending', 'running'].includes(str(chat.settleStatus))) throw new Error('当前轮次尚未完成状态结算，请等待完成后再分叉')

@@ -13,6 +13,9 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { inspectInstallation } from './installation.mjs'
+import { readLastResult } from './helper.mjs'
+export { readLastResult } from './helper.mjs'
 
 /** Throw a coded bridge error the RPC layer turns into a structured failure. */
 export function fail(code, message) {
@@ -191,6 +194,7 @@ export function statusPayload(paths) {
   const profiles = listProfiles(paths)
   const appExe = detectAppExe()
   return {
+    installation: inspectInstallation(paths),
     platform: process.platform,
     dshHome: paths.home,
     profilesDir: paths.profilesDir,
@@ -206,6 +210,7 @@ export function statusPayload(paths) {
     desktopApp: Boolean(process.versions.electron && typeof process.send === 'function' && process.ppid > 1),
     profiles,
     backups: listBackups(paths),
+    lastResult: readLastResult(paths.stateDir),
     logPath: join(paths.stateDir, 'last-run.log'),
     logTail: readLogTail(join(paths.stateDir, 'last-run.log')),
     transcriptPath: join(paths.stateDir, 'last-run.log.out'),

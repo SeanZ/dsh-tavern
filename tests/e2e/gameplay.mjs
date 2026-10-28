@@ -15,6 +15,7 @@ import { toolStepsChecks } from './tool-steps.mjs'
 import { storageAuditChecks } from './storage-audit.mjs'
 import { brokenSaveChecks } from './broken-save.mjs'
 import { nativeRepairChecks } from './native-repair.mjs'
+import { editCandidatesChecks } from './edit-candidates.mjs'
 import { failureResilienceChecks } from './failure-resilience.mjs'
 import { incrementalMvuChecks } from './mvu-incremental.mjs'
 import {openingUpdateChecks} from './opening-update.mjs'
@@ -228,6 +229,7 @@ try {
           TAVERN_E2E_STORY_TOOL_LOG: storyToolScenario ? join(output, 'story-tool.jsonl') : '',
           TAVERN_E2E_STORY_TOOL_LONG: storyToolScenario ? (process.env.TAVERN_E2E_STORY_TOOL_LONG || '60') : '',
           TAVERN_E2E_SETTLEMENT_DUMP: process.env.TAVERN_E2E_SETTLEMENT_DUMP || '',
+          TAVERN_E2E_BACKGROUND_DUMP: process.argv.includes('--edit-candidates') ? join(output, 'background-requests.jsonl') : '',
           TAVERN_E2E_CAST: castScenario ? '1' : '',
           TAVERN_E2E_MEMORY_AUDIT: process.argv.includes('--card-memory') ? join(output, 'memory-requests.jsonl') : '',
           TAVERN_E2E_CONTEXT_AUDIT: process.argv.includes('--native-repair') || process.argv.includes('--failure-resilience') ? join(output, 'context-requests.jsonl') : '',
@@ -474,6 +476,8 @@ try {
     await helperApiChecks({ page, step, savedChat, output, report })
   } else if (process.argv.includes('--failure-resilience')) {
     await failureResilienceChecks({ page, step, savedChat, output, report, root, restartServer })
+  } else if (process.argv.includes('--edit-candidates')) {
+    await editCandidatesChecks({ page, step, savedChat, output, report })
   } else if (process.argv.includes('--native-repair')) {
     await nativeRepairChecks({ page, step, savedChat, output, report, data, restartServer })
   } else if (process.argv.includes('--broken-save')) {

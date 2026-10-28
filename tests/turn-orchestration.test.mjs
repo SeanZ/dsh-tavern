@@ -366,7 +366,7 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
   const submitOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['submit_story'] } })
   assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
-  const disabled = ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'submit_story']
+  const disabled = ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
   const none = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: disabled } })
   assert.deepEqual(await none.orchestrator.visibleTools('session-1'), [])
 

@@ -40,7 +40,8 @@
     "schemastery": "3.18.0",
     "dsh-mnemon": "0.5.31",
     "dsh-mnemon-source-runtime": "0.5.14",
-    "dsh-mnemon-source-documents": "0.5.10"
+    "dsh-mnemon-source-documents": "0.5.10",
+    "undici": "6.29.1"
   },
   "dsh": {
     "profile": {

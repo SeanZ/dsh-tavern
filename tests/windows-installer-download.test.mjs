@@ -28,7 +28,7 @@ for (const transport of ['curl', 'node', 'curl-failed']) {
     const functions = source.slice(source.indexOf('function Test-Command'), source.indexOf('$PreviousDshHome ='))
     const cdn = source.slice(source.indexOf("      Write-UpdateLog 'installer.stage.started' 'source.jsdelivr'"), source.indexOf('      $UsedCdn = $true'))
     assert.ok(cdn.length > 0, 'CDN download block must be exercised')
-    const archive = source.slice(source.indexOf('    $PreviousProgressPreference ='), source.indexOf('  }\n  if (-not $UsedCdn)'))
+    const archive = source.slice(source.indexOf('    $PreviousProgressPreference ='), source.indexOf('  if (-not $UsedGit -and -not $UsedArchive)'))
     await writeFile(path.join(directory, 'bad-curl.cmd'), '@exit /b 7\r\n')
     const probe = `
 $ErrorActionPreference = 'Stop'

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, backgroundAgentRunner, backgroundCatalog, bodyEditor, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
+  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
@@ -37,6 +37,9 @@ export function createPlayHandlers(deps) {
     async getSession(args) {
       // A save opened for the first time in this process is checked once, while nothing runs.
       await reconcileWhenIdle(args && args.sessionId, { once: true })
+      // A branch forked by an older Tavern is a conversation, not a subagent: without the
+      // repair the page's history read fails and the composer stays read-only.
+      await branchOrigin?.ensure?.(str(args && args.sessionId))
       void backgroundCatalog(str(args && args.sessionId))
       if(args?.fullView === true)templateHistoryFrom.set(args.sessionId,0)
       else if(Number.isSafeInteger(args?.historyFrom) && args.historyFrom >= 0)templateHistoryFrom.set(args.sessionId,args.historyFrom)
@@ -78,6 +81,8 @@ export function createPlayHandlers(deps) {
       return { sync }
     },
     async submitTask(args) {
+      // A manual request supersedes the automatic one still waiting for this game.
+      autoChoices.cancel(args && args.sessionId)
       if (str(args && args.kind) !== 'candidate') throw new Error('暂不支持的持久任务类型: ' + str(args && args.kind))
       return { sync: await candidateTasks.submit(args) }
     },
@@ -121,9 +126,12 @@ export function createPlayHandlers(deps) {
       return { guides: await conversationGuides.remove(args?.sessionId, args) }
     },
     async getBodyEdit(args) {
+      // Editing or regenerating the reply drops its waiting automatic candidates.
+      autoChoices.cancel(args && args.sessionId)
       return { edit: args?.role === 'user' ? await bodyEditor.readUser(args && args.sessionId, args) : await bodyEditor.read(args && args.sessionId) }
     },
     async saveBodyEdit(args) {
+      autoChoices.cancel(args && args.sessionId)
       await reconcileStory(args && args.sessionId)
       if (args?.role === 'user') {
         const saved = await bodyEditor.saveUser(args && args.sessionId, args)
@@ -191,6 +199,7 @@ export function createPlayHandlers(deps) {
       return { view }
     },
     async regenBody(args) {
+      autoChoices.cancel(args && args.sessionId)
       if (args?.restyle === true) await retryStyleReference(args.sessionId, { target: 'regenerate', guidance: args.styleGuidance })
       await reconcileStory(args && args.sessionId)
       polishPrereview.cancel(args?.sessionId)

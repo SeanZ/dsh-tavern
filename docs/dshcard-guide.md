@@ -138,7 +138,7 @@ node examples/dshcard-hello/build.mjs
 
 | 文件 | 作用 |
 | --- | --- |
-| `package.json` | `name` 是插件名（与 `dsh.json` 里的 `name` 相同），`exports` 指向宿主侧和浏览器侧入口 |
+| `package.json` | `name` 是插件名（与 `dsh.json` 里的 `name` 相同），`name`、`version` 必须是非空字符串（如 `"version": "1.0.0"`，不同于 `card.version`），`exports` 指向宿主侧和浏览器侧入口 |
 | `index.mjs` | 宿主侧：在 Tavern 进程里运行，可以读写每轮数据、参与后台结算 |
 | `client.js` | 浏览器侧：画舞台、面板，由页面直接加载，不需要打包 |
 
@@ -180,7 +180,7 @@ node examples/dshcard-hello/build.mjs
 | 格式版本较新，请先更新 Tavern | `formatVersion` 大于 1 |
 | 素材包路径应为 assets/<包名>/ | `packs[].path` 不是一层目录，或包名是保留名 |
 | 插件路径应为 plugins/<文件夹>/ | 插件文件夹名只能用小写字母、数字、点、下划线、连字符 |
-| 插件 … 缺少可读的 package.json / 没有 name | 插件文件夹里的 `package.json` 缺失或没写 `name` |
+| 插件 … 缺少可读的 package.json / name 或 version 无效 | 检查插件 `package.json` 的 `name`、`version`，两者都要写非空字符串；旧包请补上作者确认的版本后重新打包 |
 | 已经有同名插件 … 在用 | 另一张卡或全局插件用了同样的插件名；卡已导入，插件没有启用 |
 | defaults.preset 应指向包内 presets/ 下的 JSON 预设 | 预设路径写错或文件不在包里 |
 
