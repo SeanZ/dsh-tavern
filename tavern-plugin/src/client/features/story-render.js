@@ -19,6 +19,44 @@ const TAVERN_FLOOR_TAGS = new Set(["div", "span", "p", "img", "br", "hr", "b", "
 const TAVERN_FLOOR_DROPPED = new Set(["svg", "math", "script", "iframe", "frame", "frameset", "object", "embed", "applet", "template", "form", "link", "meta", "base", "noscript", "portal", "textarea", "select"]);
 const TAVERN_FLOOR_ATTRIBUTES = new Set(["class", "id", "style", "title", "alt", "src", "href", "width", "height", "colspan", "rowspan", "span", "open", "disabled", "checked", "value", "type", "role", "lang", "dir", "align", "min", "max", "low", "high", "optimum", "datetime", "start", "reversed", "for"]);
 const TAVERN_FLOOR_INPUT_TYPES = new Set(["text", "checkbox", "radio", "range", "number", "button"]);
+// Fork：仅故事静态正文的纯文本 details 复用宿主 Markdown，不改原文、正则或公共 HTML 渲染。
+// 上游提供等价支持后，复跑 story-details 回归即可删除此适配及两个故事调用点。
+// 只检查原始片段的顶层节点一次；嵌套/混合 HTML 不处理，绝不扫描 Markdown 的输出。
+function tavernStoryDetailsParts(html, doc) {
+	const template = doc.createElement("template");
+	template.innerHTML = String(html || "");
+	// 相邻块也可能共享作者样式或脚本；有这类内容时整段保留原渲染边界。
+	if (template.content.querySelector("style, script, iframe, object, embed")) return null;
+	const nodes = Array.from(template.content.childNodes);
+	if (nodes.some(function (node) { return node.nodeType !== 1 ? node.nodeType !== 3 || node.data.trim() : node.localName !== "details"; })) return null;
+	let changed = false;
+	const parts = nodes.map(function (node) {
+		if (node.nodeType === 3) return { text: node.data };
+		const children = Array.from(node.childNodes), summary = node.firstElementChild;
+		const split = children.indexOf(summary);
+		if (Array.from(node.attributes).some(function (attr) { return attr.name !== "open"; }) || !summary || summary.localName !== "summary" || summary.attributes.length
+			|| Array.from(summary.childNodes).some(function (child) { return child.nodeType !== 3; })
+			|| children.slice(0, split).some(function (child) { return child.nodeType !== 3 || child.data.trim(); })
+			|| children.slice(split + 1).some(function (child) { return child.nodeType !== 3; })) return { html: node.outerHTML };
+		const text = children.slice(split + 1).map(function (child) { return child.data; }).join("");
+		if (!text.trim()) return { html: node.outerHTML };
+		changed = true;
+		return { summary: summary.textContent, text: text, open: node.hasAttribute("open") };
+	});
+	return changed ? parts : null;
+}
+
+function TavernStoryStaticHtml(props) {
+	const parts = React.useMemo(function () { return tavernStoryDetailsParts(props.html, window.document); }, [props.html]);
+	const h = React.createElement;
+	if (!parts) return h(TavernFloorStaticHtml, props);
+	return h(React.Fragment, null, parts.map(function (part, index) {
+		if (part.summary !== undefined) return h("details", { key: index, open: part.open }, h("summary", null, part.summary),
+			h(TavernColoredMarkdown, { text: part.text, labels: { code: { copyLabel: "复制", copiedLabel: "已复制" }, footnotes: "脚注" } }));
+		return part.html !== undefined ? h(TavernFloorStaticHtml, { key: index, html: part.html }) : part.text;
+	}));
+}
+
 function tavernFloorUrl(value, image) {
 	const url = String(value || "").replace(/[\u0000- \u007f]/g, "");
 	if (/^https?:/i.test(url)) return true;
@@ -173,7 +211,7 @@ function createTavernStoryRender(options) {
 		const h = React.createElement;
 		const codeLabels = { copyLabel: "复制", copiedLabel: "已复制" };
 		let body;
-		if (!live && typeof props.snapshotHtml === "string") body = h(TavernFloorStaticHtml, { html: props.snapshotHtml });
+		if (!live && typeof props.snapshotHtml === "string") body = h(TavernStoryStaticHtml, { html: props.snapshotHtml });
 		else {
 			const floor = floorOf(state.view, storyTurn);
 			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
@@ -184,7 +222,7 @@ function createTavernStoryRender(options) {
 			else body = floor.parts.map(function (part, index) {
 				return part.kind === "markdown"
 					? h(TavernColoredMarkdown, { key: index, text: String(part.text || ""), labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels })
-					: h(TavernFloorStaticHtml, { key: index, html: String(part.content !== undefined ? part.content : part.html || "") });
+					: h(TavernStoryStaticHtml, { key: index, html: String(part.content !== undefined ? part.content : part.html || "") });
 			});
 		}
 		return h("div", { ref: props.containerRef, className: "dsh-tavern-assistant dsh-tavern-floor-body", "data-tavern-floor": String(storyTurn), "data-live": live || undefined }, body);
