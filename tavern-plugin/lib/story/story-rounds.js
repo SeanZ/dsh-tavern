@@ -186,25 +186,31 @@ function createStoryRoundsFold() {
   // latest generation it covers.
   function historyOf(current) {
     const reachable = seq => {
-      const seen = new Set(), found = []
+      const seen = new Set(), found = [], partialTurns = new Set()
       const visit = at => {
         if (seen.has(at)) return
         seen.add(at)
         const event = events.get(at)
         if (!event || event.type !== 'assistant/message') return
         if (!storyRoundsIsReplace(event)) { if (storyRoundsIsModelReply(event) && textOf(event) !== '') found.push(event); return }
+        // 已接纳的部分正文以落盘投影作为独立结果；attempt 本身不进入可见楼层。
+        if (event.data.message.source?.tavernResultOrigin === true) {
+          found.push(event)
+          partialTurns.add(Number(event.data.message.source.tavernResultTurn))
+        }
         for (const source of Array.isArray(event.sourceEventSeqs) ? event.sourceEventSeqs : []) visit(source)
       }
       visit(seq)
-      return found.sort((a, b) => a.seq - b.seq)
+      return found.filter(event => storyRoundsIsReplace(event) || !partialTurns.has(Number(event.data.turn))).sort((a, b) => a.seq - b.seq)
     }
     const found = reachable(current.seq)
-    if (!found.length) return [{ seq: current.seq, turn: Number(current.data.turn), text: textOf(current), current: true }]
+    if (!found.length) return [{ seq: current.seq, turn: Number(current.data.turn), text: textOf(current), current: true, ...incompleteOf(current) }]
     // 单一来源的正文编辑沿用被编辑结果的选择；重生成合并多个来源时，默认选最新生成。
     const visited = new Set()
     function selectedResult(event) {
       if (!event || visited.has(event.seq) || event.type !== 'assistant/message') return undefined
       visited.add(event.seq)
+      if (event.data.message.source?.tavernResultOrigin === true && found.some(item => item.seq === event.seq)) return event.seq
       const named = Number(event.data.message.source?.tavernResultSeq)
       if (found.some(item => item.seq === named)) return named
       if (!storyRoundsIsReplace(event)) return found.some(item => item.seq === event.seq) ? event.seq : undefined
@@ -212,7 +218,11 @@ function createStoryRoundsFold() {
       return Array.isArray(sources) && sources.length === 1 ? selectedResult(events.get(sources[0])) : undefined
     }
     const currentSeq = selectedResult(current) ?? found[found.length - 1].seq
-    return found.map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq }))
+    return found.map(event => ({ seq: event.seq, turn: Number(event.data.turn), text: textOf(event), current: event.seq === currentSeq, ...incompleteOf(event) }))
+  }
+  function incompleteOf(event) {
+    const source = event.data?.message?.source
+    return source?.tavernIncomplete === true ? { incomplete: true, incompleteReason: String(source.tavernIncompleteReason || '已保留生成到的部分正文') } : {}
   }
   function failedEnd(turn) {
     const kind = ended.get(turn)
@@ -254,11 +264,14 @@ function createStoryRoundsFold() {
       // An append reply is story once its turn completed; a replacement is Tavern's own settled write.
       if (!storyRoundsIsReplace(event) && !(ended.has(turn) && !failedEnd(turn))) continue
       const story = storyOf(event)
-      const reply = { seq, turn, id: String(event.data.message.id || ''), text }
+      const history = historyOf(event)
+      const selected = history.find(item => item.current)
+      const incomplete = selected?.incomplete ? { incomplete: true, incompleteReason: selected.incompleteReason } : incompleteOf(event)
+      const reply = { seq, turn, id: String(event.data.message.id || ''), text, ...incomplete }
       const previous = floors[floors.length - 1]
       // A later step of the same round (after a tool call) is that round's reply.
-      if (!inputs.length && previous && previous.story === story) { previous.reply = reply; previous.history = historyOf(event); continue }
-      floors.push({ story, inputs, reply, history: historyOf(event) })
+      if (!inputs.length && previous && previous.story === story) { previous.reply = reply; previous.history = history; continue }
+      floors.push({ story, inputs, reply, history })
       inputs = []
     }
     const visible = new Set(nodes)

@@ -9,6 +9,7 @@ import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.
 import { createChatPersistence } from '../tavern-plugin/lib/domain/chat-persistence.js'
 import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createBoundedHistory, readRowsAt } from '../tavern-plugin/lib/domain/bounded-history.js'
+import { foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 import { isScopedMessages } from '../tavern-plugin/lib/domain/scoped-messages.js'
 
 const model = { kind: 'model', provider: 'fixture', model: 'fixture' }
@@ -43,8 +44,8 @@ async function fixture(t, bounded) {
   } }).chat, { source: 'background.settlement.commit' })
 
   const events = [
-    { seq: 0, type: 'user/message', data: { turn: 81, role: 'user', content: [{ type: 'text', text: '推门' }] } },
-    { seq: 1, type: 'assistant/message', data: { turn: 81, step: 1, message: { role: 'assistant', source: model, content: [{ type: 'text', text: '新正文' }] } } }
+    { seq: 0, type: 'user/message', surfaceOp: 'append', data: { turn: 81, role: 'user', content: [{ type: 'text', text: '推门' }] } },
+    { seq: 1, type: 'assistant/message', surfaceOp: 'append', data: { turn: 81, step: 1, message: { role: 'assistant', source: model, content: [{ type: 'text', text: '新正文' }] } } }
   ]
   const session = { id: 'session', events, surface: { nodes: [0, 1] }, append(type, data, options = {}) {
     const seq = events.length
@@ -285,7 +286,18 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
     assert.equal(after.messages.at(-1).incomplete, true)
     assert.equal(after.regenInProgress, undefined)
     assert.equal(after.regenRecovery, undefined)
+    assert.notEqual(after.nativeSync?.status, 'stale', '部分正文应完成原生投影，不能靠后续修复兜底')
+    const floor = foldStoryRounds(h.session.events).floors.at(-1)
+    assert.equal(floor.reply.text, '半截正文')
+    assert.equal(floor.reply.incomplete, true)
+    assert.deepEqual(floor.history.map(item => [item.text, item.current]), [['新正文', false], ['半截正文', true]])
+    assert.deepEqual(foldStoryRounds(JSON.parse(JSON.stringify(h.session.events))), foldStoryRounds(h.session.events))
     results.push(after)
+    delete h.hooks.partialGeneration
+    await h.rounds.regenerate('chat', '', 'session')
+    const completed = await h.p.read('chat')
+    assert.equal(completed.messages.at(-1).incomplete, undefined, '完整生成不继承旧标记')
+    assert.equal(foldStoryRounds(h.session.events).floors.at(-1).reply.incomplete, undefined)
   }
   const strip = chat => {
     const value = comparable(chat)

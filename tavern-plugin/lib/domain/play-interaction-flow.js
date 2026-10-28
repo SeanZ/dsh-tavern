@@ -93,6 +93,7 @@ function createPlayInteractionFlow({ rpc, coordinationView, coordination, applyB
                 if (result && result.view && result.view.regenerationWarning) reportError("重新生成提示", new Error(result.view.regenerationWarning));
                 if (candidates.getSnapshot() === candidate) candidates.set(null);
                 if (regeneration.getSnapshot() === loading) regeneration.set(null);
+                return result;
             } catch (error) {
                 reportError("正文重新生成", error);
                 if (regeneration.getSnapshot() === loading) regeneration.set({ ...panel, phase: "error", error: String(error?.message || error) });

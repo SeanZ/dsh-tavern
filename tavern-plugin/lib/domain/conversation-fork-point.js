@@ -48,7 +48,13 @@ export function conversationForkBoundary(session, state, turn) {
   const events = sessionEvents(session)
   const nativeTurn = Number(state.regeneratedDshTurns?.[turn]) || turn
   const end = events.findLast(event => event.type === 'turn/end' && Number(event.data?.turn) === nativeTurn)
-  if (!end || end.data?.reason?.kind !== 'completed') throw new Error('该回合缺少已完成的原生上下文边界')
+  // 生成终态可能失败，但已接纳的部分正文拥有后续落盘投影；切换回完整旧结果也沿用这次接纳边界。
+  const acceptedPartial = end && events.some(event => event.seq > end.seq && event.type === 'assistant/message' &&
+    event.surfaceOp?.op === 'replace' && event.data?.message?.source?.kind === 'model' &&
+    event.data.message.source.tavernResultOrigin === true &&
+    Number(event.data.message.source.tavernResultTurn) === nativeTurn &&
+    Number(event.data.message.source.tavernStoryTurn) === turn)
+  if (!end || end.data?.reason?.kind !== 'completed' && !acceptedPartial) throw new Error('该回合缺少已完成的原生上下文边界')
   let result = assistantResultForTurn(session, turn)
   const projected = events.findLast(event => event.type === 'assistant/message' &&
     Number(event.data?.message?.source?.tavernStoryTurn) === turn && event.data.message.source.kind === 'model')

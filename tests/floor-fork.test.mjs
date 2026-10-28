@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 let run
 async function scenario() {
   if (run) return run
-  const root = await mkdtemp(join(tmpdir(), 'tavern-floor-fork-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tavern-floor-fork-')))
   try {
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/floor-fork-rpc.mjs', import.meta.url))], {
       env: { ...process.env, DSH_HOME: root }, encoding: 'utf8', timeout: 60000
@@ -51,3 +51,5 @@ test('(11) MVU 卡切换结果后存档标记变量未重算，分叉新局带�
 test('新局再折叠楼层与 history[].current 正确，下一轮请求里是选中版本', realHost, () => passed('C1 新局折叠与下一轮请求是选中版本'))
 
 test('删除分支通过真实 RPC 回收快照，源局快照保持', realHost, () => passed('12 删除分支回收快照且源局不变'))
+
+test('部分正文的历史切换和分叉保留不完整状态及变量边界', realHost, () => passed('13 部分正文结果切换与分叉保留不完整状态及变量边界'))

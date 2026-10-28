@@ -209,14 +209,14 @@ function createTavernStoryService(options) {
 	async function regenerateBody(sessionId, guidance, extra) {
 		const panel = flow.regeneration.set({ sessionId: sessionId, phase: "input", guidance: "", text: "", error: "", tail: null });
 		flow.candidates.set(null);
-		await flow.regenerateBody(panel, guidance, extra || {});
+		const result = await flow.regenerateBody(panel, guidance, extra || {});
 		const after = flow.regeneration.getSnapshot();
 		if (after && after.sessionId === sessionId && (after === panel || after.phase === "error")) {
 			flow.regeneration.set(null);
 			throw new Error(after === panel ? "正文正在重新生成，请等待完成" : after.error);
 		}
 		afterChange(sessionId);
-		return { view: liveTavernView.getSnapshot(sessionId).view };
+		return { view: liveTavernView.getSnapshot(sessionId).view, regenerationWarning: result?.view?.regenerationWarning || "" };
 	}
 
 	const service = {

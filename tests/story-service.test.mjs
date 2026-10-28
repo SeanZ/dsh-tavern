@@ -486,3 +486,12 @@ test('resettle 的 guidance 透传到 retrySettlement；省略时不带（服务
   await assert.rejects(service.resettle('s1', 2, 'text'), /guidance/)
   assert.equal(calls.filter(call => call.method === 'retrySettlement').length, 4)
 })
+
+
+test('部分正文警告穿过实际客户端重生成契约', async () => {
+  const warning = '已保留部分正文'
+  const { client } = loadClient({ regenBody: { view: { mode: 'story', canRegenerate: true, regenerationWarning: warning } } })
+  const service = serviceOf(client, { s1: eventWindow(story(3)) })
+  client.liveTavernView.setView('s1', { mode: 'story', canRegenerate: true })
+  assert.equal((await service.regenerate('s1', 3)).regenerationWarning, warning)
+})

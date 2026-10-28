@@ -57,6 +57,11 @@ export function replaceLastRound(input = {}) {
     swipeId: 0,
     swipes: [source]
   })
+  // 新结果独立决定是否完整，不能继承被替换正文的中断标记。
+  if (regeneratedAssistant.incomplete !== true) {
+    delete replacement.incomplete
+    delete replacement.incompleteReason
+  }
   delete replacement.bodyEdit
   delete replacement.variablesStale
   // The regenerated body replaces the original reply in the native session, so

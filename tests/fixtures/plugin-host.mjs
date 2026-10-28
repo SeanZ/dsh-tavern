@@ -8,21 +8,26 @@ export async function createPluginHost({ withTools = false } = {}) {
   const { apply } = await import('../../tavern-plugin/lib/index.js')
   const routes = new Map(), events = new Set(), disposers = []
   const services = new Map([
+    // 仅适配此进程内夹具的固定 Host；真实鉴权由 tavern-http-origin 与浏览器回归验证。
+    ['connection', { requestRejection: req => req.headers.host === 'fixture.test' ? undefined : 403 }],
     ['settings', { describe: () => [] }], ['llm', {}],
     ['tokenMeter', { _foldEvent() {} }], ['skills', { registerProvider() {} }],
     ['agentPresets', { resolvedRoots: [] }], ['agents', new Map()], ['sessions', new Map()],
     ['webServer', { register(route) { routes.set(route.path, route.handler); return () => routes.delete(route.path) } }]
   ])
   const registeredTools = new Map()
-  if (withTools) services.set('tools', {
+  const tools = {
+    get: name => registeredTools.get(name),
     register(tool) {
       assert.ok(!registeredTools.has(tool.name), 'duplicate tool: ' + tool.name)
       registeredTools.set(tool.name, tool)
     }
-  })
+  }
+  if (withTools) services.set('tools', tools)
   const dispose = async () => { for (const callback of disposers.reverse()) await callback() }
   try {
     await apply({
+      tools,
       get: name => services.get(name),
       inject(names, callback) { if (names.every(name => services.has(name))) return callback(this) },
       llm: services.get('llm'),
@@ -36,7 +41,7 @@ export async function createPluginHost({ withTools = false } = {}) {
     services, events, registeredTools, dispose,
     async rpc(method, args = {}) {
       const req = Readable.from([Buffer.from(JSON.stringify(args))])
-      Object.assign(req, { method: 'POST', url: '/api/dsh-tavern/' + method, headers: {} })
+      Object.assign(req, { method: 'POST', url: '/api/dsh-tavern/' + method, headers: { host: 'fixture.test' } })
       let status, body
       await routes.get('/api/dsh-tavern')(req, { writeHead(code) { status = code }, end(value) { body = value } })
       assert.equal(status, 200)

@@ -60,7 +60,7 @@ function createGame(name) {
     return seq
   }
   // 重新生成落定：尝试轮 + 投影编辑轮（rollback-surface 同一套），存档正文与变量换成新结果。
-  g.regenerate = (story, attempt, text, gold) => {
+  g.regenerate = (story, attempt, text, gold, partial = false) => {
     g.chat.timeline.checkpoints.push({ id: 'cp-' + attempt, turn: attempt, userText: '', beforeRevision: g.save(), committedAt: attempt })
     const events = sessionEvents(session)
     const old = session.surface.nodes.map(seq => events[seq]).findLast(event => event.type === 'assistant/message' && (event.data.message.source.tavernStoryTurn ?? event.data.turn) === story)
@@ -68,12 +68,14 @@ function createGame(name) {
     appendSessionEvent(session, 'turn/start', { turn: attempt })
     appendSessionEvent(session, 'user/message', { id: 'regen-' + attempt, role: 'user', content: [{ type: 'text', text: '重生成' }], source: { kind: 'plugin:dsh-tavern-regen' } }, { surfaceOp: 'append' })
     appendSessionEvent(session, 'step/start', { turn: attempt, step: 1 })
-    const seq = appendSessionEvent(session, 'assistant/message', reply('attempt-' + attempt, attempt, text), { surfaceOp: 'append' }).seq
+    const seq = partial
+      ? appendSessionEvent(session, 'assistant/attempt', { turn: attempt, step: 1, stream: [{ type: 'text-chunks', index: 0, texts: [text], dt: [1] }] }).seq
+      : appendSessionEvent(session, 'assistant/message', reply('attempt-' + attempt, attempt, text), { surfaceOp: 'append' }).seq
     appendSessionEvent(session, 'step/end', { turn: attempt, step: 1 })
-    appendSessionEvent(session, 'turn/end', { turn: attempt, reason: { kind: 'completed' } })
-    const plan = planRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes, oldAssistantSeq: old.seq, eventStart })
-    applyRegenerationProjection(session, regenerationProjection(plan, reply('tavern-regen:' + attempt, story, text, { ...MODEL, tavernStoryTurn: story }), 'op-' + attempt))
-    Object.assign(g.chat.messages.at(-1), floor(story, text, gold, g.chat.messages.at(-1).greeting ? { greeting: true } : {}))
+    appendSessionEvent(session, 'turn/end', { turn: attempt, reason: { kind: partial ? 'interrupted' : 'completed' } })
+    const plan = planRegenerationSurface({ events: sessionEvents(session), nodes: session.surface.nodes, oldAssistantSeq: old.seq, eventStart, partial })
+    applyRegenerationProjection(session, regenerationProjection(plan, reply('tavern-regen:' + attempt, story, text, { ...MODEL, tavernStoryTurn: story, ...(partial ? { tavernResultOrigin: true, tavernResultTurn: attempt, tavernIncomplete: true, tavernIncompleteReason: '已保留部分正文' } : {}) }), 'op-' + attempt))
+    Object.assign(g.chat.messages.at(-1), floor(story, text, gold, { ...(g.chat.messages.at(-1).greeting ? { greeting: true } : {}), incomplete: partial, incompleteReason: partial ? '已保留部分正文' : '' }))
     g.chat.regeneratedDshTurns = { ...g.chat.regeneratedDshTurns, [story]: attempt }
     // 落定后的结算会登记一个后台 Agent（真实宿主在编辑轮之间写 subagent/catalog）。
     g.background()
@@ -392,5 +394,30 @@ try {
   await assert.rejects(host.rpc('getFloorSnapshots', { sessionId: at1.fork.sessionId }), /找不到当前存档/)
   assert.deepEqual(await snapshotFiles(A.chatId), before.snapshots, '删除分支不能动源局快照')
   passed('12 删除分支回收快照且源局不变')
+  // 部分正文没有 assistant/message：接纳后仍是独立结果，切换与分叉携带状态及变量边界。
+  const partialGame = createGame('game-partial')
+  partialGame.chat.mvu = { enabled: true, owner: 'official' }
+  partialGame.opening('P开场', 0)
+  const originalPartial = partialGame.play(2, '前进', 'P完整正文', 10)
+  partialGame.regenerate(2, 3, 'P部分正文', 12, true)
+  const partialFloor = floorsOf(partialGame.session).at(-1)
+  const partialSeq = partialFloor.history.find(item => item.current).seq
+  assert.deepEqual(partialFloor.history.map(item => [item.text, Boolean(item.incomplete)]), [['P完整正文', false], ['P部分正文', true]])
+  await partialGame.switchTo(2, originalPartial)
+  assert.equal(floorsOf(partialGame.session).at(-1).reply.incomplete, undefined)
+  assert.equal(partialGame.chat.messages.at(-1).incomplete, false)
+  await partialGame.switchTo(2, partialSeq)
+  assert.equal(partialGame.chat.messages.at(-1).incomplete, true)
+  assert.deepEqual(partialGame.chat.messages.at(-1).variablesStale, { replySeq: partialSeq })
+  partialGame.save()
+  const importedPartial = await importGame(partialGame)
+  const branchPartial = await forkAt(importedPartial.sessionId, 2)
+  const partialSave = (await exported(branchPartial.fork.sessionId)).chat
+  assert.equal(partialSave.messages.at(-1).incomplete, true)
+  assert.deepEqual(partialSave.messages.at(-1).variablesStale, { replySeq: partialSeq })
+  assert.equal(floorsOf(branchPartial.session).at(-1).reply.incomplete, true)
+  assert.match(modelText(branchPartial.session), /P部分正文/)
+  assert.doesNotMatch(modelText(branchPartial.session), /P完整正文/)
+  passed('13 部分正文结果切换与分叉保留不完整状态及变量边界')
   console.log('floor fork rpc passed')
 } finally { await host.dispose() }

@@ -41,3 +41,23 @@ test('原生分叉边界按所选回合确定，不把后续模型历史带入',
   assert.equal(conversationForkBoundary(session, {}, 3), 8)
   assert.throws(() => conversationForkBoundary(session, {}, 4), /边界/)
 })
+
+test('失败尝试必须有同一轮已接纳投影才可分叉，且不能跨过新玩家输入', () => {
+  const session = native()
+  session.events = session.events.slice(0, 6)
+  const add = (type, data, extra = {}) => session.events.push({ seq: session.events.length, type, data, ...extra })
+  add('turn/start', { turn: 3 })
+  add('turn/end', { turn: 3, reason: { kind: 'interrupted' } })
+  const state = { regeneratedDshTurns: { 2: 3 } }
+  assert.throws(() => conversationForkBoundary(session, state, 2), /缺少已完成/)
+  add('turn/start', { turn: 4 })
+  add('assistant/message', { turn: 4, message: { id: 'partial', source: { kind: 'model', tavernStoryTurn: 2, tavernResultOrigin: true, tavernResultTurn: 3 }, content: [{ type: 'text', text: '部分正文' }] } }, { surfaceOp: { op: 'replace', start: 4, end: 4 } })
+  add('turn/end', { turn: 4, reason: { kind: 'completed' } })
+  assert.equal(conversationForkBoundary(session, state, 2), 10)
+  session.events[9].data.message.source.tavernResultTurn = 99
+  assert.throws(() => conversationForkBoundary(session, state, 2), /缺少已完成/)
+  session.events[9].data.message.source.tavernResultTurn = 3
+  session.events.splice(9, 0, { seq: 0, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '新输入' }] } })
+  session.events.forEach((event, index) => { event.seq = index })
+  assert.throws(() => conversationForkBoundary(session, state, 2), /后续上下文/)
+})

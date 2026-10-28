@@ -57,7 +57,8 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
       if (entry.current) return { switched: false, turn, replySeq, mvu: 'unchanged', view: await present(chat) }
       // Prose only, like an edit: macros are not replayed, the regex projections are.
       const reply = await project(entry.text, chat)
-      const patch = replyProse(entry.text, { ...reply, projectionText: entry.text })
+      const patch = { ...replyProse(entry.text, { ...reply, projectionText: entry.text }),
+        incomplete: entry.incomplete === true, incompleteReason: entry.incompleteReason || '' }
       if (Array.isArray(message.swipes)) {
         patch.swipes = structuredClone(message.swipes)
         const swipe = Number(message.swipeId) || 0
@@ -76,7 +77,7 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
       replaceSessionSurface(session, 'assistant/message', {
         turn: Number(floor.reply.turn) || turn, step: 1,
         message: { id: 'tavern-result-switch:' + id(), role: 'assistant', content: [{ type: 'text', text: patch.text }],
-          source: { kind: 'model', provider: 'dsh-tavern', model: 'result-switch', tavernStoryTurn: turn, tavernResultSeq: entry.seq } }
+          source: { kind: 'model', provider: 'dsh-tavern', model: 'result-switch', tavernStoryTurn: turn, tavernResultSeq: entry.seq, tavernIncomplete: entry.incomplete === true, tavernIncompleteReason: entry.incompleteReason || '' } }
       }, { start: floor.reply.seq, end: floor.reply.seq, sourceEventSeqs: [floor.reply.seq] })
       await sessions.flush(session)
       return { switched: true, turn, replySeq, mvu: 'stale', view: await present(saved) }

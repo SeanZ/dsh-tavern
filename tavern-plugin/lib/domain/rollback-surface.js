@@ -581,6 +581,10 @@ export function planRegenerationSurface(input) {
       break
     }
   }
+  // 部分正文只有 attempt 日志时，以本次已接纳输入为末端；后续归属及新消息检查照常执行。
+  if (finalAssistantSeq === null && input.partial === true) {
+    finalAssistantSeq = nodes.slice(oldAssistantIndex + 1).map(Number).findLast(seq => attempt(seq) === OWNED) ?? null
+  }
   if (finalAssistantSeq === null) throw new SurfaceRecoveryError('重新生成流程未在当前模型消息面中产生正文')
 
   const failed = turnIntervals(events).filter(interval => interval.failed && interval.end < eventStart)
