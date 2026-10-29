@@ -1347,3 +1347,36 @@ test('地图 → 手机：地图插件发布产出并发出自己的事件，手
   await assert.rejects(map.emit('Bad Name', { gameId: 'game-1' }), /事件名/)
   await assert.rejects(map.emit('big', { gameId: 'game-1', data: 'x'.repeat(9000) }), /8 KB/)
 })
+
+test('tavern.job 声明的任务进任务表：按事件和条件运行，列在触发关系和任务目录里，出错记在插件名下', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const { createWorkflow } = await import('../tavern-plugin/lib/domain/workflow.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events: storyEvents })
+  const h = await harness(t, { storyEvents, workflow })
+  const ran = []
+  let tavern
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'surveyor', title: '测绘员' })
+    ctx.tavern.job({ name: 'locate', title: '定位', description: '判断主角在哪。', member: 'surveyor', on: 'task-finished',
+      if: ({ task, status }) => task === 'settlement' && status === 'completed',
+      run: async ({ gameId, turn }) => { ran.push([gameId, turn]); if (turn === 9) throw new Error('定位坏了') } })
+  } })
+  await tick()
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'candidate', status: 'completed', turn: 3 })
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 3 })
+  await tick()
+  assert.deepEqual(ran, [['game-1', 3]])
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'task-finished').followers, ['插件「map-plugin」定位'])
+  const listed = workflow.table().find(job => job.id === 'plugin:map-plugin:locate')
+  assert.equal(listed.task, 'plugin:map-plugin:locate')
+  const catalog = h.api.taskCatalog().find(item => item.task === 'plugin:map-plugin:locate')
+  assert.deepEqual([catalog.name, catalog.member, catalog.lane, catalog.does], ['定位', 'plugin:map-plugin:surveyor', 'resident', '判断主角在哪。'])
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 9 })
+  await tick(); await tick()
+  assert.match(h.errors()[0].message, /定位坏了/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'nope', run() {} }), /on 只能是/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed', member: 'ghost', run() {} }), /还没有用 tavern.member/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed' }), /run 函数/)
+})
