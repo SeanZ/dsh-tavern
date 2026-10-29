@@ -1303,7 +1303,7 @@ export async function apply(ctx) {
   })
   async function stopChatForDeletion(chatId) {
     const chat = await readChat(str(chatId))
-    if (!chat) return
+    if (!chat) return undefined
     const ids = new Set([chat.sessionId, ...Object.values(storyTimeline.inspect({ chat }).participants || {}).map(item => item.sessionId)])
     const workers = [...ids].map(id => agentRegistry.get(id)).filter(Boolean)
     for (const worker of workers) {
@@ -1313,34 +1313,73 @@ export async function apply(ctx) {
     for (const worker of workers) {
       if (typeof worker.whenIdle === 'function') await worker.whenIdle()
     }
+    return chat
   }
+  // Deleting a batch stops every game first, describes the whole batch in one disk
+  // scan, then removes them one by one. Each game used to repeat all three phases,
+  // re-reading the same index and re-listing the same sessions tree per game.
   async function deleteChats(chatIds, prepareOnly = false) {
     if (!Array.isArray(chatIds) || chatIds.some(id => typeof id !== 'string' || !id.trim())) throw new Error('请选择有效的对话')
-    const results = []
-    // Registry index updates must remain sequential.
-    for (const chatId of new Set(chatIds)) {
-      try {
-        if (prepareOnly) await stopChatForDeletion(chatId)
-        else await deleteChat(chatId)
-        results.push({ chatId, ok: true })
-      } catch (error) { results.push({ chatId, ok: false, error: String(error?.message || error) }) }
+    const unique = [...new Set(chatIds)]
+    const outcomes = new Map()
+    if (prepareOnly) {
+      for (const chatId of unique) {
+        try { await stopChatForDeletion(chatId); outcomes.set(chatId, { chatId, ok: true }) }
+        catch (error) { outcomes.set(chatId, { chatId, ok: false, error: String(error?.message || error) }) }
+      }
+      return { results: unique.map(chatId => outcomes.get(chatId)) }
     }
-    return { results }
+    const prepared = []
+    for (const chatId of unique) {
+      try { prepared.push({ chatId, chat: await stopChatForDeletion(chatId) }) }
+      catch (error) { outcomes.set(chatId, { chatId, ok: false, error: String(error?.message || error) }) }
+    }
+    const known = prepared.filter(item => item.chat !== undefined)
+    const footprints = new Map()
+    let described = null
+    let indexSnapshot
+    const readChatIndex = async function () {
+      if (indexSnapshot === undefined) indexSnapshot = await readIndex()
+      return indexSnapshot
+    }
+    try {
+      described = typeof gameFootprint.describeMany === 'function'
+        ? await gameFootprint.describeMany(known.map(item => item.chat), { ownsSession: (id, chat) => ownsBackgroundSession(chat || {}, id, readChatIndex) })
+        : await Promise.all(known.map(item => gameFootprint.describe(item.chat, { ownsSession: id => ownsBackgroundSession(item.chat, id, readChatIndex) })))
+    } catch (error) { described = null }
+    for (let index = 0; described !== null && index < known.length; index++) footprints.set(known[index].chatId, described[index])
+    // A batch-wide description can fail on one damaged save; retry per game so the rest still go.
+    if (described === null) {
+      for (const item of known) {
+        try { footprints.set(item.chatId, await gameFootprint.describe(item.chat, { ownsSession: id => ownsBackgroundSession(item.chat, id, readChatIndex) })) }
+        catch (error) { outcomes.set(item.chatId, { chatId: item.chatId, ok: false, error: String(error?.message || error) }) }
+      }
+    }
+    const deferred = []
+    for (const item of prepared) {
+      if (outcomes.has(item.chatId)) continue
+      try {
+        await finishChatDeletion(item.chatId, item.chat, footprints.get(item.chatId) || null, deferred)
+        outcomes.set(item.chatId, { chatId: item.chatId, ok: true })
+      } catch (error) { outcomes.set(item.chatId, { chatId: item.chatId, ok: false, error: String(error?.message || error) }) }
+    }
+    // Two games can name the same loaded session; queue each directory once.
+    const pendingDeletions = [...new Map(deferred.map(item => [item.path, item])).values()]
+    if (pendingDeletions.length) await gameFootprint.deferSessionDeletion(pendingDeletions).catch(error => console.warn('dsh-tavern: 延迟删除队列写入失败', error?.message || error))
+    return { results: unique.map(chatId => outcomes.get(chatId)) }
   }
   // A background session is this game's only if its stored parent is this game's foreground
   // session and no other game still refers to it (imports used to keep foreign ids).
-  async function ownsBackgroundSession(chat, sessionId) {
-    const index = await readIndex()
+  async function ownsBackgroundSession(chat, sessionId, readIndexOnce) {
+    const index = readIndexOnce ? await readIndexOnce() : await readIndex()
     if ((index.chats || []).some(row => row.id !== chat.id && (row.backgroundSessionId === sessionId || (row.backgroundHistoryIds || []).includes(sessionId)))) return false
     try {
       const handle = await ctx.get('sessionPersistence').open(sessionId, 'read')
       try { return handle.header?.parentSession === chat.sessionId } finally { await handle.close() }
     } catch { return false }
   }
-  async function deleteChat(chatId) {
-    await stopChatForDeletion(chatId)
-    const chat = await readChat(str(chatId))
-    const footprint = chat ? await gameFootprint.describe(chat, { ownsSession: id => ownsBackgroundSession(chat, id) }) : null
+  // A batch hands every loaded session to one deferred queue write instead of one per game.
+  async function finishChatDeletion(chatId, chat, footprint, deferred) {
     const result = await conversationRegistry.remove(chatId)
     await worldbookSkillProvider?.removeChat(chat)
     deletedChatIds.add(chatId)
@@ -1356,11 +1395,22 @@ export async function apply(ctx) {
       // A session DSH still holds loaded would be written back; delete it on the next start.
       const live = footprint.items.filter(item => item.category === 'subsession' && agentRegistry.get(item.sessionId))
       footprint.items = footprint.items.filter(item => !live.includes(item))
-      await gameFootprint.deferSessionDeletion(live)
+      if (deferred) deferred.push(...live)
+      else await gameFootprint.deferSessionDeletion(live)
       const cleanup = await gameFootprint.removeLeftovers(footprint)
       if (cleanup.failures.length) console.warn('dsh-tavern: 删除游戏后有残留未清理', chatId, cleanup.failures.slice(0, 5))
     }
     return result
+  }
+  async function deleteChat(chatId) {
+    const chat = await stopChatForDeletion(chatId)
+    let indexSnapshot
+    const readChatIndex = async function () {
+      if (indexSnapshot === undefined) indexSnapshot = await readIndex()
+      return indexSnapshot
+    }
+    const footprint = chat ? await gameFootprint.describe(chat, { ownsSession: id => ownsBackgroundSession(chat, id, readChatIndex) }) : null
+    return await finishChatDeletion(chatId, chat, footprint)
   }
   async function exportConversation(chatId, sessionId, title) {
     const chat = str(chatId) === '' ? await chatForSession(str(sessionId)) : await readChat(str(chatId))
