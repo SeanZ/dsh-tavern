@@ -120,11 +120,14 @@ const data = await ctx.tavern.readGameData({ gameId })
 | 接口 | 阶段 | 方式 |
 |---|---|---|
 | `onTurnSettled`、`onTimelineChanged`、`onGameRemoved` | 生命周期 | 观察 |
+| `on('reply-committed' / 'turn-settled' / 'turn-discarded')` | 生命周期（事件表：正文写完、本轮结算完、回合作废） | 观察；列在后台任务页「触发关系」里 |
+| `member({ name, title })` | 后台成员 | 添加：插件的常驻后台 Agent，每局一个，有自己的会话和缓存；不进存档时间线，不随剧情回退 |
 | `getTurn`、`getTurnState`、`getCardContext`、`backgroundModel` | 上下文 | 观察（按需读取） |
 | `promptSection`、`turnSection`、`worldbookSource` | 上下文 | 添加 |
 | `settlementSection`、`settlementTool` | 结算 | 添加 |
 | `replaceSettlement` | 结算 | 替换 |
-| `settlementTask`、`manualTask`、`startTask` | 结算、手动任务 | 添加 |
+| `settlementTask`、`manualTask`、`startTask` | 结算、手动任务 | 添加；带 `member` 时在该成员的常驻会话里按顺序跑 |
+| `runTask` | 后台任务 | 默认开一次性临时 Agent；带 `member` 时进该成员的常驻会话排队。示例见 examples/tavern-plugin-diarist |
 | `candidateSection` | 候选 | 添加 |
 | `compactionSection` | 压缩 | 添加 |
 | `tavernUi.registerPanel` | 界面 | 添加 |
