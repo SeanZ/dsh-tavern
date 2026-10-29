@@ -381,13 +381,20 @@ export function expandCallMacros(text) {
   })
 }
 
-/** Clean planner prompts for the selected image backend while preserving text for multilingual APIs. */
+/**
+ * Clean planner prompts for the selected image backend while preserving text for multilingual APIs.
+ * context.allowChinese === true 时连 comfyui 后端也不清中文；默认 false，行为与之前完全一致。
+ */
 export function normalizePrompts(text, definitions, context = {}) {
   let out = expandCallMacros(text)
   // Legacy callers retain the original local-prompt cleanup. Runtime callers pass the
   // selected backend so Chinese-capable image APIs can receive Chinese descriptions.
   const backend = typeof context === 'string' ? context : String(context?.backend ?? '')
-  const shouldCleanChinese = !backend || backend.toLowerCase() === 'comfyui'
+  // 开关（默认关闭）：只有调用方明确打开时才跳过中文清理。
+  // ComfyUI 只是执行器，编码器由工作流决定 —— Qwen-Image、FLUX.1 Krea(qwen3vl) 这类
+  // 中文原生编码器读中文长句更准，但此前没有任何绕过的办法；默认仍按原规则删中文。
+  const allowChinese = context?.allowChinese === true
+  const shouldCleanChinese = !allowChinese && (!backend || backend.toLowerCase() === 'comfyui')
   if (shouldCleanChinese) {
     const hadChinese = /[\u4e00-\u9fa5]/.test(out)
     // A leading Chinese character name is useful for local models only when replaced by its
