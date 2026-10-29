@@ -136,11 +136,12 @@ test('foreground style reference shares this turn, persists for inspection and n
   assert.equal(foregroundStyleReferencePrompt(chat, '选段要求', '写作要求'), '')
   await assert.rejects(tool.execute({ quote: '参考' }, exec), /未开启/)
   chat.backgroundTasks.styleReference = true
+  // A per-game tool blacklist left in an old save is ignored since bd0c590e.
   chat.disabledForegroundTools = ['style_reference_submit']
-  await assert.rejects(tool.execute({ quote: '参考' }, exec), /未开启/)
+  assert.equal(JSON.parse(await tool.execute({ quote: '参考' }, exec)).ok, true)
   delete chat.disabledForegroundTools
   await assert.rejects(tool.execute({ quote: '参考' }, { agent: { session: { ...exec.agent.session, id: 'background' } } }), /前台/)
   const cancelled = new AbortController(); cancelled.abort()
   await assert.rejects(tool.execute({ quote: '参考' }, { ...exec, signal: cancelled.signal }))
-  assert.equal(saved.length, 1, 'rejected or cancelled calls never persist a reference')
+  assert.equal(saved.length, 2, 'rejected or cancelled calls never persist a reference')
 })
