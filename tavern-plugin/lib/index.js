@@ -74,6 +74,7 @@ import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createStoryEvents } from './domain/story-events.js'
+import { createWorkflow } from './domain/workflow.js'
 import { TIMELINE_MEMBERS, participantOf } from './domain/background-members.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
@@ -668,6 +669,7 @@ export async function apply(ctx) {
   }
 
   const storyEvents = createStoryEvents()
+  const workflow = createWorkflow({ events: storyEvents })
   const settlementJobs = createSettlementJobs({ run: (...args) => wholeReads.scope('结算', () => settlementRun.runCycle(...args)), onSettled: (...args) => settlementRun.onSettled(...args) })
   const scriptContinuity = createScriptContinuity()
   const storyTimeline = createStoryTimeline({ id: uid, now: Date.now })
@@ -3175,8 +3177,10 @@ export async function apply(ctx) {
   storyEvents.on('reply-committed', '台词气泡', ({ sessionId }) => castPresentation.announce(str(sessionId)))
   // The 精修 pre-review reads the reply as written; settlement never waits for it.
   storyEvents.on('reply-committed', '自动精修', ({ sessionId }) => polishPrereview.start(sessionId))
-  storyEvents.on('turn-settled', '对局标题', ({ latest }) => { if (latest) return gameTitles.afterTurn(latest.sessionId, latest.cardName) })
-  storyEvents.on('turn-settled', '存档整理', ({ chatId, latest }) => { if (latest) saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) })
+  workflow.job({ id: 'game-title', name: '对局标题', on: 'turn-settled', if: ({ latest }) => Boolean(latest),
+    run: ({ latest }) => gameTitles.afterTurn(latest.sessionId, latest.cardName) })
+  workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled', if: ({ latest }) => Boolean(latest),
+    run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
   // A reply the pre-review has not read yet (it was busy, or the reply changed since).
   storyEvents.on('turn-settled', '自动精修', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
   storyEvents.on('turn-settled', '插件轮次通知', ({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
