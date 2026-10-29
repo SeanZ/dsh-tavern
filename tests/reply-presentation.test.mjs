@@ -53,6 +53,26 @@ test('正则引入的旧身份标记与 HTML 属性都在共同展示层解析',
   assert.equal(result.sessionText, '开场')
 })
 
+test('新局尚无玩家消息：原生开场已替换，模板格式化正文中的旧标记也必须替换', () => {
+  const source = '你好，<user>。'
+  const message = {
+    role: 'assistant', greeting: true, turn: 1, swipeId: 0,
+    sourceText: source, projectionText: '你好，林舟。', text: '你好，林舟。',
+    tavernPluginData: { template_display: { source, swipe: 0,
+      formattingText: source + '\n\n<div>状态：平静</div>',
+      html: '<p>' + source + '</p><div>状态：平静</div>' } }
+  }
+  const original = structuredClone(message)
+  const result = projectReplyHistory([message], { macroState: { userName: '林舟' } })
+  assert.equal(result.projections.length, 1)
+  assert.equal(result.projections[0].turn, 1)
+  assert.deepEqual(result.projections[0].parts, [
+    { kind: 'markdown', text: '你好，林舟。\n\n' },
+    { kind: 'html', content: '<div>状态：平静</div>' }
+  ])
+  assert.deepEqual(message, original, '不修改原文、原生正文或持久化模板')
+})
+
 test('损坏规则只产生目标诊断，后续规则继续执行', () => {
   const result = projectReplyLayers('进入校园', {
     regexScripts: [

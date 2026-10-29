@@ -6,7 +6,7 @@ import {readFile,writeFile,mkdtemp,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {createRequire} from 'node:module'
 import path from 'node:path'
-import {projectReplyLayers} from '../tavern-plugin/lib/domain/reply-presentation.js'
+import {projectReplyLayers,projectReplyHistory} from '../tavern-plugin/lib/domain/reply-presentation.js'
 
 const prose='第一段。\n\n**第二段**\n\n- 第一点\n- 第二点\n\n> 引用内容'
 const simple='<details>\n<summary>隐藏剧情</summary>\n'+prose+'\n</details>'
@@ -16,7 +16,7 @@ const cases={simple,nested,encoded,html:'<details><summary>已有排版</summary
  styled:'<details style="color:red"><summary>作者样式</summary>**保留原样**</details>',
  adjacent:'<details><summary>记录</summary><!-- 不展示 --></details>'+simple}
 
-test('故事折叠 Markdown：真实宿主组件、HTML/Chat 边界、快照与重复挂载', {skip:!process.env.TAVERN_BROWSER_TESTS},async()=>{
+test('新局身份与故事折叠 Markdown：真实宿主组件、HTML/Chat 边界、快照与重复挂载', {skip:!process.env.TAVERN_BROWSER_TESTS},async()=>{
   assert(process.env.DSH_MARKDOWN_PACKAGE,'需要宿主 Markdown 包路径')
   assert(process.env.ESBUILD_MODULE,'需要已有 esbuild 模块路径')
   const require=createRequire(import.meta.url)
@@ -47,6 +47,26 @@ window.__ModuleLoader__={load(d){window.client=d.factory(name=>name==='react'?Re
         else if(out.path.endsWith('.js'))await page.addScriptTag({content:out.text})
       }
       await page.addScriptTag({content:client})
+      // 新局只有开场白：Chat 走宿主正文，故事视图消费持久化模板的公共投影。
+      const source='欢迎 <user>，请选择路线。'
+      const opening={role:'assistant',greeting:true,turn:1,sourceText:source,
+        text:'欢迎 林舟，请选择路线。',projectionText:'欢迎 林舟，请选择路线。',
+        tavernPluginData:{template_display:{source,swipe:0,formattingText:source+'\n\n<div>状态：平静</div>',html:'<p>'+source+'</p><div>状态：平静</div>'}}}
+      const projectedOpening=projectReplyHistory([opening],{macroState:{userName:'林舟'}}).projections
+      await page.evaluate(({opening,projectedOpening})=>{
+        const {React,createRoot,MarkdownText}=window.fixture,h=React.createElement
+        const render=client.createTavernStoryRender({})
+        client.liveTavernView.setView('opening',{mode:'story',replyProjections:projectedOpening,tavernRuntimePolicy:{trustedCardMode:true}})
+        window.openingRoots=[createRoot(document.querySelector('#story')),createRoot(document.querySelector('#chat'))]
+        openingRoots[0].render(h(render.FloorBody,{sessionId:'opening',storyTurn:1,fallbackText:opening.text}))
+        openingRoots[1].render(h(MarkdownText,{text:opening.text}))
+      },{opening,projectedOpening})
+      await page.locator('#story .dsh-tavern-colored-markdown').waitFor()
+      assert.equal((await page.locator('#story .dsh-tavern-colored-markdown').innerText()).trim(),opening.text)
+      assert.equal((await page.locator('#chat').innerText()).trim(),opening.text)
+      assert.equal(await page.locator('#story user').count(),0)
+      assert.equal(await page.locator('#story iframe').count(),0)
+      await page.evaluate(()=>openingRoots.forEach(root=>root.unmount()))
       await page.evaluate(({projections,prose})=>{
         const {React,createRoot,MarkdownText}=window.fixture,h=React.createElement
         const render=client.createTavernStoryRender({})
