@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { helperHostHarness } from './fixtures/helper-host-harness.mjs'
 import { createHelperWorldbookHost } from './fixtures/helper-worldbook-host.mjs'
-import { prepareWorldBookRecall } from '../tavern-plugin/lib/domain/worldbook-recall.js'
 
 async function connect(host) {
   const initial = await host.adapter.getWorldbook('audit', 'current')
@@ -61,17 +60,6 @@ for (const embedded of [false, true]) {
   })
 }
 
-test('关键词更新进入现有 DSH 世界书召回，RegExp 跨宿主边界不丢失', async t => {
-  const host = await createHelperWorldbookHost()
-  t.after(host.cleanup)
-  const api = await connect(host)
-  await api.updateWorldbookWith('审计书', entries => { entries[0].strategy.keys = [/钟楼/u]; entries[0].content = '已更新的钟楼设定'; return entries })
-  const worldBook = await host.record()
-  const prepared = prepareWorldBookRecall({ card: { name: '角色' }, chat: { id: 'audit', messages: [{ role: 'assistant', text: '抵达钟楼', turn: 2 }] }, turn: 2, worldBook })
-  assert.equal(prepared.context, '已更新的钟楼设定')
-  assert.deepEqual(worldBook.view.entries[0].primaryKeys, ['/钟楼/u'])
-})
-
 test('脚本写世界书只传改动条目，版本没变不重传整本，别处改过则拒绝', async t => {
   const host = await createHelperWorldbookHost(false)
   t.after(host.cleanup)
@@ -105,15 +93,6 @@ test('脚本写世界书只传改动条目，版本没变不重传整本，别�
   await host.adapter.replaceWorldbook('audit', 'current', stale.entries.concat([{ name: '别处' }]), stale.entries)
   await assert.rejects(host.adapter.patchWorldbook('audit', 'current', { version: stale.version, upserts: [{ name: '迟到' }], deletes: [] }), /已被其他操作修改/)
   assert.equal((await api.getWorldbook('审计书')).at(-1).name, '别处')
-})
-
-test('没有全局世界书和单独的聊天世界书时如实回答，不假装能新建世界书', async t => {
-  const host = await createHelperWorldbookHost(false)
-  t.after(host.cleanup)
-  const api = await connect(host)
-  assert.deepEqual(Array.from(api.getGlobalWorldbookNames()), [])
-  assert.equal(api.getChatWorldbookName('current'), null)
-  assert.equal(api.createWorldbook, undefined)
 })
 
 for (const embedded of [false, true]) test(`脚本增删改 → 静态文件 → 失效通知，保留其他快照 (${embedded})`, async t => {

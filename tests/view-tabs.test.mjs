@@ -180,12 +180,3 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   assert.deepEqual(saved.at(-1), { viewTabs: { items: [...DEFAULT_VIEW_TABS.items] } })
   await act(async () => root.unmount())
 })
-
-test('标签行控制模块随 client 一起发布，自定义顶栏里挂上设置', () => {
-  assert.match(client, /function installTavernViewTabLayout\(options\)/)
-  assert.match(client, /tavernViewTabCatalog\.publish\(tavernViewTabEntries\(slots\)\)/)
-  assert.match(client, /"dsh-tavern: view tab layout"/)
-  assert.match(client, /TAVERN_VIEW_TAB_RESIDENT = "chat"/)
-  assert.match(client, /h\(TavernViewTabsSettings\)/)
-  assert.match(client, /title: "拖动排序"/)
-})

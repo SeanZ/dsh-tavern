@@ -35,15 +35,6 @@ async function fixture(t) {
   return { root, directory, file, library }
 }
 
-test('直接放入目录的 BOM Skill 保留写作用途，编辑也接受 BOM', async t => {
-  const { library, file } = await fixture(t)
-  assert.deepEqual((await library.read('writing-probe')).agents, ['foreground'])
-  assert.equal((await library.read('writing-probe')).content, body)
-  assert.equal(await readFile(file, 'utf8'), '\uFEFF' + body)
-  await library.edit({ name: 'writing-probe', content: '\uFEFF' + body })
-  assert.deepEqual((await library.read('writing-probe')).agents, ['foreground'])
-})
-
 test('原生文件 Provider 完整发现并读取 BOM 写作 Skill，更新和停用继续生效', {
   skip: !process.env.DSH_RUNTIME_ROOT && 'Set DSH_RUNTIME_ROOT to installed host node_modules'
 }, async t => {

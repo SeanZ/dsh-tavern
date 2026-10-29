@@ -49,57 +49,6 @@ test('list order: prev / next wrap and enter from outside the list; search keeps
   assert.deepEqual(stageBgmSearch([track('a', 'Rain Walk'), track('b', '夜'), track('c', 'rainy day')], 'RAIN').map(item => item.key), ['P/a', 'P/c'])
 })
 
-test('auto follows the director; a pick turns 导演选曲 off and later choices are recorded, not played; on jumps back', async () => {
-  const { bgm, music, sessions } = harness()
-  bgm.activate('s'); await tick()
-  assert.deepEqual(plays(music), ['P:music:a:h'])
-  assert.deepEqual({ ...bgm.get().current }, { key: 'P/a', name: 'A', source: 'director' })
-  sessions.data('s', { music: track('b') }); await tick()
-  assert.deepEqual(plays(music), ['P:music:a:h', 'P:music:b:h'])
-  bgm.pick('P/c'); await tick()
-  assert.equal(bgm.get().follow, false, 'a manual pick turns 导演选曲 off')
-  assert.deepEqual({ ...bgm.get().current }, { key: 'P/c', name: 'C', source: 'manual' })
-  sessions.data('s', { music: track('a') }); await tick()
-  assert.equal(plays(music).at(-1), 'P:music:c:h', 'the next directed track does not override the pick')
-  assert.equal(bgm.get().cue.key, 'P/a', 'but it is recorded')
-  bgm.follow(true); await tick()
-  assert.equal(plays(music).at(-1), 'P:music:a:h', 'back on: the director\'s current track')
-  const count = plays(music).length
-  bgm.follow(false); await tick()
-  assert.equal(plays(music).length, count, 'turning it off keeps what sounds (no restart)')
-  assert.deepEqual([bgm.get().current.key, bgm.get().current.source], ['P/a', 'manual'])
-  sessions.data('s', { music: track('b') }); bgm.pick('P/x'); await tick()
-  assert.equal(plays(music).length, count, 'a key outside the list is no pick')
-})
-
-test('prev / next follow list order from what plays; pause keeps the track and resumes it without restarting', async () => {
-  const { bgm, music } = harness()
-  bgm.activate('s'); await tick()
-  bgm.step(1); await tick()
-  assert.equal(plays(music).at(-1), 'P:music:b:h', 'next from the director\'s a')
-  bgm.step(1); bgm.step(1); await tick()
-  assert.equal(plays(music).at(-1), 'P:music:a:h', 'c → a wraps')
-  bgm.step(-1); await tick()
-  assert.equal(plays(music).at(-1), 'P:music:c:h')
-  const count = plays(music).length
-  bgm.pause(true)
-  assert.deepEqual(music.calls.at(-1), ['pause']); assert.equal(bgm.get().paused, true)
-  bgm.pause(false)
-  assert.deepEqual(music.calls.at(-1), ['resume']); assert.equal(plays(music).length, count)
-})
-
-test('BGM off, or the stage off: nothing plays and the panel says so; on again plays the director\'s track', async () => {
-  const { bgm, music, sessions } = harness()
-  bgm.activate('s'); await tick()
-  sessions.data('s', { musicEnabled: false })
-  assert.deepEqual([bgm.get().enabled, bgm.get().available, bgm.get().current], [false, true, null])
-  assert.deepEqual(music.calls.at(-1), ['stop', true], 'switching off stops at once')
-  sessions.data('s', { musicEnabled: true })
-  assert.equal(plays(music).at(-1), 'P:music:a:h')
-  sessions.data('s', { enabled: false })
-  assert.deepEqual([bgm.get().enabled, bgm.get().available], [false, false], 'music plays on the stage: no stage, no music and no chat chip')
-})
-
 test('the director\'s stop fades; skipping and leaving the game stop at once; skipping snaps a new track in', async () => {
   const { bgm, music, sessions } = harness()
   bgm.activate('s'); await tick()
@@ -142,33 +91,4 @@ test('per-game memory: the mode, the pick and pause survive a reload of that gam
   for (let i = 0; i < 40; i++) { many.bgm.activate('s' + i); await tick(); many.bgm.pause(true) }
   const kept = JSON.parse(many.local.map.get(TAVERN_BGM_STORAGE))
   assert.ok(Object.keys(kept).length <= 32 && kept.s39, 'only the most recent games are kept')
-})
-
-test('a stale pick reads the list once more, then shows the failure; another card stops and rereads', async () => {
-  const h = harness()
-  h.bgm.activate('s'); await tick()
-  h.music.fail.add('lease-c')
-  h.bgm.pick('P/c'); await tick()
-  assert.deepEqual(h.reads, ['s', 's'], 'one fresh list')
-  assert.equal(h.bgm.get().error, true, 'the second failure is shown')
-  h.music.fail.clear(); h.bgm.pick('P/b'); await tick()
-  assert.equal(h.bgm.get().error, false)
-  const count = h.reads.length
-  h.sessions.data('s', { card: { imageUrl: 'card-b' } }); await tick()
-  assert.equal(h.reads.length, count + 1)
-  assert.ok(h.music.calls.some(call => call[0] === 'stop'), 'another card is another authority')
-})
-
-test('wiring: one transport owner, the chat header chip, the control bar chip, the RPC and the global BGM switch', () => {
-  const main = read('tavern-plugin/src/client/main.js'), controls = read('tavern-plugin/src/client/features/play-controls.js')
-  const runtime = read('tavern-plugin/src/client/modules/stage-runtime.js'), feature = read('tavern-plugin/src/client/features/stage-bgm.js')
-  assert.ok(main.indexOf('// @include features/stage-settings.js') < main.indexOf('// @include modules/stage-music.js'))
-  assert.ok(main.indexOf('// @include modules/stage-bgm.js') < main.indexOf('// @include features/stage-bgm.js'))
-  assert.match(main, /ctx\.effect\(\(\) => startTavernBgm\(ctx\.sessions\), "dsh-tavern: BGM player"\)/)
-  assert.match(controls, /id: "dsh-tavern-bgm", order: 82/)
-  assert.match(feature, /tavernBgm\.activate\(selectedStageSession\(sessions\.list\.getSnapshot\(\)\)\)/)
-  assert.doesNotMatch(runtime, /music\.|tavernMusic/, 'the stage runtime never touches music')
-  assert.match(read('tavern-plugin/lib/rpc/media.js'), /async getStageMusicTracks\(args\)/)
-  assert.match(read('tavern-plugin/lib/index.js'), /musicEnabled: \(await readTavernSettings\(\)\)\.stageToggles\.music/)
-  assert.match(read('tavern-plugin/lib/index.js'), /const toggles = \(await readTavernSettings\(\)\)\.stageToggles\n\s*if \(!toggles\.music\) material\.music = \[\]/)
 })

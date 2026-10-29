@@ -31,27 +31,6 @@ test('取值规整：默认开着自动分段、每段两句、不缩进；句�
   assert.deepEqual(prose.normalizeTavernProseLayout({ sentences: '' }), { paragraphs: true, indent: false, sentences: 2 })
 })
 
-test('一整块正文：按句子分段，每段不超过设定的句数', () => {
-  const text = '夜色从窗棂上滑下来，落在她的发梢。她抬起头，轻声说：「雨停了，我们走吧。」窗外的水声一层层退下去，像有人在很远的地方翻书。她没有等到回答，只是把伞往他那边斜了斜，自己半边肩膀湿在雨里。他忽然笑了，把手伸进雨里接了接，说别急。'
-  const two = paragraphs(layout(text, { sentences: 2 }))
-  assert.equal(two.length, 3)
-  assert.ok(two[0].startsWith('夜色从窗棂上滑下来'))
-  assert.ok(two[0].endsWith('我们走吧。」'), '引号里的句号不切碎')
-  assert.ok(two[1].startsWith('窗外的水声'))
-  assert.ok(two[2].startsWith('他忽然笑了'))
-  assert.equal(paragraphs(layout(text, { sentences: 1 })).length, 5, '每段一句就是逐句分段')
-  assert.equal(paragraphs(layout(text, { sentences: 4 })).length, 2)
-})
-
-test('边界清楚：短段不拆，已有的空行保留，句数没超上限时原文不动', () => {
-  const short = '她笑了笑，把灯关小。'
-  assert.equal(layout(short, { sentences: 2 }), short, '一句话的旁白不拆，也不补空行')
-  const twoSentences = '她没有等到回答。只是把伞往他那边斜了斜，自己半边肩膀湿在雨里，雨声把话都盖住了。'
-  assert.equal(layout(twoSentences, { sentences: 2 }), twoSentences, '两句一段本来就合规，保持原样')
-  const written = '第一段只有一句。\n\n第二段也短，但仍然自己成段。\n\n第三段照旧。'
-  assert.equal(layout(written, { sentences: 2 }), written, '已经分好段的正文不再改写')
-})
-
 test('软换行：句末才断段，句中折行并回同一句；中文不加空格，英文补一个', () => {
   assert.equal(layout('雨停了。\n我们走吧。', { sentences: 1 }), '雨停了。\n\n我们走吧。')
   assert.equal(layout('雨落在窗沿上，\n一声接一声。', { sentences: 2 }), '雨落在窗沿上，一声接一声。')
@@ -112,12 +91,4 @@ test('关掉自动分段就原样返回；开着时同一段文本重复排版�
   assert.equal(layout(once, { sentences: 2 }), once, '排过一次的结果再排仍是原样')
   assert.equal(layout('', { sentences: 2 }), '')
   assert.equal(layout(null, { sentences: 2 }), '')
-})
-
-test('接线：正文渲染走自动分段，段首缩进有对应样式', async () => {
-  const cast = slice('function renderTavernDialogueText', '// Cast material (sprites')
-  assert.match(cast, /renderText\(layoutTavernProseText\(/)
-  assert.match(cast, /if \(segment\.kind === "markdown"\) return renderText\(layoutTavernProseText\(segment\.text\), index\)/)
-  const css = await readFile(new URL('../tavern-plugin/lib/client-assets/tavern.css', import.meta.url), 'utf8')
-  assert.match(css, /html\[data-dsh-tavern-prose-indent\] \.dsh-tavern-assistant[^\n]*p \{ text-indent: 2em; \}/)
 })

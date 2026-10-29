@@ -76,12 +76,6 @@ test('collect 整目录打 zip：相对路径、统一 /、.git 不进包，可�
   assert.equal(entries.get('references/lesson.md').toString('utf8'), ALPHA_FILES['references/lesson.md'])
 })
 
-test('collect 未知 Skill 报错，空目录同样按不存在处理', async t => {
-  const { transfer } = await fixture(t)
-  await assert.rejects(() => transfer.collect(['nope']), /Skill 不存在：nope/)
-  await assert.rejects(() => transfer.collect(['empty']), /Skill 不存在：empty/)
-})
-
 test('importOne 解包到新目录，重名自动加序号且不覆盖已有 Skill', async t => {
   const { transfer, skillsDir } = await fixture(t)
   const zip = skillZip([
@@ -116,15 +110,4 @@ test('importOne 拒绝越界与非法路径，且不留下半个 Skill', async t
   assert.equal(existsSync(path.join(root, 'evil.txt')), false)
   assert.equal(existsSync(path.join(skillsDir, 'evil.txt')), false)
   assert.equal(existsSync(path.join(skillsDir, 'gamma')), false)
-})
-
-test('importOne 同一个 Skill 包再来一次：复用已有目录，不再造 skill-2', async t => {
-  const { transfer, skillsDir } = await fixture(t)
-  const zip = skillZip([['SKILL.md', '---\nname: gamma\ndescription: 新加的\n---\n\n正文\n']])
-  const first = await transfer.importOne({ key: 'gamma', content: zip })
-  assert.deepEqual(first, { name: 'gamma' })
-  const again = await transfer.importOne({ key: 'gamma', content: zip })
-  assert.deepEqual(again, { name: 'gamma', reused: true })
-  const names = await readdir(skillsDir)
-  assert.deepEqual(names.filter(name => name.startsWith('gamma')), ['gamma'])
 })

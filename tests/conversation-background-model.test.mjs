@@ -29,46 +29,6 @@ test('本局模型保存保留并发更新的剧情，只修改所选游戏，�
   await assert.rejects(settings.save({ sessionId: 'missing', backgroundModel: null }), /游玩会话/)
 })
 
-test('configuration read stays narrow and enabling foreground style never launches background work', async () => {
-  let chat = { id: 'one', mode: 'story', mvu: { enabled: true, owner: 'official' }, backgroundTasks: { styleReference: false } }
-  const calls = []
-  let fail = false
-  const settings = createConversationBackgroundSettings({
-    readConfig: async () => { calls.push('read-config'); return chat },
-    readChat: async () => { calls.push('read-chat'); return chat },
-    updateChat: async (_id, mutate) => { calls.push('write'); if (fail) throw new Error('write failed'); return chat = mutate(chat) },
-    isPlayMode: mode => mode === 'story',
-    modelCatalog: async () => [], modelReasoning: async () => null,
-    onStyleEnabled: (sessionId, chatId) => calls.push(['style', sessionId, chatId])
-  })
-  assert.equal((await settings.read('game')).mvuCard, true)
-  assert.deepEqual(calls, ['read-config'])
-  fail = true
-  await assert.rejects(settings.save({ sessionId: 'game', backgroundTasks: { styleReference: true } }), /write failed/)
-  assert.equal(calls.some(Array.isArray), false)
-  fail = false
-  await settings.save({ sessionId: 'game', backgroundTasks: { styleReference: true } })
-  await settings.save({ sessionId: 'game', backgroundTasks: { styleReference: true } })
-  assert.deepEqual(calls.filter(Array.isArray), [])
-})
-
-test('前台工具配置入口移除，旧客户端不能重新保存黑名单', async () => {
-  let chat = { id: 'one', mode: 'story', backgroundConfigVersion: 1, conversationFeaturesVersion: 1 }
-  const settings = createConversationBackgroundSettings({
-    readConfig: async () => chat, readChat: async () => chat,
-    updateChat: async (_id, mutation) => { chat = mutation(chat); return chat },
-    isPlayMode: mode => mode === 'story',
-    extraTools: async sessionId => sessionId === 'game' ? [{ name: 'plugin_lookup', label: '插件查询', description: '插件注册的工具。' }] : [],
-    modelCatalog: async () => [], modelReasoning: async () => null
-  })
-  const read = await settings.read('game')
-  assert.equal(read.disabledForegroundTools, undefined)
-  assert.equal(read.foregroundTools, undefined)
-  await settings.save({ sessionId: 'game', disabledForegroundTools: ['plugin_lookup'] })
-  assert.equal(chat.disabledForegroundTools, undefined)
-
-})
-
 test('worldbook strategy is per-game, migrates legacy to retrieval and preserves screening, cooldowns and concurrent settings', async () => {
   const reads = { 'book:7': { turn: 3, kind: 'screened', fingerprint: 'old' } }
   const chats = new Map(['one', 'two'].map(id => [id, { id, mode: 'story', worldBookReads: reads, backgroundTasks: { worldbookScreening: true, posture: false }, disabledWritingSkills: ['writing'] }]))

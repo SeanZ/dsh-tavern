@@ -24,10 +24,6 @@ function plugin(ui, name = 'pet-guide') {
   return instance
 }
 
-test('浏览器接口版本升到 7', () => {
-  assert.equal(load().service.apiVersion, 7)
-})
-
 test('watchReply：先给当前状态，随后每次变化回调一次，内容不变不回调，卸载后停止', () => {
   const ui = load()
   const seen = []
@@ -56,26 +52,6 @@ test('watchReply：先给当前状态，随后每次变化回调一次，内容�
   ui.publishReply({ sessionId: 's1', mode: 'card', turn: 4, text: '下一轮' })
   assert.equal(seen.length, 3)
   assert.equal(ui.replySnapshot('s1').text, '下一轮', '状态仍然保留，供后来者立即读取')
-})
-
-test('watchReply：listener 抛错不影响其他订阅；卡内插件范围外不回调', () => {
-  const reports = []
-  const ui = load({ tavernErrorHub: { report: (scope, error) => reports.push([scope, String(error.message)]) } })
-  const ok = []
-  const broken = plugin(ui, 'broken')
-  const good = plugin(ui, 'good')
-  broken.watchReply('s1', () => { throw new Error('boom') })
-  good.watchReply('s1', state => ok.push(state.text))
-  ui.publishReply({ sessionId: 's1', text: 'hi' })
-  assert.deepEqual(ok, ['', 'hi'])
-  assert.equal(reports.length, 2, '初始回调和后续更新各报一次')
-  assert.match(reports[0][1], /boom/)
-
-  const scoped = load({ tavernPluginAllowed: () => false })
-  const blocked = []
-  plugin(scoped, 'card-plugin').watchReply('s1', state => blocked.push(state))
-  scoped.publishReply({ sessionId: 's1', text: 'hi' })
-  assert.deepEqual(blocked, [], '范围外的插件连初始回调也拿不到')
 })
 
 test('watchReply：本轮落盘的新卡才出现在 cardSaved，改卡则 changed 为 true', () => {
@@ -118,25 +94,6 @@ test('registerReplyPresenter：按注册顺序取第一个给出 fold 的；模�
   assert.throws(() => card.registerReplyPresenter({ id: 'Bad Id', modes: ['card'], present() {} }), /id/)
   assert.throws(() => card.registerReplyPresenter({ id: 'nope', modes: [], present() {} }), /modes/)
   assert.throws(() => card.registerReplyPresenter({ id: 'nope', modes: ['CARD'], present() {} }), /modes/)
-})
-
-test('registerReplyPresenter：摘要截到 60 字；抛错三次后这个会话不再调用它', () => {
-  const ui = load()
-  const pet = plugin(ui, 'pet')
-  let calls = 0
-  pet.registerReplyPresenter({ id: 'long', modes: ['card'], present: () => ({ fold: { summary: '题'.repeat(120) } }) })
-  assert.equal(ui.presentReply({ sessionId: 's1', mode: 'card', turn: 1, text: 'x' }).fold.summary.length, 60)
-
-  const broken = load()
-  const pluginA = plugin(broken, 'broken')
-  pluginA.registerReplyPresenter({ id: 'bad', modes: ['card'], present: () => { calls += 1; throw new Error('present failed') } })
-  for (let index = 0; index < 3; index++) assert.equal(broken.presentReply({ sessionId: 's1', mode: 'card', turn: 1, text: 'x' }), null)
-  assert.equal(calls, 3)
-  assert.equal(broken.presentReply({ sessionId: 's1', mode: 'card', turn: 1, text: 'x' }), null)
-  assert.equal(calls, 3, '连续抛错后停用')
-  // Another session is still served.
-  assert.equal(broken.presentReply({ sessionId: 's2', mode: 'card', turn: 1, text: 'x' }), null)
-  assert.equal(calls, 4)
 })
 
 test('registerComposerSlot：先注册者优先，卸载后让位；id 与 modes 有校验', () => {

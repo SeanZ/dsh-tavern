@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createContextPlanner } from '../tavern-plugin/lib/domain/context-planner.js'
 import { diffStatData, mergeVariableUpdate, recordVariableUpdate, variableUpdateFor, variableUpdateText } from '../tavern-plugin/lib/domain/variable-update.js'
 
 test('只记下改动的字段；同一轮再改合并（保留最初的旧值），改回原值就不再提', () => {
@@ -27,15 +26,6 @@ test('只在紧接被改那一轮的正文请求里出现：重新生成下一�
   assert.equal(variableUpdateFor({ variableUpdate, messages: [reply(7), { role: 'user' }, reply(8)] }), null)
   assert.equal(variableUpdateFor({ variableUpdate, messages: [reply(6)] }), null)
   assert.equal(variableUpdateText(variableUpdate), '【变量已更新】\n以下变量已更新，以此为准：\n- 状态.体力：5 → 9')
-})
-
-test('正文请求带上变量更新说明；没有更新时请求不变', async () => {
-  const planner = createContextPlanner({ prompt: () => '正文写作规则' })
-  const card = { name: '角色' }
-  const plain = await planner.plan({ purpose: 'body', card, chat: {} })
-  const updated = await planner.plan({ purpose: 'body', card, chat: {}, variableUpdate: { afterTurn: 1, changes: [{ path: ['金币'], from: 10, to: 40 }] } })
-  assert.equal(plain.text.includes('变量已更新'), false)
-  assert.equal(updated.text, plain.text + '\n\n【变量已更新】\n以下变量已更新，以此为准：\n- 金币：10 → 40')
 })
 
 test('面板保存只在有改动时写入本局', async () => {

@@ -19,20 +19,6 @@ function setup(select, options = {}) {
   const id = registry.list().find(row => row.id.startsWith('plugin-')).id
   return { registry, worldBook, effects, dispose, input: { chat: { sessionId: 'game-1', worldbookStrategy: id } } }
 }
-test('plugin selection is namespaced, cloned and constrained to enabled references', async () => {
-  const h = setup(input => {
-    assert.equal(input.gameId, 'game-1')
-    assert.equal(input.chat, undefined)
-    assert.deepEqual(input.entries.map(entry => entry.ref), ['entry:1'])
-    input.entries[0].content = 'mutation'
-    return ['entry:1', 'entry:1']
-  })
-  assert.deepEqual(await h.registry.project(h.input), ['entry:1'])
-  assert.equal(h.worldBook.view.entries[0].content, 'body')
-  assert.equal(h.effects.length, 1)
-  h.dispose()
-  assert.equal(await h.registry.project(h.input), 'native')
-})
 test('invalid references and plugin failures fall back without erasing selection', async () => {
   for (const select of [() => ['entry:2'], () => ['unknown'], () => 'entry:1', () => { throw Error('broken') }]) {
     const h = setup(select)

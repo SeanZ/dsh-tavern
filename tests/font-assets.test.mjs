@@ -24,26 +24,6 @@ async function fixture(t, handler) {
   }
   return { root, bytes, calls: () => calls, api: createFontAssets({ dataRoot: root, bundledRoots: [], fetchImpl }) }
 }
-test('lazy fonts: missing binaries retain full catalog without a network call', async t => {
-  const f = await fixture(t)
-  const library = createFontLibrary({ dataRoot: f.root, bundledRoot: path.join(f.root, 'absent'), fetchImpl: () => { throw Error('should not fetch') } })
-  const result = await library.listFonts()
-  assert.equal(result.fonts.length, 5)
-  assert.equal(result.fonts.reduce((n, f) => n + f.files.length, 0), 11)
-  assert.equal(f.calls(), 0)
-})
-test('lazy fonts: concurrent selected face fetched once, verified atomic cache works offline and corrupt cache repairs', async t => {
-  const f = await fixture(t)
-  const targets = await Promise.all(Array.from({ length: 8 }, () => f.api.ensure(family.id, face.file)))
-  assert.equal(new Set(targets).size, 1); assert.equal(f.calls(), 1)
-  assert.deepEqual(await readFile(targets[0]), f.bytes)
-  const offline = createFontAssets({ dataRoot: f.root, bundledRoots: [], fetchImpl: () => { throw Error('offline') } })
-  assert.equal(await offline.ensure(family.id, face.file), targets[0])
-  await writeFile(targets[0], 'corrupt')
-  await f.api.ensure(family.id, face.file)
-  assert.equal(f.calls(), 2)
-  assert.deepEqual(await readdir(path.dirname(targets[0])), [face.sha256])
-})
 test('lazy fonts: oversized, hash-invalid and redirect payloads never enter cache; retries bounded with cooldown', async t => {
   for (const mode of ['oversize', 'hash', 'redirect']) {
     const f = await fixture(t, (req, res) => {

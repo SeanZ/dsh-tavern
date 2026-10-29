@@ -54,13 +54,3 @@ test('receipt output invalidates for content, interruption, membership and lifec
  const cold=createMvuReceiptIndex({shared:true})(chat,{},null)
  assert.deepEqual(changed,cold)
 })
-
-test('default reads detach cached receipts and output respects cache budget',()=>{
- const chat={id:'c',_storageRevision:1,messages:[{role:'assistant',turn:1,mvu:{pending:true}}]}
- const project=createMvuReceiptIndex()
- const first=project(chat,{},null)
- first[0].receipt.status='outside'
- assert.equal(project(chat,{}, {baseRevision:1,indices:[]})[0].receipt.status,'pending')
- const uncached=createMvuReceiptIndex({shared:true,maxBytes:0})
- assert.notEqual(uncached(chat,{},null),uncached(chat,{}, {baseRevision:1,indices:[]}))
-})

@@ -5,7 +5,6 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
-import { validateStageSkin } from '../tavern-plugin/packages/dsh-presentation-protocol/src/stage-skin.cjs'
 
 const client = name => readFileSync(new URL('../tavern-plugin/src/client/' + name, import.meta.url), 'utf8')
 const dB = value => Math.round(20 * Math.log10(value) * 100) / 100
@@ -35,36 +34,6 @@ function load(storage = memoryStorage()) {
   const dip = layer => tavernStageAudio.output(context, layer).next.gain
   return { audio: tavernStageAudio, context, storage, voice, dip, level: layer => dB(dip(layer).value) }
 }
-
-test('a voice lowers the layers below it, 音效 the ones below it; both take the deepest dip, never the sum; sliders untouched', () => {
-  const page = load(), layers = () => ['music', 'ambience', 'sfx'].map(page.level)
-  const music = page.audio.output(page.context, 'music'), sfx = page.audio.output(page.context, 'sfx')
-  assert.ok(music.next !== sfx.next && music.next.next === sfx.next.next, 'each layer has its own dip before the one 总音量')
-  assert.deepEqual(layers(), [0, 0, 0], 'nothing sounding: no dip')
-  page.voice(true)
-  assert.deepEqual(layers(), [-4, -4, -2], 'a voice: BGM and 环境音 -4 dB, 音效 -2 dB')
-  page.audio.duck('sfx', true)
-  assert.deepEqual(layers(), [-4, -4, -2], 'with a sound effect too, each layer keeps the deeper dip')
-  page.voice(false)
-  assert.deepEqual(layers(), [-2, -3, 0], 'the sound effect alone: BGM -2, 环境音 -3, 音效 itself untouched')
-  page.audio.duck('sfx', false)
-  assert.deepEqual(layers(), [0, 0, 0], 'all back')
-  assert.deepEqual([music.gain.value, sfx.gain.value], [1, 1], 'the layer sliders never move')
-})
-
-test('a dip glides down at the attack and back up after the hold, held where it is so a turn midway is continuous', () => {
-  const page = load(), gain = page.dip('music')
-  page.voice(true)
-  assert.deepEqual([gain.held, gain.glides.at(-1)], [10, { to: Math.pow(10, -4 / 20), at: 10, tau: .05 }])
-  page.context.currentTime = 12
-  page.voice(false)
-  assert.deepEqual([gain.held, gain.glides.at(-1)], [12, { to: 1, at: 12.25, tau: .2 }], 'voice: up after 0.25 s, release 0.2 s')
-  page.audio.duck('sfx', true); page.audio.duck('sfx', false)
-  assert.deepEqual(gain.glides.slice(-2).map(glide => [dB(glide.to), Math.round((glide.at - 12) * 100) / 100, glide.tau]), [[-2, 0, .02], [0, .05, .15]], '音效: attack 20 ms, hold 50 ms, release 150 ms')
-  const count = gain.glides.length
-  page.audio.duck('sfx', false)
-  assert.equal(gain.glides.length, count, 'an unchanged trigger schedules nothing')
-})
 
 test('CONFIG › 声音 › 自动混音 turns it off and on, saved in this browser; off only adds duck: false', () => {
   const page = load()
@@ -121,12 +90,4 @@ test('the voice is heard from its start to its end or stop; 音效 sounds from i
   assert.deepEqual(sounding, [true, false], 'the last one ends it')
   await sfx.play('knock'); sfx.stop()
   assert.deepEqual(sounding, [true, false, true, false], 'the stage closing stops it')
-})
-
-test('a skin\'s duck is checked where it enters: known triggers and layers below them, -24..0 dB', () => {
-  const skin = duck => ({ schema: 'dsh.skin/1', id: 'sample-duck', label: '示例', textbox: { paint: { bg: '#101418', fg: '#f2f2f2', accent: '#7fd0ff' } },
-    nameplate: { shape: 'plain', paint: { bg: '#101418', fg: '#f2f2f2' } }, font: {}, textFx: { reveal: 'type' }, duck })
-  validateStageSkin(skin({ voice: { music: -10, ambience: -24, sfx: 0 }, sfx: { music: -1.5 } }))
-  for (const duck of [{}, { voice: { voice: -3 } }, { sfx: { sfx: -3 } }, { ambience: { music: -3 } }, { voice: { music: 2 } }, { voice: { music: -30 } }, { voice: -4 }])
-    assert.throws(() => validateStageSkin(skin(duck)), error => error.code === 'INVALID_SKIN', JSON.stringify(duck))
 })

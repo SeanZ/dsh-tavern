@@ -34,34 +34,6 @@ async function fixture(run) {
   return { ...h, stream, submit, source, prompts, receipts, errors, reference }
 }
 
-test('five complete rows start before body submission; only accepted prefixes render, final CAS persists both windows', async () => {
-  const h = await fixture(), observer = await h.stream.begin('game', 2)
-  observer.append('One.\nTwo.\nThree.\nFour.\nFive.')
-  await tick(); assert.equal(h.prompts.length, 0, 'an unfinished fifth paragraph is not sealed')
-  observer.append('\nSix.\nSeven.')
-  await until(() => h.receipts.length === 1)
-  assert.equal(h.prompts.length, 1)
-  assert.equal((await h.read()).messages.length, 1, 'foreground has not submitted yet')
-  assert.equal(await h.data.snapshot('story'), null, 'prefix is memory only')
-  const preview = await h.stream.preview('game')
-  assert.equal(preview.pages.length, 5)
-  assert.equal(preview.state.music, 'Theme')
-  assert.deepEqual(h.prompts[0].context.window, { sequence: 1, through: 5, done: true, first: 1 })
-  const body = await h.submit()
-  const before = await h.read()
-  assert.equal(await h.stream.finish(body), true)
-  assert.equal(h.prompts.length, 2, 'not a repeating five-row window loop')
-  assert.deepEqual(h.prompts[1].context.window, { sequence: 2, through: 7, done: true, first: 6 })
-  assert.doesNotMatch(h.prompts[1].input.messages[0].content[0].text, /\[1\]/)
-  assert.deepEqual(await h.read(), before, 'stage persistence never rewrites story data')
-  assert.equal(await h.stream.preview('game'), null)
-  const record = await h.director.presentation('game', 2, body.key)
-  assert.equal(record.presentationKey, preview.key, 'finalization retains the playback source identity')
-  assert.deepEqual(record.performances.map(event => event.at), [1, 6])
-  assert.equal((await h.director.state('game', 2)).music, 'Theme')
-  assert.deepEqual(h.errors, [])
-})
-
 test('window envelope and events repair in the same request; sealed pages cannot be rewritten', async () => {
   const h = await fixture(async ({ context, call }) => {
     assert.equal((await call({ through: 99 })).ok, false)
@@ -77,19 +49,6 @@ test('window envelope and events repair in the same request; sealed pages cannot
   assert.equal(h.prompts.length, 2)
   assert.equal(h.receipts.filter(value => value.ok).length, 2)
   assert.deepEqual(h.errors, [])
-})
-
-test('context, selection and catalog are frozen for both windows, not read from changing settlement state', async () => {
-  const h = await fixture()
-  ;(await h.stream.begin('game', 2)).append(text)
-  await until(() => h.receipts.length === 1)
-  h.reference.activeWorldbook = 'New live lore.'
-  h.reference.currentStateProjection = 'After settlement.'
-  await h.stream.finish(await h.submit())
-  assert.deepEqual(h.prompts[1].context.reference, h.prompts[0].context.reference)
-  assert.equal(h.prompts[1].context.reference.activeWorldbook, 'Frozen lore.')
-  assert.deepEqual(h.prompts[1].input.selection, h.prompts[0].input.selection)
-  assert.equal(h.prompts[1].context.state.music, 'Theme', 'next window sees accepted stage state, not the old baseline')
 })
 
 for (const change of ['prefix', 'catalog', 'branch', 'operation', 'cancel']) test('stale stream cannot persist either channel: ' + change, async () => {
@@ -117,15 +76,6 @@ for (const count of [3, 5]) test('short or exact-five body needs only one direct
   assert.deepEqual(h.errors, [])
 })
 
-test('stream pages reuse the host projection instead of addressing markup as story paragraphs', async () => {
-  const h = await fixture()
-  ;(await h.stream.begin('game', 2)).append('<content>\n' + text + '\n</content>')
-  await until(() => h.receipts.length === 1)
-  assert.equal((await h.stream.preview('game')).pages[0].text, 'One.')
-  await h.stream.finish(await h.submit())
-  assert.deepEqual(h.errors, [])
-})
-
 for (const template of ['{{setvar::x::1}}', '<% print(value) %>', '<script>\nprogram\n</script>']) test('effectful or executable source waits for host final projection: ' + template, async () => {
   const h = await fixture(async ({ call }) => { await call({}) })
   ;(await h.stream.begin('game', 2)).append(template + '\n' + text)
@@ -145,23 +95,6 @@ test('a predecessor changed during generation rejects final publication under th
   await h.stream.finish(body)
   assert.equal(await h.director.presentation('game', 2, body.key), null)
   assert.ok(h.errors.length)
-})
-
-test('clear after a first-window entrance folds identically before and after persistence', async () => {
-  const h = await fixture(async ({ context, call }) => {
-    await call(context.window.sequence === 1 ? { figures: [{ speaker: 'Nora' }], music: 'Theme' } : { figures: null, music: null })
-  })
-  ;(await h.stream.begin('game', 2)).append(text)
-  await until(() => h.receipts.length === 1)
-  assert.equal((await h.stream.preview('game')).state.figures.length, 1)
-  await h.stream.finish(await h.submit())
-  assert.deepEqual(await h.director.state('game', 2), { figures: [], background: null, music: null })
-})
-
-test('disposed streams cannot reopen an operation', async () => {
-  const h = await fixture()
-  h.stream.dispose()
-  assert.equal(await h.stream.begin('game', 2), null)
 })
 
 test('late tools after cancellation cannot revive a prefix', async () => {

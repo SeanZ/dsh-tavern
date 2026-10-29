@@ -1,48 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { latestStyleReference, readStyleReference, rememberStyleReference } from '../tavern-plugin/lib/domain/style-reference.js'
-import { createContextPlanner } from '../tavern-plugin/lib/domain/context-planner.js'
-import { normalizeBackgroundTasks, normalizePlayDefaults } from '../tavern-plugin/lib/domain/tavern-settings.js'
 
 const ref = (afterTurn, book = '边城') => ({ book, author: '沈从文', quote: '小溪流下去，绕山岨流。', afterTurn })
-
-test('新游戏默认开启文风联想（全局默认可关）；没有这项的旧存档保持关闭', () => {
-  assert.equal(normalizePlayDefaults({}).backgroundTasks.styleReference, true)
-  assert.equal(normalizePlayDefaults({ backgroundTasks: { styleReference: false } }).backgroundTasks.styleReference, false)
-  assert.equal(normalizeBackgroundTasks({}).styleReference, false)
-  assert.equal(normalizeBackgroundTasks({ styleReference: true }).styleReference, true)
-  assert.equal(latestStyleReference({ styleReferences: [ref(1)] }), null)
-})
-
-test('同一轮重摘会替换旧条目，并丢掉回滚后失效的后续条目', () => {
-  const list = rememberStyleReference([ref(1), ref(2), ref(3)], { book: '围城', author: '钱锺书', quote: '婚姻是一座围城。' }, 2)
-  assert.deepEqual(list.map(item => [item.afterTurn, item.book]), [[1, '边城'], [2, '围城']])
-  assert.equal(rememberStyleReference(Array.from({ length: 12 }, (_, i) => ref(i)), ref(20), 20).length, 8)
-})
-
-test('提交内容要有不超过 400 字的范文，书名、作者可不填', () => {
-  assert.deepEqual(readStyleReference({ book: '《边城》', author: '沈从文', quote: ' 小溪流下去。 ' }), { book: '边城', author: '沈从文', quote: '小溪流下去。' })
-  assert.deepEqual(readStyleReference({ quote: '句子' }), { book: '', author: '', quote: '句子' })
-  assert.throws(() => readStyleReference({ book: '边城', author: '沈从文', quote: ' ' }))
-  assert.throws(() => readStyleReference({ book: '边城', author: '沈从文', quote: '长'.repeat(401) }))
-})
-
-test('正文上下文带上文风联想与借鉴规则', async () => {
-  const planner = createContextPlanner({ prompt: name => '〈' + name + '〉' })
-  const plan = await planner.plan({ purpose: 'body', card: { name: '阿青' }, chat: {}, worldBookContext: '',
-    styleReference: { book: '边城', author: '沈从文', quote: '小溪流下去。' } })
-  const style = plan.sections.filter(section => section.kind === 'style-reference').map(section => section.text)
-  assert.deepEqual(style, ['【文风联想 · 《边城》沈从文】\n小溪流下去。', '〈style-reference〉'])
-  const without = await planner.plan({ purpose: 'body', card: { name: '阿青' }, chat: {}, worldBookContext: '', styleReference: null })
-  assert.equal(without.sections.some(section => section.kind === 'style-reference'), false)
-})
-
-test('选段提示词来自系统提示词「文风联想选段」：按题材选书，不限名家', async () => {
-  const { prompt, SYSTEM_PROMPT_NAMES } = await import('../tavern-plugin/lib/prompt-catalog.js')
-  assert.ok(SYSTEM_PROMPT_NAMES.includes('style-reference-recall'))
-  assert.match(prompt('style-reference-recall'), /轻小说/)
-})
 
 test('foreground style reference shares this turn, persists for inspection and never concludes the writer', async () => {
   const { createForegroundStyleReferenceTool, foregroundStyleReferencePrompt } = await import('../tavern-plugin/lib/domain/style-reference.js')

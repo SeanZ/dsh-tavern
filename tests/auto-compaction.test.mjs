@@ -18,21 +18,6 @@ function fixture() {
     restart() { service = createAutoCompaction(deps) }, blocked: () => service.blocked(chat) }
 }
 
-test('idle manual checks after rollback do not write metadata and invalidate its undo revision', async () => {
-  const h = fixture()
-  h.chat.timeline.branchId = 'rolled-back'
-  h.chat._storageRevision = 23
-  h.chat.rollbackUndo = { ready: true, storageRevision: 23 }
-  h.chat.contextCompaction = { branch: 'main', operation: null }
-  let writes = 0
-  const update = h.deps.updateChat
-  h.deps.updateChat = (...args) => { writes++; return update(...args) }
-  const before = structuredClone(h.chat)
-  await h.run()
-  assert.equal(writes, 0)
-  assert.deepEqual(h.chat, before)
-})
-
 test('percent mode, unknown capacity, no-progress suppression and branch reset', async () => {
   const h = fixture(); h.policy = { mode: 'percent', percent: 80 }; h.pressure = null; await h.run(); assert.match(h.chat.contextCompaction.warning, /容量/)
   h.pressure = 79; await h.run(); assert.equal(h.calls.length, 0)

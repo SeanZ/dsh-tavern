@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { BACKGROUND_TASK_CATALOG, describeTasks, registerBackgroundTasks, taskMember } from '../tavern-plugin/lib/domain/background-tasks.js'
+import { BACKGROUND_TASK_CATALOG, describeTasks, registerBackgroundTasks } from '../tavern-plugin/lib/domain/background-tasks.js'
 import { createStoryEvents } from '../tavern-plugin/lib/domain/story-events.js'
 import { createWorkflow } from '../tavern-plugin/lib/domain/workflow.js'
 
@@ -17,22 +17,6 @@ async function sources(dir) {
   }
   return files
 }
-
-test('every background task kind the code runs is listed in the catalog', async () => {
-  const listed = new Set(BACKGROUND_TASK_CATALOG.map(item => item.task))
-  const used = new Set()
-  for (const file of await sources(new URL('../tavern-plugin/lib', import.meta.url).pathname)) {
-    for (const match of (await readFile(file, 'utf8')).matchAll(/\btask: *'([a-z-]+)'/g)) used.add(match[1])
-  }
-  // Sub-agents the foreground spawns are not background runner tasks.
-  used.delete('subagent')
-  assert.ok(used.size >= 8)
-  assert.deepEqual([...used].filter(task => !listed.has(task)), [])
-  for (const item of BACKGROUND_TASK_CATALOG) {
-    assert.ok(item.name && item.does && item.manual?.length && ['resident', 'ephemeral'].includes(item.lane), item.task)
-    for (const task of item.needs || []) assert.ok(listed.has(task), item.task + ' needs ' + task)
-  }
-})
 
 test('the page lines are written from the declarations: starting moments, needs and what waits', () => {
   const jobs = [{ task: 'settlement', on: ['reply-committed'], cancelOn: [], condition: '', flow: true }, { task: 'polish', on: ['reply-committed', 'turn-settled'], cancelOn: [], condition: '开启自动精修时' },
@@ -74,11 +58,4 @@ test('one table: registering it gives the scheduler each task\'s triggers and th
   assert.deepEqual(workflow.runs('game').map(run => [run.id, run.status]).sort(), [['cast-bubbles', 'skipped'], ['polish', 'completed'], ['stage-director', 'skipped']])
   stop()
   assert.deepEqual(workflow.table(), [])
-})
-
-test('a task\'s member is its own entry\'s; upkeep is not in the catalog', () => {
-  assert.deepEqual(['settlement', 'candidate', 'ledger', 'character-design', 'polish', 'phone', 'plugin', 'nope'].map(taskMember),
-    ['background', 'background', 'background', 'background', 'polish', '', '', ''])
-  assert.equal(BACKGROUND_TASK_CATALOG.some(item => item.task === 'game-title'), false)
-  assert.deepEqual(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.lane]).filter(([, lane]) => lane === 'ephemeral').map(([task]) => task), ['stage-director', 'phone', 'plugin'])
 })

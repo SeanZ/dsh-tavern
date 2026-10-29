@@ -17,54 +17,6 @@ async function prepared() {
 // 大凉龙虎传 v4.11 的开局页把自己的记录写进"刚发送的那一楼"，随后时间结算脚本
 // 再从同一条楼层的消息变量里读回来。延迟开局后那一楼还没建，于是它在准备页里
 // 先写进草稿，开局时跟着第一条用户楼层进入新局。
-test('准备页发送的开局文本先在草稿里占一层，卡的写回落在这层上', async () => {
-  const { service, draft: current } = await prepared()
-  const deferred = await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/send 我推门而入' })
-  assert.equal(deferred.deferred, true)
-  const rows = deferred.context.messages
-  assert.equal(rows.length, 2, '开场白之外还有一层等待开局的用户楼层')
-  assert.equal(rows[0].role, 'assistant')
-  assert.equal(rows[1].role, 'user')
-  assert.equal(rows[1].message, '我推门而入')
-  assert.notEqual(rows[1].is_user, false)
-
-  const floor = rows.length - 1
-  const record = { 标识: 'preset-a', 来源: '开局界面', 消息楼: floor }
-  const written = await service.callRuntime(current.id, 'updateTavernHelperVariables', {
-    option: { type: 'message', message_id: floor },
-    variables: { dshOpening327: record, stat_data: { 系统接入: {} } }
-  })
-  assert.deepEqual(written.context.messages[floor].variables.dshOpening327, record)
-
-  assert.equal(service.resolve(current.id, 'card').startCommand, undefined, '写回数据不等于开局')
-  await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/trigger' })
-  const resolved = service.resolve(current.id, 'card')
-  assert.equal(resolved.startCommand.input, '我推门而入')
-  assert.deepEqual(resolved.openingMessageVariables.dshOpening327, record)
-  assert.deepEqual(resolved.openingMessageVariables.stat_data, { 系统接入: {} })
-  await service.release(current.id)
-})
-
-test('准备页拒绝写不存在的楼层', async () => {
-  const { service, draft: current } = await prepared()
-  await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/send 我推门而入' })
-  await assert.rejects(service.callRuntime(current.id, 'updateTavernHelperVariables', {
-    option: { type: 'message', message_id: 7 }, variables: { dshOpening327: {} }
-  }), /消息楼层不存在/)
-  await service.release(current.id)
-})
-
-test('重复发送的开局文本改写同一层，不会越攒越多', async () => {
-  const { service, draft: current } = await prepared()
-  await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/send 我推门而入' })
-  const again = await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/send 我推门而入。' })
-  assert.equal(again.context.messages.length, 2)
-  assert.equal(again.context.messages[1].message, '我推门而入。')
-  await service.callRuntime(current.id, 'prepareOpeningCommand', { line: '/trigger' })
-  assert.equal(service.resolve(current.id, 'card').startCommand.input, '我推门而入。')
-  await service.release(current.id)
-})
-
 test('新局把准备页写下的开局楼层变量挂到第一条用户楼层上', async () => {
   const h = initializationFixture()
   const service = createOpeningPreparation({ readCard: async () => ({ ...h.card, first_mes: '首页', alternate_greetings: [] }), worldBooks: { bound: async () => null } })

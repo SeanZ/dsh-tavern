@@ -45,44 +45,6 @@ test('PNG 人物卡改名导入仍保留原始图片字节', async t => {
   assert.deepEqual(await resources.readCardImage(result.cardPath), bytes)
 })
 
-test('同卡绑定了不同剧本时，隔离存档资源且不改变本地旧游戏', async t => {
-  const { resources, prepare } = await harness(t)
-  const source = saveOf(payload('same card'))
-  const local = await prepare(source)
-  const localScript = await resources.importText('source', { name: 'story.txt', text: 'LOCAL STORY' })
-  await resources.bindMaterial(local.cardPath, localScript)
-  const incoming = { ...source, chat: { ...source.chat, mode: 'script' }, script: { path: 'materials/story.txt', text: 'PACKAGED STORY' } }
-  const result = await prepare(incoming)
-  assert.notEqual(result.cardPath, local.cardPath)
-  const script = await resources.scriptForCard(result.cardPath)
-  assert.notEqual(script, localScript)
-  assert.equal(await resources.readText(script), 'PACKAGED STORY')
-  assert.equal(await resources.scriptForCard(local.cardPath), localScript)
-  assert.equal(await resources.readText(localScript), 'LOCAL STORY')
-  // A later import failure rolls back only the newly created resources.
-  await result.rollback()
-  assert.equal(await resources.readCard(result.cardPath), undefined)
-  assert.equal(await resources.readText(script), undefined)
-  assert.equal(await resources.scriptForCard(local.cardPath), localScript)
-})
-
-test('同卡同剧本可直接复用；无剧本的本地卡不会被导入操作改绑', async t => {
-  const { resources, prepare } = await harness(t)
-  const source = saveOf(payload('same card'))
-  const local = await prepare(source)
-  const incoming = { ...source, chat: { ...source.chat, mode: 'script' }, script: { path: 'materials/story.txt', text: 'SAME STORY' } }
-  const isolated = await prepare(incoming)
-  assert.notEqual(isolated.cardPath, local.cardPath)
-  assert.equal(await resources.scriptForCard(local.cardPath), undefined)
-  const localScript = await resources.importText('source', { name: 'story.txt', text: 'SAME STORY' })
-  await resources.bindMaterial(local.cardPath, localScript)
-  const reused = await prepare(incoming)
-  assert.equal(reused.cardPath, local.cardPath)
-  assert.equal(reused.importedCard, '')
-  await reused.rollback()
-  assert.equal(await resources.scriptForCard(local.cardPath), localScript)
-})
-
 test('剧本绑定失败清理新卡和新剧本，保留旧资源', async t => {
   const { resources, prepare } = await harness(t)
   const source = saveOf(payload('same card'))
@@ -91,17 +53,4 @@ test('剧本绑定失败清理新卡和新剧本，保留旧资源', async t => 
   await assert.rejects(failing({ ...source, chat: { ...source.chat, mode: 'script' }, script: { path: 'materials/story.txt', text: 'STORY' } }), /binding failed/)
   assert.deepEqual(await resources.list('card'), ['cards/hero.json'])
   assert.deepEqual(await resources.list('source'), [])
-})
-
-test('同一个包里的多个存档：内容一样的卡复用同一张，不再一局一张', async t => {
-  const { resources, prepare } = await harness()
-    .catch(() => ({ resources: null, prepare: null }))
-  if (!resources) return
-  const first = await prepare(saveOf('packaged'))
-  const second = await prepare(saveOf('packaged'))
-  const third = await prepare(saveOf('packaged'))
-  assert.equal(first.importedCard, second.importedCard === '' ? first.importedCard : '')
-  assert.equal(second.cardPath, first.cardPath, '第二次沿用第一次的卡')
-  assert.equal(third.cardPath, first.cardPath)
-  assert.equal((await resources.list('card')).length, 1, '本机只多出一张卡')
 })

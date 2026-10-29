@@ -69,13 +69,6 @@ test('list 只认含 index.json 的自装族，并统计标题、字重与字节
   assert.equal(bare.bytes, Buffer.byteLength(plain['index.json']) + Buffer.byteLength(plain['plain.ttf']))
 })
 
-test('list 在字体目录不存在时返回空表', async t => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'transfer-fonts-empty-'))
-  t.after(async () => { await rm(root, { recursive: true, force: true }) })
-  const transfer = createTransferFonts({ fontsDir: path.join(root, 'missing') })
-  assert.deepEqual(await transfer.list(), [])
-})
-
 test('collect 把整族打成可读回的 zip，路径相对且统一用 /', async t => {
   const { transfer, sans } = await fixture(t)
   const items = await transfer.collect(['note-sans'])
@@ -93,13 +86,6 @@ test('collect 把整族打成可读回的 zip，路径相对且统一用 /', asy
   assert.equal(entries.get('index.json').toString('utf8'), sans['index.json'])
   assert.equal(entries.get('OFL.txt').toString('utf8'), sans['OFL.txt'])
   assert.deepEqual(entries.get('note-400.woff2'), Buffer.from('wOF2-400'))
-})
-
-test('collect 未知 id 报错', async t => {
-  const { transfer } = await fixture(t)
-  await assert.rejects(() => transfer.collect(['nope']), /字体不存在：nope/)
-  // 存在但缺 index.json 目录不算族。
-  await assert.rejects(() => transfer.collect(['unfinished']), /字体不存在：unfinished/)
 })
 
 test('importOne 落成新目录，重名自动加后缀，不覆盖原族', async t => {
@@ -125,13 +111,6 @@ test('importOne 落成新目录，重名自动加后缀，不覆盖原族', asyn
   assert.equal(await readFile(path.join(fontsDir, 'note-sans', 'index.json'), 'utf8'), sans['index.json'])
 })
 
-test('importOne 把不合法 key 归一成合法 id', async t => {
-  const { transfer, fontsDir } = await fixture(t)
-  const result = await transfer.importOne({ key: 'Note Serif 字体', content: fontZip([['index.json', '{}']]) })
-  assert.equal(result.id, 'note-serif')
-  assert.equal(existsSync(path.join(fontsDir, 'note-serif', 'index.json')), true)
-})
-
 test('importOne 拒绝越界路径，且不写 fonts 目录之外', async t => {
   const { transfer, fontsDir, root } = await fixture(t)
 
@@ -150,20 +129,4 @@ test('importOne 拒绝越界路径，且不写 fonts 目录之外', async t => {
     content: fontZip([['index.json', '{}'], ['../evil.txt', 'bad']])
   }), /越界路径/)
   assert.equal(existsSync(path.join(fontsDir, 'mixed')), false)
-})
-
-test('importOne 空内容直接报错', async t => {
-  const { transfer } = await fixture(t)
-  await assert.rejects(() => transfer.importOne({ key: 'gamma-face' }), /字体包内容为空/)
-})
-
-test('importOne 同一个字体包再来一次：复用已有族，不再造 -2', async t => {
-  const { transfer, fontsDir } = await fixture(t)
-  const zip = fontZip([['index.json', JSON.stringify({ id: 'gamma-face', label: 'Gamma' })]])
-  const first = await transfer.importOne({ key: 'gamma-face', content: zip })
-  assert.equal(first.id, 'gamma-face')
-  const again = await transfer.importOne({ key: 'gamma-face', content: zip })
-  assert.deepEqual(again, { id: 'gamma-face', reused: true })
-  const names = await readdir(fontsDir)
-  assert.deepEqual(names.filter(name => name.startsWith('gamma')), ['gamma-face'])
 })

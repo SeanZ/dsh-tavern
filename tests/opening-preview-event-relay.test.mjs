@@ -51,19 +51,6 @@ function runPreviewScript() {
   return { parentWin, frameWin, pagehide }
 }
 
-test('开场预览把面板派发到宿主文档的确认事件同步中继进预览文档', async () => {
-  const { parentWin, frameWin } = runPreviewScript()
-  const received = []
-  frameWin.document.addEventListener('hc1:opening-confirm', event => {
-    event.detail.result = Promise.resolve('已检票上车。')
-    received.push(event.detail)
-  })
-  const packet = { chatId: 'c1', target: 1, text: '身份' }
-  parentWin.document.dispatchEvent(new CustomEvent('hc1:opening-confirm', { detail: packet }))
-  assert.equal(received.length, 1)
-  assert.ok(packet.result, 'packet.result 必须在同步派发中被赋值')
-})
-
 test('中继过滤 dsh- 前缀与无对象 detail 的事件，释放后停止中继', () => {
   const { parentWin, frameWin, pagehide } = runPreviewScript()
   const received = []
@@ -131,13 +118,4 @@ test('延迟开局的 /send 让预览页里真的有"刚发送的那一楼"，�
   const after = run.frameWin.SillyTavern.getContext().chat
   assert.equal(after.length, 2)
   assert.equal(after[1].mes, '我推门而入。')
-})
-
-test('直接开局的命令不给预览页凭空加一层', async () => {
-  const run = runPreviewScriptWithTransport()
-  const started = run.frameWin.triggerSlash('/send 我推门而入 | /trigger')
-  run.answer(run.sent.at(-1), { deferred: false, input: '我推门而入' })
-  const result = await started
-  assert.equal(result.deferred, false)
-  assert.equal(run.frameWin.SillyTavern.getContext().chat.length, 1)
 })

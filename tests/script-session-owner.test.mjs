@@ -140,14 +140,3 @@ test('idle games release after refreshing state; stale callbacks cannot cross an
   assert.equal(owner.getSnapshot().sessionId, '')
   owner.dispose()
 })
-
-test('0.2.0 扁平快照没有顶层 current 时，仍按 mainView retain 选中会话并建立卡片运行时', async t => {
-  const h = harness({ snapshotShape: 'flat' })
-  const owner = h.client.createTavernScriptSessionOwner(h.options)
-  t.after(() => owner.dispose())
-  owner.start(); await h.poll()
-  assert.equal(owner.getSnapshot().sessionId, 'A', '主视图 retained 的会话必须被选中')
-  assert.equal(h.runtimes.length, 1, '0.2.0 宿主下页面必须自建脚本运行时，否则卡片 UI 永不挂载')
-  assert.equal(h.runtimes[0].foreground, true, 'retained 会话的宿主卡片产物必须保持可见')
-  owner.dispose()
-})

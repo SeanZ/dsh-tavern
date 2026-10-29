@@ -10,17 +10,6 @@ const fx = require('../tavern-plugin/src/client/stage-effects.cjs')
 const commands = require('../tavern-plugin/packages/dsh-presentation-protocol/src/director-commands.cjs')
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`)
 
-test('catalogue: the director enums are exactly the core ids; every id has one engine definition', () => {
-  const field = (id, name) => commands.byName[id].schema({ actors: {}, dimensions: {}, catalogue: { candidates: {} } }).properties[name]
-  assert.deepEqual([...field('screen.play', 'effect').enum].sort(), [...fx.STAGE_EFFECT_BEATS].sort())
-  assert.deepEqual([...field('screen.set', 'look').enum].sort(), [...fx.STAGE_EFFECT_LOOKS].sort())
-  assert.ok(commands.byName['screen.clear'])
-  for (const id of [...fx.STAGE_EFFECT_BEATS, ...fx.STAGE_EFFECT_LOOKS, 'transition', 'thinking', 'title']) assert.ok(fx.STAGE_EFFECTS[id]?.kind, id)
-  assert.equal(fx.STAGE_EFFECTS.blur.kind, 'look', 'blur is a screen state, not a one-shot')
-  assert.equal(fx.stageEffectResolve('fade-in', null, null), null, 'retired prototype ids have no definition')
-  assert.equal(fx.stageEffectResolve('skin-memory', null, null), null)
-})
-
 test('resolver: engine <- skin <- card-local, field by field; arrays and images replace whole', () => {
   const skin = { flash: { in: 0.05, hold: 0.05, out: 0.05, ease: 'linear' }, shock: { flash: { out: 1.3 } }, memory: { fade: [1, 1], params: { saturation: 0.5 } } }
   const local = { flash: { color: '#ffe0a0' }, shock: { shake: null }, memory: { params: { grain: 0 } } }

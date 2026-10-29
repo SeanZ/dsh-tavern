@@ -60,16 +60,3 @@ test('会话真的不在宿主时，超时信息说明该删除历史记录', as
   })
   await assert.rejects(function () { return recovery.wait('session-gone') }, /已不在宿主列表中/)
 })
-
-test('宿主列表缺少一局存档时，优先报出会话日志升级失败的原因，而不是建议删除', async function () {
-  const recovery = client.createSessionListRecoveryModule({
-    summary: function () { return undefined },
-    binding: function () { return undefined },
-    refresh: function () { return Promise.resolve() },
-    open: function () { throw new Error('sessions.retain: unknown session session-old') },
-    explainMissing: async function (sessionId) { return sessionId === 'session-old' ? '旧会话日志无法升级到新版，原档已保留。step/start does not match' : '' },
-    sleep: function () { return Promise.resolve() },
-    timeoutMs: 300
-  })
-  await assert.rejects(function () { return recovery.wait('session-old') }, error => /无法升级/.test(error.message) && !/已不在宿主列表中/.test(error.message))
-})

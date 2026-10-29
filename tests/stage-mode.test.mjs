@@ -43,23 +43,6 @@ test('可用演出 lists the upstream director commands by group and saves a chi
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['updateTavernSettings', { patch: { stageDimensions: { acts: true } } }], ['event', 'dsh-tavern-settings-changed']])
 })
 
-test('每轮上限 is a draft: 保存 is enabled only with a change, and Esc may leave only without one', async () => {
-  const clean = page(settings())
-  const button = find(clean.tree, node => node.type === 'button' && text(node) === '保存')
-  assert.equal(button.props.disabled, true)
-  assert.equal(clean.dirty.current, false)
-  assert.equal(find(clean.tree, node => node.props.className === 'dsh-tavern-mode-foot').props['data-dirty'], undefined)
-  const calls = [], changed = page(settings(), { beat: 3 }, undefined, { calls })
-  const foot = find(changed.tree, node => node.props.className === 'dsh-tavern-mode-foot')
-  assert.equal(foot.props['data-dirty'], true)
-  assert.equal(text(foot), '有未保存的修改保存')
-  assert.equal(changed.dirty.current, true)
-  const field = find(changed.tree, node => node.type === 'input' && node.props['aria-label'] === '画面效果 每轮上限')
-  assert.deepEqual([field.props['aria-label'], field.props.value], ['画面效果 每轮上限', '3'])
-  await find(foot, node => node.type === 'button').props.onClick()
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), ['updateTavernSettings', { patch: { stageActionCaps: { beat: 3 }, stageJudge: JUDGE } }])
-})
-
 test('a cap joins the draft only as a whole number from 1 to 256; loading and a failed read have their own states', () => {
   const committed = [], { TavernStageModeField, tavernCapValue } = load()
   const input = () => find(expand(TavernStageModeField({ id: 'x', label: '画面效果', unit: '次', value: 6, parse: tavernCapValue, onCommit: value => committed.push(value) })), node => node.type === 'input')

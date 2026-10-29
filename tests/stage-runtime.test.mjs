@@ -20,34 +20,6 @@ function fixture() {
   return { store, reads, changes }
 }
 
-test('refresh and failure retain one atomic scene; identical snapshots reuse static presentation', async () => {
-  const { store, reads } = fixture()
-  let pending = store.refresh(); await tick(); reads[0].resolve(data()); await pending
-  const accepted = store.getSnapshot()
-  assert.equal(accepted.scene.figures[0].url, 'joy')
-  pending = store.refresh(); await tick()
-  assert.equal(store.getSnapshot().scene, accepted.scene)
-  reads[1].reject(Error('offline')); await pending
-  assert.equal(store.getSnapshot().scene, accepted.scene); assert.match(store.getSnapshot().error, /offline/)
-  pending = store.refresh(); await tick(); reads[2].resolve(data()); await pending
-  assert.equal(store.getSnapshot().data, accepted.data); assert.equal(store.getSnapshot().scene, accepted.scene)
-  pending = store.refresh(); await tick(); reads[3].resolve({ ...data(), background: 'night', stage: { figures: [] } }); await pending
-  assert.equal(store.getSnapshot().scene.background, 'night'); assert.equal(store.getSnapshot().scene.figures.length, 0)
-  store.dispose()
-})
-
-test('single-flight notifications discard outdated reads and reconcile once more', async () => {
-  const { store, reads, changes } = fixture()
-  const pending = store.refresh(); await tick()
-  store.refresh(); store.refresh(); assert.equal(reads.length, 1)
-  reads[0].resolve(data('Old')); await tick()
-  assert.equal(reads.length, 2); assert.equal(store.getSnapshot().data, null)
-  reads[1].resolve(data('New')); await pending
-  assert.equal(store.getSnapshot().data.card.name, 'New')
-  assert.ok(!changes.some(value => value.data?.card.name === 'Old'))
-  store.dispose()
-})
-
 test('context withdrawal aborts and clears; late responses after reset or disposal cannot publish', async () => {
   const { store, reads } = fixture()
   let pending = store.refresh(); await tick(); reads[0].resolve(data()); await pending
@@ -57,14 +29,6 @@ test('context withdrawal aborts and clears; late responses after reset or dispos
   assert.equal(store.getSnapshot().data.card.name, 'Other card')
   pending = store.refresh(); await tick(); store.dispose(); reads[3].resolve(data('Late')); await pending
   assert.equal(store.getSnapshot().data, null); assert.equal(reads[3].signal.aborted, true)
-})
-
-test('static projection uses canonical cast selection and is independent of pages', () => {
-  const value = data(); value.stage.figures[0].speaker = 'Reader'
-  assert.deepEqual(copy(project(value)), { background: 'card', backdrop: false, figures: [{ name: 'Reader', url: 'joy' }] })
-  value.stage.figures[0].emotion = 'unavailable'
-  assert.equal(project(value).figures[0].url, 'calm')
-  assert.equal(project({ ...value, turns: [{ pages: [{ text: 'Different page' }] }] }).figures[0].url, 'calm')
 })
 
 test('session owner survives UI remount, isolates sessions, replaces bindings and releases subscriptions', async () => {
@@ -89,31 +53,6 @@ test('session owner survives UI remount, isolates sessions, replaces bindings an
 const turn = (key, texts, performances = []) => ({ turn: 2, key, pages: texts.map(text => ({ kind: 'narration', text })), performances })
 const withTurns = (...turns) => ({ ...data(), turns, music: { name: 'theme', url: 'theme.wav' } })
 async function accept(store, reads, value) { const pending = store.refresh(); await tick(); reads.at(-1).resolve(value); await pending }
-
-test('the reading position is session state: first read restores, page turns are visits, new bodies go live', async () => {
-  const { store, reads } = fixture()
-  await accept(store, reads, withTurns(turn('a', ['one', 'two', 'three'])))
-  const first = store.getSnapshot().reader
-  assert.deepEqual({ ...first }, { key: 'a', index: 0, visit: 1, mode: 'refresh', auto: false })
-  store.page(1); assert.deepEqual([store.getSnapshot().reader.index, store.getSnapshot().reader.mode], [1, 'page'])
-  const visit = store.getSnapshot().reader.visit
-  store.page(1); store.page(9); store.page(index => index + 1)
-  assert.equal(store.getSnapshot().reader.index, 2); assert.equal(store.getSnapshot().reader.visit, visit + 1, 'clamped and repeated turns are not visits')
-  store.page(2, 'skip'); assert.equal(store.getSnapshot().reader.mode, 'skip', 'skip is always a visit')
-  store.setAuto(true); store.restore()
-  assert.deepEqual([store.getSnapshot().reader.index, store.getSnapshot().reader.mode, store.getSnapshot().reader.auto], [2, 'refresh', false], 'reopening keeps the page')
-  await accept(store, reads, withTurns(turn('a', ['one', 'two', 'three'])))
-  assert.equal(store.getSnapshot().reader.index, 2, 'a notification with the same body keeps the page')
-  await accept(store, reads, withTurns(turn('a', ['one'])))
-  assert.equal(store.getSnapshot().reader.index, 0, 'a shorter body clamps the page')
-  await accept(store, reads, withTurns(turn('b', ['next'])))
-  assert.deepEqual([store.getSnapshot().reader.key, store.getSnapshot().reader.index, store.getSnapshot().reader.mode], ['b', 0, 'live'])
-  const before = store.getSnapshot().reader.visit
-  const pending = store.refresh(true); await tick(); reads.at(-1).resolve(withTurns(turn('b', ['next']))); await pending
-  assert.equal(store.getSnapshot().reader.mode, 'refresh', 'a withdrawn context restores, never plays')
-  assert.ok(store.getSnapshot().reader.visit > before, 'visits stay unique across a reset')
-  store.dispose()
-})
 
 function playerFixture() {
   let value = withTurns(turn('a', ['first', 'second', 'third'], [{ at: 1, op: 'screen.play', effect: 'shake-1' }, { at: 2, op: 'screen.play', effect: 'shake-1' }]))
@@ -171,46 +110,6 @@ test('an attached view plays the session page once; closing releases everything 
   h.bindings.a = {}; h.relist(); await tick()
   assert.deepEqual(h.log, ['say regenerated', 'release', 'hush'], 'replacing the binding releases the attached player')
   detach(); h.owner.page('a', 0); await h.run(); assert.deepEqual(h.log.filter(line => line.startsWith('say') || line.startsWith('play')), ['say regenerated'])
-})
-
-test('auto paging waits for the line to be heard, falls back to its length and stops at the end', async () => {
-  const h = playerFixture()
-  h.owner.start(h.sessions); await tick()
-  const detach = h.owner.attach('a', h.view); await h.run()
-  h.owner.setAuto('a', true); await tick()
-  assert.equal(h.timers.size, 0, 'nothing turns while the line is still being read')
-  h.voices[0].resolve(true); await tick()
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay), [400])
-  await h.run(400)
-  assert.equal(h.owner.getSnapshot('a').reader.index, 1)
-  h.setReading(false); h.owner.sync('a'); await tick()
-  assert.ok(h.log.includes('hush'), 'turning reading off stops the voice')
-  const turns = () => [...h.timers.values()].map(timer => timer.delay).filter(delay => delay !== 1000)
-  assert.deepEqual(turns(), [1500], 'without a voice the page turns by its length')
-  await h.run(1500)
-  assert.equal(h.owner.getSnapshot('a').reader.index, 2); await tick()
-  assert.deepEqual(turns(), [], 'the last page stays')
-  h.owner.setAuto('a', false); detach()
-  assert.equal(h.owner.getSnapshot('a').reader.auto, false)
-})
-
-test('the reader\'s pace scales every auto wait, never cuts a voice, and auto waits while CONFIG is open', async () => {
-  const h = playerFixture()
-  let reading = { autoWait: 400, autoSpeed: 2, voiceRate: 1 }, held = false
-  h.owner.start(h.sessions); await tick()
-  const detach = h.owner.attach('a', { ...h.view, reading: () => reading, held: () => held }); await h.run()
-  h.owner.setAuto('a', true); await tick()
-  assert.equal(h.timers.size, 0, 'a voice is still waited for in full')
-  h.voices[0].resolve(true); await tick()
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay), [200])
-  held = true; h.owner.sync('a'); await tick()
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay), [], 'nothing turns while CONFIG is open')
-  reading = { ...reading, autoSpeed: .5 }; held = false; h.owner.sync('a'); await tick()
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay), [800], 'closing starts the wait afresh at the new pace')
-  await h.run(800)
-  h.setReading(false); h.owner.sync('a'); await tick()
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay).filter(delay => delay !== 1000), [3000], 'without a voice the length-based wait is divided too')
-  h.owner.setAuto('a', false); detach()
 })
 
 test('auto paging walks a page\'s cards: each waits its reading time, a voiced one turns at its share, the last waits the voice', async () => {

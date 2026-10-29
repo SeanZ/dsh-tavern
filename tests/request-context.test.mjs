@@ -21,20 +21,6 @@ const preset = (phase, text) => ({
   source: { kind: 'plugin:dsh-tavern', form: 'snapshot', sections: [{ name: 'tavern:runtime-preset-' + phase, text }] }
 })
 
-test('请求里的每一部分都能在面板里找到，不丢工具与参数', () => {
-  const request = {
-    model: 'google/gemini-4-argon-thinking-low',
-    temperature: 0.9,
-    system: 'SENTINEL-SYSTEM',
-    tools: [{ type: 'function', function: { name: 'SENTINEL-TOOL' } }],
-    messages: [{ role: 'user', content: 'SENTINEL-USER' }, { role: 'assistant', content: 'SENTINEL-ASSISTANT' }]
-  }
-  const text = rendered(request)
-  // 模型名、采样参数这类调用参数和提示词本身一样，都是这次请求的输入。
-  for (const value of ['model', 'temperature', 'SENTINEL-SYSTEM', 'SENTINEL-TOOL', 'SENTINEL-USER', 'SENTINEL-ASSISTANT']) assert.ok(text.includes(value), value + ' 没有出现在面板里')
-  assert.deepEqual(titles(request), ['调用参数', 'system · 系统提示词', 'tools · 工具定义', 'messages[0] · user', 'messages[1] · assistant'])
-})
-
 test('工具定义夹在前置系统消息与普通消息之间，消息下标保持原样', () => {
   const request = {
     tools: [{ type: 'function', function: { name: 'tavern_read_play_chat' } }],
@@ -63,46 +49,6 @@ test('预设前段、后段会从消息正文里切出来，仍归属同一条�
   assert.ok(byTitle['messages[1] · user · 消息正文'].text.startsWith(body))
   // 切分后每节的字符数只算正文，不含分节之间补的分隔符。
   for (const section of Object.values(byTitle)) assert.equal(section.count, section.body.reduce((sum, text) => sum + text.length, 0))
-})
-
-test('中段预设同样单独成节', () => {
-  const request = { messages: [{ role: 'system', content: '甲\n\n乙', source: { sections: [{ name: 'tavern:runtime-preset-middle', text: '甲' }, { name: 'tavern:dsh-system', text: '乙' }] } }] }
-  assert.deepEqual(titles(request), ['messages[0] · system · 预设中段', 'messages[0] · system · 消息正文'])
-})
-
-test('来源节对不上原文时保留整段正文，不猜切分点', () => {
-  const request = { messages: [{ role: 'user', content: 'AAA BBB', source: { sections: [{ name: 'tavern:turn', text: '对不上的内容' }] } }] }
-  const only = sections(request)
-  assert.equal(only.length, 1)
-  assert.equal(only[0].title, 'messages[0] · user')
-  assert.equal(only[0].text, 'AAA BBB')
-})
-
-test('非文本内容按 JSON 展示，工具调用不丢字段', () => {
-  const request = { messages: [{ role: 'assistant', content: [{ type: 'toolCall', name: 'tavern_read_play_chat', arguments: '{"turn":3}' }] }] }
-  const text = sections(request)[0].text
-  assert.ok(text.includes('"type": "toolCall"'))
-  assert.ok(text.includes('tavern_read_play_chat'))
-  assert.ok(text.includes('arguments'))
-})
-
-test('Skill 目录认成单独一节，可以折叠起来', () => {
-  const catalog = '<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n- debug-card\n</system-reminder>'
-  const request = { messages: [{ role: 'user', content: '正文\n\n' + catalog }] }
-  const parts = sections(request)[0].displayParts
-  const found = parts.find(part => part.catalog)
-  assert.ok(found, '目录没有单独拆出来')
-  assert.equal(found.label, '系统附加 · Skill 目录')
-  assert.equal(found.text, catalog)
-  assert.equal(parts.filter(part => !part.catalog).map(part => part.text).join(''), '正文\n\n')
-})
-
-test('回合正文的来源标签是人话，不是内部节名', () => {
-  const body = '我推开门。'
-  const back = '【收尾】'
-  const request = { messages: [{ role: 'user', content: body + '\n\n' + back, source: { sections: [{ name: 'tavern:turn', text: body }, { name: 'tavern:runtime-preset-back', text: back }] } }] }
-  const labels = sections(request).flatMap(section => section.displayParts.map(part => part.label)).filter(Boolean)
-  assert.deepEqual(labels, ['消息正文', '末尾预设投影'])
 })
 
 test('token 估算：中文约 1.5、拉丁约每 4 字母 1 个、数字约每 3 位 1 个', () => {

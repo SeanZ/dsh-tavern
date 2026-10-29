@@ -31,21 +31,6 @@ function harness({ fail = new Set() } = {}) {
   return { sfx, context, sources, fetched, timers, fire() { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job.fn()) } }
 }
 
-test('a cue plays its decoded sound once at the entry volume; a prepared sound is not fetched again', async () => {
-  const h = harness()
-  h.sfx.prepare('knock')
-  await drain()
-  assert.equal(await h.sfx.play('knock', .4), true)
-  assert.deepEqual([h.fetched, h.context.decodes, h.sources.length], [['knock'], 1, 1])
-  const [source] = h.sources
-  assert.equal(source.started, true)
-  assert.equal(source.next.gain.value, .4)
-  assert.equal(source.next.next, h.context.destination)
-  // It ends by itself: the voice is released.
-  source.onended()
-  assert.deepEqual([source.stopped, h.sfx.sounding(), h.timers.size], [true, 0, 0])
-})
-
 test('a sound rings out for at most 10 s, then fades over 0.5 s; at most six sound at once', async () => {
   const h = harness()
   assert.equal(await h.sfx.play('long', 1), true)

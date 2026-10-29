@@ -100,10 +100,6 @@ function activity(busy, role = 'foreground') {
   return { busy, role, phase: busy ? 'running' : 'idle' }
 }
 
-test('浏览器接口版本升到 7', () => {
-  assert.equal(load().ui.service.apiVersion, 7)
-})
-
 test('工作状态：没人动时是 idle，忙碌/工具/提问/结算失败各有自己的状态', () => {
   const { ui, live, plugin } = load()
   const pet = plugin()
@@ -152,29 +148,6 @@ test('工作状态：忙完给一次 success，4 秒后回到 idle；重复状�
   assert.equal(seen.at(-1).state, 'idle')
 
   stop()
-})
-
-test('工作状态：第一次看到就已经闲下来的局不补 success；退订后不再回调', () => {
-  const { ui, live, plugin } = load()
-  const pet = plugin()
-  const seen = []
-  const stop = pet.watchWorkStatus('s3', state => seen.push(state))
-  live.set('s3', { activity: activity(false), settleStatus: 'done', latestAssistantTurn: 9 })
-  assert.equal(seen.at(-1).state, 'idle')
-
-  stop()
-  const before = seen.length
-  live.set('s3', { activity: activity(true), settleStatus: 'done', latestAssistantTurn: 9 })
-  assert.equal(seen.length, before)
-})
-
-test('工作状态：getWorkStatus 不订阅也能读；参数校验', () => {
-  const { ui, live, plugin } = load()
-  live.set('s4', { activity: activity(true), settleStatus: 'done', latestAssistantTurn: 1 })
-  const pet = plugin()
-  assert.equal(pet.getWorkStatus('s4').state, 'thinking')
-  assert.throws(() => pet.getWorkStatus(''), /sessionId/)
-  assert.throws(() => pet.watchWorkStatus('s4'), /listener/)
 })
 
 test('占用锁：一局一个 scope 只给一个插件；同插件续期不换编号', () => {

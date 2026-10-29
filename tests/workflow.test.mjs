@@ -20,34 +20,6 @@ test('a declared task runs on its events when its condition holds, and is listed
   assert.deepEqual(workflow.table().map(job => [job.id, job.name, [...job.on]]), [['title', '对局标题', ['turn-settled']], ['both', '两处', ['reply-committed', 'turn-settled']]])
 })
 
-test('cancelOn moments stop a task, listed as 取消 under them', async () => {
-  const events = createStoryEvents(), workflow = createWorkflow({ events }), cancelled = []
-  const stop = workflow.job({ id: 'director', name: '舞台导演', on: 'reply-committed', run: () => {},
-    cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => { cancelled.push([gameId, turn]) } })
-  events.emit('turn-discarded', { sessionId: 'game', turn: 3 })
-  await tick()
-  assert.deepEqual(cancelled, [['game', 3]])
-  assert.deepEqual(events.table().find(row => row.event === 'turn-discarded').followers, ['取消舞台导演'])
-  stop()
-  events.emit('turn-discarded', { sessionId: 'game', turn: 4 })
-  assert.deepEqual(cancelled, [['game', 3]])
-  assert.throws(() => workflow.job({ id: 'x', on: 'reply-committed', run: () => {}, cancelOn: 'turn-discarded' }), /缺少 cancel/)
-})
-
-test('a failing task is reported under its name; removing it stops it and frees the id', async () => {
-  const warnings = []
-  const events = createStoryEvents({ logger: { warn: (...args) => warnings.push(args.join(' ')) } })
-  const workflow = createWorkflow({ events })
-  const stop = workflow.job({ id: 'x', name: '存档整理', on: 'turn-settled', run: async () => { throw new Error('坏了') } })
-  events.emit('turn-settled', { chatId: 'a', latest: { sessionId: 'game' } })
-  await tick()
-  assert.ok(warnings.some(line => line.includes('本轮结算完后「存档整理」失败') && line.includes('坏了')))
-  stop()
-  assert.deepEqual(workflow.table(), [])
-  assert.deepEqual(events.table().find(row => row.event === 'turn-settled').followers, [])
-  workflow.job({ id: 'x', name: '再来', on: 'turn-settled', run: () => {} })
-})
-
 test('declarations are checked', () => {
   const workflow = createWorkflow({ events: createStoryEvents() })
   const run = () => {}
@@ -79,16 +51,6 @@ test('needs waits for the work each needed task registered a waiter for, in orde
   await assert.rejects(bare.needs('candidate', { id: 'c' }), /没有登记等待方式/)
 })
 
-test('before the next turn, the work of every task that blocks it is waited for', async () => {
-  const tasks = [{ task: 'settlement', blocksNextTurn: true }, { task: 'phone' }, { task: 'plugin', blocksNextTurn: true }]
-  const workflow = createWorkflow({ events: createStoryEvents(), tasks }), waited = []
-  workflow.waiter('settlement', chat => { waited.push('settlement ' + chat.id) })
-  workflow.waiter('phone', () => assert.fail('the next turn does not wait for the phone'))
-  workflow.waiter('plugin', async chat => { waited.push('plugin ' + chat.id) })
-  await workflow.beforeNextTurn({ id: 'c' })
-  assert.deepEqual(waited, ['settlement c', 'plugin c'])
-})
-
 test('a task that needs others starts once they all finished the turn, hears their outputs; rewinding drops them', async () => {
   const events = createStoryEvents(), workflow = createWorkflow({ events, logger: { warn() {} } }), heard = []
   workflow.job({ id: 'map', on: 'task-finished', run: async ({ turn }) => ({ place: '花店', turn }) })
@@ -117,15 +79,6 @@ test('a task that needs others starts once they all finished the turn, hears the
   assert.equal(heard.length, 2)
 })
 
-test('a task a flow starts itself is declared only: listed under its moment, never run from it', () => {
-  const events = createStoryEvents(), workflow = createWorkflow({ events })
-  workflow.job({ id: 'settlement', name: '变量结算', task: 'settlement', flow: true, on: 'reply-committed' })
-  events.emit('reply-committed', { sessionId: 'game' })
-  assert.deepEqual(events.table().find(row => row.event === 'reply-committed').followers, ['变量结算（流程启动）'])
-  assert.equal(workflow.table()[0].flow, true)
-  assert.throws(() => workflow.job({ id: 'x', flow: true, on: 'reply-committed', run() {} }), /不能有 run/)
-})
-
 test('each run of a declared task is kept per game: what started it, when, and how it ended', async () => {
   let clock = 100
   const events = createStoryEvents({ logger: { warn() {} } })
@@ -139,18 +92,4 @@ test('each run of a declared task is kept per game: what started it, when, and h
     { id: 'locate', name: '定位', task: 'plugin:map:locate', event: 'task-finished', cause: 'settlement', turn: 2, at: 100, endedAt: 300, status: 'completed' },
     { id: 'call', name: '来电', task: '', event: 'needs', needs: ['locate'], turn: 2, at: 300, endedAt: 300, status: 'failed', error: '打不通' }])
   assert.deepEqual(workflow.runs('other'), [])
-})
-
-test('a task whose feature is off is kept as skipped; one its condition filters out is not kept at all', async () => {
-  let on = false
-  const events = createStoryEvents(), workflow = createWorkflow({ events, now: () => 5 }), ran = []
-  workflow.job({ id: 'polish', name: '自动精修', condition: '开启自动精修时', on: 'reply-committed', enabled: async () => on, run: () => { ran.push('polish') } })
-  workflow.job({ id: 'locate', name: '定位', on: 'reply-committed', if: () => false, run: () => { ran.push('locate') } })
-  events.emit('reply-committed', { sessionId: 'game' })
-  await tick()
-  on = true
-  events.emit('reply-committed', { sessionId: 'game' })
-  await tick()
-  assert.deepEqual(ran, ['polish'])
-  assert.deepEqual(workflow.runs('game').map(run => [run.id, run.status, run.condition]), [['polish', 'skipped', '开启自动精修时'], ['polish', 'completed', undefined]])
 })

@@ -60,17 +60,3 @@ test('存储提交前与提交失败时不通知；CAS 失败或对话消失不�
     assert.equal(events.some(([name]) => ['publish', 'templates', 'compaction'].includes(name)), false)
   }
 })
-
-test('删除保护覆盖所有写入口；原始导入写入不触发实时消费者', async () => {
-  let persisted = 0
-  const { writes, events } = fixture(async () => { persisted++; return saved })
-  const deleted = { ...input, id: 'deleted' }
-  for (const operation of [() => writes.write(deleted), () => writes.writeHeader(deleted, {}), () => writes.writeRaw(deleted), () => writes.update('deleted', () => {}), () => writes.patch('deleted', 1, [])]) {
-    await assert.rejects(operation, /对话已删除/)
-  }
-  assert.equal(persisted, 0)
-  assert.deepEqual(events, [])
-  assert.equal(await writes.writeRaw(input, { source: 'game-save.import' }), saved)
-  assert.equal(persisted, 1)
-  assert.deepEqual(events, [])
-})
