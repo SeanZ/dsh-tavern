@@ -366,8 +366,13 @@ export function createBackgroundAgentSessions(options, task) {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
     })
-    return work.then(result => { record.finish(); return result }, error => {
-      record.fail(error, input.signal?.aborted === true || error?.name === 'AbortError')
+    // Every run's end is announced (任务完成), so other work can follow it.
+    const finished = status => options.onRunFinished?.({ sessionId: str(input.sessionId), task: str(input.task), plugin: str(input.pluginName),
+      member: input.persistent === true ? memberFor(input) : '', turn: Math.max(0, Number(input.turn) || 0), status })
+    return work.then(result => { record.finish(); finished('completed'); return result }, error => {
+      const cancelled = input.signal?.aborted === true || error?.name === 'AbortError'
+      record.fail(error, cancelled)
+      finished(cancelled ? 'cancelled' : 'failed')
       throw error
     })
   }

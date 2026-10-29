@@ -1316,3 +1316,34 @@ test('tavern.on：插件挂到事件表上，出现在触发关系里；别的�
   await tick()
   assert.equal(heard.length, 1, 'another card\'s plugin: not heard')
 })
+
+test('地图 → 手机：地图插件发布产出并发出自己的事件，手机插件挂上去、读到产出；内置的任务完成事件也能挂', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const h = await harness(t, { storyEvents, data: createPluginData({ store: memoryStore() }) })
+  let map
+  const calls = [], finished = []
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) { map = ctx.tavern } })
+  await h.root.plugin({ name: 'phone-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.on('map-plugin:signal-changed', async ({ gameId, from, data }) => {
+      const signal = await ctx.tavern.readOutput({ gameId, plugin: from, name: 'signal' })
+      calls.push(signal.value.strength === 0 ? '信号为零，打不通' : '接通 ' + data.turn)
+    })
+    ctx.tavern.on('task-finished', payload => { finished.push([payload.task, payload.status, payload.plugin || '']) })
+  } })
+  await tick()
+  await map.publishOutput({ gameId: 'game-1', turn: 3, name: 'signal', value: { strength: 0 } })
+  await map.emit('signal-changed', { gameId: 'game-1', data: { turn: 3 } })
+  await tick()
+  assert.deepEqual(calls, ['信号为零，打不通'])
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'map-plugin:signal-changed').followers, ['插件「phone-plugin」'])
+  // An output belongs to the turn and text version it was made for.
+  assert.equal((await map.readOutput({ gameId: 'game-1', turn: 3, plugin: 'map-plugin', name: 'signal' })).value.strength, 0)
+  h.setLatest({ ...turnMaterial(), key: 'key-3-regenerated' })
+  assert.equal(await map.readOutput({ gameId: 'game-1', plugin: 'map-plugin', name: 'signal' }), null)
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', member: 'background', turn: 3 })
+  await tick()
+  assert.deepEqual(finished, [['settlement', 'completed', '']])
+  await assert.rejects(map.emit('Bad Name', { gameId: 'game-1' }), /事件名/)
+  await assert.rejects(map.emit('big', { gameId: 'game-1', data: 'x'.repeat(9000) }), /8 KB/)
+})

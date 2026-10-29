@@ -34,6 +34,7 @@ export function registerTurnLifecycleHooks({
   sessionStore,
   storyOutputToolCall,
   turnOrchestrator,
+  turnStarted,
   userMessageForTurn,
 }) {
   ctx.on('agent/turn-stopping', async function (payload) {
@@ -86,7 +87,10 @@ export function registerTurnLifecycleHooks({
 
   ctx.on('session/event', function (session, event) {
     // A new foreground request drops the previous reply's waiting automatic candidates.
-    if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) autoChoices.cancel(session.id)
+    if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) {
+      autoChoices.cancel(session.id)
+      turnStarted?.(session.id, event.data?.turn)
+    }
     if (!event || event.type !== 'turn/end') return
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''

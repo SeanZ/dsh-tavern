@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { isMvuUpdateEntry } from './domain/worldbook-recall.js'
 import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
 import { pluginMember, pluginMemberId, registerPluginMember } from './domain/background-members.js'
+import { CUSTOM_EVENT, STORY_EVENTS } from './domain/story-events.js'
 import { bounded, untilAborted } from './domain/plugin-callback.js'
 import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
@@ -45,8 +46,15 @@ const MAX_PACK_FILES = 5000
 const NATIVE_CARD_EXTENSIONS = new Set(['.png', '.json', '.charx', '.dshcard'])
 const CARD_EXTENSION = /^\.[a-z0-9][a-z0-9._-]{0,19}$/
 
-// Story moments plugins may follow (domain/story-events.js).
-const PLUGIN_STORY_EVENTS = Object.freeze({ 'reply-committed': '正文写完', 'turn-settled': '本轮结算完', 'turn-discarded': '回合作废' })
+// Story moments plugins may follow (domain/story-events.js), and plugins' own (`<plugin>:<name>`).
+const PLUGIN_STORY_EVENTS = STORY_EVENTS
+const OWN_EVENT_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
+const MAX_EVENT_DATA = 8192
+const MAX_OUTPUT = 65536
+// Outputs live in plugin data beside the plugin's own records, under their own owner key.
+const outputOwner = (plugin, name) => 'output:' + plugin + ':' + name
+// A plugin's own moments per game in 10 s: two plugins answering each other cannot spin forever.
+const MAX_OWN_EVENTS = 60
 
 function ownerOf(service) {
   const ctx = service && service.ctx
@@ -132,6 +140,7 @@ export function createTavernPluginApi(deps) {
   const replacements = { settlement: new Map(), ledger: new Map() }
   const ledgerRuns = new Map()  // gameId → AbortController of a running ledger replacement
   const settlementTasks = new Map()
+  const ownEvents = new Map()
   const manualTasks = new Map()
   const toolScopes = new Map()
   const toolNetworks = new Map()
@@ -295,19 +304,43 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => { settledHandlers.add(entry); return () => settledHandlers.delete(entry) }, 'tavern.onTurnSettled()')
     },
 
-    // A story moment of the event table (正文写完 / 本轮结算完 / 回合作废): the handler is listed
-    // there as this plugin's, and hears { event, gameId, turn? } in the games that have it on.
+    // A moment of the event table, Tavern's (玩家发送, 正文开始, 正文写完, 本轮结算完, 回合作废,
+    // 剧情回退或改写, 任务完成) or a plugin's own ('<plugin>:<name>', see emit): the handler is
+    // listed there as this plugin's and hears { event, gameId, ... } in the games that have it on.
     on(event, handler) {
       const owner = ownerOf(this)
-      if (!Object.hasOwn(PLUGIN_STORY_EVENTS, event)) throw new Error('event 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、'))
+      if (!Object.hasOwn(PLUGIN_STORY_EVENTS, event) && !CUSTOM_EVENT.test(String(event))) {
+        throw new Error('event 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、') + '，或别的插件的事件「插件名:事件名」')
+      }
       if (typeof handler !== 'function') throw new TypeError('tavern.on() 需要一个函数')
       if (!deps.storyEvents) throw new Error('当前酒馆不支持剧情事件')
       return owned(this, () => deps.storyEvents.on(event, '插件「' + owner + '」', async payload => {
         const gameId = String(payload?.sessionId || payload?.latest?.sessionId || '')
         if (!gameId || (await choicesFor(gameId)).disabled.has(owner)) return
-        try { await bounded(handler({ event, gameId, ...(Number.isSafeInteger(payload?.turn) ? { turn: payload.turn } : {}) }), 'tavern.on(' + event + ')') }
-        catch (error) { recordError(gameId, owner, '剧情事件 ' + PLUGIN_STORY_EVENTS[event], error) }
+        const heard = { event, gameId }
+        if (Number.isSafeInteger(payload?.turn)) heard.turn = payload.turn
+        for (const key of ['kind', 'task', 'plugin', 'member', 'status', 'from']) if (typeof payload?.[key] === 'string' && payload[key]) heard[key] = payload[key]
+        if (payload?.data !== undefined) heard.data = structuredClone(payload.data)
+        try { await bounded(handler(heard), 'tavern.on(' + event + ')') }
+        catch (error) { recordError(gameId, owner, '剧情事件 ' + (PLUGIN_STORY_EVENTS[event] || event), error) }
       }), 'tavern.on()')
+    },
+
+    // Announce a moment of this plugin, '<this plugin>:<name>': others follow it with tavern.on and
+    // hear { event, gameId, from, data }. Data is small (≤ 8 KB JSON): ids and flags; what they
+    // point at is read through readOutput.
+    async emit(name, { gameId, data } = {}) {
+      const owner = ownerOf(this)
+      if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('事件名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
+      const event = owner + ':' + name
+      if (!CUSTOM_EVENT.test(event)) throw new Error('插件名 ' + owner + ' 不能用作事件前缀')
+      const game = await requireGame(gameId)
+      if (data !== undefined && JSON.stringify(data).length > MAX_EVENT_DATA) throw new Error('data 最多 8 KB')
+      const now = Date.now(), recent = (ownEvents.get(game.sessionId) || []).filter(at => now - at < 10000)
+      if (recent.length >= MAX_OWN_EVENTS) throw new Error('这一局 10 秒内插件事件太多，已暂停发出')
+      ownEvents.set(game.sessionId, [...recent, now])
+      if (!deps.storyEvents) throw new Error('当前酒馆不支持剧情事件')
+      deps.storyEvents.emit(event, { sessionId: game.sessionId, from: owner, ...(data === undefined ? {} : { data: structuredClone(data) }) })
     },
 
     onGameRemoved(handler) {
@@ -413,6 +446,36 @@ export function createTavernPluginApi(deps) {
       for (const record of await deps.data.turnsUpTo({ chatId: game.chatId, owner, turn: positiveTurn(turn) })) {
         if (!keys.has(record.turn)) keys.set(record.turn, await deps.currentKey(game.sessionId, record.turn))
         if (keys.get(record.turn) === record.key) return { turn: record.turn, textVersion: record.key, data: structuredClone(record.data) }
+      }
+      return null
+    },
+
+    // A named output of this plugin for a turn, which every plugin may read (readOutput): what an
+    // event points at, such as a map's 信号强度 for a phone. Kept per turn and text version like
+    // turn data, so a rollback or a regenerated reply drops it.
+    async publishOutput({ gameId, turn, name, value } = {}) {
+      const owner = ownerOf(this)
+      if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('产出名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
+      const game = await requireGame(gameId)
+      const at = positiveTurn(turn)
+      const key = await deps.currentKey(game.sessionId, at)
+      if (!key) throw Object.assign(new Error('这一轮不存在'), { code: 'TAVERN_PLUGIN_TURN_UNAVAILABLE' })
+      if (value === undefined) throw new TypeError('value 不能省略；要清除请传 null')
+      if (JSON.stringify(value).length > MAX_OUTPUT) throw new Error('产出最多 64 KB')
+      await deps.data.saveTurn({ chatId: game.chatId, owner: outputOwner(owner, name), turn: at, key, data: value })
+      return { turn: at, textVersion: key }
+    },
+
+    // Another plugin's (or this one's) output: the latest one at or before `turn` (the latest of
+    // all without it) whose turn still shows the text it was made for; null when there is none.
+    async readOutput({ gameId, turn, plugin, name } = {}) {
+      if (typeof plugin !== 'string' || !plugin || typeof name !== 'string' || !name) throw new TypeError('readOutput 需要 plugin 和 name')
+      const game = await deps.resolveGame(gameIdOf(gameId))
+      if (!game) return null
+      const keys = new Map()
+      for (const record of await deps.data.turnsUpTo({ chatId: game.chatId, owner: outputOwner(plugin, name), turn: turn === undefined ? Number.MAX_SAFE_INTEGER : positiveTurn(turn) })) {
+        if (!keys.has(record.turn)) keys.set(record.turn, await deps.currentKey(game.sessionId, record.turn))
+        if (keys.get(record.turn) === record.key) return { plugin, name, turn: record.turn, textVersion: record.key, value: structuredClone(record.data) }
       }
       return null
     },

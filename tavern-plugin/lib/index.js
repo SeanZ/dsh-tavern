@@ -2084,6 +2084,7 @@ export async function apply(ctx) {
   const BACKGROUND_TOOLS = [POSTURE_SUBMIT_TOOL, CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL, CHARACTER_DESIGN_REUSE_TOOL, MVU_SUBMIT_UPDATE_TOOL, CANDIDATE_SUBMIT_TOOL, SCRIPT_READ_TOOL, SCRIPT_POINT_TOOL, LEDGER_SUBMIT_TOOL]
   const backgroundAgentRunner = createBackgroundAgentRunner({
     retirement: backgroundRetirement,
+    onRunFinished: run => { try { storyEvents.emit('task-finished', run) } catch (error) { console.warn('dsh-tavern: 任务完成通知失败', str(error?.message || error)) } },
     // The browser's session list keeps a disposed subagent as an idle row until the list is
     // reloaded; tell the game's page so its header count drops the retired worker at once.
     onRetired: (_id, parentId) => sessionSignals.publish(parentId, { kind: 'subagents', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }),
@@ -2677,6 +2678,7 @@ export async function apply(ctx) {
     const id = str(sessionId)
     if (!id) return
     pluginApi.timelineChanged(id, { kind, turn })
+    storyEvents.emit('story-rewound', { sessionId: id, kind, turn })
     if (settled) void pluginApi.turnSettled(id).catch(error => console.warn('dsh-tavern: 插件轮次通知失败:', str(error?.message || error)))
   }
   const { readPluginMediaFile, removePluginMediaVersion, pluginMediaTurns, pluginMediaForTurn, pluginGalleryItems, removePluginGalleryItems } =
@@ -3692,7 +3694,14 @@ export async function apply(ctx) {
     capabilityFor: name => pluginApi.toolNetworkFor(name)
   }))
 
+  // 正文开始, once per turn: a reply makes several model requests (tool steps).
+  const startedReplies = new Map()
   registerModelStreamHooks({
+    replyStarted: (sessionId, turn) => {
+      if (startedReplies.get(sessionId) === String(turn)) return
+      startedReplies.set(sessionId, String(turn))
+      storyEvents.emit('reply-started', { sessionId, turn })
+    },
     agentRegistry,
     backgroundAgentRunner,
     chatForSession,
@@ -3716,6 +3725,7 @@ export async function apply(ctx) {
   })
 
   registerTurnLifecycleHooks({
+    turnStarted: (sessionId, turn) => storyEvents.emit('turn-started', { sessionId, turn }),
     autoChoices,
     backgroundAgentRunner,
     hookChatForSession,

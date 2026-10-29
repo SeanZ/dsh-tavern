@@ -85,3 +85,12 @@ test('插件成员：任务在它自己的常驻会话里按顺序跑，和书�
   assert.notEqual(a, settlement, 'and not in 书记\'s')
   assert.deepEqual(h.runner.runs('parent-a').filter(run => run.task === 'plugin').map(run => run.member), ['plugin:npc-plugin:luna', 'plugin:npc-plugin:luna'])
 })
+
+test('每次后台运行结束都报一次「任务完成」，带任务、成员和成败', async t => {
+  const ended = []
+  const h = harness(t, { options: { onRunFinished: run => ended.push(run) }, work: async input => { if (input.text === 'bad') throw new Error('坏了') } })
+  await h.run('parent-a', 'ok')
+  await assert.rejects(h.run('parent-a', 'bad'))
+  assert.deepEqual(ended.map(run => [run.sessionId, run.task, run.member, run.status]),
+    [['parent-a', 'candidate', 'background', 'completed'], ['parent-a', 'candidate', 'background', 'failed']])
+})

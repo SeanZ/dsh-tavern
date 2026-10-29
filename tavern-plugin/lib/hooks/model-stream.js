@@ -18,6 +18,7 @@ export function registerModelStreamHooks({
   pluginCompactionNotes,
   pluginSettlementProgress,
   stageDirectorStream,
+  replyStarted,
   requestCoordinates,
   storyRetention,
   runtimePrompt,
@@ -148,6 +149,8 @@ export function registerModelStreamHooks({
       }
       const progress = child ? event => pluginSettlementProgress?.model(child.context.parentSessionId, event) : () => {}
       progress('start')
+      // The story reply of a turn started streaming (正文开始; once per turn, see index.js).
+      if (!backgroundContext && !child && options.purpose === undefined && ['story', 'script'].includes(chat?.mode)) replyStarted?.(sessionId, requestCoordinates.get(sessionId)?.turn)
       const stage = stageDirectorStream && !backgroundContext && !child && options.purpose === undefined && ['story', 'script'].includes(chat?.mode)
         ? observeStageText({ begin: () => stageDirectorStream.begin(sessionId, coordinates?.turn), signal: options.signal,
           warn: error => console.warn('dsh-tavern: 舞台流已停止', str(error?.message || error)) }) : null
