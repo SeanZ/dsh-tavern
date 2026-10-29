@@ -1,7 +1,7 @@
 import { patchConversationBackground } from './conversation-background.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { foregroundToolCatalog, normalizeDisabledForegroundTools } from './foreground-tools.js'
-import { normalizeBackgroundTasks } from './tavern-settings.js'
+import { normalizeConfiguredBackgroundTasks } from './tavern-settings.js'
 
 /** Validate model choices, patch only current configuration and trigger newly enabled work. */
 export function createConversationBackgroundSettings({ readConfig, readChat, updateChat, modelCatalog, modelReasoning,
@@ -14,7 +14,7 @@ export function createConversationBackgroundSettings({ readConfig, readChat, upd
   function present(chat) {
     return { backgroundModel: chat.backgroundModelSelection || null,
       worldbookStrategy: (!chat.worldbookStrategy || chat.worldbookStrategy === 'legacy') ? 'native-skills' : chat.worldbookStrategy,
-      backgroundTasks: normalizeBackgroundTasks(chat.backgroundTasks), webSearchEnabled: chat.webSearchEnabled === true,
+      backgroundTasks: normalizeConfiguredBackgroundTasks(chat.backgroundTasks), webSearchEnabled: chat.webSearchEnabled === true,
       disabledForegroundTools: normalizeDisabledForegroundTools(chat.disabledForegroundTools) }
   }
   async function toolCatalog(chat, sessionId) {

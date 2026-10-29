@@ -6,24 +6,26 @@ const engine = createMvuSettlementEngine({})
 const official = { enabled: true, owner: 'official' }
 const game = mvu => ({ mvu: official, messages: [{ role: 'user' }, { role: 'assistant', turn: 2, swipeId: 0, variables: [{ stat_data: { hp: 1 } }], mvu }] })
 
-test('only an official MVU game with a waiting reply has a target; a switched-off task still delivers a saved submission', () => {
+test('official MVU settles automatically even when legacy settings disabled variables', () => {
   assert.equal(engine.target({ ...game({ pending: true }), mvu: { enabled: true, owner: 'card' } }), null)
+  assert.equal(engine.runs(engine.target({ ...game({ pending: true }), mvu: null })), false)
+  assert.equal(engine.settings({ ...game({ pending: true }), backgroundTasks: { variables: false } }).variables, true)
   const target = engine.target(game({ pending: true }))
   assert.equal(target.messageId, 1)
-  assert.equal(engine.runs(target, { variables: false }), false)
+  assert.equal(engine.runs(target, { variables: false }), true)
   assert.equal(engine.runs(engine.target(game({ pending: true, pendingSubmission: {} })), { variables: false }), true)
   assert.deepEqual(engine.settings(game({ pending: true, variableRetry: true })).posture, false, 'a variable retry settles the variables alone')
 })
 
-test('the commit marks a switched-off reply skipped; a failure closes it with an error receipt', () => {
+test('a retired switch cannot mark pending settlement skipped; failures have error receipts', () => {
   const chat = game({ pending: true })
   const target = engine.target(chat)
   const commit = engine.completion({ mvuTarget: target, mvuResult: null, backgroundTasksSettings: { variables: false } })
   assert.equal(commit.stateChanged, false)
   assert.deepEqual(commit.messageIndices, [1])
   commit.apply(chat, {})
-  assert.equal(chat.messages[1].mvu.receipt.status, 'skipped')
-  assert.equal(chat.messages[1].mvu.pending, false)
+  assert.equal(chat.messages[1].mvu.receipt, undefined)
+  assert.equal(chat.messages[1].mvu.pending, true)
 
   const failed = game({ pending: true })
   assert.equal(engine.recordFailure(failed, new Error('x'), '模型超时'), true)

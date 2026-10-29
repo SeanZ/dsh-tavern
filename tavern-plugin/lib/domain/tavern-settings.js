@@ -214,13 +214,19 @@ export function normalizeBackgroundTasks(value) {
 }
 
 
+// User preferences no longer control MVU settlement; internal task masks still can.
+export function normalizeConfiguredBackgroundTasks(value) {
+  return normalizeBackgroundTasks({ ...object(value), variables: true })
+}
+
+
 export function normalizePlayDefaults(value) {
   const input = object(value)
   return { playerName: typeof input.playerName === 'string' ? input.playerName.trim().slice(0, 80) || '你' : '你',
     worldbookStrategy: 'native-skills',
     statusBarPlacement: input.statusBarPlacement === 'body' ? 'body' : 'sidebar',
     // New games get 文风联想 unless the defaults turn it off; an existing game without the key stays off.
-    backgroundTasks: { ...normalizeBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
+    backgroundTasks: { ...normalizeConfiguredBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
     webSearchEnabled: input.webSearchEnabled === true }
 }
 
@@ -235,7 +241,7 @@ export function applyTavernSettingsPatch(current, patch) {
     if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['variables', 'posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -352,7 +358,7 @@ export function applyTavernSettingsPatch(current, patch) {
   }
   if (Object.hasOwn(input, 'contextCompaction')) next.contextCompaction = { ...compactionPolicy(input.contextCompaction), revision: Date.now() }
   if (Object.prototype.hasOwnProperty.call(input, 'backgroundTasks')) {
-    next.backgroundTasks = normalizeBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
+    next.backgroundTasks = normalizeConfiguredBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
   }
   if (input.sillyModeEnabled === true || input.compatibilityMode === true) throw new Error('silly 模式已停用')
   delete next.sillyModeEnabled
@@ -448,7 +454,7 @@ export function presentTavernSettings(document, defaults) {
     webSearchEnabled: object(document).webSearchEnabled === true,
     systemAppendEnabled: object(document).systemAppendEnabled !== false,
     backgroundModel: normalizeBackgroundModel(object(document).backgroundModel),
-    backgroundTasks: normalizeBackgroundTasks(object(document).backgroundTasks),
+    backgroundTasks: normalizeConfiguredBackgroundTasks(object(document).backgroundTasks),
     // Card rendering uses a fixed trusted policy; legacy preferences are no longer applied.
     trustedCardMode: true,
     systemPrompts: prompts,
