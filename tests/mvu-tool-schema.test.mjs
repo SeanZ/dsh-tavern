@@ -22,3 +22,12 @@ test('文本值忘了加 JSON 双引号时按文本收下；像对象、列表�
   // A delta still needs a number.
   assert.throws(() => normalizeMvuToolSubmission({ operations: [{ op: 'delta', path: '/hp', valueJson: '很多' }] }), /delta/)
 })
+
+test('变量路径被写成网址编码（甚至编码两次）时还原成原文；解不开的照原样', () => {
+  const path = pointer => normalizeMvuToolSubmission({ operations: [{ op: 'replace', path: pointer, valueJson: '"x"' }] }).operations[0].path
+  assert.equal(path('/stat_data/%E9%93%83/%E5%BF%83%E6%80%81'), '/stat_data/铃/心态')
+  assert.equal(path('/%25E5%259C%25BA%25E6%2599%25AF/%E5%9C%B0%E7%82%B9'), '/场景/地点')
+  assert.equal(path('/stat_data/铃/心态'), '/stat_data/铃/心态')
+  assert.equal(path('/stat_data/完成度100%'), '/stat_data/完成度100%')
+  assert.equal(path('/stat_data/a~1b'), '/stat_data/a~1b', 'JSON Pointer escapes stay')
+})
