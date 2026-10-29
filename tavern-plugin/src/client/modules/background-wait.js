@@ -226,6 +226,34 @@ function TavernBackgroundTurn(props) {
                 h("div", { className: "dsh-tavern-run-moment" }, h("span", null, "手动或插件启动")),
                 list(turn.others)) : null));
 }
+// One task's definition, like a GitHub Actions job: member, what starts it (on, if), its
+// other starts, needs, what needs it, what the next turn and cancelling make of it, what it does.
+function TavernBackgroundTaskSpec(props) {
+    const h = React.createElement, item = props.item, spec = item.spec || {};
+    const member = backgroundMemberLabel((props.members || []).find(entry => entry.id === item.member));
+    const none = "—";
+    const rows = [
+        ["成员", (member || (item.lane === "resident" ? "常驻 Agent" : "临时 Agent")) + (item.lane === "resident" ? "（常驻，保留历史）" : "（每次新开）") + (spec.lock ? "，占锁：同成员的任务一次只跑一个" : "")],
+        ["启动", (spec.on || []).length ? h("ul", null, spec.on.map((start, index) => h("li", { key: index },
+            [start.moments.join("、"), start.needs.length ? start.needs.join("、") + " 完成后" : ""].filter(Boolean).join("，"),
+            start.condition ? h("span", { className: "dsh-tavern-task-spec-if" }, "if " + start.condition) : null,
+            start.flow ? h("span", { className: "dsh-tavern-task-spec-if" }, "流程直接启动") : null))) : none],
+        ["其他入口", (spec.manual || item.manual || []).length ? h("ul", null, (spec.manual || item.manual).map(text => h("li", { key: text }, text))) : none],
+        ["需要", (spec.needs || []).length ? spec.needs.join("、") + " 完成" : none],
+        ["被需要", (spec.neededBy || []).length ? spec.neededBy.join("、") + " 等它" : none],
+        ["下一轮", spec.blocksNextTurn ? "开始前要等它做完" : "不等它"],
+        ["前台", spec.idleForeground ? "不在生成正文时才开始" : none],
+        ["取消", (spec.cancelOn || []).length ? spec.cancelOn.join("、") + " 时" : none],
+        ["做什么", item.does],
+        ["读", item.reads || none],
+        ["写", item.writes || none],
+        spec.note ? ["备注", spec.note] : null,
+        item.waits && !item.spec ? ["等待", item.waits] : null
+    ].filter(Boolean);
+    return h("div", { className: "dsh-tavern-task-spec" },
+        h("div", { className: "dsh-tavern-task-spec-name" }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name, h("code", null, item.task)),
+        h("dl", null, rows.flatMap(([label, value]) => [h("dt", { key: label + ":k" }, label), h("dd", { key: label + ":v" }, value)])));
+}
 // The 后台任务 sidebar page, for development: per turn, which moment started which task and
 // what ran after what; the timeline and the full task list are folded below.
 function TavernBackgroundTasksTab(props) {
@@ -251,10 +279,7 @@ function TavernBackgroundTasksTab(props) {
                 runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now, locks, catalog, members })),
             catalog.length ? h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold" },
                 h("summary", null, "全部任务（" + catalog.length + "）"),
-                h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
-                    h("dt", { key: item.task + ":name", title: item.does }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name,
-                        h("span", null, memberName(item.member) || (item.lane === "resident" ? "常驻 Agent" : "临时 Agent"))),
-                    h("dd", { key: item.task + ":when" }, item.trigger, h("br"), h("span", null, "等待：" + item.waits))])),
+                catalog.map(item => h(TavernBackgroundTaskSpec, { key: item.task, item, members })),
                 h("p", { className: "dsh-tavern-settings-desc" }, "成员：书记、润色师等是每局常驻的后台 Agent，保留历史；临时 Agent 每次新开，可同时运行。")) : null));
 }
 // One line in 酒馆状态 that opens the page.

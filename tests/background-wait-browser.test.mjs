@@ -47,7 +47,8 @@ test('后台任务页在 Chromium 中按轮显示流程：时刻、它启动的�
     others:[{key:'run:run-2',name:'生成选项',task:'candidate',status:'queued',at:t-2000,agents:[{id:'run-2',status:'queued',member:'background',lane:'resident',queuedAt:t-2000}],then:[]}]},
    {turn:4,at:t-21000,moments:[{event:'turn-started',name:'玩家发送',at:t-21000,tasks:[]}],
     others:[{key:'run:run-0',name:'手动记账',task:'ledger',status:'discarded',at:t-20000,endedAt:t-15000,agents:[],then:[]}]}],
-  catalog:[{task:'plugin:npc:diary',name:'露娜日记',plugin:'npc',member:'plugin:npc:luna',lane:'resident',does:'写日记',trigger:'结算后',waits:'不等其他任务',lock:false},{task:'settlement',name:'变量结算',lane:'resident',member:'background',does:'更新变量',trigger:'正文写完后',reads:'正文',writes:'变量',waits:'下一轮开始前要等它',lock:true}],
+  catalog:[{task:'plugin:npc:diary',name:'露娜日记',plugin:'npc',member:'plugin:npc:luna',lane:'resident',does:'写日记',trigger:'结算后',waits:'不等其他任务',lock:false},{task:'settlement',name:'变量结算',lane:'resident',member:'background',does:'更新变量',trigger:'正文写完后',reads:'正文',writes:'变量',waits:'下一轮开始前要等它',lock:true,
+   spec:{on:[{moments:['正文写完'],needs:[],condition:'有待结算的回复时',flow:true}],manual:['重新生成正文后'],needs:[],neededBy:['生成选项'],cancelOn:[],blocksNextTurn:true,idleForeground:false,lock:true,note:''}}],
   members:[{id:'background',name:'书记'},{id:'plugin:npc:luna',name:'露娜',plugin:'npc'}],
   locks:[{kind:'held',slot:'background',role:'settlement',operationId:'op',from:t-8000},{kind:'refused',slot:'background',role:'candidate',holder:'settlement',at:t-2000}],
   moments:[{event:'reply-committed',name:'正文写完',at:t-8500}]}}
@@ -71,6 +72,8 @@ test('后台任务页在 Chromium 中按轮显示流程：时刻、它启动的�
   assert.match(timeline, /书记 …abcd · 手动记账、变量结算[\s\S]*书记 · 生成选项/)
   assert.match(timeline, /书记的后台锁[\s\S]*变量结算[\s\S]*✕/)
   await page.getByText('全部任务（2）').click()
-  assert.match(await page.locator('.dsh-tavern-background-catalog').innerText(), /插件「npc」露娜日记[\s\S]*插件「npc」·露娜[\s\S]*变量结算[\s\S]*书记[\s\S]*正文写完后[\s\S]*等待：下一轮开始前要等它/)
+  const [diary, settlement]=await page.locator('.dsh-tavern-task-spec').allInnerTexts()
+  assert.match(diary, /插件「npc」露娜日记[\s\S]*plugin:npc:diary[\s\S]*成员\s*插件「npc」·露娜/)
+  assert.match(settlement, /变量结算\s*settlement[\s\S]*成员\s*书记（常驻，保留历史），占锁[\s\S]*启动\s*正文写完\s*if 有待结算的回复时\s*流程直接启动[\s\S]*其他入口\s*重新生成正文后[\s\S]*需要\s*—[\s\S]*被需要\s*生成选项 等它[\s\S]*下一轮\s*开始前要等它做完[\s\S]*做什么\s*更新变量/)
  } finally {await browser.close()}
 })
