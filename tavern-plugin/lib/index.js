@@ -3184,17 +3184,20 @@ export async function apply(ctx) {
   // run from here: the reply and regeneration flows queue it themselves, since they wait
   // for its outcome (and skip it while a regeneration's temporary turn is open).
   workflow.job({ id: 'settlement', name: '变量结算', task: 'settlement', flow: true, on: 'reply-committed', condition: '有待结算的回复时' })
-  workflow.job({ id: 'stage-director', name: '舞台导演', task: 'stage-director', condition: '开启对话气泡与舞台模式时', on: 'reply-committed', run: ({ gameId }) => directRound(gameId),
+  workflow.job({ id: 'stage-director', name: '舞台导演', task: 'stage-director', condition: '开启对话气泡与舞台模式时', on: 'reply-committed',
+    enabled: ({ gameId }) => stageOn(gameId), run: ({ gameId }) => directRound(gameId),
     cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => cancelDirector(gameId, turn) })
   // Its dialogue bubbles came with the text.
-  workflow.job({ id: 'cast-bubbles', name: '台词气泡', on: 'reply-committed', run: ({ gameId }) => castPresentation.announce(gameId) })
+  workflow.job({ id: 'cast-bubbles', name: '台词气泡', on: 'reply-committed', condition: '开启对话气泡时',
+    enabled: async () => (await readTavernSettings()).castPresentation === true, run: ({ gameId }) => castPresentation.announce(gameId) })
   workflow.job({ id: 'game-title', name: '对局标题', on: 'turn-settled',
     run: ({ gameId, latest }) => gameTitles.afterTurn(gameId, latest.cardName) })
   workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled',
     run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
   // The 精修 pre-review reads the reply as written; settlement never waits for it. After
   // settlement it picks up a reply it has not read yet (it was busy, or the reply changed).
-  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: ['reply-committed', 'turn-settled'], run: ({ gameId }) => polishPrereview.start(gameId) })
+  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: ['reply-committed', 'turn-settled'],
+    enabled: async () => (await readTavernSettings()).polishPrereview === true, run: ({ gameId }) => polishPrereview.start(gameId) })
   workflow.job({ id: 'plugin-turn', name: '插件轮次通知', on: 'turn-settled', run: ({ gameId }) => pluginApi.turnSettled(gameId) })
   workflow.job({ id: 'candidate-worldbook', name: '选项世界书预热', on: 'turn-settled', run: ({ gameId }) => candidateWorldbookPreparation.warm(gameId) })
   const foregroundHandoff = createForegroundHandoff({

@@ -41,7 +41,7 @@ function TavernBackgroundWait(props) {
         React.createElement("p", null, message),
         React.createElement(TavernStopBackgroundAction, {sessionId:props.sessionId}));
 }
-const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消" };
+const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消", skipped: "跳过（功能没开）" };
 function backgroundRunName(run) {
     return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : run.name || run.task;
 }
@@ -170,7 +170,7 @@ function TavernBackgroundTimeline(props) {
                 moments.map((item, index) => h("i", { key: index, className: "dsh-tavern-timeline-moment", style: { left: scale.x(item.at) } })),
                 scale.breaks.map((left, index) => h("i", { key: "b" + index, className: "dsh-tavern-timeline-break", style: { left } })))));
 }
-const BACKGROUND_STATUS_MARK = { queued: "…", running: "●", completed: "✓", discarded: "⊘", failed: "✕", cancelled: "⊘" };
+const BACKGROUND_STATUS_MARK = { queued: "…", running: "●", completed: "✓", discarded: "⊘", failed: "✕", cancelled: "⊘", skipped: "–" };
 function backgroundClock(time) {
     return new Date(time).toTimeString().slice(0, 8);
 }
@@ -186,7 +186,7 @@ function TavernBackgroundTaskNode(props) {
     const memberName = id => backgroundMemberLabel((props.members || []).find(member => member.id === id));
     const info = (props.catalog || []).find(item => item.task === node.task);
     const agent = node.agents[0];
-    const facts = [backgroundSpan((agent && (agent.startedAt || agent.queuedAt)) || node.at, (agent && agent.endedAt) || node.endedAt, now),
+    const facts = node.status === "skipped" ? ["跳过：" + (node.condition ? "只在" + node.condition + "运行" : "功能没开")] : [backgroundSpan((agent && (agent.startedAt || agent.queuedAt)) || node.at, (agent && agent.endedAt) || node.endedAt, now),
         node.agents.map(run => memberName(run.member) || (run.lane === "resident" ? "常驻 Agent" : "临时 Agent")).join("、"),
         agent && agent.model, agent && agent.startedAt && agent.startedAt - agent.queuedAt >= 1000 ? "排队 " + Math.round((agent.startedAt - agent.queuedAt) / 1000) + " 秒" : ""].filter(Boolean);
     return h("li", { className: "dsh-tavern-run-node " + node.status },
@@ -213,7 +213,8 @@ function TavernBackgroundTurn(props) {
     const nodes = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others));
     const busy = nodes.filter(node => node.status === "running" || node.status === "queued").length;
     const failed = nodes.filter(node => node.status === "failed").length;
-    const summary = [count(nodes.filter(node => !nodes.some(other => other.then.includes(node)))) + " 项任务", busy ? busy + " 项进行中" : "", failed ? failed + " 项失败" : ""].filter(Boolean).join(" · ");
+    const skipped = nodes.filter(node => node.status === "skipped").length;
+    const summary = [count(nodes.filter(node => !nodes.some(other => other.then.includes(node)))) - skipped + " 项任务", skipped ? skipped + " 项跳过" : "", busy ? busy + " 项进行中" : "", failed ? failed + " 项失败" : ""].filter(Boolean).join(" · ");
     const list = tasks => h("ul", { className: "dsh-tavern-run-tasks" }, tasks.map(node => h(TavernBackgroundTaskNode, { key: node.key, node, now: props.now, catalog: props.catalog, members: props.members })));
     return h("details", { className: "dsh-tavern-run-turn", open: props.open },
         h("summary", null, h("b", null, turn.turn ? "第 " + turn.turn + " 轮" : "更早"), " · " + backgroundClock(turn.at) + " · " + summary),
@@ -243,7 +244,7 @@ function TavernBackgroundTasksTab(props) {
                 runs === null ? null : turns.length
                     ? turns.map((turn, index) => h(TavernBackgroundTurn, { key: turn.at, turn, open: index === 0, now, catalog, members }))
                     : h("div", { className: "dsh-tavern-status-empty" }, "服务启动以来这局还没有玩过。"),
-                h("p", { className: "dsh-tavern-settings-desc" }, "✓ 完成　● 运行中　… 排队　✕ 失败　⊘ 取消或作废。缩进的任务在上一项做完后才开始；点任务名看它做什么、等什么。只保留重启服务以来的最近几轮。")),
+                h("p", { className: "dsh-tavern-settings-desc" }, "✓ 完成　● 运行中　… 排队　✕ 失败　⊘ 取消或作废　– 跳过（功能没开）。缩进的任务在上一项做完后才开始；点任务名看它做什么、等什么。只保留重启服务以来的最近几轮。")),
             h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold" },
                 h("summary", null, "时序图（查并发和锁时用）"),
                 h("p", { className: "dsh-tavern-settings-desc" }, "每行一个后台 Agent，时间从左到右；浅色是排队，⋯ 是折叠的空闲。「后台锁」行：同一成员的任务同一时间只能跑一个。"),

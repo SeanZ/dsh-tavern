@@ -33,8 +33,9 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
   // Per game: each time a declared task ran (its `if` held), newest last, for the 后台任务 page.
   const history = new Map()
 
-  function record(entry, payload, event) {
-    const item = { id: entry.id, name: entry.name, task: entry.task, event, at: now(), status: 'running' }
+  function record(entry, payload, event, at = now(), status = 'running') {
+    const item = { id: entry.id, name: entry.name, task: entry.task, event, at, status }
+    if (status === 'skipped') Object.assign(item, { endedAt: at }, entry.condition ? { condition: entry.condition } : {})
     if (Number.isSafeInteger(payload.turn)) item.turn = payload.turn
     // What finished, for a task started by 任务完成; what it needed, for one started by needs.
     if (event === 'task-finished' && payload.task) item.cause = String(payload.task)
@@ -95,7 +96,7 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     const on = list(declaration?.on)
     const after = list(declaration?.needs)
     const cancelOn = list(declaration?.cancelOn)
-    const { if: when, run, cancel } = declaration || {}
+    const { if: when, enabled, run, cancel } = declaration || {}
     // `task`: the background runner task it starts (background-task-catalog.js), and
     // `condition`: its `if` in words; both only describe it on the 后台任务 page.
     const task = String(declaration?.task || '')
@@ -110,21 +111,29 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     if (!flow && typeof run !== 'function') throw new Error('任务 ' + name + ' 缺少 run')
     if (flow && (run !== undefined || after.length > 0)) throw new Error('流程启动的任务 ' + name + ' 不能有 run 或 needs')
     if (when !== undefined && typeof when !== 'function') throw new Error('任务 ' + name + ' 的 if 必须是函数')
+    if (enabled !== undefined && typeof enabled !== 'function') throw new Error('任务 ' + name + ' 的 enabled 必须是函数')
     if (cancelOn.length > 0 && typeof cancel !== 'function') throw new Error('任务 ' + name + ' 有 cancelOn 但缺少 cancel')
     const entry = Object.freeze({ id, name, task, condition, flow, on: Object.freeze(on), needs: Object.freeze(after), cancelOn: Object.freeze(cancelOn) })
     // Synchronous where the task is, so tasks on one moment start in declaration order.
+    // `if` filters which moments are its at all (not kept); `enabled` is the feature's switch:
+    // with it off the run is kept as skipped, so the 后台任务 page shows it was not done.
     function attempt(payload, event) {
-      const proceed = ok => {
+      const proceed = (ok, at) => {
         if (!ok) return
-        const end = record(entry, payload, event)
+        const end = record(entry, payload, event, at)
         let value
         try { value = run(payload, event) } catch (error) { end('failed', error); throw error }
         const done = result => { end('completed'); finished(id, payload.gameId, payload.turn, result) }
         if (typeof value?.then !== 'function') return done(value)
         return value.then(done, error => { end('failed', error); throw error })
       }
+      const switched = ok => {
+        if (!ok || !enabled) return proceed(ok)
+        const at = now()
+        return Promise.resolve(enabled(payload, event)).then(on => on ? proceed(true, at) : void record(entry, payload, event, at, 'skipped'))
+      }
       const ok = when ? when(payload, event) : true
-      return typeof ok?.then === 'function' ? ok.then(proceed) : proceed(ok)
+      return typeof ok?.then === 'function' ? ok.then(switched) : switched(ok)
     }
     // A failing `if`, run or cancel is the events' to report, under the task's name.
     const follow = (event, label, work) => events.on(event, label, payload => {

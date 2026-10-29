@@ -140,3 +140,17 @@ test('each run of a declared task is kept per game: what started it, when, and h
     { id: 'call', name: '来电', task: '', event: 'needs', needs: ['locate'], turn: 2, at: 300, endedAt: 300, status: 'failed', error: '打不通' }])
   assert.deepEqual(workflow.runs('other'), [])
 })
+
+test('a task whose feature is off is kept as skipped; one its condition filters out is not kept at all', async () => {
+  let on = false
+  const events = createStoryEvents(), workflow = createWorkflow({ events, now: () => 5 }), ran = []
+  workflow.job({ id: 'polish', name: '自动精修', condition: '开启自动精修时', on: 'reply-committed', enabled: async () => on, run: () => { ran.push('polish') } })
+  workflow.job({ id: 'locate', name: '定位', on: 'reply-committed', if: () => false, run: () => { ran.push('locate') } })
+  events.emit('reply-committed', { sessionId: 'game' })
+  await tick()
+  on = true
+  events.emit('reply-committed', { sessionId: 'game' })
+  await tick()
+  assert.deepEqual(ran, ['polish'])
+  assert.deepEqual(workflow.runs('game').map(run => [run.id, run.status, run.condition]), [['polish', 'skipped', '开启自动精修时'], ['polish', 'completed', undefined]])
+})

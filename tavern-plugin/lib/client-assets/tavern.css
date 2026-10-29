@@ -4950,6 +4950,8 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-run-node.completed > .dsh-tavern-run-node-head .dsh-tavern-run-mark { color: #4f9a62; }
 .dsh-tavern-run-node.running > .dsh-tavern-run-node-head .dsh-tavern-run-mark, .dsh-tavern-run-node.running > .dsh-tavern-run-node-head .dsh-tavern-run-name { color: var(--dsh-tavern-accent); }
 .dsh-tavern-run-node.queued > .dsh-tavern-run-node-head { opacity: .75; }
+.dsh-tavern-run-node.skipped > .dsh-tavern-run-node-head { opacity: .5; }
+.dsh-tavern-run-node.skipped > .dsh-tavern-run-node-head .dsh-tavern-run-name { font-weight: 400; }
 .dsh-tavern-run-node.failed > .dsh-tavern-run-node-head .dsh-tavern-run-mark, .dsh-tavern-run-node.failed > .dsh-tavern-run-node-head .dsh-tavern-run-name, .dsh-tavern-run-error { color: #c45f5f; }
 .dsh-tavern-run-node.discarded > .dsh-tavern-run-node-head .dsh-tavern-run-name, .dsh-tavern-run-node.cancelled > .dsh-tavern-run-node-head .dsh-tavern-run-name { text-decoration: line-through; opacity: .7; }
 .dsh-tavern-run-error, .dsh-tavern-run-note { padding-left: 18px; overflow-wrap: anywhere; }

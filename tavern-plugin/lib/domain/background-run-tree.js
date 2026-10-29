@@ -53,6 +53,7 @@ export function buildRunTree({ moments = [], jobRuns = [], runs = [], catalog = 
       agents: [], then: [], event: jobRun.event, cause: jobRun.cause, needs: jobRun.needs }
     if (jobRun.endedAt !== undefined) node.endedAt = jobRun.endedAt
     if (jobRun.error) node.error = jobRun.error
+    if (jobRun.condition) node.condition = jobRun.condition
     for (const run of runs) {
       if (!used.has(run.id) && ranFor(jobRun, run, now)) { node.agents.push(agentLine(run)); used.add(run.id) }
     }
