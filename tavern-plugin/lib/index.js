@@ -689,10 +689,7 @@ export async function apply(ctx) {
     return (idx !== undefined && typeof idx === 'object') ? idx : { cards: [], chats: [] }
   }
   async function writeIndex(idx) { await writeJson('index.json', idx) }
-  // index.json summarises chats/ and cards/ and is rebuilt from them on startup, so it
-  // does not pay the durable barriers of the data it points at: it is rewritten on every
-  // chat save (several times a turn) while a lost last write only costs a rescan.
-  async function updateIndex(updater) { return await profileData.updateJsonFast('index.json', value => updater(value || { cards: [], chats: [] })) }
+  async function updateIndex(updater) { return await profileData.updateJson('index.json', value => updater(value || { cards: [], chats: [] })) }
   const fileResources = createFileResourceStore({ dataRoot })
   const resourceWorkspaceProjection = createResourceWorkspaceProjection({ root: dataRoot + '/resources' })
   const mobileCardImport = createMobileCardImport({ runtimeHost: process.env.DSH_TAVERN_RUNTIME_HOST })

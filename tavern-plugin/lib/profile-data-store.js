@@ -43,19 +43,6 @@ export function createProfileDataStore(options) {
       })
       return decodeJson(result)
     },
-    /**
-     * Same read-modify-write contract without disk barriers. For files that are a
-     * rebuildable index (list every chat, scan the sources) rather than the data
-     * itself: crash durability there only costs a rescan, and these files are
-     * rewritten far more often than the data they summarise.
-     */
-    async updateJsonFast(relativePath, updater) {
-      const result = await files.update(resolveSafePath(dataRoot, relativePath), async function (current) {
-        const next = await updater(decodeJson(current))
-        return next === undefined ? undefined : encodeJson(next)
-      }, { fsync: false })
-      return decodeJson(result)
-    },
     async remove(relativePath) { await files.remove(resolveSafePath(dataRoot, relativePath)) },
     /** Directory entries; a missing directory is empty. */
     async list(relativePath) {

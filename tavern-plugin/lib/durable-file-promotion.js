@@ -54,7 +54,7 @@ export function createDurableFilePromotion(options = {}) {
     return Date.now() - createdAt > writeLockStaleMs
   }
 
-  async function withWriteLock(target, operation, { fsync = true } = {}) {
+  async function withWriteLock(target, operation) {
     await mkdir(path.dirname(target), { recursive: true })
     const lockPath = target + WRITE_LOCK_SUFFIX
     let handle
@@ -74,7 +74,7 @@ export function createDurableFilePromotion(options = {}) {
     if (!handle) throw new Error(`无法取得 Tavern 写入锁：${target}`)
     try {
       await handle.writeFile(JSON.stringify({ pid: process.pid, writerId, createdAt: Date.now() }) + '\n', 'utf8')
-      if (fsync) await handle.sync()
+      await handle.sync()
       return await operation()
     } finally {
       await handle.close().catch(function () {})
@@ -163,10 +163,7 @@ export function createDurableFilePromotion(options = {}) {
     } finally { if (handle) await handle.close().catch(function () {}) }
   }
 
-  // `fsync: false` keeps the same lock, staging file and atomic rename but skips the
-  // three disk barriers. Rebuilt-from-source indexes (chat index, diagnostics) do not
-  // need crash durability: a lost last write is recovered by the next scan.
-  async function writeTarget(target, value, { fsync = true } = {}) {
+  async function writeTarget(target, value) {
     await mkdir(path.dirname(target), { recursive: true })
     const snapshots = await pendingSnapshots(target)
     const revision = snapshots.length === 0 ? 1 : snapshots[snapshots.length - 1].revision + 1
@@ -176,12 +173,12 @@ export function createDurableFilePromotion(options = {}) {
     try {
       handle = await open(staging, 'wx')
       await handle.writeFile(bytes(value))
-      if (fsync) await handle.sync()
+      await handle.sync()
       await handle.close(); handle = null
       await rename(staging, pending)
-      if (fsync) await syncDirectory(path.dirname(target))
+      await syncDirectory(path.dirname(target))
       await replaceTarget(pending, target)
-      if (fsync) await syncDirectory(path.dirname(target))
+      await syncDirectory(path.dirname(target))
       await cleanupPending(target)
       promoted.add(target)
       return { status: 'promoted', revision }
@@ -253,20 +250,20 @@ export function createDurableFilePromotion(options = {}) {
         return { status: 'appended', bytes: frame.length }
       }))
     },
-    async write(target, value, settings) {
+    async write(target, value) {
       const absolute = path.resolve(target)
-      return enqueue(absolute, () => withWriteLock(absolute, () => writeTarget(absolute, value, settings), settings))
+      return enqueue(absolute, () => withWriteLock(absolute, () => writeTarget(absolute, value)))
     },
-    async update(target, updater, settings) {
+    async update(target, updater) {
       if (typeof updater !== 'function') throw new Error('Durable File Promotion 缺少 updater')
       const absolute = path.resolve(target)
       return enqueue(absolute, () => withWriteLock(absolute, async function () {
         const current = await readTarget(absolute)
         const next = await updater(current)
         if (next === undefined) return current
-        await writeTarget(absolute, next, settings)
+        await writeTarget(absolute, next)
         return bytes(next)
-      }, settings))
+      }))
     },
     async remove(target) {
       const absolute = path.resolve(target)
