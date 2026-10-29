@@ -101,9 +101,16 @@ export function createTransferHandlers(deps) {
 
   const tokens = new Map()
   const undoTokens = new Map()
+  // A phone that loses the reply taps again with the same token; that must not import twice.
+  // One apply per token at a time, and a finished token replays its result instead of re-running.
+  const runningApplies = new Map()
+  const finishedApplies = new Map()
+  const applyProgress = new Map()
   function sweepTokens(now = Date.now()) {
     for (const [token, entry] of tokens) if (now - entry.at > TOKEN_TTL_MS) tokens.delete(token)
     for (const [token, entry] of undoTokens) if (now - entry.at > TOKEN_TTL_MS) undoTokens.delete(token)
+    for (const [token, entry] of finishedApplies) if (now - entry.at > TOKEN_TTL_MS) finishedApplies.delete(token)
+    for (const [token, entry] of applyProgress) if (now - entry.at > TOKEN_TTL_MS) applyProgress.delete(token)
   }
 
   const fileHash = async relative => {
@@ -192,26 +199,64 @@ export function createTransferHandlers(deps) {
     async applyTransferBundle(args) {
       sweepTokens()
       const token = str(args && args.token)
+      // 同一个 token 只跑一次导入：手机端超时重发、连点、重新打开页面再点，都复用这一次。
+      const inFlight = runningApplies.get(token)
+      if (inFlight) return await inFlight
+      const settled = finishedApplies.get(token)
+      if (settled) return settled.result
       const entry = tokens.get(token)
       if (!entry) throw new Error('导入会话已过期，请重新选择导出包')
       const policies = args && args.policies && typeof args.policies === 'object' && !Array.isArray(args.policies) ? args.policies : {}
       const selection = args && args.selection && typeof args.selection === 'object' && !Array.isArray(args.selection) ? args.selection : null
-      const result = await importer.apply({ manifest: entry.manifest, files: entry.files, policies, selection })
-      tokens.delete(token)
-      // Record what was created and its hash now, so undo can refuse files edited since.
-      const records = []
-      for (const row of result.results || []) {
-        for (const created of row.created || []) {
-          const sha256 = await fileHash(created.path).catch(() => null)
-          if (sha256) records.push({ kind: created.kind, title: created.title, path: created.path, sha256 })
+      const startedAt = Date.now()
+      const report = function (step) {
+        applyProgress.set(token, Object.assign({ at: Date.now(), startedAt }, step))
+      }
+      report({ stage: 'start', kind: '', label: '准备中', items: 0, total: 0 })
+      const run = (async () => {
+        const result = await importer.apply({
+          manifest: entry.manifest, files: entry.files, policies, selection,
+          onProgress: step => report(step)
+        })
+        // Record what was created and its hash now, so undo can refuse files edited since.
+        const records = []
+        for (const row of result.results || []) {
+          for (const created of row.created || []) {
+            const sha256 = await fileHash(created.path).catch(() => null)
+            if (sha256) records.push({ kind: created.kind, title: created.title, path: created.path, sha256 })
+          }
         }
+        let undoTx = ''
+        if (records.length) {
+          undoTx = randomUUID()
+          undoTokens.set(undoTx, { at: Date.now(), records })
+        }
+        return Object.assign({}, result, undoTx ? { undoToken: undoTx } : {})
+      })()
+      runningApplies.set(token, run)
+      try {
+        const result = await run
+        tokens.delete(token)
+        finishedApplies.set(token, { at: Date.now(), result })
+        return result
+      } catch (error) {
+        // Token 还在 tokens 里，用户可以原地再试一次；只有成功才把它回收。
+        throw error
+      } finally {
+        runningApplies.delete(token)
+        applyProgress.delete(token)
       }
-      let undoTx = ''
-      if (records.length) {
-        undoTx = randomUUID()
-        undoTokens.set(undoTx, { at: Date.now(), records })
+    },
+
+    async getTransferImportProgress(args) {
+      sweepTokens()
+      const token = str(args && args.token)
+      const entry = applyProgress.get(token)
+      if (entry) {
+        return { running: true, kind: entry.kind, label: entry.label, items: entry.items, total: entry.total,
+          elapsedMs: Math.max(0, Date.now() - entry.startedAt) }
       }
-      return Object.assign({}, result, undoTx ? { undoToken: undoTx } : {})
+      return { running: runningApplies.has(token), kind: '', label: '', items: 0, total: 0, elapsedMs: 0 }
     },
 
     async undoTransferImport(args) {

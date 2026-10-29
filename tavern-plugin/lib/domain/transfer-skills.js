@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
+import { folderHoldsZip } from './transfer-folder-match.js'
 
 // 导出/导入里的写作 Skill 子模块：只负责 zip 与文件读写，Skill 目录本身仍归 tavern-skills 管。
 const MAX_ZIP_BYTES = 40 * 1024 * 1024
@@ -136,6 +137,10 @@ export function createTransferSkills(deps) {
     const entries = readZipEntries(content, { label: '写作 Skill 包' })
     const base = skillNameOf(key, title)
     let name = base
+    // 同一个包再来一次：目录内容一模一样就认它，不再造 skill-2。
+    if (existsSync(path.join(skillsDir, base)) && await folderHoldsZip(path.join(skillsDir, base), entries).catch(() => false)) {
+      return { name: base, reused: true }
+    }
     if (existsSync(path.join(skillsDir, base))) {
       name = ''
       for (let index = 2; index <= MAX_RENAME_ATTEMPTS; index += 1) {

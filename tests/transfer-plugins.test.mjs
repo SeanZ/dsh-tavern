@@ -122,3 +122,23 @@ test('importOne 拒绝越界路径，且不写 plugins 目录之外', async t =>
   assert.equal(existsSync(path.join(pluginsDir, 'evil.txt')), false)
   assert.equal(existsSync(path.join(pluginsDir, 'gamma')), false)
 })
+
+test('importOne 同一个包再来一次：复用已有目录，不再造 (2)', async t => {
+  const { transfer, pluginsDir } = await fixture(t)
+  const zip = pluginZip([
+    ['package.json', JSON.stringify({ name: 'gamma-plugin', version: '0.1.0' })],
+    ['index.mjs', 'export default {}\n']
+  ])
+  const first = await transfer.importOne({ key: 'gamma', title: 'Gamma 插件', content: zip })
+  assert.deepEqual(first, { folder: 'gamma' })
+
+  // 手机端重发、用户重试都算：内容一样就不再落一份副本。
+  const again = await transfer.importOne({ key: 'gamma', title: 'Gamma 插件', content: zip })
+  assert.deepEqual(again, { folder: 'gamma', reused: true })
+  const names = await readdir(pluginsDir)
+  assert.deepEqual(names.filter(name => name.startsWith('gamma')), ['gamma'])
+
+  // 内容真的不一样，还是要新开一个目录，不能把已有的盖掉。
+  const changed = await transfer.importOne({ key: 'gamma', title: 'Gamma 插件', content: pluginZip([['index.mjs', 'export default 2\n']]) })
+  assert.equal(changed.folder, 'gamma (2)')
+})

@@ -10,6 +10,8 @@ function stemOf(value) {
 }
 
 const IMPORTABLE = Object.freeze(['cards', 'worldbooks', 'presets', 'prompts', 'profile', 'regex', 'settings', 'chats', 'plugins', 'scripts', 'fonts', 'plugin-data', 'skills', 'assets', 'memory'])
+// Only these kinds can be compared by content after import; prompts/regex have no local twin.
+const DEDUPE_KINDS = Object.freeze(['cards', 'worldbooks', 'presets', 'scripts'])
 const SETTINGS_PART = 'settings'
 
 /** A name that does not collide: 名字, 名字 (2), 名字 (3), … */
@@ -217,8 +219,7 @@ export function createTransferImport(deps) {
   async function preview(manifest, files = new Map()) {
     const index = await existingIndex()
     const contents = await contentIndex()
-    // Only these kinds can be compared byte-for-byte after import; prompts/regex have no local twin.
-    const dedupeKinds = new Set(['cards', 'worldbooks', 'presets', 'scripts'])
+    const dedupeKinds = new Set(DEDUPE_KINDS)
     // 一局的召回记录没有地方可去，除非同一个包也带着那一局的存档。
     const chatKeys = new Set(manifest.parts.filter(function (part) { return part.kind === 'chats' })
       .flatMap(function (part) { return part.items.map(function (item) { return str(item.key) }) }))
@@ -267,9 +268,12 @@ export function createTransferImport(deps) {
     }
   }
 
-  async function apply({ manifest, files, policies = {}, selection = null }) {
+  async function apply({ manifest, files, policies = {}, selection = null, onProgress = null }) {
     const index = await existingIndex()
     const contents = await contentIndex()
+    const dedupe = new Set(DEDUPE_KINDS)
+    // 这一趟已经处理过的内容，用来挡住同一个包里重复的条目。
+    const handled = new Set()
     const used = {
       cardStems: new Set(index.cardStems), worldStems: new Set(index.worldStems), presetStems: new Set(index.presetStems),
       promptNames: new Set(index.promptNames), profileNames: new Set(index.profileNames),
@@ -297,20 +301,45 @@ export function createTransferImport(deps) {
     // 新局 id：召回记录要落进刚导入的那一局，源 chatId 只用来配对。
     const chatIdMap = new Map()
 
+    // 进度只服务界面：慢在哪个板块、第几项，看得见就不会被当成卡死。
+    const planned = (manifest.parts || []).filter(function (part) { return part && IMPORTABLE.includes(part.kind) })
+    const totalItems = planned.reduce(function (sum, part) { return sum + (part.items || []).length }, 0)
+    let finishedItems = 0
+    const report = function (kind, label, stage) {
+      if (typeof onProgress !== 'function') return
+      try { onProgress({ kind, label, stage, items: finishedItems, total: totalItems }) }
+      catch (_error) { /* 进度上报失败不该影响导入本身 */ }
+    }
+
     for (const part of manifest.parts) {
       const result = { kind: part.kind, label: part.label, added: 0, skipped: 0, overwritten: 0, failed: [], created: [] }
       results.push(result)
       if (!IMPORTABLE.includes(part.kind)) { result.skipped = part.items.length; result.note = '下一版支持'; continue }
       const policy = policies[part.kind] === 'skip' ? 'skip' : 'apply'
-      if (policy === 'skip') { result.skipped = part.items.length; continue }
+      if (policy === 'skip') { result.skipped = part.items.length; finishedItems += part.items.length; continue }
+      report(part.kind, part.label, 'start')
 
       const picked = selection && Array.isArray(selection[part.kind]) ? new Set(selection[part.kind]) : null
       for (const item of part.items) {
+        finishedItems += 1
+        report(part.kind, part.label, 'item')
         if (item.usable === false) { result.failed.push({ title: item.title, error: '包内文件损坏或缺失' }); continue }
         if (picked && !picked.has(item.key)) { result.skipped += 1; continue }
         const content = files.get(item.entry)
         if (content === undefined) { result.failed.push({ title: item.title, error: '包内缺少该文件' }); continue }
         const text = content.toString('utf8')
+        // 包里的内容本机已经有了：写之前就跳过，别先落盘再删（中断在半路就会留下副本）。
+        // 按内容去重只记「本机已有」，这一趟自己写出来的不算，否则 dropDuplicate 会把自己刚写的删掉。
+        if (dedupe.has(part.kind) && contents.get(part.kind)) {
+          const packedHash = contentHashOf(part.kind, text)
+          const seenKey = part.kind + '\u0000' + packedHash
+          if (contents.get(part.kind).has(packedHash) || handled.has(seenKey)) {
+            result.skipped += 1
+            result.duplicates = (result.duplicates || []).concat(item.title)
+            continue
+          }
+          handled.add(seenKey)
+        }
         try {
           if (part.kind === 'cards') {
             let document
@@ -437,6 +466,7 @@ export function createTransferImport(deps) {
             if (!skills) throw new Error('Skill 导入不可用')
             const imported = await skills.importOne({ key: item.key, content })
             used.skillNames.add(str(imported.name).toLowerCase())
+            if (imported && imported.reused) { result.skipped += 1; result.duplicates = (result.duplicates || []).concat(item.title); continue }
             result.added += 1
             continue
           }
@@ -444,6 +474,7 @@ export function createTransferImport(deps) {
             if (!fonts) throw new Error('字体导入不可用')
             const imported = await fonts.importOne({ key: item.key, content })
             used.fontIds.add(str(imported.id).toLowerCase())
+            if (imported && imported.reused) { result.skipped += 1; result.duplicates = (result.duplicates || []).concat(item.title); continue }
             result.added += 1
             continue
           }
@@ -476,6 +507,7 @@ export function createTransferImport(deps) {
             if (!plugins) throw new Error('插件导入不可用')
             const imported = await plugins.importOne({ key: item.key, title: item.title, content })
             used.pluginFolders.add(str(imported.folder).toLowerCase())
+            if (imported && imported.reused) { result.skipped += 1; result.duplicates = (result.duplicates || []).concat(item.title); continue }
             result.added += 1
             continue
           }

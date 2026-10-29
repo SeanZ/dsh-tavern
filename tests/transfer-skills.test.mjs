@@ -117,3 +117,14 @@ test('importOne 拒绝越界与非法路径，且不留下半个 Skill', async t
   assert.equal(existsSync(path.join(skillsDir, 'evil.txt')), false)
   assert.equal(existsSync(path.join(skillsDir, 'gamma')), false)
 })
+
+test('importOne 同一个 Skill 包再来一次：复用已有目录，不再造 skill-2', async t => {
+  const { transfer, skillsDir } = await fixture(t)
+  const zip = skillZip([['SKILL.md', '---\nname: gamma\ndescription: 新加的\n---\n\n正文\n']])
+  const first = await transfer.importOne({ key: 'gamma', content: zip })
+  assert.deepEqual(first, { name: 'gamma' })
+  const again = await transfer.importOne({ key: 'gamma', content: zip })
+  assert.deepEqual(again, { name: 'gamma', reused: true })
+  const names = await readdir(skillsDir)
+  assert.deepEqual(names.filter(name => name.startsWith('gamma')), ['gamma'])
+})

@@ -339,3 +339,27 @@ test('游玩记忆随同包的存档并进新局；包里没带存档时明确�
   assert.match(row.failed[0].error, /无处可并/)
   assert.equal(merged.length, 1, '没有新局，不会再写记忆')
 })
+
+test('同一个包再导一次：内容已在本机就不落盘，也不生成第二份副本', async () => {
+  const from = environment()
+  const bundle = await bundleFrom(from, { cards: ['cards/作家.json'] })
+  const to = environment({ cards: new Map() })
+  const steps = []
+  const first = await to.importer.apply({
+    manifest: bundle.manifest, files: bundle.files,
+    onProgress: step => steps.push(step)
+  })
+  assert.equal(first.results[0].added, 1)
+  assert.deepEqual(steps.map(step => step.kind), ['cards', 'cards'], '每个板块和每一项都上报进度')
+  assert.equal(steps.at(-1).total, 1)
+  assert.equal(steps.at(-1).items, 1)
+
+  // 手机端等不到回包又点了一次：包还是一模一样，写之前就该认出内容相同。
+  const again = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files })
+  const row = again.results.find(item => item.kind === 'cards')
+  assert.equal(row.added, 0, '不再新建副本')
+  assert.equal(row.skipped, 1)
+  assert.deepEqual(row.duplicates, ['作家'])
+  assert.equal(to.state.imported.cards.length, 1, '第二次没有写文件')
+  assert.deepEqual([...to.state.cards.keys()], ['cards/作家.json'])
+})

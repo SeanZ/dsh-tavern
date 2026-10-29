@@ -74,8 +74,12 @@ function createTransferFeatureModule() {
 		const [importing, setImporting] = React.useState(null)
 		const [openImport, setOpenImport] = React.useState({})
 		const [error, setError] = usePersistentError("导出与导入")
+		const [applyProgress, setApplyProgress] = React.useState(null)
 		const fileInput = React.useRef(null)
 		const bodyRef = React.useRef(null)
+		// 服务端一次导入要写几万个文件，手机端等不到回包就再点一次是常态：这里同步挡住第二次提交，
+		// 不至于按下两次就导入两遍（服务端也认同一个 token 只跑一次）。
+		const applyingRef = React.useRef(false)
 		// 最后生成的包，供「重新下载」复用。服务端在 token 有效期内允许多次下载，所以
 		// 第一次没弹出保存界面（内嵌 WebView 常见）时，用户可以直接再点一次。
 		const exportRef = React.useRef(null)
@@ -238,18 +242,53 @@ function createTransferFeatureModule() {
 		}
 
 		function applyImport() {
-			if (!importing || !importing.token) return
+			if (!importing || !importing.token || applyingRef.current) return
+			applyingRef.current = true
 			setError("")
 			setBusy(true)
+			setApplyProgress(null)
 			setImporting(function (current) { return Object.assign({}, current, { stage: "applying" }) })
-			rpc("applyTransferBundle", { token: importing.token, policies: importing.policies, selection: selectionPayload(importing.selection) }, sessionId).then(function (result) {
+			const payload = { token: importing.token, policies: importing.policies, selection: selectionPayload(importing.selection) }
+			// 手机端断网、网关超时都会让这一次 POST 白跑；服务端同一个 token 只跑一趟，重发是安全的，
+			// 所以这里自己补一次，不必等用户手再点一遍。
+			const attempt = function (left) {
+				return rpc("applyTransferBundle", payload, sessionId).catch(function (err) {
+					const transient = !err || !err.status || err.retryable === true
+					if (left <= 0 || !transient) throw err
+					return new Promise(function (resolve) { window.setTimeout(resolve, 1500) }).then(function () { return attempt(left - 1) })
+				})
+			}
+			attempt(1).then(function (result) {
 				setImporting(function (current) { return Object.assign({}, current, { stage: "done", result }) })
 				notifyTavernDataChanged(["cards", "worldbooks", "presets", "sessions", "plugins"], "transfer")
 				void refresh()
 			}, function (err) {
 				setImporting(function (current) { return Object.assign({}, current, { stage: "preview" }) })
 				setError(String(err && err.message || err))
-			}).finally(function () { setBusy(false) })
+			}).finally(function () { applyingRef.current = false; setBusy(false) })
+		}
+
+		// 导入过程中每秒取一次进度：慢在哪个板块、走到第几项，看得见就不会被当成卡死。
+		const applyToken = importing && importing.stage === "applying" ? importing.token : ""
+		React.useEffect(function () {
+			if (!applyToken) return undefined
+			let stopped = false
+			function tick() {
+				rpc("getTransferImportProgress", { token: applyToken }, sessionId).then(function (value) {
+					if (!stopped && value) setApplyProgress(value)
+				}, function () { /* 取不到进度不影响导入本身 */ })
+			}
+			tick()
+			const timer = window.setInterval(tick, 1000)
+			return function () { stopped = true; window.clearInterval(timer) }
+		}, [applyToken, sessionId])
+
+		function applyProgressText() {
+			const row = applyProgress
+			const seconds = Math.max(1, Math.round(((row && row.elapsedMs) || 0) / 1000))
+			const part = row && row.label ? " · " + row.label : ""
+			const count = row && row.total ? " " + Math.min(row.items || 0, row.total) + "/" + row.total : ""
+			return "正在导入" + part + count + "，已 " + seconds + " 秒"
 		}
 
 		function renderItem(part, item) {
@@ -509,9 +548,10 @@ function createTransferFeatureModule() {
 					h("div", { className: "dsh-tavern-transfer-summary" },
 						h("strong", null, "新增 " + totals.added + " 项"),
 						h("span", null, "跳过 " + totals.skipped + " 项"),
-						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null
+						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null,
+						state.stage === "applying" ? h("span", { className: "is-warn" }, applyProgressText()) : null
 					),
-					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport }, busy ? "导入中…" : "确认导入")
+					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport, title: state.stage === "applying" ? "导入还在进行，大包可能要几分钟" : "" }, busy ? "导入中…" : "确认导入")
 				) : null
 			)
 		}

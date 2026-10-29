@@ -156,3 +156,14 @@ test('importOne 空内容直接报错', async t => {
   const { transfer } = await fixture(t)
   await assert.rejects(() => transfer.importOne({ key: 'gamma-face' }), /字体包内容为空/)
 })
+
+test('importOne 同一个字体包再来一次：复用已有族，不再造 -2', async t => {
+  const { transfer, fontsDir } = await fixture(t)
+  const zip = fontZip([['index.json', JSON.stringify({ id: 'gamma-face', label: 'Gamma' })]])
+  const first = await transfer.importOne({ key: 'gamma-face', content: zip })
+  assert.equal(first.id, 'gamma-face')
+  const again = await transfer.importOne({ key: 'gamma-face', content: zip })
+  assert.deepEqual(again, { id: 'gamma-face', reused: true })
+  const names = await readdir(fontsDir)
+  assert.deepEqual(names.filter(name => name.startsWith('gamma')), ['gamma-face'])
+})
