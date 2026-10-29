@@ -35,24 +35,39 @@ test('状态栏位置是全局显示偏好，保存后通知现有对局刷新',
   assert.equal(await page.evaluate(() => window.__statusSettingsChanged), 1)
 })
 
-test('界面皮肤：导入后立即生效，选「默认」恢复原样', async t => {
-  let index = { active: null, skins: [] }, css = ''
-  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: interface skin settings', respond(method, args) {
-    if (method === 'listInterfaceSkins') return index
-    if (method === 'getActiveInterfaceSkin') return { id: index.active, css: index.active ? css : '' }
-    if (method === 'importInterfaceSkin') { css = args.css; index = { active: 'aaaaaaaaaaaa', skins: [{ id: 'aaaaaaaaaaaa', name: args.name.replace(/\.css$/, '') }] }; return index }
-    if (method === 'selectInterfaceSkin') { index = { ...index, active: args.id }; return index }
-  } })
-  const skinStyle = () => page.evaluate(() => document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]')?.textContent ?? null)
-  const select = page.getByLabel('皮肤', { exact: true })
-  await page.waitForFunction(() => document.querySelector('select[aria-label="皮肤"]')?.disabled === false)
-  await page.locator('input[type=file][accept^=".css"]').setInputFiles({ name: '纸感.css', mimeType: 'text/css', buffer: Buffer.from('body { color: rgb(1, 2, 3) }') })
+test('皮肤：配色与 CSS 皮肤在同一排，一次只选一套', async t => {
+  let index = { active: null, skins: [{ id: 'builtin:paper', name: '纸感', builtin: true }] }, css = ''
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: interface skin settings',
+    // The bundled dream-skin's API, as its patched client exposes it.
+    beforeRender: () => {
+      let current = 'tavern-terracotta'
+      const listeners = new Set()
+      window.dshDreamSkin = { skins: () => [{ id: 'tavern-terracotta', label: '酒馆 · 暖陶土', tokens: {} }, { id: 'abyss', label: '沉静蓝', tokens: {} }],
+        defaultLabel: () => '默认', current: () => current, onChange: listener => { listeners.add(listener); return () => listeners.delete(listener) },
+        setSkin: id => { current = id; window.__dreamSet = id; listeners.forEach(listener => listener()) },
+        Swatch: () => null, DefaultSwatch: () => null, styles: {} }
+    },
+    respond(method, args) {
+      if (method === 'listInterfaceSkins') return index
+      if (method === 'getActiveInterfaceSkin') return { id: index.active, css: index.active === 'builtin:paper' ? 'paper-css' : index.active ? css : '' }
+      if (method === 'importInterfaceSkin') { css = args.css; index = { active: 'aaaaaaaaaaaa', skins: [...index.skins, { id: 'aaaaaaaaaaaa', name: args.name.replace(/\.css$/, '') }] }; return index }
+      if (method === 'selectInterfaceSkin') { index = { ...index, active: args.id }; return index }
+    } })
+  const pressed = () => page.evaluate(() => [...document.querySelectorAll('button[aria-pressed="true"]')].map(button => button.textContent))
+  await page.getByRole('button', { name: '纸感', exact: true }).waitFor()
+  assert.deepEqual(await pressed(), ['酒馆 · 暖陶土'])
+  await page.locator('input[type=file][accept^=".css"]').setInputFiles({ name: '我的.css', mimeType: 'text/css', buffer: Buffer.from('body { color: rgb(1, 2, 3) }') })
   await page.getByText('已导入并启用', { exact: true }).waitFor()
-  assert.deepEqual(calls.find(call => call.method === 'importInterfaceSkin').args, { name: '纸感.css', css: 'body { color: rgb(1, 2, 3) }' })
-  assert.equal(await select.inputValue(), 'aaaaaaaaaaaa')
+  assert.deepEqual(calls.find(call => call.method === 'importInterfaceSkin').args, { name: '我的.css', css: 'body { color: rgb(1, 2, 3) }' })
+  assert.deepEqual(await pressed(), ['我的'])
   await page.waitForFunction(() => getComputedStyle(document.body).color === 'rgb(1, 2, 3)')
-  await select.selectOption('')
-  await page.getByText('已切换', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '沉静蓝', exact: true }).click()
+  await page.waitForFunction(() => window.__dreamSet === 'abyss')
   await page.waitForFunction(() => !document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]'))
-  assert.equal(await skinStyle(), null)
+  assert.equal(calls.filter(call => call.method === 'selectInterfaceSkin').at(-1).args.id, null)
+  assert.deepEqual(await pressed(), ['沉静蓝'])
+  await page.getByRole('button', { name: '纸感', exact: true }).click()
+  await page.waitForFunction(() => window.__dreamSet === 'tavern-terracotta')
+  assert.deepEqual(await pressed(), ['纸感'])
+  await page.waitForFunction(() => document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]')?.textContent === 'paper-css')
 })

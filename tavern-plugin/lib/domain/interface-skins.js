@@ -13,7 +13,9 @@ const MAX_SKINS = 50
 const ID = /^[0-9a-f]{12}$/
 const BUILTIN = Object.freeze([
   // 纸感: contributed by SilverLark257 (PR #418); a full restyle that also sets the colors.
-  Object.freeze({ id: 'builtin:paper', name: '纸感（示例）', file: 'paper.css' })
+  Object.freeze({ id: 'builtin:paper', name: '纸感', file: 'paper.css', preview: Object.freeze({
+    '--dsw-alias-bg-layer-1': '#fffdf8', '--dsw-alias-border-l2': '#e6dfd8', '--dsw-alias-label-primary': '#2e2921',
+    '--dsw-alias-brand-primary': '#cc785c', '--dsw-alias-label-secondary': '#6f6759' }) })
 ])
 const BUILTIN_DIR = new URL('../client-assets/skins/', import.meta.url)
 const builtinOf = id => BUILTIN.find(skin => skin.id === id)
@@ -32,7 +34,7 @@ function skinName(value) {
 export function createInterfaceSkins({ store }) {
   // Built-ins first, then the player's own imports in import order.
   function present(index) {
-    return { active: index.active, skins: [...BUILTIN.map(({ id, name }) => ({ id, name, builtin: true })), ...index.skins] }
+    return { active: index.active, skins: [...BUILTIN.map(({ id, name, preview }) => ({ id, name, builtin: true, preview })), ...index.skins] }
   }
   async function list() {
     return present(readIndex(await store.readJson(INDEX)))

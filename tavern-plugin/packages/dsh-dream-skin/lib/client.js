@@ -646,7 +646,7 @@ window.__ModuleLoader__.load({
 
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
-			"skin.title": "配色",
+			"skin.title": "皮肤",
 			"skin.default": "默认",
 			"skin.abyss": "沉静蓝",
 			"skin.aurora": "极光青",
@@ -4133,7 +4133,8 @@ window.__ModuleLoader__.load({
 		 * accent, or `system` + null when unset).
 		 */
 		function readAccent() {
-			const raw = readStorage(ACCENT_KEY);
+			// Tavern: the 强调色 row is gone, so an accent saved earlier no longer applies.
+			const raw = null;
 			if (raw === null || raw === DEFAULT_ACCENT) return null;
 			if (HEX_RE.test(raw.trim())) return raw.toLowerCase();
 			const skin = SKINS.find((s) => s.id === raw.trim());
@@ -5483,14 +5484,18 @@ window.__ModuleLoader__.load({
 				} }
 			}, DreamSkinSection));
 
-			ctx.slots.inject("settings.dreamSkin.item", () => ctx.slots.register({
-				name: "settings.dreamSkin.item",
-				id: "dream-skin",
-				order: 20,
-				store: skinStore,
-				locale: SETTINGS_NS,
-				inject: skinInjected
-			}, SkinRow));
+			// Tavern: no skin (配色) row here. Tavern's 皮肤 row lists these color skins next to
+			// its CSS skins, so the player picks one look in one place; it drives them here.
+			window.dshDreamSkin = Object.freeze({
+				skins: () => SKINS.map((skin) => ({ id: skin.id, label: skin.label || localeT(`skin.${skin.id}`), tokens: skin.tokens })),
+				defaultLabel: () => localeT("skin.default"),
+				current: () => ctx.theme.getTheme().preference,
+				onChange: (listener) => ctx.on("theme/change", listener),
+				setSkin: (id) => skinInjected(skinBound).setSkin(id),
+				Swatch,
+				DefaultSwatch,
+				styles
+			});
 
 			const wallpaperInjected = (actions) => {
 				wallpaperBound = actions;
@@ -5836,14 +5841,7 @@ window.__ModuleLoader__.load({
 					}
 				};
 			};
-			ctx.slots.inject("settings.dreamSkin.item", () => ctx.slots.register({
-				name: "settings.dreamSkin.item",
-				id: "dream-skin-accent",
-				order: 25,
-				store: accentStore,
-				locale: SETTINGS_NS,
-				inject: accentInjected
-			}, AccentRow));
+			// Tavern: no 强调色 row; skins own the colors, and an accent would only be painted over.
 
 			// P0: theme-pack library + favorites + surprise-me row.
 			const packStore = createPackStore();

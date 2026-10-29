@@ -2,9 +2,9 @@
 
 规范版本：**1**
 
-皮肤是一个 `.css` 文件。玩家在「设置 › Theme / 外观 › 皮肤」里导入后，酒馆的外观随之改变；选「默认」恢复原样。皮肤只有样式，没有脚本，导入别人的皮肤不会碰到存档、不会运行代码。
+「设置 › Theme / 外观 › 皮肤」里列出所有皮肤，玩家一次只选一套：内置的几套配色（酒馆 · 暖陶土、沉静蓝、午夜黑……）、内置的「纸感」，以及玩家自己导入的皮肤。
 
-酒馆内置一套「纸感（示例）」（来自社区贡献），可在同一处选用；它是整套换装，连配色一起改，适合当参考，不是最省事的写法。
+可导入的皮肤是一个 `.css` 文件，导入后出现在同一个列表里，可以只改颜色，也可以连字体、形状一起改。皮肤只有样式，没有脚本，导入别人的皮肤不会碰到存档、不会运行代码。内置的「纸感」（来自社区贡献）就是这样一个文件，可以当参考。
 
 需要改页面结构、加按钮、跑脚本的，不是皮肤，请写[插件](plugin-api.md)。舞台（galgame 画面）的外观另有舞台皮肤，不归本文管。
 
@@ -17,24 +17,26 @@
 
 ## 生效方式
 
-皮肤的 `<style>` 放在酒馆自己的样式表**之后**，所以选择器优先级相同时皮肤胜出，不需要 `!important`。同一时间只启用一套皮肤；切换、删除立即生效，不用刷新。
+选中一套 CSS 皮肤时，酒馆先换回「酒馆 · 暖陶土」作底（跟随浅色/深色），再把皮肤的 `<style>` 放在所有样式**之后**；选别的皮肤时它被撤掉。所以皮肤没写到的地方保持暖陶土的样子，不会和别的皮肤叠在一起。切换、删除立即生效，不用刷新。
 
-## 和「配色」的分工
+## 改颜色
 
-整体配色归同一页上方的「配色」和「强调色」：玩家在那里选浅色、深色或某套配色，DSH 自己的界面和酒馆都跟着变。皮肤叠在配色**之上**，只管酒馆自己的部分。
-
-所以皮肤**不要改 DSH 的 `--dsw-*` 变量**：那一层由配色插件用一整套内部变量绘制，皮肤只能盖住其中一部分，结果会半新半旧，还会让玩家换配色时看不出变化。皮肤只改下面的酒馆变量和酒馆类名，这样玩家换哪套配色，皮肤都能叠在上面一起用。
-
-## 推荐写法：先改酒馆变量
-
-改变量最省力，也最不容易随版本失效。默认值都由当前配色推导，皮肤在 `body` 上重写即可：
+颜色由 DSH 的主题变量决定，酒馆和 DSH 自己的界面都用它。当前配色把这些变量写在 `body` 的行内样式上，所以皮肤要在 `body` 上加 `!important` 才能盖过：
 
 ```css
 body {
-  --dsh-tavern-accent: #8a5a3c;
-  --dsh-tavern-radius-lg: 18px;
+  --dsw-alias-brand-primary: #8a5a3c !important;     /* 强调色 */
+  --dsw-alias-brand-text: #fff9f2 !important;        /* 强调色上的文字 */
+  --dsw-alias-bg-base: #f6f1e7 !important;           /* 页面底色 */
+  --dsw-alias-bg-layer-1: #fffdf8 !important;        /* 卡片、面板 */
+  --dsw-alias-label-primary: #2e2921 !important;     /* 正文文字 */
+  --dsw-alias-label-secondary: #6f6759 !important;   /* 次要文字 */
+  --dsw-alias-border-l1: #e9e1d4 !important;         /* 细线 */
+  --dsw-alias-border-l2: #ddd3c4 !important;
 }
 ```
+
+只想微调酒馆自己的部分，也可以改下面的酒馆变量（默认由上面的 DSH 变量推导，不需要 `!important`）：
 
 | 变量 | 用途 |
 |---|---|
@@ -53,11 +55,11 @@ body {
 
 ## 深色模式
 
-DSH 处于深色时，`body` 上有 `data-ds-dark-theme` 属性。皮肤若只为浅色设计，请把颜色写在 `body:not([data-ds-dark-theme])` 下，深色时保持原样；若两种都做：
+玩家在「通用设置 › 外观」里选浅色、深色或跟随系统；深色时 `body` 上有 `data-ds-dark-theme` 属性。皮肤若只为浅色设计，把颜色写在 `body:not([data-ds-dark-theme])` 下，深色时保持暖陶土的深色；两种都做：
 
 ```css
-body:not([data-ds-dark-theme]) { --dsh-tavern-accent: #a9583e; }
-body[data-ds-dark-theme] { --dsh-tavern-accent: #d4896c; }
+body:not([data-ds-dark-theme]) { --dsw-alias-bg-base: #f6f1e7 !important; }
+body[data-ds-dark-theme] { --dsw-alias-bg-base: #1d1a16 !important; }
 ```
 
 ## 稳定的类名
@@ -93,9 +95,11 @@ DSH 宿主区域可以用它的 `data-slot` 属性定位（如 `[data-slot="conv
 ## 示例
 
 ```css
-/* 书页：正文换衬线字体、放宽行距，玩家气泡更圆；颜色跟随玩家选的配色 */
+/* 书页：暖纸底色、正文衬线字体、放宽行距，玩家气泡更圆；只做浅色 */
 body:not([data-ds-dark-theme]) {
-  --dsh-tavern-accent: #a9583e;
+  --dsw-alias-bg-base: #f6f1e7 !important;
+  --dsw-alias-bg-layer-1: #fffdf8 !important;
+  --dsw-alias-brand-primary: #a9583e !important;
 }
 .dsh-tavern-assistant {
   font-family: "LXGW WenKai", "Songti SC", serif;

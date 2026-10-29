@@ -4,7 +4,7 @@ import { chromium } from 'playwright'
 
 // Exercise the public plugin registration and real React effects/events. Only
 // the DSH host and HTTP boundary are fixtures; no component source extraction.
-export async function openTavernSettings(t, { respond, section: pageSection, sessionId } = {}) {
+export async function openTavernSettings(t, { respond, section: pageSection, sessionId, beforeRender } = {}) {
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -39,6 +39,7 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, ...result }) })
   })
   await page.goto('http://tavern.test/')
+  if (beforeRender) await page.evaluate(beforeRender)
   let script = await browserReactScript()
   script += `window.__ModuleLoader__={load(definition){window.client=definition.factory(name=>name==='react'?modules.react:{});}};`
   await page.addScriptTag({ content: script })

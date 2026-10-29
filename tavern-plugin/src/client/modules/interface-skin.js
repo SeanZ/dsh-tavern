@@ -25,45 +25,76 @@ function createInterfaceSkinModule({ React, rpc }) {
         window.dispatchEvent(new CustomEvent(TAVERN_INTERFACE_SKIN_EVENT));
     }
 
+    // An imported skin has no colors to preview; draw it in the current theme's own colors.
+    const IMPORTED_SKIN_PREVIEW = { "--dsw-alias-bg-layer-1": "var(--dsw-alias-bg-layer-1)", "--dsw-alias-border-l2": "var(--dsw-alias-border-l2)",
+        "--dsw-alias-label-primary": "var(--dsw-alias-label-primary)", "--dsw-alias-brand-primary": "var(--dsw-alias-brand-primary)", "--dsw-alias-label-secondary": "var(--dsw-alias-label-secondary)" };
+    // The base a CSS skin is drawn over: Tavern's own colors, following light/dark.
+    const CSS_SKIN_BASE = "tavern-terracotta";
+
+    // One 皮肤 row for every look: the bundled dream-skin's color skins (window.dshDreamSkin,
+    // stored per browser by dream-skin) and Tavern's CSS skins (stored in the profile).
+    // Exactly one is chosen; picking a color skin turns the CSS skin off.
     function InterfaceSkinSettings() {
         const h = React.createElement;
+        const dream = window.dshDreamSkin || null;
         const [index, setIndex] = React.useState(null), [busy, setBusy] = React.useState(false), [message, setMessage] = React.useState("");
+        const [themeSkin, setThemeSkin] = React.useState(dream ? dream.current() : null);
         const fileInput = React.useRef(null);
         React.useEffect(function () {
             let active = true;
             rpc("listInterfaceSkins").then(function (result) { if (active) setIndex(result); }, function (err) { if (active) setMessage("读取失败：" + err.message); });
-            return function () { active = false; };
+            const off = dream ? dream.onChange(function () { setThemeSkin(dream.current()); }) : null;
+            return function () { active = false; if (typeof off === "function") off(); };
         }, []);
         async function run(method, args, notice) {
             setBusy(true); setMessage("");
-            try { setIndex(await rpc(method, args)); changed(); setMessage(notice); }
-            catch (err) { setMessage("失败：" + String(err && err.message || err)); }
+            try { const next = await rpc(method, args); setIndex(next); changed(); if (notice) setMessage(notice); return next; }
+            catch (err) { setMessage("失败：" + String(err && err.message || err)); throw err; }
             finally { setBusy(false); }
+        }
+        function chooseTheme(id) {
+            const pick = function () { if (dream) { dream.setSkin(id); setThemeSkin(dream.current()); } };
+            if (index && index.active) void run("selectInterfaceSkin", { id: null }).then(pick, function () {});
+            else pick();
+        }
+        function chooseCss(id) {
+            void run("selectInterfaceSkin", { id }).then(function () {
+                if (dream && !String(dream.current()).startsWith(CSS_SKIN_BASE)) { dream.setSkin(CSS_SKIN_BASE); setThemeSkin(dream.current()); }
+            }, function () {});
         }
         async function importFile(file) {
             if (!file) return;
             try { await run("importInterfaceSkin", { name: file.name, css: decodeTextResource(await file.arrayBuffer()) }, "已导入并启用"); }
             catch (err) { setMessage("导入失败：" + String(err && err.message || err)); }
         }
-        const skins = index ? index.skins : [];
-        const active = index && index.active || "";
+        const cssSkins = index ? index.skins : [];
+        const cssActive = index && index.active || null;
+        const themeSkins = dream ? dream.skins() : [];
+        const selected = cssActive ? "css:" + cssActive : themeSkins.some(function (skin) { return skin.id === themeSkin; }) ? "theme:" + themeSkin : "default";
+        const activeCss = cssSkins.find(function (skin) { return skin.id === cssActive; });
         const disabled = !index || busy;
-        const activeSkin = skins.find(function (item) { return item.id === active; });
-        // Same look as the other rows of 「Theme / 外观」 (dream-skin's group/title/button styles).
-        const control = { height: "32px", padding: "0 14px", borderRadius: "8px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-button-elevated-fill)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit" };
-        return h("div", { style: { borderBottom: "1px solid var(--dsw-alias-border-l2)", display: "flex", flexDirection: "column", gap: "10px", padding: "16px 0" } },
-            h("div", { style: { color: "var(--dsw-alias-label-primary)", fontSize: "14px", lineHeight: "22px" } }, "皮肤"),
-            h("div", { style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" } },
-                h("select", { "aria-label": "皮肤", disabled, value: active, style: Object.assign({}, control, { padding: "0 10px", minWidth: "160px" }), onChange: function (event) { void run("selectInterfaceSkin", { id: event.target.value || null }, "已切换"); } },
-                    h("option", { value: "" }, "默认"),
-                    skins.map(function (skin) { return h("option", { key: skin.id, value: skin.id }, skin.name); })),
-                h("button", { type: "button", style: control, disabled, onClick: function () { fileInput.current && fileInput.current.click(); } }, "导入皮肤…"),
-                activeSkin && !activeSkin.builtin ? h("button", { type: "button", style: control, disabled, onClick: function () {
-                    if (window.confirm("删除皮肤「" + activeSkin.name + "」？")) void run("deleteInterfaceSkin", { id: active }, "已删除，恢复默认外观");
-                } }, "删除") : null,
+        const styles = dream ? dream.styles : {};
+        function card(key, label, swatch, onSelect) {
+            const on = selected === key;
+            return h("button", { key, type: "button", disabled, "aria-pressed": on, title: label, onClick: onSelect,
+                style: Object.assign({}, styles.card, on ? styles.cardSelected : null) },
+                swatch,
+                h("span", { style: Object.assign({}, styles.cardLabel, on ? styles.cardLabelSelected : null) }, label));
+        }
+        function swatch(tokens) { return dream ? h(dream.Swatch, { tokens }) : null; }
+        return h("div", { style: styles.group },
+            h("div", { style: styles.title }, "皮肤"),
+            h("div", { style: styles.grid },
+                dream ? card("default", dream.defaultLabel(), h(dream.DefaultSwatch), function () { chooseTheme("system"); }) : null,
+                themeSkins.map(function (skin) { return card("theme:" + skin.id, skin.label, swatch(skin.tokens), function () { chooseTheme(skin.id); }); }),
+                cssSkins.map(function (skin) { return card("css:" + skin.id, skin.name, swatch(skin.preview || IMPORTED_SKIN_PREVIEW), function () { chooseCss(skin.id); }); })),
+            h("div", { style: styles.actionRow },
+                h("button", { type: "button", style: styles.button, disabled, onClick: function () { fileInput.current && fileInput.current.click(); } }, "导入皮肤…"),
+                activeCss && !activeCss.builtin ? h("button", { type: "button", style: styles.button, disabled, onClick: function () {
+                    if (window.confirm("删除皮肤「" + activeCss.name + "」？")) void run("deleteInterfaceSkin", { id: activeCss.id }, "已删除").catch(function () {});
+                } }, "删除这套皮肤") : null,
                 h("input", { ref: fileInput, type: "file", accept: ".css,text/css", hidden: true, onChange: function (event) { const file = event.target.files && event.target.files[0]; event.target.value = ""; void importFile(file); } })),
-            h("div", { role: "status", style: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "18px" } },
-                message || "改变酒馆的排版、字体和形状，叠在上面的配色之上。导入 .css 皮肤文件后可在这里切换，选「默认」恢复原样；不影响正文和存档。"));
+            h("div", { role: "status", style: styles.hint }, message || "选一套皮肤，立即生效；导入别人分享的 .css 皮肤文件后也会出现在这里。皮肤只改外观，不影响正文和存档。"));
     }
 
     return { applyActiveInterfaceSkin, InterfaceSkinSettings };

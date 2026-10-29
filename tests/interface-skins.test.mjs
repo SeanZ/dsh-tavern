@@ -16,7 +16,7 @@ async function withSkins(run) {
 
 test('导入的皮肤立即启用，可切回默认、切换、删除', async () => {
   await withSkins(async (skins, dataRoot) => {
-    assert.deepEqual(await skins.list(), { active: null, skins: [{ id: 'builtin:paper', name: '纸感（示例）', builtin: true }] })
+    assert.deepEqual((await skins.list()).skins.map(({ id, name, builtin }) => ({ id, name, builtin })), [{ id: 'builtin:paper', name: '纸感', builtin: true }])
     assert.deepEqual(await skins.active(), { id: null, css: '' })
     const first = await skins.importSkin({ name: '我的.css', css: 'body { color: red }' })
     assert.equal(first.skins[1].name, '我的')
@@ -31,7 +31,7 @@ test('导入的皮肤立即启用，可切回默认、切换、删除', async ()
     await skins.select(second.active)
     const removed = await skins.remove(second.active)
     assert.equal(removed.active, null)
-    assert.deepEqual(removed.skins.map(skin => skin.name), ['纸感（示例）', '我的'])
+    assert.deepEqual(removed.skins.map(skin => skin.name), ['纸感', '我的'])
     assert.deepEqual((await readdir(path.join(dataRoot, 'interface-skins'))).sort(), [first.active + '.css', 'index.json'].sort())
   })
 })
