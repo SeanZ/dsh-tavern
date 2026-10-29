@@ -432,8 +432,11 @@
 				const state = useLiveTavernView(props.sessionId, "receipt", tavernReceiptViewPaths(props.turn,
 					tavernMvuReceiptForTurn(current, props.turn), props.turn === current?.settlementTurn));
 				const receipt = tavernMvuReceiptForTurn(state.view, props.turn);
-				return receipt ? React.createElement(TavernMvuReceipt, { ...props, receipt,
-					latest: props.turn === state.view?.settlementTurn, busy: Boolean(state.view?.activity?.busy) }) : null;
+				// 自动精修 reworded this reply after it was shown: say so, the 精修 page has the comparison.
+				const polished = (state.view?.autoPolishedTurns || current?.autoPolishedTurns || []).includes(Number(props.turn))
+					? React.createElement("div", { className: "dsh-tavern-auto-polished", title: "正文写完后已按精修原则自动润色，「精修」页可对比和撤销" }, "已自动精修") : null;
+				return receipt ? React.createElement(React.Fragment, null, React.createElement(TavernMvuReceipt, { ...props, receipt,
+					latest: props.turn === state.view?.settlementTurn, busy: Boolean(state.view?.activity?.busy) }), polished) : polished;
 			}
 			function TavernInlineStatusRuntime(props) {
 				const state = useLiveTavernView(props.sessionId, "inline-status");

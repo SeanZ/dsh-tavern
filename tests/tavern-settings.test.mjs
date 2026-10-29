@@ -148,10 +148,10 @@ test('舞台模式 is one global switch (stageToggles.stage), off by default; on
   for (const bad of [{}, { stage: 'on' }, { stage: true, other: true }, null]) assert.throws(() => applyTavernSettingsPatch({}, { stageToggles: bad }), /舞台开关/)
 })
 
-test('精修后台预审是全局开关，默认关闭，只接受布尔值', () => {
+test('自动精修是全局开关，默认关闭，只接受布尔值', () => {
   assert.equal(presentTavernSettings({}, {}).polishPrereview, false)
   assert.equal(presentTavernSettings(applyTavernSettingsPatch({}, { polishPrereview: true }), {}).polishPrereview, true)
-  assert.throws(() => applyTavernSettingsPatch({}, { polishPrereview: 'yes' }), /精修预审/)
+  assert.throws(() => applyTavernSettingsPatch({}, { polishPrereview: 'yes' }), /自动精修/)
 })
 
 test('世界书模型筛选是本局开关，默认关闭', () => {

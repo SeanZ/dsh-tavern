@@ -523,6 +523,8 @@ export function createStoryTimeline(options = {}) {
       Object.assign(chat.messages[index], intent.patch)
       delete chat.messages[index].displayRuntime
       delete chat.messages[index].sessionText // retired copy of text (reply-prose.js)
+      // An edit is a new scene; only 自动精修 keeps the original one (body.polish).
+      delete chat.messages[index].polishedFrom
       chat.timeline.revision++
       // Editing keeps the same committed round, but its next settlement must
       // bind to the edited revision. Old in-flight work still fails basedOn.
@@ -555,6 +557,17 @@ export function createStoryTimeline(options = {}) {
       }
       chat.candidateAgent = null
       value = { status: 'edited', revision: chat.timeline.revision }
+    }
+    else if (intent.kind === 'body.polish') {
+      // 自动精修: the same reply in better words. Its settlement, choices, stage and the background
+      // Agents' histories stay valid, so unlike body.edit nothing else moves, not even the revision.
+      const index = chat.messages.findLastIndex(message => message?.role === 'assistant')
+      if (index !== chat.messages.length - 1 || chat.messages[index]?.greeting || Number(chat.messages[index]?.turn) !== Number(intent.turn)) throw new Error('只能精修最后一轮正文')
+      Object.assign(chat.messages[index], intent.patch)
+      delete chat.messages[index].displayRuntime
+      delete chat.messages[index].sessionText
+      chat.timeline.updatedAt = now()
+      value = { status: 'polished', revision: chat.timeline.revision }
     }
     else if (intent.kind === 'body.begin') value = beginBody(chat, intent)
     else if (intent.kind === 'agent.begin') value = beginAgent(chat, intent)

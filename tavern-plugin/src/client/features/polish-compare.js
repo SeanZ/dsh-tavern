@@ -59,7 +59,7 @@
 				window.addEventListener("dsh-tavern-polished", changed);
 				return function () { window.removeEventListener("dsh-tavern-polished", changed); };
 			}, [sessionId, load]);
-			// 后台预审 is one switch for every game: each reply is reviewed as soon as it is written.
+			// 自动精修 is one switch for every game: each reply is reviewed as it is written and reworded in place.
 			async function togglePrereview(enabled) {
 				setSaving(true); setNotice("");
 				try {
@@ -86,14 +86,14 @@
 			const prereview = current ? current.prereview === true : false;
 			return h("section", { className: "dsh-tavern-full-context dsh-tavern-polish-compare" },
 				h("label", { className: "dsh-tavern-background-task" },
-					h("span", null, "后台预审", h("span", { className: "dsh-tavern-settings-desc" }, prereview
-						? "每轮正文写完就在后台审稿，点「精修」时多半已经审好，直接应用。每轮都会多一次模型调用，没点精修的轮次也照样计费。"
-						: "开启后，每轮正文写完就在后台审稿，点「精修」不用再等；每轮多一次模型调用。关闭时点「精修」才开始审稿，要等半分钟到一分钟。")),
-					h("input", { type: "checkbox", role: "switch", "aria-label": "后台预审", checked: prereview, disabled: !current || saving, onChange: function (event) { void togglePrereview(event.target.checked); } })),
+					h("span", null, "自动精修", h("span", { className: "dsh-tavern-settings-desc" }, prereview
+						? "每轮正文写完，后台按「正文精修原则」审稿，等本轮结算完成后直接改进正文，正文下方标「已自动精修」；改了什么在这里对比，可撤销。每轮多一次模型调用。"
+						: "开启后，每轮正文写完自动精修，不用再手动点「精修」；每轮多一次模型调用。关闭时点「精修」才开始审稿，要等半分钟到一分钟。")),
+					h("input", { type: "checkbox", role: "switch", "aria-label": "自动精修", checked: prereview, disabled: !current || saving, onChange: function (event) { void togglePrereview(event.target.checked); } })),
 				h("header", { className: "dsh-context-header" },
 					h("div", null, h("h3", null, "精修"),
 						h("p", null, !current ? "读取中…" : comparison
-							? "第 " + comparison.turn + " 轮 · 改了 " + comparison.count + " 处" + (comparison.seconds ? " · 用时 " + comparison.seconds + " 秒" : "") + " · " + new Date(comparison.at).toLocaleString()
+							? (comparison.auto ? "自动精修 · " : "") + "第 " + comparison.turn + " 轮 · 改了 " + comparison.count + " 处" + (comparison.seconds ? " · 用时 " + comparison.seconds + " 秒" : "") + " · " + new Date(comparison.at).toLocaleString()
 							: current.error ? "读取失败" : "最近一次精修")),
 					h("div", { className: "dsh-polish-actions" },
 						comparison ? h("button", { disabled: busy || undoing, onClick: undo }, undoing ? "正在撤销…" : "撤销精修") : null,

@@ -44,7 +44,7 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
   members:[{id:'background',name:'书记'}],
   locks:[{kind:'held',slot:'background',role:'settlement',operationId:'op',from:t-8000},{kind:'refused',slot:'background',role:'candidate',holder:'settlement',at:t-2000}],
   moments:[{event:'reply-committed',name:'正文写完',at:t-8500}],
-  triggers:[{event:'reply-committed',name:'正文写完',followers:['舞台导演','精修预审']},{event:'turn-discarded',name:'回合作废',followers:[]}]}}
+  triggers:[{event:'reply-committed',name:'正文写完',followers:['舞台导演','自动精修']},{event:'turn-discarded',name:'回合作废',followers:[]}]}}
  ${wait}\nmodules['react-dom/client'].createRoot(document.querySelector('main')).render(React.createElement(TavernBackgroundTasksTab,{sessionId:'game'}));`
  const browser=await chromium.launch({headless:true})
  try {
@@ -57,6 +57,6 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
   assert.match(active, /进行中[\s\S]*生成选项[\s\S]*排队中[\s\S]*第 5 轮 · 常驻[\s\S]*变量结算[\s\S]*运行中[\s\S]*停止后台/)
   assert.match(done, /最近完成[\s\S]*插件「地图」[\s\S]*失败[\s\S]*信号读取失败[\s\S]*手动记账[\s\S]*已作废[\s\S]*结果没有保存/)
   assert.match(catalog, /任务目录[\s\S]*变量结算[\s\S]*书记[\s\S]*更新变量[\s\S]*何时启动：正文写完后[\s\S]*读：正文[\s\S]*写：变量[\s\S]*等待：不等[\s\S]*占用书记的后台锁/)
-  assert.match(triggers, /触发关系[\s\S]*正文写完[\s\S]*舞台导演、精修预审[\s\S]*回合作废[\s\S]*—/)
+  assert.match(triggers, /触发关系[\s\S]*正文写完[\s\S]*舞台导演、自动精修[\s\S]*回合作废[\s\S]*—/)
  } finally {await browser.close()}
 })

@@ -190,6 +190,7 @@ import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
 import { createPolishRecords } from './domain/polish-records.js'
 import { createPolishPrereview, createPolishReviewer } from './domain/polish-run.js'
+import { applyPolishEdits } from './domain/polish-review.js'
 import { createCardAutoReload } from './domain/card-auto-reload.js'
 import { createRuntimeLogBuffer, runtimeHealthReport } from './domain/runtime-health.js'
 import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
@@ -2238,12 +2239,43 @@ export async function apply(ctx) {
     if (!selected) throw new Error('没有可用的模型配置，请先选择模型')
     return selected
   }, data: pluginData })
-  // 精修预审 (a setting, off by default): each reply is reviewed as soon as it is written.
+  // 自动精修 (setting polishPrereview, off by default): each reply is reviewed as soon as it is
+  // written, beside settlement, and the review is written back into the reply in place.
   const polishPrereview = createPolishPrereview({
     enabled: async () => (await readTavernSettings()).polishPrereview === true,
     readTexts: async sessionId => (await bodyEditor.read(sessionId)).parts.filter(part => part.kind === 'text').map(part => part.text),
-    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal)
+    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal),
+    apply: autoPolish
   })
+  // A reworded reply (body.polish) keeps its settlement, choices and stage. The write waits
+  // for this turn's background work, which writes the same reply; a new message cancels it.
+  async function autoPolish(sessionId, texts, review, signal) {
+    const started = Date.now()
+    const edits = (review?.edits || []).filter(item => item.status === 'ok')
+    if (review?.fallback || !edits.length) return polishPrereview.settle(sessionId, texts)
+    for (let waited = 0; ; waited += 1000) {
+      signal.throwIfAborted()
+      const chat = await chatHeaderForSession(sessionId, ['timeline', 'settleStatus', 'regenInProgress'])
+      if (!chat) return
+      const busy = agentRegistry.get(sessionId)?.phase?.kind === 'running' || chat.regenInProgress ||
+        ['pending', 'running'].includes(chat.settleStatus) || backgroundTasks.activity(chat).busy
+      if (!busy) break
+      if (waited > 300000) throw new Error('后台任务一直未结束，本轮不写回')
+      await sleep(1000)
+    }
+    const edit = await bodyEditor.read(sessionId)
+    const current = edit.parts.filter(part => part.kind === 'text').map(part => part.text)
+    // The reply changed meanwhile (an edit, a regeneration, a 精修): this review is not for it.
+    if (JSON.stringify(current) !== JSON.stringify(texts)) return
+    signal.throwIfAborted()
+    const polished = applyPolishEdits(texts, edits)
+    await bodyEditor.polish(sessionId, { token: edit.token, texts: polished })
+    polishPrereview.settle(sessionId, texts, polished)
+    notifyPluginTimeline(sessionId, 'edit', { settled: true })
+    sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'auto-polish:' + Date.now() })
+    await polishRecords.save(sessionId, edit.turn, { original: texts, edits, seconds: Math.round((Date.now() - started) / 1000), auto: true })
+      .catch(error => console.warn('dsh-tavern: 自动精修记录保存失败', error))
+  }
   // Who speaks each line and how they feel: the story model's dialogue bubbles (docs/design/cast-presentation.md).
   const castPresentation = createCastPresentation({
     // On for every game with 对话气泡; 舞台模式 needs it too, so the stage always has its speakers.
@@ -3138,11 +3170,11 @@ export async function apply(ctx) {
   // Its dialogue bubbles came with the text.
   storyEvents.on('reply-committed', '台词气泡', ({ sessionId }) => castPresentation.announce(str(sessionId)))
   // The 精修 pre-review reads the reply as written; settlement never waits for it.
-  storyEvents.on('reply-committed', '精修预审', ({ sessionId }) => polishPrereview.start(sessionId))
+  storyEvents.on('reply-committed', '自动精修', ({ sessionId }) => polishPrereview.start(sessionId))
   storyEvents.on('turn-settled', '对局标题', ({ latest }) => { if (latest) return gameTitles.afterTurn(latest.sessionId, latest.cardName) })
   storyEvents.on('turn-settled', '存档整理', ({ chatId, latest }) => { if (latest) saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) })
   // A reply the pre-review has not read yet (it was busy, or the reply changed since).
-  storyEvents.on('turn-settled', '精修预审', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
+  storyEvents.on('turn-settled', '自动精修', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
   storyEvents.on('turn-settled', '插件轮次通知', ({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
   storyEvents.on('turn-discarded', '取消舞台导演', ({ sessionId, turn }) => cancelDirector(sessionId, turn))
   storyEvents.on('turn-settled', '选项世界书预热', ({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })

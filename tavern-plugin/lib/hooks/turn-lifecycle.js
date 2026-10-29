@@ -42,7 +42,7 @@ export function registerTurnLifecycleHooks({
     const sessionId = session.id
     // No template cancellation here: this hook runs when any Agent's turn ends normally,
     // and the game's template process is shared, so cancelling it killed whatever another
-    // task (settlement beside the director or 精修预审) was still rendering.
+    // task (settlement beside the director or 自动精修) was still rendering.
     clearRuntimePresetRequestState(payload.agent)
     if (backgroundAgentRunner.owns(sessionId)) return
     const userMessage = userMessageForTurn(session, payload.turn)
