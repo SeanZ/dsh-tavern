@@ -1,6 +1,6 @@
 {
   "name": "dsh-tavern-image",
-  "version": "3.1.3",
+  "version": "3.1.4",
   "description": "DSH Tavern 剧情配图插件，支持 ComfyUI、NovelAI、OpenAI Images、Gemini 等渠道。",
   "type": "module",
   "scripts": {
