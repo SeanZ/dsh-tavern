@@ -23,7 +23,8 @@ function createTransferFeatureModule() {
 
 	function defaultPolicies(bundle) {
 		const policies = {}
-		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = "new" })
+		// 对话默认只带最新进度：一局存档点动辄七八份，导一份就等于整局写七八遍。
+		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = part.kind === "chats" ? "latest" : "new" })
 		return policies
 	}
 
@@ -495,6 +496,7 @@ function createTransferFeatureModule() {
 									"aria-label": part.label + " 的导入方式"
 								},
 									h("option", { value: "new" }, part.kind === "settings" ? "合并设置" : part.kind === "plugin-data" ? "覆盖数据" : "新建副本"),
+									part.kind === "chats" ? h("option", { value: "latest" }, "只导最新进度（快）") : null,
 									h("option", { value: "skip" }, "跳过")
 								),
 								items.length ? h("button", {
@@ -549,6 +551,7 @@ function createTransferFeatureModule() {
 						h("strong", null, "新增 " + totals.added + " 项"),
 						h("span", null, "跳过 " + totals.skipped + " 项"),
 						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null,
+						(state.policies && state.policies.chats === "latest") ? h("span", { className: "is-warn" }, "对话只带最新进度，可回退的存档点不导") : null,
 						state.stage === "applying" ? h("span", { className: "is-warn" }, applyProgressText()) : null
 					),
 					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport, title: state.stage === "applying" ? "导入还在进行，大包可能要几分钟" : "" }, busy ? "导入中…" : "确认导入")

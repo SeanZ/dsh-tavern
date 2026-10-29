@@ -56,12 +56,15 @@ export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prep
       try {
         // A save that came without its preset snapshot re-freezes it from the preset it points
         // at: the bundle installed that preset just before these games.
-        for (const { revision, state } of save.revisions) {
+        // 只要最新进度时这些存档点不写：一局 7 份快照就是 7 倍写盘，还带来几千个块。
+        const historyRevisions = args?.latestOnly === true ? [] : save.revisions
+        for (const { revision, state } of historyRevisions) {
           const historyState = await rawWriteChat(await restorePresetSnapshot(prepare(state)), { source: 'game-save.import.history' })
           written = true
           content.recordRevision(revision, historyState._storageRevision)
         }
         markStage('revisions')
+        if (args?.latestOnly === true) stageMs.skippedRevisions = save.revisions.length
         const current = await restorePresetSnapshot(prepare(save.chat))
         current.title = (sessionTitleOf(save.session.events) || str(save.chat.title) || str(save.chat.cardName) || '游戏') + '（导入）'
         current.lastOpenedAt = Date.now()

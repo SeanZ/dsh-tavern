@@ -363,3 +363,18 @@ test('同一个包再导一次：内容已在本机就不落盘，也不生成�
   assert.equal(to.state.imported.cards.length, 1, '第二次没有写文件')
   assert.deepEqual([...to.state.cards.keys()], ['cards/作家.json'])
 })
+
+test('对话「只导最新进度」：策略 latest 传给存档导入，new 保持完整历史', async () => {
+  const seen = []
+  const chats = {
+    async list() { return [] },
+    async collect(keys) { return keys.map(key => ({ key, title: '作家 · 第 3 章', fileName: 'game.dshsave', content: Buffer.from('save-bytes') })) },
+    async importOne(payload) { seen.push(payload.latestOnly === true); return { chatId: 'chat-new', sessionId: 'session-new', title: '作家 · 第 3 章' } },
+    async importedHashes() { return new Set() }
+  }
+  const to = environment({ chats })
+  const bundle = await bundleFrom(to, { chats: ['chat-1'] })
+  await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: { chats: 'latest' } })
+  await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: { chats: 'new' } })
+  assert.deepEqual(seen, [true, false])
+})
