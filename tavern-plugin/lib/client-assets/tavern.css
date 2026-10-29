@@ -4930,4 +4930,7 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-run.failed .dsh-tavern-background-run-name, .dsh-tavern-background-run-error { color: #c45f5f; }
 .dsh-tavern-background-run.discarded .dsh-tavern-background-run-name { text-decoration: line-through; opacity: .7; }
 .dsh-tavern-background-run-note { color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-background-triggers { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.dsh-tavern-background-triggers dt { color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-background-triggers dd { margin: 0; }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }

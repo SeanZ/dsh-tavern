@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
+  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
@@ -259,7 +259,7 @@ export function createPlayHandlers(deps) {
       return { progress: backgroundAgentRunner.progress(args && args.sessionId) || pluginSettlementProgress.snapshot(args && args.sessionId) }
     },
     async getBackgroundRuns(args) {
-      return { runs: backgroundAgentRunner.runs(args && args.sessionId) }
+      return { runs: backgroundAgentRunner.runs(args && args.sessionId), triggers: storyEvents?.table() || [] }
     },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }

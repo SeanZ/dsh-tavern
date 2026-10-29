@@ -38,14 +38,17 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
  async function rpc(method){return {runs:[
   {id:'run-3',task:'plugin',plugin:'地图',lane:'ephemeral',turn:5,model:'m',status:'failed',queuedAt:t-9000,startedAt:t-9000,endedAt:t-4000,error:'信号读取失败'},
   {id:'run-2',task:'candidate',lane:'resident',turn:5,model:'m',status:'queued',queuedAt:t-2000},
-  {id:'run-1',task:'settlement',lane:'resident',turn:5,model:'m',status:'running',queuedAt:t-8000,startedAt:t-8000}]}}
+  {id:'run-1',task:'settlement',lane:'resident',turn:5,model:'m',status:'running',queuedAt:t-8000,startedAt:t-8000},
+  {id:'run-0',task:'ledger',lane:'resident',turn:4,model:'m',status:'discarded',queuedAt:t-20000,startedAt:t-20000,endedAt:t-15000}],
+  triggers:[{event:'reply-committed',name:'正文写完',followers:['舞台导演','精修预审']},{event:'turn-discarded',name:'回合作废',followers:[]}]}}
  ${wait}\nmodules['react-dom/client'].createRoot(document.querySelector('main')).render(React.createElement(TavernBackgroundTasksTab,{sessionId:'game'}));`
  const browser=await chromium.launch({headless:true})
  try {
   const page=await browser.newPage();page.on('pageerror', error => { throw error });await page.setContent('<main></main>');await page.addScriptTag({content:script})
   await page.getByText('运行 1 · 排队 1 · 失败 1').waitFor()
-  const [active, done]=await page.locator('section').allInnerTexts()
+  const [active, done, triggers]=await page.locator('section').allInnerTexts()
   assert.match(active, /进行中[\s\S]*生成选项[\s\S]*排队中[\s\S]*第 5 轮 · 常驻[\s\S]*变量结算[\s\S]*运行中[\s\S]*停止后台/)
-  assert.match(done, /最近完成[\s\S]*插件「地图」[\s\S]*失败[\s\S]*信号读取失败/)
+  assert.match(done, /最近完成[\s\S]*插件「地图」[\s\S]*失败[\s\S]*信号读取失败[\s\S]*手动记账[\s\S]*已作废[\s\S]*结果没有保存/)
+  assert.match(triggers, /触发关系[\s\S]*正文写完[\s\S]*舞台导演、精修预审[\s\S]*回合作废[\s\S]*—/)
  } finally {await browser.close()}
 })

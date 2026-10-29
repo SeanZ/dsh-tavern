@@ -3370,7 +3370,7 @@ export async function apply(ctx) {
   const fontLibrary = createFontLibrary({ dataRoot })
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
   const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
-    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog,
+    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents,
     backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
     castCardOf, castEdit, castPresentation, castStage, castView, chatForSession, chatHeaderForSession,

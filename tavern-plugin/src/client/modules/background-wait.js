@@ -58,6 +58,7 @@ function backgroundRunsSummary(runs) {
 function useTavernBackgroundRuns(sessionId) {
     const [runs, setRuns] = React.useState(null);
     const [now, setNow] = React.useState(Date.now);
+    const [triggers, setTriggers] = React.useState([]);
     React.useEffect(function () {
         let disposed = false, loading = false;
         setRuns(null);
@@ -67,7 +68,9 @@ function useTavernBackgroundRuns(sessionId) {
             loading = true;
             try {
                 const result = await rpc("getBackgroundRuns", {}, sessionId);
-                if (!disposed) setRuns(Array.isArray(result.runs) ? result.runs : []);
+                if (disposed) return;
+                setRuns(Array.isArray(result.runs) ? result.runs : []);
+                setTriggers(Array.isArray(result.triggers) ? result.triggers : []);
             } catch (_) { /* Diagnostic only; the next poll retries. */ }
             finally { loading = false; }
         }
@@ -75,7 +78,7 @@ function useTavernBackgroundRuns(sessionId) {
         const timer = window.setInterval(refresh, 2000);
         return function () { disposed = true; window.clearInterval(timer); };
     }, [sessionId]);
-    return { runs, now };
+    return { runs, now, triggers };
 }
 function TavernBackgroundRunRow(props) {
     const h = React.createElement, run = props.run;
@@ -89,7 +92,7 @@ function TavernBackgroundRunRow(props) {
 // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
 function TavernBackgroundTasksTab(props) {
     const h = React.createElement;
-    const { runs, now } = useTavernBackgroundRuns(props.sessionId);
+    const { runs, now, triggers } = useTavernBackgroundRuns(props.sessionId);
     const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
     const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
     const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
@@ -105,6 +108,13 @@ function TavernBackgroundTasksTab(props) {
             h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "最近完成"),
                 list(done, "服务启动以来本局还没有结束的后台任务。")),
+            // The story event table: which moment starts or stops which task.
+            triggers.length ? h("section", { className: "dsh-tavern-status-section" },
+                h("div", { className: "dsh-tavern-status-label" }, "触发关系"),
+                h("dl", { className: "dsh-tavern-background-triggers" }, triggers.flatMap(row => [
+                    h("dt", { key: row.event + ":name" }, row.name),
+                    h("dd", { key: row.event + ":tasks" }, row.followers.length ? row.followers.join("、") : "—")])),
+                h("p", { className: "dsh-tavern-settings-desc" }, "变量结算不在表中：正文写完和重新生成时由流程直接启动，并等待它的结果。")) : null,
             h("p", { className: "dsh-tavern-settings-desc" }, "常驻：保留历史的后台 Agent，精修使用独立会话；临时：单独新开的 Agent，可同时运行。记录只保留最近 30 条，重启服务后清空。")));
 }
 // One line in 酒馆状态 that opens the page.
