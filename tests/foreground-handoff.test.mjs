@@ -42,7 +42,7 @@ test('发送前先清掉遗留的失败回合，再准备本轮（#193）', asyn
   assert.deepEqual(order, ['clear:session-4', 'prepare'])
 })
 
-test('开场与无结算的正文完成均不启动旧世界书预备任务', async () => {
+test('开场与无结算的正文完成都不排队后台结算', async () => {
   const deferred = []
   const chat = { id: 'chat', mode: 'story', messages: [{ greeting: true }] }
   const retired = () => assert.fail('retired recall hook')
@@ -50,7 +50,6 @@ test('开场与无结算的正文完成均不启动旧世界书预备任务', as
     store: { chatForSession: async () => chat },
     turns: { discard: async () => {}, prepare: async () => ({}), finalize: async () => ({ saved: true, chatId: chat.id }) },
     tasks: { activity: () => ({ phase: 'idle', busy: false }) },
-    prepareOpeningWorldBook: retired, prefilterWorldbook: retired, cancelPrefilter: retired,
     queueBackground: retired, defer: fn => deferred.push(fn), logger: { error: retired }
   })
   await handoff.prepare({ sessionId: 'parent', turn: 1 })

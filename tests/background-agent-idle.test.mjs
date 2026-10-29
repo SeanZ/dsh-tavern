@@ -52,10 +52,10 @@ test('failed persistence retains instance and backs off before retry', async t =
   assert.equal(h.runner.owns(id), false); assert.equal(attempts, 2)
 })
 
-test('本局开了联网搜索：任务自己写明不联网时仍不联网（文风联想、世界书预筛）', async t => {
+test('本局开了联网搜索：任务自己写明不联网时仍不联网', async t => {
   const seen = []
   const h = harness(t, { options: { resolveWebSearch: async () => true }, work: async (input, state) => { seen.push([input.task, state.input.webSearchEnabled]) } })
   await h.runner.run({ sessionId: 'parent-a', task: 'candidate', persistent: true, selection: { provider: 'test', model: 'test' } })
-  await h.runner.run({ sessionId: 'parent-a', task: 'style-reference', persistent: true, webSearchEnabled: false, selection: { provider: 'test', model: 'test' } })
-  assert.deepEqual(seen, [['candidate', true], ['style-reference', false]])
+  await h.runner.run({ sessionId: 'parent-a', task: 'ledger', persistent: true, webSearchEnabled: false, selection: { provider: 'test', model: 'test' } })
+  assert.deepEqual(seen, [['candidate', true], ['ledger', false]])
 })

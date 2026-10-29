@@ -75,7 +75,7 @@ for (const pending of [false, true]) test('host body completion starts director 
     turns: { async finalize() {}, async discard() {} }, store: { async chatForSession() { return { id: 'story' } } },
     tasks: { activity: () => pending ? { role: 'settlement', phase: 'pending' } : { phase: 'idle' } },
     replyCommitted: id => calls.push('director:' + id), queueBackground: async id => { calls.push('settlement:' + id) },
-    prefilterWorldbook: () => {}, defer: work => work()
+    defer: work => work()
   })
   handoff.end({ sessionId: 'game', reason: 'completed' })
   await new Promise(resolve => setImmediate(resolve))

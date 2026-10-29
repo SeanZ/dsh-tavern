@@ -347,7 +347,6 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function run(input) {
-    if (input.task === 'worldbook-filter') return Promise.reject(new Error('独立世界书召回任务已停用，请在当前任务中按需搜索和读取'))
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
     const record = runs.begin(input)
     input = { ...input, runRecord: record }

@@ -232,12 +232,6 @@ test('候选任务开始时合并任务状态，不丢掉已读的正文', async
   assert.equal(task.chat.messages.at(-1)?.text, '改过的正文')
 })
 
-test('retired worldbook recall cannot create a persisted background operation', async () => {
-  const h = coordinatorHarness()
-  await assert.rejects(h.coordinator.begin(h.current(), 'worldbook-filter'), /已停用/)
-  assert.equal(h.writes.length, 0)
-})
-
 test('剧情在后台任务运行期间变化：提交作废，并通知运行记录', async () => {
   const discarded = []
   const { coordinator, current } = coordinatorHarness({ discarded: target => discarded.push(target) })

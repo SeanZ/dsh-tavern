@@ -111,7 +111,6 @@ export function createBackgroundTaskCoordinator(options = {}) {
   }
 
   async function begin(chat, role, input = {}) {
-    if (role === 'worldbook-filter') throw new Error('独立世界书召回任务已停用')
     const chatId = str(chat && chat.id)
     const requestId = str(input.requestId).trim().slice(0, 160)
     const begun = await serialize(chatId, async function () {

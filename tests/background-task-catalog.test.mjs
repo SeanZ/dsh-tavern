@@ -22,10 +22,8 @@ test('every background task kind the code runs is listed in the catalog', async 
   for (const file of await sources(new URL('../tavern-plugin/lib', import.meta.url).pathname)) {
     for (const match of (await readFile(file, 'utf8')).matchAll(/\btask: *'([a-z-]+)'/g)) used.add(match[1])
   }
-  // Sub-agents the foreground spawns are not background runner tasks; 文风联想 runs in the
-  // foreground since 7e1dc293, and its old background recall is no longer started anywhere.
+  // Sub-agents the foreground spawns are not background runner tasks.
   used.delete('subagent')
-  used.delete('style-reference')
   assert.ok(used.size >= 8)
   assert.deepEqual([...used].filter(task => !listed.has(task)), [])
   for (const item of BACKGROUND_TASK_CATALOG) {
