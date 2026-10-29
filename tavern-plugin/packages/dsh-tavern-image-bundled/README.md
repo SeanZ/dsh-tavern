@@ -2,7 +2,7 @@
 
 给 DSH Tavern 用的剧情配图插件。它读取已经完成的正文，挑选适合画成插图的场景，再交给你配置的生图服务生成，按剧情位置插回消息里。
 
-可以用本地 ComfyUI、SD WebUI / Forge，也可以接 NovelAI、OpenAI Images、Gemini 等在线服务。人物资料、画风、提示词规则和图片记录在同一个面板里管理，适合给长篇角色扮演和故事配图。
+可以用本地 ComfyUI、SD WebUI / Forge，也可以接 NovelAI、OpenAI Images、Gemini、atlas cloud 等在线服务。人物资料、画风、提示词规则和图片记录在同一个面板里管理，适合给长篇角色扮演和故事配图。
 
 ## 插件的长处
 
@@ -180,6 +180,7 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 | Grok Images | xAI 图片接口 |
 | Seedream / 火山方舟 | Ark 图片接口 |
 | 百炼 Qwen-Image | DashScope 图片接口 |
+| atlas cloud | 原生 `model/generateImage` 文生图接口，自动查询异步任务并下载图片 |
 | SD WebUI / Forge | `sdapi/v1/txt2img` |
 
 同一个提供商可以配置多条渠道，分别保存名称、地址、模型和鉴权。可以在自己的服务和不同中转之间切换，无需把原配置删掉再重新填写。复制渠道后，需要给副本填写自己的密钥。
@@ -189,6 +190,18 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 渠道密钥在设置界面中不回显。留空保存会保留原密钥，明确清除后再保存才会删除。下载服务返回的图片链接时，不会把 API Key 发送给图片服务器。
 
 生图请求遇到网络错误时不会自动重发。如果服务端已接收任务但响应丢失，先查看任务记录，再决定是否手动重试，避免重复创建付费任务。
+
+### atlas cloud
+
+在 **设置 → 配图 → 在线服务 → 服务商** 中选择 **atlas cloud**，填写 Atlas Cloud API Key 后点“保存并测试连接”，无需另行安装 MCP。
+
+- 默认 API 根地址：`https://api.atlascloud.ai/api/v1`；默认文生图模型：`black-forest-labs/flux-schnell`。模型栏可填写自定义 ID，连接测试后提供当前公开目录中的文生图模型建议。
+- **尺寸参数格式**默认 `size`，将规划尺寸或手填的 `1024x1536` 转成 Atlas 所用的 `1024*1536`。Nano Banana 等模型应改选 `aspect_ratio`；也可选“不发送尺寸参数”，使用模型默认值。不同模型的尺寸、比例枚举不通用，更换模型时请核对平台文档（例如 Seedream 需要其支持的尺寸）。
+- 为兼容不同模型，负面提示词以 `Avoid:` 描述合入提示词，不会通发原生 `negative_prompt`、`seed` 或采样参数。
+- 测试只读取已鉴权的任务历史与公开模型目录，不创建付费任务；查询正常不代表所有模型均有权限或额度。没有任务历史读取权限时会显示测试失败，但不能据此断定没有生成权限。
+- 提交后自动轮询任务并下载图片；网络中断或重启后，已有任务号可继续只读查询，不会自动重新提交。取消仅停止本地等待，平台任务可能仍继续生成。
+
+接口依据：[Atlas MCP](https://github.com/AtlasCloudAI/mcp-server)、[Predictions API](https://www.atlascloud.ai/docs/en/predictions.md)、[Flux Schnell 模型参数](https://static.atlascloud.ai/model/schema/black-forest-labs-flux-schnell.json)。当前接入文生图，不包含参考图上传或图生图。
 
 ## 人物库与角色设计
 

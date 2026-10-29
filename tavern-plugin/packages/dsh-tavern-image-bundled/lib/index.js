@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { buildAutoImageGenPrompt } from './prompts.js'
 import { installTavernBridge, removeMountedPicture } from './tavern-bridge.js'
 import { createPluginUpdater } from './updater.js'
-import { IMAGE_PROVIDERS, generateImage, testImageChannel } from './image-providers.js'
+import { IMAGE_PROVIDERS, generateImage, testImageChannel, supportsImageTaskResume } from './image-providers.js'
 import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
@@ -1084,7 +1084,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       // Only an explicit recovery may inspect a locally cancelled task. Keep
       // normal polling cancelled, and never create a new provider request.
       if (job.state === 'cancelled' && options.recoverCancelled === true) {
-        if (!(job.comfyId || (job.backend === 'qwen' && job.providerTaskId))) {
+        if (!(job.comfyId || (supportsImageTaskResume(job.backend) && job.providerTaskId))) {
           throw new Error('这个渠道没有可查询的平台任务号；请到生图平台检查结果，未重新提交')
         }
         const snapshot = { ...job, state: 'uncertain', controller: new AbortController(), refreshing: null, queryAt: 0 }
@@ -1100,11 +1100,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         return
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) return
-      if (job.backend === 'qwen' && job.state === 'uncertain' && job.providerTaskId) {
+      if (supportsImageTaskResume(job.backend) && job.state === 'uncertain' && job.providerTaskId) {
         if (job.refreshing) return job.refreshing
-        const channel = config.imageChannels.find(item => item.id === job.channelId && item.provider === 'qwen')
+        const channel = config.imageChannels.find(item => item.id === job.channelId && item.provider === job.backend)
         if (!channel || !job.channelEndpoint || channelEndpointOf(channel) !== job.channelEndpoint) {
-          job.error = '原 Qwen 渠道地址已变化；请恢复原渠道配置后重查，或到平台手动检查'
+          job.error = '原 ' + (job.backend === 'atlascloud' ? 'atlas cloud' : 'Qwen') + ' 渠道地址已变化；请恢复原渠道配置后重查，或到平台手动检查'
           persistJobs()
           return
         }
@@ -1112,6 +1112,8 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (now - job.queryAt < config.queryThrottleMs) return
         job.queryAt = now
         job.refreshing = (async () => {
+          const signal = (job.controller ||= new AbortController()).signal
+          const stopped = () => signal.aborted || job.state === 'cancelled' || !jobs.has(job.id)
           try {
             const result = await generateImage(structuredClone(channel), {
               positive: job.positive, negative: job.negative,
@@ -1119,13 +1121,16 @@ function createRuntime(ctx, overrides, logger, deps) {
               steps: job.params?.steps, cfg: job.params?.cfg,
             }, {
               resumeTaskId: job.providerTaskId,
+              signal,
               maxImageBytes: config.maxImageBytes,
-              onTask: info => { if (info?.taskId) { job.providerTaskId = String(info.taskId); job.providerTaskProvider = String(info.provider || 'qwen'); persistJobs() } },
+              onTask: info => { if (info?.taskId) { job.providerTaskId = String(info.taskId); job.providerTaskProvider = String(info.provider || job.backend); return persistJobs() } },
             })
-            if (job.state === 'cancelled') return
-            const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: config.maxImageBytes })
+            if (stopped()) return
+            const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: config.maxImageBytes, signal })
+            if (stopped()) return
             const file = join(cacheRoot(config), `${job.id}.img`)
             await writeFile(file, output.bytes)
+            if (stopped()) { await rm(file, { force: true }); return }
             Object.assign(job, { file, mediaType: output.mediaType, byteLength: output.bytes.length, imageOutputWarning: output.warning || '', percent: 100, state: 'done', requestMayHaveSucceeded: false, completedAt: Date.now(), error: '' })
           } catch (error) {
             if (job.state !== 'cancelled') {
@@ -1134,8 +1139,8 @@ function createRuntime(ctx, overrides, logger, deps) {
               job.error = (error?.message ?? String(error)) + (job.state === 'uncertain' ? '；平台任务仍待确认，未自动重发' : '')
             }
           } finally {
+            await persistJobs()
             job.refreshing = null
-            persistJobs()
           }
         })()
         return job.refreshing
@@ -1266,7 +1271,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const timer = setInterval(() => {
         for (const job of jobs.values()) {
           if ((job.state === 'pending' || job.state === 'running' || job.state === 'uncertain')
-            && (job.comfyId || (job.backend === 'qwen' && job.providerTaskId && job.providerTaskProvider === 'qwen'))) refresh(job).catch(() => {})
+            && (job.comfyId || (supportsImageTaskResume(job.backend) && job.providerTaskId && job.providerTaskProvider === job.backend))) refresh(job).catch(() => {})
         }
       }, 3000)
       return () => clearInterval(timer)
@@ -1285,7 +1290,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       imageDisposed = true
       for (const controller of settledTurnWaitControllers) controller.abort(new Error('插件已卸载'))
       settledTurnWaitControllers.clear()
-      for (const job of jobs.values()) if (job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) job.controller?.abort()
+      for (const job of jobs.values()) if (job.backend !== 'comfyui' && ['pending', 'running', 'uncertain'].includes(job.state)) job.controller?.abort()
     }, 'dsh-tavern-image: image channels')
 
     function drainImages() {
@@ -1295,9 +1300,13 @@ function createRuntime(ctx, overrides, logger, deps) {
         imageRunning++
         job.state = 'running'
         job.requestStarted = true
-        persistJobs()
         ;(async () => {
           try {
+            // Persist the submission marker before POST, not only after its ID
+            // arrives: a lost response must never look like an unsubmitted job.
+            await persistJobs()
+            job.controller.signal.throwIfAborted()
+            if (!jobs.has(job.id)) return
             const result = await generateImage(channel, {
               positive: compiled.positive, negative: compiled.negative, seed: compiled.seed, characters: compiled.characters,
               width: compiled.size.width, height: compiled.size.height, steps: job.params.steps, cfg: job.params.cfg,
@@ -1305,7 +1314,7 @@ function createRuntime(ctx, overrides, logger, deps) {
               if (info?.provider && info?.taskId) {
                 job.providerTaskId = String(info.taskId)
                 job.providerTaskProvider = String(info.provider)
-                persistJobs()
+                return persistJobs()
               }
             } })
             job.controller.signal.throwIfAborted()
@@ -1320,9 +1329,17 @@ function createRuntime(ctx, overrides, logger, deps) {
           } catch (error) {
             job.requestMayHaveSucceeded = error.requestMayHaveSucceeded === true
             if (job.controller.signal.aborted) {
-              job.state = 'cancelled'
-              job.cancelMayHaveContinued = job.requestStarted === true
-              job.error = job.cancelMayHaveContinued ? '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用' : '已取消'
+              if (imageDisposed && job.state !== 'cancelled') {
+                // Host reload is not a user cancellation. Keep accepted tasks
+                // recoverable by their saved ID, without resubmitting the POST.
+                job.requestMayHaveSucceeded = job.requestStarted === true
+                job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
+                job.error = job.requestMayHaveSucceeded ? '插件已卸载；平台任务仍待确认，重启后可继续查询，未重新提交' : '插件卸载中断了尚未提交的任务'
+              } else {
+                job.state = 'cancelled'
+                job.cancelMayHaveContinued = job.requestStarted === true
+                job.error = job.cancelMayHaveContinued ? '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用' : '已取消'
+              }
             }
             else {
               job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'

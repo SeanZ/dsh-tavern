@@ -11,6 +11,7 @@ const PROVIDERS = {
   grok: ['Grok Images', 'https://api.x.ai/v1', 'grok-imagine-image-2.0'],
   seedream: ['Seedream / 火山方舟', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seedream-5-0-pro-260628'],
   qwen: ['百炼 Qwen-Image', 'https://dashscope-intl.aliyuncs.com/api/v1', 'qwen-image-3.0'],
+  atlascloud: ['atlas cloud', 'https://api.atlascloud.ai/api/v1', 'black-forest-labs/flux-schnell'],
   sdwebui: ['Stable Diffusion WebUI / Forge', 'http://127.0.0.1:7860', '']
 }
 
@@ -443,6 +444,86 @@ async function generateQwen(channel, request, ctx) {
   }
   throw new Error('DashScope 生图任务等待超时')
 }
+// Atlas MCP: POST /model/generateImage → data.id → GET /model/prediction/{id}.
+// Model parameters are top-level and model-specific; do not send OpenAI's n or
+// a universal negative_prompt/seed. Flux uses size="W*H", Nano Banana aspect_ratio.
+const ATLAS_SUCCESS = new Set(['completed', 'succeeded', 'success'])
+const ATLAS_FAILURE = new Set(['failed', 'canceled', 'cancelled', 'error', 'timeout'])
+const ATLAS_PENDING = new Set(['created', 'starting', 'queued', 'processing', 'pending', 'running'])
+const atlasStatus = task => String(task?.status || '').toLowerCase()
+const validTaskId = value => typeof value === 'string' && value.length > 0 && value.length <= 200 && /^[\w-]+$/.test(value)
+
+async function fetchAtlasJson(ctx, path, init) {
+  const { base, fetchImpl, signal, jsonLimit, channel } = ctx
+  const response = await fetchImpl(joinUrl(base, path), { ...init, redirect: 'error', signal })
+  const bytes = await readLimited(response, jsonLimit)
+  let data
+  try { data = JSON.parse(bytes.toString('utf8')) } catch {
+    throw new Error(`atlas cloud ${response.ok ? '返回了无效 JSON' : 'HTTP ' + response.status}`)
+  }
+  const task = data?.data || data
+  const code = Number(data?.code)
+  const failed = ATLAS_FAILURE.has(atlasStatus(task))
+  if (!response.ok || failed || (Number.isFinite(code) && code !== 0 && (code < 200 || code >= 300))) {
+    const detail = task?.error?.message || task?.error || data?.error?.message || data?.error || data?.message || data?.msg || task?.message || '请求失败'
+    const error = new Error(`atlas cloud${response.ok ? '' : ' HTTP ' + response.status}：${redact(typeof detail === 'string' ? detail : JSON.stringify(detail), channel)}`)
+    // Polling may return HTTP 5xx together with a definitive failed task. Conversely,
+    // a polling 401/404 does not prove a previously accepted paid task has failed.
+    error.providerDefinitiveFailure = failed || (init.method === 'POST' && code >= 400 && code < 500)
+    throw error
+  }
+  return task
+}
+
+async function generateAtlascloud(channel, request, ctx) {
+  const { fetchImpl, signal, max, channel: ch } = ctx
+  let task
+  if (ctx.resumeTaskId) task = { id: ctx.resumeTaskId, status: 'created' }
+  else {
+    const payload = { model: ch.model || PROVIDERS.atlascloud[2], prompt: combinedPrompt(request) }
+    const { width, height } = dims(request)
+    const sizeMode = option(ch, 'sizeMode', 'size')
+    if (sizeMode === 'size') {
+      const size = String(option(ch, 'size', `${width}*${height}`)).trim().match(/^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i)
+      if (!size || Number(size[1]) <= 0 || Number(size[2]) <= 0) throw new Error('atlas cloud 尺寸请填写宽×高，例如 1024x1536')
+      payload.size = `${Number(size[1])}*${Number(size[2])}`
+    } else if (sizeMode === 'aspect_ratio') {
+      payload.aspect_ratio = String(option(ch, 'aspectRatio', closestRatio(width, height))).trim()
+    } else if (sizeMode !== 'none') throw new Error('atlas cloud 尺寸参数模式无效')
+    task = await fetchAtlasJson(ctx, endpointFromOption(ch, 'generatePath', '/model/generateImage'), {
+      method: 'POST', headers: requestHeaders(ch, 'atlascloud'), body: JSON.stringify(payload),
+    })
+  }
+  const taskId = task?.id
+  if (taskId !== undefined && !validTaskId(taskId)) throw new Error('atlas cloud 返回了无效的平台任务编号')
+  if (taskId) await ctx.onTask?.({ provider: 'atlascloud', taskId })
+  const deadline = Date.now() + bounded(option(ch, 'pollTimeoutMs', 240000), 1000, 600000)
+  const pollPath = endpointFromOption(ch, 'taskPath', '/model/prediction/')
+  while (true) {
+    const status = atlasStatus(task)
+    if (ATLAS_SUCCESS.has(status)) {
+      const outputs = task.outputs ?? task.output
+      const output = Array.isArray(outputs) ? outputs[0] : outputs
+      const image = findImage(output, max)
+      if (image?.bytes) return image
+      if (image?.url) return fetchBytes(fetchImpl, checkedRemoteUrl(image.url), { method: 'GET', headers: {} }, max, signal, ch)
+      if (output && typeof output === 'object') return fromDataObject({ ...output, url: output.url || output.download_url }, fetchImpl, max, signal, ch)
+      const error = new Error('atlas cloud 任务完成但没有返回图片地址' + (task.has_nsfw_contents?.some?.(Boolean) ? '（平台内容过滤）' : ''))
+      error.providerDefinitiveFailure = true
+      throw error
+    }
+    if (!taskId) throw new Error('atlas cloud 没有返回平台任务编号')
+    if (status && !ATLAS_PENDING.has(status)) throw new Error('atlas cloud 返回了未知任务状态：' + redact(status, ch))
+    if (Date.now() >= deadline) throw new Error('atlas cloud 生图任务等待超时')
+    await wait(bounded(option(ch, 'pollIntervalMs', 2000), 1, 30_000), signal)
+    task = await fetchAtlasJson(ctx, `${pollPath.replace(/\/?$/, '/')}${encodeURIComponent(taskId)}`, {
+      method: 'GET', headers: requestHeaders(ch, 'atlascloud', false),
+    })
+  }
+}
+
+export function supportsImageTaskResume(provider) { return provider === 'qwen' || provider === 'atlascloud' }
+
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason || new Error('请求已取消'))
@@ -467,7 +548,7 @@ export async function generateImage(channel, request, { signal, fetchImpl = glob
   if (typeof fetchImpl !== 'function') throw new Error('当前环境没有可用的网络请求功能')
   const base = validateBase(channel), max = bounded(maxImageBytes, 1024, 128 * 1024 * 1024)
   const jsonLimit = Math.min(192 * 1024 * 1024, max * 2 + 1024 * 1024)
-  if (resumeTaskId && (channel.provider !== 'qwen' || typeof resumeTaskId !== 'string' || resumeTaskId.length > 200 || !/^[\w-]+$/.test(resumeTaskId))) throw new Error('无效的平台任务编号')
+  if (resumeTaskId !== undefined && (!supportsImageTaskResume(channel.provider) || !validTaskId(resumeTaskId))) throw new Error('无效的平台任务编号')
   const scope = abortScope(signal, bounded(channel.options?.timeoutMs, 1000, 600_000))
   let sentGeneration = Boolean(resumeTaskId)
   let generationStatus = resumeTaskId ? 200 : null
@@ -486,6 +567,7 @@ export async function generateImage(channel, request, { signal, fetchImpl = glob
     if (channel.provider === 'gemini') return await generateGemini(channel, request, ctx)
     if (channel.provider === 'gemini-chat') return await generateGeminiChat(channel, request, ctx)
     if (channel.provider === 'qwen') return await generateQwen(channel, request, ctx)
+    if (channel.provider === 'atlascloud') return await generateAtlascloud(channel, request, ctx)
     return await generateSdwebui(channel, request, ctx)
   } catch (error) {
     const message = scope.signal.aborted && !signal?.aborted ? '生图请求超时' : redact(error.message || '生图请求失败', channel)
@@ -500,7 +582,7 @@ export async function generateImage(channel, request, { signal, fetchImpl = glob
 export async function testImageChannel(channel, { signal, fetchImpl = globalThis.fetch } = {}) {
   if (!channel || !PROVIDERS[channel.provider]) throw new Error('不支持的生图渠道')
   const base = validateBase(channel)
-  const safePaths = { novelai: '/user/subscription', openai: '/models', grok: '/models', 'gemini-chat': '/models', gemini: '/models', sdwebui: '/sdapi/v1/sd-models' }
+  const safePaths = { novelai: '/user/subscription', openai: '/models', grok: '/models', 'gemini-chat': '/models', gemini: '/models', atlascloud: '/model/history?no=1&size=1', sdwebui: '/sdapi/v1/sd-models' }
   const chatNovelai = channel.provider === 'novelai' && option(channel, 'protocol', 'native') === 'chat'
   const safePath = chatNovelai ? (new URL(base).pathname.replace(/\/+$/, '') ? '/models' : '/v1/models') : safePaths[channel.provider]
   const path = safePath && endpointFromOption(channel, 'testPath', safePath)
@@ -513,6 +595,21 @@ export async function testImageChannel(channel, { signal, fetchImpl = globalThis
     const bytes = await readLimited(response, 2 * 1024 * 1024)
     let parsed = null; try { parsed = JSON.parse(bytes.toString('utf8')) } catch {}
     if (!parsed) return { ok: false, status: 'reachable', message: '服务已响应，但返回内容不是有效 JSON。' }
+    if (channel.provider === 'atlascloud') {
+      if ((parsed.code !== undefined && ![0, 200].includes(Number(parsed.code))) || !Array.isArray(parsed.data?.items)) {
+        return { ok: false, status: 'reachable', message: redact(parsed.message || parsed.msg || '任务查询未返回有效结果；请检查 API 根地址、密钥及查询权限。', channel) }
+      }
+      // The public model catalogue alone cannot verify a key. Probe authenticated
+      // history first (no generation/billing), then use the catalogue for suggestions.
+      let models = []
+      try {
+        const catalogue = await fetchJson(fetchImpl, joinUrl(base, '/models'), { method: 'GET', headers: { 'user-agent': USER_AGENT } }, 2 * 1024 * 1024, scope.signal, channel)
+        if (Array.isArray(catalogue?.data)) models = [...new Set(catalogue.data.filter(item => item?.type === 'Image' && item.display_console !== false
+          && item.tags?.some?.(tag => String(tag).toUpperCase().replaceAll('_', '-') === 'TEXT-TO-IMAGE'))
+          .map(item => item.model).filter(model => typeof model === 'string' && model.trim()))]
+      } catch (error) { if (signal?.aborted) throw error }
+      return { ok: true, status: 'reachable', message: '鉴权与任务查询正常；实际生图仍需模型权限和可用额度。', ...(models.length ? { models: models.slice(0, 200) } : {}) }
+    }
     const models = channel.provider === 'sdwebui'
       ? (Array.isArray(parsed) ? parsed.map(x => x && typeof x === 'object' ? x.model_name : null).filter(Boolean) : [])
       : (Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : []).map(x => x && typeof x === 'object' ? x.id || x.name : null).filter(Boolean)

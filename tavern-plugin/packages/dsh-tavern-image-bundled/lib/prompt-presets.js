@@ -47,7 +47,7 @@ export const BUILTIN_PROMPT_PRESETS = [
 ]
 
 const TAG_BACKENDS = new Set(['comfyui', 'novelai', 'stable-diffusion', 'sd', 'sdwebui', 'forge', 'automatic1111'])
-const NATURAL_BACKENDS = new Set(['openai', 'gemini', 'gemini-chat', 'grok', 'seedream', 'qwen'])
+const NATURAL_BACKENDS = new Set(['openai', 'gemini', 'gemini-chat', 'grok', 'seedream', 'qwen', 'atlascloud'])
 
 function clean(value, max = MAX_TEXT) { return String(value ?? '').trim().slice(0, max) }
 function id(value) { return clean(value, 80).replace(/[^a-zA-Z0-9_-]/g, '-') }
