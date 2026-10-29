@@ -3,15 +3,15 @@ set -euo pipefail
 
 DSH_ROOT="${DSH_HOME:-${HOME}/.dsh}"
 APP_DIR="${DSH_TAVERN_SOURCE_ROOT:-${DSH_TAVERN_ANDROID_APP_DIR:-${DSH_ROOT}/apps/dsh-tavern}}"
-DEFAULT_REPOSITORY="https://github.com/flizzywine/dsh-tavern.git"
+DEFAULT_REPOSITORY="https://github.com/koabop/dsh-tavern.git"
 REPOSITORY="${DSH_TAVERN_REPOSITORY:-${DEFAULT_REPOSITORY}}"
 # Follows the main branch, same as install.sh.
 BRANCH="${DSH_TAVERN_BRANCH:-main}"
-DEFAULT_TARBALL_URL="https://codeload.github.com/flizzywine/dsh-tavern/tar.gz/refs/heads/main"
+DEFAULT_TARBALL_URL="https://codeload.github.com/koabop/dsh-tavern/tar.gz/refs/heads/main"
 TARBALL_URL="${DSH_TAVERN_TARBALL_URL:-${DEFAULT_TARBALL_URL}}"
 # 运行清单与 CDN 源：按文件哈希逐个比对，只下载有变化的文件（整包压缩包为备用方案）。
-CDN_METADATA_URL="${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json}"
-CDN_ROOT_URL="${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern}"
+CDN_METADATA_URL="${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/koabop/dsh-tavern@main/dsh-tavern-runtime.json}"
+CDN_ROOT_URL="${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/koabop/dsh-tavern}"
 SOURCE_CDN="${DSH_TAVERN_SOURCE_CDN:-1}"
 SOURCE_MARKER=".dsh-tavern-tarball-source"
 OFFLINE_TARBALL="/root/tavern-offline.tar"
@@ -368,6 +368,19 @@ update_source() {
       fail "项目目录存在未提交修改。为避免覆盖你的文件，已停止更新。"
     fi
     printf '正在检查 DSH Tavern 更新……\n'
+    # 旧安装保留着自己的 origin：只迁移已知旧官方源，不覆盖用户自定义仓库。
+    # 显式指定仓库时优先使用它，与首次 clone 的行为一致。
+    local origin
+    origin="$(git -C "${APP_DIR}" remote get-url origin 2>/dev/null || true)"
+    if [ -n "${origin}" ] && [ -n "${DSH_TAVERN_REPOSITORY:-}" ]; then
+      if [ "${origin}" != "${REPOSITORY}" ]; then git -C "${APP_DIR}" remote set-url origin "${REPOSITORY}"; fi
+    else
+      case "${origin%.git}" in
+        https://github.com/flizzywine/dsh-tavern|http://github.com/flizzywine/dsh-tavern|git://github.com/flizzywine/dsh-tavern|git@github.com:flizzywine/dsh-tavern|ssh://git@github.com/flizzywine/dsh-tavern)
+          git -C "${APP_DIR}" remote set-url origin "${REPOSITORY}"
+          ;;
+      esac
+    fi
     # Apply before fetching so existing installations also stop requesting doc blobs.
     git -C "${APP_DIR}" config remote.origin.promisor true
     git -C "${APP_DIR}" config remote.origin.partialclonefilter blob:none
@@ -407,6 +420,12 @@ update_source() {
     if [ -z "${DSH_TAVERN_TARBALL_URL:-}" ]; then
       TARBALL_URL="$(sed -n '1p' "${APP_DIR}/${SOURCE_MARKER}")"
       [ -n "${TARBALL_URL}" ] || TARBALL_URL="${DEFAULT_TARBALL_URL}"
+      # 旧 APK/压缩包的标记会覆盖默认 URL；仅换旧官方仓库，保留分支或提交路径。
+      case "${TARBALL_URL}" in
+        https://codeload.github.com/flizzywine/dsh-tavern/*)
+          TARBALL_URL="https://codeload.github.com/koabop/dsh-tavern/${TARBALL_URL#https://codeload.github.com/flizzywine/dsh-tavern/}"
+          ;;
+      esac
     fi
     if install_from_tarball; then return; fi
     if install_from_cdn; then return; fi
