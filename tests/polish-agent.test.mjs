@@ -98,8 +98,8 @@ test('意见修改复用同一 Agent，草稿与实际正文区别明确', async
   assert.match(f.calls[1].text, /本轮只按玩家意见修改，不额外扩展原则精修/)
 })
 
-test('回退、重生成、前文变化和固定设定变化不复用错误历史', async () => {
-  for (const change of ['rewind', 'regenerate', 'previous', 'card', 'fork']) {
+test('回退、重生成、前文变化仍用同一个润色会话并说明剧情有变；固定设定变化或分叉才换会话', async () => {
+  for (const change of ['rewind', 'regenerate', 'previous']) {
     const f = fixture(), reviewer = createPolishReviewer(f.options)
     await reviewer.review('parent', ['甲。乙。'])
     if (change === 'rewind') f.chat.messages = [{ role: 'assistant', text: '开场' }]
@@ -107,8 +107,15 @@ test('回退、重生成、前文变化和固定设定变化不复用错误历�
       f.chat.messages[2].text = '已手动改过'
       f.chat.messages.push({ role: 'user', text: '继续' }, { role: 'assistant', text: '新正文' })
     }
+    await reviewer.review('parent', [change === 'regenerate' ? '另一个正文' : '甲。乙。'])
+    assert.equal(f.calls[1].id, f.calls[0].id, change)
+    assert.match(f.calls[1].text, /【剧情有变】/, change)
+  }
+  for (const change of ['card', 'fork']) {
+    const f = fixture(), reviewer = createPolishReviewer(f.options)
+    await reviewer.review('parent', ['甲。乙。'])
     if (change === 'card') f.card = { name: '人物', description: '新的固定设定' }
-    await reviewer.review(change === 'fork' ? 'fork-parent' : 'parent', [change === 'regenerate' ? '另一个正文' : '甲。乙。'])
+    await reviewer.review(change === 'fork' ? 'fork-parent' : 'parent', ['甲。乙。'])
     assert.notEqual(f.calls[1].id, f.calls[0].id, change)
   }
 })
@@ -126,9 +133,13 @@ test('跳过轮次或 native 会话丢失时补入前文；失败记录不能作
   f.fail = true
   await assert.rejects(reviewer.review('parent', ['新正文']), /模型失败/)
   assert.equal(f.saved.complete, false)
+  // A failed review is no cache, but the Session stays: the next review continues there and is told.
+  const failedIn = f.calls.at(-1).id
   f.fail = false; f.replaceSession = false
   await reviewer.review('parent', ['新正文'])
-  assert.equal(f.calls.at(-1).newSession, true)
+  assert.equal(f.calls.at(-1).newSession, false)
+  assert.equal(f.calls.at(-1).id, failedIn)
+  assert.match(f.calls.at(-1).text, /【剧情有变】/)
 })
 
 test('无修改必须显式完成，正文或模型错误不冒充成功', async () => {
