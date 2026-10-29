@@ -3172,7 +3172,7 @@ export async function apply(ctx) {
   }
   // 任务表: every background task a story moment starts. Settlement is not here: the
   // reply and regeneration flows queue it themselves, since they wait for its outcome.
-  workflow.job({ id: 'stage-director', name: '舞台导演', on: 'reply-committed', run: ({ gameId }) => directRound(gameId),
+  workflow.job({ id: 'stage-director', name: '舞台导演', task: 'stage-director', condition: '开启对话气泡与舞台模式时', on: 'reply-committed', run: ({ gameId }) => directRound(gameId),
     cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => cancelDirector(gameId, turn) })
   // Its dialogue bubbles came with the text.
   workflow.job({ id: 'cast-bubbles', name: '台词气泡', on: 'reply-committed', run: ({ gameId }) => castPresentation.announce(gameId) })
@@ -3182,7 +3182,7 @@ export async function apply(ctx) {
     run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
   // The 精修 pre-review reads the reply as written; settlement never waits for it. After
   // settlement it picks up a reply it has not read yet (it was busy, or the reply changed).
-  workflow.job({ id: 'auto-polish', name: '自动精修', on: ['reply-committed', 'turn-settled'], run: ({ gameId }) => polishPrereview.start(gameId) })
+  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: ['reply-committed', 'turn-settled'], run: ({ gameId }) => polishPrereview.start(gameId) })
   workflow.job({ id: 'plugin-turn', name: '插件轮次通知', on: 'turn-settled', run: ({ gameId }) => pluginApi.turnSettled(gameId) })
   workflow.job({ id: 'candidate-worldbook', name: '选项世界书预热', on: 'turn-settled', run: ({ gameId }) => candidateWorldbookPreparation.warm(gameId) })
   const foregroundHandoff = createForegroundHandoff({
@@ -3413,7 +3413,7 @@ export async function apply(ctx) {
   const fontLibrary = createFontLibrary({ dataRoot })
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
   const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
-    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents,
+    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow,
     backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
     castCardOf, castEdit, castPresentation, castStage, castView, chatForSession, chatHeaderForSession,

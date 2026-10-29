@@ -26,13 +26,17 @@ export function createWorkflow({ events }) {
     const on = list(declaration?.on)
     const cancelOn = list(declaration?.cancelOn)
     const { if: when, run, cancel } = declaration || {}
+    // `task`: the background runner task it starts (background-task-catalog.js), and
+    // `condition`: its `if` in words; both only describe it on the 后台任务 page.
+    const task = String(declaration?.task || '')
+    const condition = String(declaration?.condition || '')
     if (!id) throw new Error('任务缺少 id')
     if (jobs.has(id)) throw new Error('任务 ' + id + ' 已声明')
     if (on.length === 0) throw new Error('任务 ' + name + ' 缺少触发事件')
     if (typeof run !== 'function') throw new Error('任务 ' + name + ' 缺少 run')
     if (when !== undefined && typeof when !== 'function') throw new Error('任务 ' + name + ' 的 if 必须是函数')
     if (cancelOn.length > 0 && typeof cancel !== 'function') throw new Error('任务 ' + name + ' 有 cancelOn 但缺少 cancel')
-    const entry = Object.freeze({ id, name, on: Object.freeze(on), cancelOn: Object.freeze(cancelOn) })
+    const entry = Object.freeze({ id, name, task, condition, on: Object.freeze(on), cancelOn: Object.freeze(cancelOn) })
     // A failing `if`, run or cancel is the events' to report, under the task's name.
     const follow = (event, label, work) => events.on(event, label, payload => {
       const gameId = gameOf(payload)
