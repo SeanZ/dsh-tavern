@@ -75,7 +75,8 @@ export function createManualCharacterDesign({ store, runAgent, selection, beginT
       if (!draft.changed() && !draft.reused().length) throw new Error(saveError
         ? '人物档案保存失败：' + saveError + '。模型未完成修正，请重试。'
         : '模型未调用人物档案保存工具，本次未保存设计档案。请重试；若持续出现，请检查后台模型是否支持工具调用。')
-      const completed = await taskRun.commit({ participant: taskRun.participant(result), stateChanged: draft.changed(), beforePersist: publishWorldbook ? current => publishWorldbook(current, [...savedCharacters.values()]) : undefined, apply: current => {
+      // Character files change no story: in-flight work fenced on the revision stays valid.
+      const completed = await taskRun.commit({ participant: taskRun.participant(result), stateChanged: false, beforePersist: publishWorldbook ? current => publishWorldbook(current, [...savedCharacters.values()]) : undefined, apply: current => {
         for (const reuse of draft.reused()) {
           const entries = characterWorldbookEntries(current.openingWorldbookSnapshot?.version === 1 ? current.openingWorldbookSnapshot.document : snapshot.document, [reuse.name])
           if (reuse.entries.some(old => !entries.some(entry => entry.ref === old.ref && entry.content === old.content))) throw new Error('复用的人物世界书已变化，请重新设计')
