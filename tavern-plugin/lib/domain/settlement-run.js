@@ -158,9 +158,17 @@ export function createSettlementRun(deps) {
   }
   async function onSettlementSettled(chatId, signal) {
     const { chatPersistence, storyEvents } = deps
-    let latest
-    try { latest = (await chatPersistence.readSlice(chatId, [], ['_storageRevision', 'sessionId', 'cardName']))?.chat } catch { latest = null }
-    if (!signal.aborted && latest !== undefined) storyEvents.emit('turn-settled', { chatId, latest })
+    let latest, turn
+    try {
+      const head = await chatPersistence.readSlice(chatId, [], ['_storageRevision', 'sessionId', 'cardName'])
+      latest = head?.chat
+      // The turn just settled, so what follows 本轮结算完 (needs, outputs) knows which turn it is.
+      if (Number.isSafeInteger(head?.messageCount) && head.messageCount > 0) {
+        const last = (await chatPersistence.readSlice(chatId, [head.messageCount - 1]))?.chat?.messages?.at(-1)
+        if (last?.role === 'assistant' && Number.isSafeInteger(Number(last.turn)) && Number(last.turn) > 0) turn = Number(last.turn)
+      }
+    } catch { latest = latest ?? null }
+    if (!signal.aborted && latest !== undefined) storyEvents.emit('turn-settled', { chatId, latest, ...(turn ? { turn } : {}) })
   }
 
   return Object.freeze({ runSettlement, runCycle: runSettlementCycle, onSettled: onSettlementSettled, startPluginTask, pluginTaskJob: chatId => pluginTaskJobs.get(chatId) })

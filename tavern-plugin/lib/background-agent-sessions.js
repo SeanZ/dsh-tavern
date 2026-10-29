@@ -195,10 +195,10 @@ export function createBackgroundAgentSessions(options, task) {
     const parent = agents.get(input.sessionId)
     if (parent === undefined || parent.session === undefined) throw new Error('无法创建后台 Agent：前台会话不可用')
     const runtimeInput = Object.assign({}, input)
-    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && Boolean(await options.resolveWorldbookSkills?.(input))
+    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && Boolean(await options.resolveWorldbookSkills?.(input))
     // The game's web search setting, unless the task rules it out (style reference, worldbook
     // filter: paid, slow, and what they look for is not on the open web).
-    if (options.resolveWebSearch && !['phone', 'polish'].includes(input.task) && input.webSearchEnabled !== false) {
+    if (options.resolveWebSearch && !['phone', 'polish'].includes(input.task) && input.ownPrefix !== true && input.webSearchEnabled !== false) {
       runtimeInput.webSearchEnabled = await options.resolveWebSearch(input)
     }
     const persistent = input.persistent === true
@@ -306,7 +306,7 @@ export function createBackgroundAgentSessions(options, task) {
     requestSessions.set(traceSessionId, handle.agent.session)
     requestContexts.set(traceSessionId, {
       scope: 'background',
-      webSearchEnabled: !['phone', 'stage-director', 'polish'].includes(input.task) && runtimeInput.webSearchEnabled === true,
+      webSearchEnabled: !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && runtimeInput.webSearchEnabled === true,
       parentSessionId: str(input.sessionId),
       selection: { ...input.selection },
       maxTokens,

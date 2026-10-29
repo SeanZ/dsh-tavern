@@ -36,19 +36,29 @@ export function slotOf(role) {
 
 // Members plugins register (tavern.member): `plugin:<owner>:<name>`. Their Sessions are the
 // runner's, like 润色师's: not bound in the save, never rewound with the story.
+// A member may bring a prefix of its own (`system`, `tools`): its Session then holds that
+// system prompt and those tools only, fixed for every task, and each task is one message.
 const pluginMembers = new Map()
+const pluginPrefixes = new Map()
 
 export function pluginMemberId(owner, name) {
   return 'plugin:' + String(owner) + ':' + String(name)
 }
 
 /** Register a plugin's member; returns the function that removes it. */
-export function registerPluginMember({ owner, name, title }) {
+export function registerPluginMember({ owner, name, title, system, tools }) {
   const id = pluginMemberId(owner, name)
   if (pluginMembers.has(id)) throw new Error('成员 ' + name + ' 已注册')
-  const member = Object.freeze({ id, name: String(title || name), timeline: false, plugin: String(owner) })
+  const member = Object.freeze({ id, name: String(title || name), timeline: false, plugin: String(owner), ownPrefix: system !== undefined })
+  const prefix = system === undefined ? null : Object.freeze({ system: String(system), tools: tools || new Map() })
   pluginMembers.set(id, member)
-  return () => { if (pluginMembers.get(id) === member) pluginMembers.delete(id) }
+  if (prefix) pluginPrefixes.set(id, prefix)
+  return () => { if (pluginMembers.get(id) === member) { pluginMembers.delete(id); pluginPrefixes.delete(id) } }
+}
+
+/** The prefix a plugin member brought, { system, tools: Map(name → tool) }, or null. */
+export function pluginMemberPrefix(id) {
+  return pluginPrefixes.get(String(id || '')) || null
 }
 
 export function pluginMember(id) {

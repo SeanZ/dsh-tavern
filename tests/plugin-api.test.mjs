@@ -1288,6 +1288,36 @@ test('插件成员：注册后任务可以挂上去，在它的常驻会话里�
   assert.ok(!listMembers().some(member => member.id === 'plugin:npc-plugin:luna'))
 })
 
+test('插件成员可以有自己的前缀：系统提示词和工具固定在成员上，任务只送一条工单、不能再带工具；工具调用回到插件', { skip: !cordis }, async t => {
+  const { listMembers, pluginMemberPrefix } = await import('../tavern-plugin/lib/domain/background-members.js')
+  const requests = [], rolled = []
+  const h = await harness(t, { runTask: async input => { requests.push(input); return { text: await input.call('roll_dice', { sides: 6 }) } } })
+  let tavern
+  await h.root.plugin({ name: 'dice-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'dealer', title: '荷官', system: '你是赌场荷官，只用 roll_dice 掷骰。',
+      tools: [{ name: 'roll_dice', description: '掷骰', parameters: { type: 'object', properties: { sides: { type: 'integer' } } },
+        execute: async ({ sides }) => { rolled.push(sides); return { value: 4 } } }] })
+    ctx.tavern.member({ name: 'plain', title: '普通' })
+  } })
+  await tick()
+  assert.ok(listMembers().some(member => member.id === 'plugin:dice-plugin:dealer' && member.ownPrefix === true))
+  assert.equal(pluginMemberPrefix('plugin:dice-plugin:plain'), null)
+  const { text } = await tavern.runTask({ gameId: 'game-1', member: 'dealer', prompt: '这一局掷一次' })
+  assert.equal(text, '{"value":4}')
+  assert.deepEqual(rolled, [6])
+  const sent = requests.at(-1)
+  assert.deepEqual([sent.member, sent.system, sent.prompt, sent.tools.map(tool => tool.name)],
+    ['plugin:dice-plugin:dealer', '你是赌场荷官，只用 roll_dice 掷骰。', '这一局掷一次', ['roll_dice']])
+  await assert.rejects(tavern.runTask({ gameId: 'game-1', member: 'dealer', prompt: 'x',
+    tools: [{ name: 'other_tool', description: 'd', parameters: { type: 'object' }, execute() {} }] }), /不能再传 tools/)
+  await tavern.runTask({ gameId: 'game-1', member: 'plain', prompt: '普通任务' })
+  assert.equal(requests.at(-1).system, undefined, 'a member without system keeps Tavern\'s background prefix')
+  assert.throws(() => tavern.member({ name: 'x', tools: [] }), /先给它 system/)
+  assert.throws(() => tavern.member({ name: 'y', system: '' }), /system 必须是/)
+  assert.throws(() => tavern.member({ name: 'z', system: 's', tools: [{ name: 'Bad', description: 'd', parameters: { type: 'object' }, execute() {} }] }), /工具名/)
+})
+
 test('tavern.on：插件挂到事件表上，出现在触发关系里；别的卡自带的插件不触发；出错只记错误', { skip: !cordis }, async t => {
   const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
   const storyEvents = createStoryEvents({ logger: { warn() {} } })

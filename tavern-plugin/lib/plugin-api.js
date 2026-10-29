@@ -30,6 +30,7 @@ const POOL_TIMEOUT_MS = 5000
 const POOL_ENTRY_ID = /^[A-Za-z0-9._-]{1,64}$/
 const PLUGIN_TIMEOUT_MS = 30000
 const REPLACEMENT_TIMEOUT_MS = 120000
+const MAX_MEMBER_SYSTEM = 20000
 const MAX_VARIABLES = 1024 * 1024
 const MAX_EDIT_TEXT = 200000
 const MAX_HISTORY_TURNS = 50
@@ -870,11 +871,18 @@ export function createTavernPluginApi(deps) {
 
     // A resident background Agent of this plugin: one per game, its own Session and prompt cache.
     // Tasks given `member: name` run in it one at a time, beside Tavern's own members.
-    member({ name, title } = {}) {
+    // A resident member of this plugin: one Session per game. With `system` it has a prefix of
+    // its own: that system prompt and `tools` (as in runTask) only, the same for every task, so
+    // each runTask({ member }) is one message to it and brings no tools of its own. Without
+    // `system` it shares Tavern's background prefix (card, world book), as before.
+    member({ name, title, system, tools } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
       const label = taskTitle(title, name)
-      return owned(this, () => registerPluginMember({ owner, name, title: label }), 'tavern.member()')
+      if (system !== undefined && (typeof system !== 'string' || !system.trim() || system.length > MAX_MEMBER_SYSTEM)) throw new Error('system 必须是 1–' + MAX_MEMBER_SYSTEM + ' 字的系统提示词')
+      if (tools !== undefined && system === undefined) throw new Error('成员要有自己的工具，先给它 system')
+      const checked = system === undefined ? undefined : taskExecution.checkTools(tools || [])
+      return owned(this, () => registerPluginMember({ owner, name, title: label, system: system?.trim(), tools: checked }), 'tavern.member()')
     },
 
     // A task of this plugin run after each turn, before or after Tavern's own settlement.
