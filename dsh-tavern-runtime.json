@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "5dfbaca8fb9bfa5d8f5c1920513dcdd3de35cc40",
-  "releaseSequence": 970,
+  "revision": "339f54b6f1a9d295fac089d0fa8fe0cc2467a69d",
+  "releaseSequence": 971,
   "version": "3.1.0",
   "files": [
     {
@@ -781,13 +781,13 @@
     },
     {
       "path": "tavern-plugin/lib/client-assets/tavern.css",
-      "sha256": "4d5ab045e6e99d35e22eb9bee096d58c35f491ad52a05a2300bfc943ec8eb3b6",
-      "size": 516045
+      "sha256": "5a2b349c6d9cb96c6abd4d78ffce10dbbdb59decb689e8a30180af404f549e5d",
+      "size": 516426
     },
     {
       "path": "tavern-plugin/lib/client.js",
-      "sha256": "87479a678704a40c7196025bb41c6cf7644303593603691eb339316f3e217c42",
-      "size": 2921152
+      "sha256": "662fbcaeef6ff17cc808834df5311333be9dffc8eac330d56d23915e9b69feed",
+      "size": 2923346
     },
     {
       "path": "tavern-plugin/lib/cordis-inspect.js",
@@ -2041,8 +2041,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/round-history.js",
-      "sha256": "e2a6ec8e7edb441768249cdc2f2a7b52efaf016fa028d5b65a1f764089e6463a",
-      "size": 92766
+      "sha256": "4c953dfcb540d3aebf567d79e808f1d9e3b289d20a0cfa243545e5dab4335524",
+      "size": 94971
     },
     {
       "path": "tavern-plugin/lib/domain/runtime-content-projection.js",
@@ -2686,8 +2686,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/transfer-store.js",
-      "sha256": "0ceb0dd4c4bb7701bf24ca47837b7a0f1893929db80f7a826040aa769cca70ee",
-      "size": 2285
+      "sha256": "e991beebda0acaba5b0c0ddb3c21a363f024cf5b7f09f94c397d5973e0ca86d8",
+      "size": 3863
     },
     {
       "path": "tavern-plugin/lib/domain/transfer-undo.js",
@@ -2936,8 +2936,8 @@
     },
     {
       "path": "tavern-plugin/lib/http/routes.js",
-      "sha256": "9c68f586c30c947726f5257be209779be949ae4ecc73ef0345f43456302cc1f0",
-      "size": 31134
+      "sha256": "3cc8cd4fc7f070ad2804ffe243d3fde0e009e0fb76956acea9420d91d60f64b7",
+      "size": 31457
     },
     {
       "path": "tavern-plugin/lib/index.js",
@@ -5096,9 +5096,9 @@
     }
   ],
   "archive": {
-    "commit": "2a253d3c93bf9b97a808fccd8160d2bba8b2582a",
+    "commit": "a50ccb63bc517dcea536476105b2e5b21db93d97",
     "path": "runtime.zip",
-    "sha256": "3ec6b9ea8c54eb6fbc33184f3628bb467a15977bafc18801b43627dd2330cc3a",
-    "size": 10522973
+    "sha256": "e0c924dd4c8ca590e21399b0c9d545263c5bb90c2125af0ae33023cde8c6620c",
+    "size": 10525658
   }
 }
