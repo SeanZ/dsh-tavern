@@ -6,7 +6,7 @@ import { referencedBackgroundSessionIds } from '../tavern-plugin/lib/domain/back
 import { createBackgroundSessionRetirement } from '../tavern-plugin/lib/domain/background-session-retirement.js'
 import { createAutoCompaction } from '../tavern-plugin/lib/domain/auto-compaction.js'
 import { projectChatSessionState } from '../tavern-plugin/lib/domain/chat-session-state.js'
-import { BACKGROUND_TASK_CATALOG } from '../tavern-plugin/lib/domain/background-task-catalog.js'
+import { BACKGROUND_TASK_CATALOG } from '../tavern-plugin/lib/domain/background-tasks.js'
 
 // The contract every member whose Session the save binds must keep. A member added to
 // background-members.js is checked here without touching this file.

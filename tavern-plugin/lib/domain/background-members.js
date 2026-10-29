@@ -1,3 +1,5 @@
+import { taskMember } from './background-tasks.js'
+
 // The named resident background Agents of a game. Each keeps its own Session (and prompt
 // cache); tasks on one member run one at a time, tasks on different members may overlap.
 // `background` is the Session every game already has, so old saves keep using it.
@@ -12,20 +14,13 @@ export const BACKGROUND_MEMBERS = Object.freeze([
 // Members whose Sessions the save binds, in table order.
 export const TIMELINE_MEMBERS = Object.freeze(BACKGROUND_MEMBERS.filter(member => member.timeline).map(member => member.id))
 
-// Coordinator roles (and runner tasks) by the member whose Session and slot they use.
-const ROLE_MEMBER = Object.freeze({
-  settlement: 'background',
-  ledger: 'background',
-  candidate: 'background',
-  'character-design': 'background',
-  // Retired roles still found in old saves.
-  'worldbook-filter': 'background',
-  'style-reference': 'background',
-  polish: 'polish'
-})
+// Coordinator roles (and runner tasks) by the member whose Session and slot they use: each
+// task's own `member` in the task table, and roles retired from it still found in old saves.
+const RETIRED_ROLE_MEMBER = Object.freeze({ 'worldbook-filter': 'background', 'style-reference': 'background' })
 
 export function memberOf(role) {
-  return ROLE_MEMBER[String(role || '')] || ''
+  const key = String(role || '')
+  return taskMember(key) || RETIRED_ROLE_MEMBER[key] || ''
 }
 
 // The timeline participant a role binds: its member, or the role itself when it has none.

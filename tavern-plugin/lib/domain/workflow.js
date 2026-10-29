@@ -3,7 +3,7 @@
 // it does (`run`) and which moments stop it (`cancelOn`, `cancel`). The scheduler follows
 // the story events for it, so the declaration is the only place a task's trigger is
 // written, and the 后台任务 page reads it from here.
-// A task's `needs` (background-task-catalog.js) are kept here too: the task that owns a
+// A task's `needs` (background-tasks.js) are kept here too: the task that owns a
 // piece of work says how to wait for it in a game (`waiter`), and a task that needs it
 // waits through `needs`, so no task reaches into another's queues.
 // Between declared tasks, `needs` names other tasks (by id) instead of moments: it runs
@@ -97,7 +97,7 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     const after = list(declaration?.needs)
     const cancelOn = list(declaration?.cancelOn)
     const { if: when, enabled, run, cancel } = declaration || {}
-    // `task`: the background runner task it starts (background-task-catalog.js), and
+    // `task`: the background runner task it starts (background-tasks.js), and
     // `condition`: its `if` in words; both only describe it on the 后台任务 page.
     const task = String(declaration?.task || '')
     const condition = String(declaration?.condition || '')

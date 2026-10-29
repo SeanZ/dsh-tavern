@@ -1384,7 +1384,7 @@ test('tavern.job 声明的任务进任务表：按事件和条件运行，列在
 test('tavern.job 的 needs：等别的插件任务这一轮做完再跑，读到它的产出；任务目录写出先后', { skip: !cordis }, async t => {
   const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
   const { createWorkflow } = await import('../tavern-plugin/lib/domain/workflow.js')
-  const { describeTasks } = await import('../tavern-plugin/lib/domain/background-task-catalog.js')
+  const { describeTasks } = await import('../tavern-plugin/lib/domain/background-tasks.js')
   const storyEvents = createStoryEvents({ logger: { warn() {} } })
   const workflow = createWorkflow({ events: storyEvents, logger: { warn() {} } })
   const h = await harness(t, { storyEvents, workflow })

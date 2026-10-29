@@ -75,7 +75,7 @@ import { createSessionViewReader, createSessionChatReader } from './domain/sessi
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createStoryEvents } from './domain/story-events.js'
 import { createWorkflow } from './domain/workflow.js'
-import { BACKGROUND_TASK_CATALOG } from './domain/background-task-catalog.js'
+import { BACKGROUND_TASK_CATALOG, registerBackgroundTasks } from './domain/background-tasks.js'
 import { TIMELINE_MEMBERS, participantOf } from './domain/background-members.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
@@ -3040,15 +3040,6 @@ export async function apply(ctx) {
   })
   const { startPluginTask } = settlementRun
   function queueSettlement(chatId) { return settlementJobs.start(chatId) }
-  // Waiting for this game's settlement: the one its timeline says is due runs now (or is
-  // joined), then whatever settlement job is still running ends.
-  workflow.waiter('settlement', async chat => {
-    const activity = backgroundTasks.activity(chat)
-    if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) await queueSettlement(chat.id)
-    await settlementJobs.pending(chat.id)
-  })
-  // A plugin task of the last turn (or one the player started) runs to its end.
-  workflow.waiter('plugin', chat => settlementRun.pluginTaskJob(chat.id))
   function cancelSettlement(chatId, options) { return settlementJobs.cancel(chatId, options) }
   const mvuSettlementReconciler = createMvuSettlementResume({
     conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, storyEvents,
@@ -3183,26 +3174,10 @@ export async function apply(ctx) {
     stageDirectorStream.cancel(sessionId, turn)
     if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
   }
-  // 任务表: every background task a story moment starts. Settlement is declared but not
-  // run from here: the reply and regeneration flows queue it themselves, since they wait
-  // for its outcome (and skip it while a regeneration's temporary turn is open).
-  workflow.job({ id: 'settlement', name: '变量结算', task: 'settlement', flow: true, on: 'reply-committed', condition: '有待结算的回复时' })
-  workflow.job({ id: 'stage-director', name: '舞台导演', task: 'stage-director', condition: '开启对话气泡与舞台模式时', on: 'reply-committed',
-    enabled: ({ gameId }) => stageOn(gameId), run: ({ gameId }) => directRound(gameId),
-    cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => cancelDirector(gameId, turn) })
-  // Its dialogue bubbles came with the text.
-  workflow.job({ id: 'cast-bubbles', name: '台词气泡', on: 'reply-committed', condition: '开启对话气泡时',
-    enabled: async () => (await readTavernSettings()).castPresentation === true, run: ({ gameId }) => castPresentation.announce(gameId) })
-  workflow.job({ id: 'game-title', name: '对局标题', on: 'turn-settled',
-    run: ({ gameId, latest }) => gameTitles.afterTurn(gameId, latest.cardName) })
-  workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled',
-    run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
-  // The 精修 review reads the reply as written; settlement never waits for it. One start: a
-  // regenerated reply is 正文写完 again, and starting twice for the same text is a no-op.
-  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: 'reply-committed',
-    enabled: async () => (await readTavernSettings()).polishPrereview === true, run: ({ gameId }) => polishPrereview.start(gameId) })
-  workflow.job({ id: 'plugin-turn', name: '插件轮次通知', on: 'turn-settled', run: ({ gameId }) => pluginApi.turnSettled(gameId) })
-  workflow.job({ id: 'candidate-worldbook', name: '选项世界书预热', on: 'turn-settled', run: ({ gameId }) => candidateWorldbookPreparation.warm(gameId) })
+  // 任务表 (domain/background-tasks.js): every background task is declared there once; this
+  // hands it the services its tasks run on.
+  registerBackgroundTasks(workflow, { readTavernSettings, stageOn, directRound, cancelDirector, polishPrereview, castPresentation,
+    gameTitles, saveMaintenance, pluginApi, candidateWorldbookPreparation, backgroundTasks, queueSettlement, settlementJobs, settlementRun })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },

@@ -3,7 +3,9 @@ import test from 'node:test'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { BACKGROUND_TASK_CATALOG, describeTasks } from '../tavern-plugin/lib/domain/background-task-catalog.js'
+import { BACKGROUND_TASK_CATALOG, describeTasks, registerBackgroundTasks, taskMember } from '../tavern-plugin/lib/domain/background-tasks.js'
+import { createStoryEvents } from '../tavern-plugin/lib/domain/story-events.js'
+import { createWorkflow } from '../tavern-plugin/lib/domain/workflow.js'
 
 async function sources(dir) {
   const files = []
@@ -49,4 +51,34 @@ test('the page lines are written from the declarations: starting moments, needs 
   assert.equal(lines.plugin.waits, '前台不在生成时才能开始；下一轮开始前要等它')
   const plugin = describeTasks([{ task: 'plugin:x:y', name: 'y', trigger: '自己的', waits: '' }], [])[0]
   assert.equal(plugin.trigger, '自己的')
+})
+
+test('one table: registering it gives the scheduler each task\'s triggers and the waits others rely on', async () => {
+  const events = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events, tasks: BACKGROUND_TASK_CATALOG })
+  const calls = []
+  const stop = registerBackgroundTasks(workflow, {
+    readTavernSettings: async () => ({ polishPrereview: true, castPresentation: false }), stageOn: async () => false,
+    directRound: id => calls.push(['director', id]), polishPrereview: { start: id => calls.push(['polish', id]) },
+    castPresentation: { announce: id => calls.push(['bubbles', id]) },
+    backgroundTasks: { activity: () => ({ role: '', phase: 'idle' }) }, settlementJobs: { pending: () => calls.push(['settlement-wait']) },
+    settlementRun: { pluginTaskJob: () => calls.push(['plugin-wait']) } })
+  const jobs = Object.fromEntries(workflow.table().map(job => [job.id, job]))
+  assert.deepEqual([jobs.settlement.flow, jobs.polish.task, jobs['game-title'].task, [...jobs['stage-director'].cancelOn]], [true, 'polish', '', ['turn-discarded']])
+  events.emit('reply-committed', { sessionId: 'game' })
+  for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, [['polish', 'game']], 'stage and bubbles are off; settlement is the flow\'s')
+  await workflow.beforeNextTurn({ id: 'chat' })
+  await workflow.needs('candidate', { id: 'chat' })
+  assert.deepEqual(calls.slice(1), [['settlement-wait'], ['plugin-wait'], ['settlement-wait']])
+  assert.deepEqual(workflow.runs('game').map(run => [run.id, run.status]).sort(), [['cast-bubbles', 'skipped'], ['polish', 'completed'], ['stage-director', 'skipped']])
+  stop()
+  assert.deepEqual(workflow.table(), [])
+})
+
+test('a task\'s member is its own entry\'s; upkeep is not in the catalog', () => {
+  assert.deepEqual(['settlement', 'candidate', 'ledger', 'character-design', 'polish', 'phone', 'plugin', 'nope'].map(taskMember),
+    ['background', 'background', 'background', 'background', 'polish', '', '', ''])
+  assert.equal(BACKGROUND_TASK_CATALOG.some(item => item.task === 'game-title'), false)
+  assert.deepEqual(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.lane]).filter(([, lane]) => lane === 'ephemeral').map(([task]) => task), ['stage-director', 'phone', 'plugin'])
 })

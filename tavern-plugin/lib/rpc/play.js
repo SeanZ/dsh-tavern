@@ -1,4 +1,4 @@
-import { BACKGROUND_TASK_CATALOG, describeTasks } from '../domain/background-task-catalog.js'
+import { BACKGROUND_TASK_CATALOG, describeTasks } from '../domain/background-tasks.js'
 import { STORY_EVENTS } from '../domain/story-events.js'
 import { buildRunTree } from '../domain/background-run-tree.js'
 import { listMembers } from '../domain/background-members.js'
