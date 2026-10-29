@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "bdbaf244701c463945206f8abc827831dc60844d",
-  "releaseSequence": 983,
+  "revision": "2317610eaf6a54b5f2eefa7e0adf6c8ee650d962",
+  "releaseSequence": 984,
   "version": "3.1.0",
   "files": [
     {
@@ -786,8 +786,8 @@
     },
     {
       "path": "tavern-plugin/lib/client.js",
-      "sha256": "e518ceb18e9a6e85c79210dc4f7119d2f917458aa6778cd022b36463a0b4fe67",
-      "size": 2950238
+      "sha256": "2fd1127241ca99cbcd49b1a615e92b873b4bad6a64c51af7f74e7e186fef072b",
+      "size": 2954387
     },
     {
       "path": "tavern-plugin/lib/cordis-inspect.js",
@@ -1196,13 +1196,13 @@
     },
     {
       "path": "tavern-plugin/lib/domain/conversation-background-settings.js",
-      "sha256": "fc87e7e814f21328d610b5ac85072e04bbc419e25336782582fc72530cc01cb9",
-      "size": 2719
+      "sha256": "aa14f9dcda27bc70b80a0e18a337539ea4e55e133729080b1717685bdcfd53fe",
+      "size": 3575
     },
     {
       "path": "tavern-plugin/lib/domain/conversation-background.js",
-      "sha256": "62305d7ba48052cd55f38603e58aafede504be6394e32ae023049f9c343285fe",
-      "size": 2059
+      "sha256": "9a8a2fc9147cbaf25354c34ceac8f7930749d0f06a91d08f39d100512c3c23fa",
+      "size": 2353
     },
     {
       "path": "tavern-plugin/lib/domain/conversation-fork-point.js",
@@ -1351,8 +1351,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/foreground-orchestration-strategies.js",
-      "sha256": "50838239323582ed0438fac17c9708acb3226eb7db94dc9b169fc56b5ecd3d23",
-      "size": 30428
+      "sha256": "dd926193b445460c60a4f600a3377440e9466e08805d460d0e00ffe98c02b3ac",
+      "size": 30721
     },
     {
       "path": "tavern-plugin/lib/domain/foreground-tools.js",
@@ -1741,8 +1741,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/network-tools.js",
-      "sha256": "a3931b1fdccd98b68ac294011e2a1f0f6d90e1f42f99a6ba52ec028d3e8e3ebb",
-      "size": 2607
+      "sha256": "0d207e725d994140a35185ed656ea91b558e668e9e0c3a703a6d026e24e428f0",
+      "size": 2782
     },
     {
       "path": "tavern-plugin/lib/domain/official-mvu-assets.js",
@@ -2726,8 +2726,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/turn-orchestration.js",
-      "sha256": "37e2ef48143b8a94c7ee8365d9a14471a3a97e461ebededae5838cc3b3395f6c",
-      "size": 50819
+      "sha256": "5bdc49d1c10592d8d5d1ce111bc8ce3ff85bf66a54927f9481b7278d5ac8eb8b",
+      "size": 51021
     },
     {
       "path": "tavern-plugin/lib/domain/uncommitted-rounds.js",
@@ -5126,9 +5126,9 @@
     }
   ],
   "archive": {
-    "commit": "815f9e810ad42f03ac3876a252d3b3d0f67d8f7d",
+    "commit": "6a39a272f64a9e6eda532635283bcecb7f070a05",
     "path": "runtime.zip",
-    "sha256": "5b3b479e38b3f099b569cf5329a7de9266fbdb71c6e0c6a8f89e2f6e01f4df70",
-    "size": 10566242
+    "sha256": "6bf47010988370ceff621655fe8e4e8afad82c240447b543212ab66ee0ad846f",
+    "size": 10567463
   }
 }
