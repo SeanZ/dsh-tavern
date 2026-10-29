@@ -315,24 +315,30 @@ export function registerTavernHttpRoutes({
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
             return
           }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/transfer-export') {
+          if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/api/dsh-tavern/transfer-export' || pathname.startsWith('/api/dsh-tavern/transfer-export/'))) {
             const token = new URL(req.url, 'http://x').searchParams.get('token') || ''
-            const found = transferExports ? transferExports.take(token) : null
+            const found = transferExports ? await transferExports.take(token) : null
             if (!found) {
               res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
               res.end('export expired')
               return
             }
-            const name = String(found.filename || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
+            // 名字优先取服务端记录；URL 路径段只是给下载器的兜底（见 rpc 里 downloadUrl 的注释）。
+            const requested = pathname.slice('/api/dsh-tavern/transfer-export/'.length)
+            const name = String(found.filename || requested || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
             res.writeHead(200, {
               'Content-Type': 'application/zip',
               'Content-Length': found.bytes,
               'Cache-Control': 'no-store',
               'X-Content-Type-Options': 'nosniff',
-              'Content-Disposition': 'attachment; filename="backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
+              // ASCII 名给只认 filename= 的下载器，filename* 给浏览器，路径段给 Android WebView。
+              'Content-Disposition': 'attachment; filename="tavern-backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
             })
+            if (req.method === 'HEAD' || found.bytes === 0) { res.end(); return }
             const stream = found.stream()
-            res.on('close', () => { void transferExports.remove(token); stream.destroy() })
+            // 下载完不删：内嵌 WebView 或浏览器可能中途放弃第一次请求，用户刷新后还会再点。
+            // 文件按 token 有效期由 sweep 收掉，这里只中断本次流。
+            res.on('close', () => { stream.destroy(); void transferExports.sweep() })
             stream.on('error', () => res.destroy()).pipe(res)
             return
           }

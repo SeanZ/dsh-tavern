@@ -34,12 +34,12 @@ test('全局写作 Skill 逐项保存，恢复开启不改动其他 Skill', () =
   assert.throws(() => applyTavernSettingsPatch(document, { defaultWritingSkill: { name: 'one', enabled: 'false' } }), /无效/)
 })
 
-test('BGM is one global stage switch (stageToggles.music), on by default, kept beside 舞台模式; only stage booleans are accepted', () => {
-  assert.deepEqual(presentTavernSettings({}, {}).stageToggles, { stage: true, music: true, sfx: true, ambience: true, items: true, entrance: true })
-  const off = applyTavernSettingsPatch({ castPresentation: true, stageToggles: { stage: false } }, { stageToggles: { music: false } })
+test('BGM is one global stage switch (stageToggles.music), off by default like every stage switch, kept beside 舞台模式; only stage booleans are accepted', () => {
+  assert.deepEqual(presentTavernSettings({}, {}).stageToggles, { stage: false, music: false, sfx: false, ambience: false, items: false, entrance: false })
+  const off = applyTavernSettingsPatch({ castPresentation: true, stageToggles: { stage: false, sfx: true, ambience: true, items: true, entrance: true } }, { stageToggles: { music: false } })
   assert.deepEqual([off.castPresentation, presentTavernSettings(off, {}).stageToggles], [true, { stage: false, music: false, sfx: true, ambience: true, items: true, entrance: true }])
   assert.deepEqual(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { music: true } }), {}).stageToggles, { stage: false, music: true, sfx: true, ambience: true, items: true, entrance: true })
-  // 物品 is the third switch, on by default.
+  // 物品 is the third switch.
   assert.equal(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { items: false } }), {}).stageToggles.items, false)
   assert.equal(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { sfx: false } }), {}).stageToggles.sfx, false)
   assert.equal(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { ambience: false } }), {}).stageToggles.ambience, false)
@@ -140,8 +140,8 @@ test('改一边不会带上另一边；第一次改动就把旧字段折成明�
   assert.throws(() => applyTavernSettingsPatch({}, { storyOutputToolCall: 1 }), /输出走工具调用设置必须是布尔值/)
 })
 
-test('舞台模式 is one global switch (stageToggles.stage), on by default; only stage booleans are accepted', () => {
-  assert.equal(presentTavernSettings({}, {}).stageToggles.stage, true)
+test('舞台模式 is one global switch (stageToggles.stage), off by default; only stage booleans are accepted', () => {
+  assert.equal(presentTavernSettings({}, {}).stageToggles.stage, false)
   const off = applyTavernSettingsPatch({ castPresentation: true }, { stageToggles: { stage: false } })
   assert.deepEqual([off.castPresentation, presentTavernSettings(off, {}).stageToggles.stage], [true, false])
   assert.equal(presentTavernSettings(applyTavernSettingsPatch(off, { stageToggles: { stage: true } }), {}).stageToggles.stage, true)

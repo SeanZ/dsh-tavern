@@ -23,7 +23,6 @@ export function registerTurnLifecycleHooks({
   ensureNativeSystemPrefix,
   foregroundHandoff,
   foregroundStrategies,
-  fullTemplateRuntime,
   nativeWorldBookTemplateContext,
   persistClearedBodyEdits,
   pluginPromptSections,
@@ -41,8 +40,9 @@ export function registerTurnLifecycleHooks({
     const session = payload.agent && payload.agent.session
     if (session === undefined) return
     const sessionId = session.id
-    const templateOwner = backgroundAgentRunner.requestContext(sessionId)?.parentSessionId || sessionId
-    fullTemplateRuntime.cancel(templateOwner)
+    // No template cancellation here: this hook runs when any Agent's turn ends normally,
+    // and the game's template process is shared, so cancelling it killed whatever another
+    // task (settlement beside the director or 精修预审) was still rendering.
     clearRuntimePresetRequestState(payload.agent)
     if (backgroundAgentRunner.owns(sessionId)) return
     const userMessage = userMessageForTurn(session, payload.turn)

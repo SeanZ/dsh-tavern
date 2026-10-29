@@ -1,6 +1,6 @@
 <p align="center">
 
-> **当前版本适配 DSH 0.2.x**（0.2.0-rc.2 起的 0.2 系列均可；官方 DeepSeek Harness 或独立命令行；Android 使用独立 APK），安装见[快速开始](#快速开始)。还在用 DSH 0.1.5 的，请用[稳定版](#稳定版dsh-015)。
+> **当前版本适配 DSH 0.2.x**（0.2.0-rc.2 起的 0.2 系列均可；官方 DeepSeek Harness 或独立命令行；Android 使用独立 APK），安装见[快速开始](#快速开始)。
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/docs/assets/brand/dsh-tavern-lockup-on-dark.svg">
     <img src="docs/assets/brand/dsh-tavern-lockup.svg" width="360" alt="DSH 酒馆">
@@ -39,12 +39,6 @@
 | 写作方法      | ❌ 写进预设，每轮常驻提示词                            | ✅ 写成 Skill，按场景调用                                                                                            |
 | **边玩边改卡** | ❌ 想排错或按喜好调整，都要自己翻人物卡、世界书、正则，逐项手改          | ✅ 边玩边改：<br>① 排查错误：有问题随时交给调试 Agent，结合实际游玩记录分析并修复<br>② 调整内容：用对话告诉 Agent 哪里不喜欢，按自己的口味微调                        |
 | **酒馆生态**  | ✅ 生态极其丰富：人物卡、世界书、预设、正则、MVU、酒馆助手脚本、大量第三方插件 | ✅ 兼容大部分人物卡（包括 MVU、正则、酒馆助手脚本、前端美化），世界书、预设可直接导入<br>⚠️ 不支持安装酒馆插件（DSH 插件可以装），但内置了酒馆助手、MVU、提示词模板等重要插件，足以支撑大部分人物卡 |
-
-## 字体与离线使用
-
-字体列表和皮肤中的字体 ID 保持不变。精简 runtime 包仅保留字体清单与许可证，使用某一字重时才下载对应文件，校验大小和 SHA-256 后写入酒馆数据目录的 `cache/fonts`。下载失败会使用系统字体，不阻塞游玩；缓存可离线使用，随数据目录迁移，默认卸载保留数据时也保留缓存。旧版本已带的字体会先校验复用。
-
-需要提前准备离线字体时，在酒馆程序目录、使用与酒馆相同的数据目录环境运行 `node bin/prefetch-fonts.mjs`；失败项可联网后重试，不修改皮肤选择。当前分阶段发布仅精简 CDN runtime 包及逐文件安装清单；Git、codeload 和 Android 源码安装仍保留完整字体，不能视为同等下载减量。
 
 ## 产品特色
 
@@ -122,7 +116,7 @@
 
 **桌面版仅支持官方 DeepSeek Harness，不再支持社区 DSH Desktop 或 DSH NEXT。** 从社区版迁移前请备份数据，再按[数据导入说明](https://github.com/flizzywine/dsh-tavern/wiki/%E4%BB%8E%E6%97%A7%E9%85%92%E9%A6%86%E7%BB%A7%E6%89%BF%E6%95%B0%E6%8D%AE%EF%BC%88%E6%B5%8B%E8%AF%95%E7%89%88%EF%BC%89)导入；Android 和独立命令行版继续支持。
 
-当前版本适配 **DSH 0.2.x**（0.2.0-rc.2 起）。还在用 DSH 0.1.5（DSH Desktop 2.0.13、旧一键安装包）的，请用[稳定版](#稳定版dsh-015)。安装前建议备份 `.dsh` 目录。
+当前版本适配 **DSH 0.2.x**（0.2.0-rc.2 起）。安装前建议备份 `.dsh` 目录。
 
 ### Windows
 
@@ -193,12 +187,6 @@ curl -fsSL 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/install
 - 旧版本的存档：打开后在「酒馆状态」里点「迁移存档」。正文、变量、分支和历史版本都会保留。迁移后的数据目录不要再让旧宿主直接读取。
 - 桌面版切回原版 DSH：设置 → 原版DSH → 切到原版 DSH 并重启。之后在原版 DSH 的设置 → DSH酒馆，就能切回酒馆。不要删除 `.dsh/backups` 和 `profiles/desktop.fresh-*`。细节见[桥接插件说明](tavern-plugin/packages/dsh-profile-bridge/README.md)。
 - 旧酒馆在自定义目录、需要继承数据时，见[数据继承说明](https://github.com/flizzywine/dsh-tavern/wiki/%E4%BB%8E%E6%97%A7%E9%85%92%E9%A6%86%E7%BB%A7%E6%89%BF%E6%95%B0%E6%8D%AE%EF%BC%88%E6%B5%8B%E8%AF%95%E7%89%88%EF%BC%89)。
-
-### 稳定版（DSH 0.1.5）
-
-适配 **DSH 0.1.5-rc.2**（DSH Desktop 2.0.13、DSHA 0.1.5-rc2），在 [`stable` 分支](https://github.com/flizzywine/dsh-tavern/tree/stable)维护，只修严重问题。安装方法（含一键安装包）见 [稳定版 README](https://github.com/flizzywine/dsh-tavern/blob/stable/README.md#快速开始)。
-
-已经装了稳定版、点更新时提示「DSH 版本不符」的：要继续用 DSH 0.1.5，按稳定版 README 重新运行一次安装命令，以后的更新就跟随稳定版；要换到当前版本，先装上适配的宿主再更新。
 
 ## 交流与反馈
 

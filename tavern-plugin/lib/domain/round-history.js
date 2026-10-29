@@ -19,6 +19,13 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
+// The bounded regeneration writes with an explicit revision. Anything may write
+// the save between that read and its patch — a switch, a settlement, or the
+// failed turn's own cleanup restoring the staged template input. Retry those
+// writes instead of throwing the regeneration away: a truncated attempt keeps
+// its partial body only if the following commit can still land.
+const REGEN_WRITE_ATTEMPTS = 4
+
 /**
  * The input of a regeneration attempt. The provider never sees the replaced body
  * (the request projection drops it), so without guidance this is a fresh sample
@@ -388,18 +395,25 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       if (body === '') {
         throw new Error('重新生成失败：模型返回空文本')
       }
-      const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
-        role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
       // The persisted intent must only reference events already on disk.
       if (typeof sessions.flush === 'function') await sessions.flush(session)
+      let projection = null
       committedChat = await updateChat(latest.id, function (current) {
         if (current?.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
         const currentMessages = Array.isArray(current && current.messages) ? current.messages : []
         const currentUser = currentMessages[currentMessages.length - 2]
         const currentAssistant = currentMessages[currentMessages.length - 1]
         if (currentMessages.length < rolledMessageCount + 2 || currentUser === null || typeof currentUser !== 'object' || currentUser.role !== 'user' ||
-            currentAssistant === null || typeof currentAssistant !== 'object' || currentAssistant.role !== 'assistant' || Number(currentAssistant.turn) !== syntheticTurn ||
-            str(currentAssistant.text).trim() !== body) throw new Error('重新生成流程的正文已被另一项操作修改')
+            currentAssistant === null || typeof currentAssistant !== 'object' || currentAssistant.role !== 'assistant' || Number(currentAssistant.turn) !== syntheticTurn) throw new Error('重新生成流程的正文已被另一项操作修改')
+        // The attempt's row is the truth by the time this write runs: the failed
+        // turn's own cleanup may have re-projected it while the marker was set.
+        // Comparing it with the text read before this write threw the whole
+        // regeneration away, partial body included.
+        const landed = str(currentAssistant.text).trim()
+        if (landed === '') throw new Error('重新生成失败：模型返回空文本')
+        body = landed
+        projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
+          role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
         const merged = replaceLastRound({ originalChat, regeneratedChat: current, assistantIndex: oldAssistantIndex })
         const next = merged.chat
         if (next.nativeCommits !== null && typeof next.nativeCommits === 'object') delete next.nativeCommits[String(syntheticTurn)]
@@ -561,68 +575,89 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       let latest = await chats.readRecent(chat.id)
       if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
       let latestMsgs = latest.messages
+      let adoptedPartial = false
       if (latestMsgs.length < rolledMessageCount + 2) {
         const streamed = streamedAttemptText(session, syntheticTurn, eventStart)
         if (streamed === '') {
           if (generationError !== null) throw generationError
           throw new Error('这次重新生成没有完成（可能被内容审核拦截或已停止），正文保持原样，可以再试一次')
         }
-        const commits = latest.nativeCommits !== null && typeof latest.nativeCommits === 'object' ? structuredClone(latest.nativeCommits) : {}
-        // 同上（完整路径）：宿主自己的提交若随后到达，不能把这一轮再追加一次。
-        const partialCommit = { turn: syntheticTurn, userText: syntheticText, committedAt: Date.now(), partial: true }
-        const appended = await chats.patch(chat.id, latest._storageRevision, [{ op: 'splice', path: ['messages'], index: latestMsgs.length, deleteCount: 0,
-          items: partialAttemptRows({ turn: syntheticTurn, userText: syntheticText, inputAttachments: originalUser.inputAttachments, text: streamed }) },
-        { op: 'set', path: ['nativeCommits'], value: { ...commits, [String(syntheticTurn)]: partialCommit } }],
-        { source: 'foreground.regen-partial' })
-        if (!appended) throw new Error('重新生成流程的正文已被另一项操作修改')
-        latest = await chats.readRecent(chat.id)
-        if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
-        latestMsgs = latest.messages
-        keptStreamed = true
+        // 被截断的尝试写进存档之后，宿主和插件的失败轮清理还会各写一次（例如
+        // 还原 promptTemplateInput）。用读到的 revision 只写一次就作废，会把刚
+        // 保留下的部分正文连同整轮一起撤回——所以拿最新 revision 重试。
+        for (let attempt = 0; attempt < REGEN_WRITE_ATTEMPTS && !adoptedPartial; attempt++) {
+          const commits = latest.nativeCommits !== null && typeof latest.nativeCommits === 'object' ? structuredClone(latest.nativeCommits) : {}
+          // 同上（完整路径）：宿主自己的提交若随后到达，不能把这一轮再追加一次。
+          const partialCommit = { turn: syntheticTurn, userText: syntheticText, committedAt: Date.now(), partial: true }
+          const written = await chats.patch(chat.id, latest._storageRevision, [{ op: 'splice', path: ['messages'], index: latestMsgs.length, deleteCount: 0,
+            items: partialAttemptRows({ turn: syntheticTurn, userText: syntheticText, inputAttachments: originalUser.inputAttachments, text: streamed }) },
+          { op: 'set', path: ['nativeCommits'], value: { ...commits, [String(syntheticTurn)]: partialCommit } }],
+          { source: 'foreground.regen-partial' })
+          latest = await chats.readRecent(chat.id)
+          if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
+          if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
+          latestMsgs = latest.messages
+          adoptedPartial = Boolean(written)
+          // 宿主自己把这一轮提交上来了：用它，不再追加。
+          if (!adoptedPartial && latestMsgs.length >= rolledMessageCount + 2) break
+        }
+        if (!adoptedPartial && latestMsgs.length < rolledMessageCount + 2) throw new Error('重新生成流程的正文已被另一项操作修改')
+        keptStreamed = adoptedPartial
       }
-      const regeneratedUser = latestMsgs[latestMsgs.length - 2]
-      const newAssistant = latestMsgs[latestMsgs.length - 1]
-      if (regeneratedUser === null || typeof regeneratedUser !== 'object' || regeneratedUser.role !== 'user' ||
-          newAssistant === null || typeof newAssistant !== 'object' || newAssistant.role !== 'assistant' || Number(newAssistant.turn) !== syntheticTurn) {
-        throw new Error('重新生成流程未产生正文')
-      }
-      body = str(newAssistant.text).trim()
-      if (body === '') throw new Error('重新生成失败：模型返回空文本')
-      const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
-        role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
-      if (typeof sessions.flush === 'function') await sessions.flush(session)
-      if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
       // 2) The original floors around the new round. Floors changed since the
       // original revision (the temporary rollback included) return to it.
-      const { messages: _latestRows, ...latestHeader } = latest
-      const merged = replaceLastRound({ originalChat: { messages: [originalUser, originalAssistant] }, regeneratedChat: { ...latestHeader, messages: [regeneratedUser, newAssistant] }, assistantIndex: 1 })
-      const next = merged.chat
-      if (next.nativeCommits !== null && typeof next.nativeCommits === 'object') delete next.nativeCommits[String(syntheticTurn)]
-      next.nativeCommits = next.nativeCommits && typeof next.nativeCommits === 'object' ? structuredClone(next.nativeCommits) : {}
-      if (originalHeader.nativeCommits && originalHeader.nativeCommits[String(oldTurn)]) next.nativeCommits[String(oldTurn)] = structuredClone(originalHeader.nativeCommits[String(oldTurn)])
-      next.regenInProgress = true
-      next.regenRecovery = { ...latest.regenRecovery, phase: 'committed', projection }
-      next.settleStatus = 'pending'
-      next.settleError = null
-      next.tavernHelperLifecycleRevision = lifecycleRevision + 1
-      // 旧正文的临时隐藏留到投影写入时（regenerationRecovery.complete）才撤：此刻日志里还没有
-      // 投影，行计划会把旧轮和生成轮都画出来，同一段正文显示两份（#312）。
-      next.suppressedDshTurns = Array.from(new Set((Array.isArray(next.suppressedDshTurns) ? next.suppressedDshTurns : []).concat([syntheticTurn]))).sort(function (left, right) { return left - right })
-      next.regeneratedDshTurns = next.regeneratedDshTurns && typeof next.regeneratedDshTurns === 'object' && !Array.isArray(next.regeneratedDshTurns)
-        ? structuredClone(next.regeneratedDshTurns) : {}
-      next.regeneratedDshTurns[String(oldTurn)] = syntheticTurn
-      const prefix = oldAssistantIndex - 1
-      const sinceOriginal = await chats.changedSince(chat.id, revision)
-      if (!sinceOriginal || sinceOriginal.revision !== latest._storageRevision) throw new Error('重新生成流程的正文已被另一项操作修改')
-      const restoreIndices = sinceOriginal.indices.filter(index => index < prefix)
-      const originalRows = restoreIndices.length ? await chats.rowsAt(chat.id, revision, restoreIndices) : { chat: {}, denseMessages: true }
-      if (!originalRows?.denseMessages) throw new Error('找不到重新生成前的存档恢复点')
-      const commitChanges = headerChanges(latestHeader, next)
-      restoreIndices.forEach((index, offset) => commitChanges.push({ op: 'set', path: ['messages', index], value: originalRows.chat.messages[offset] }))
-      commitChanges.push({ op: 'splice', path: ['messages'], index: prefix, deleteCount: latestMsgs.length - prefix, items: merged.chat.messages })
-      const saved = await chats.patch(chat.id, latest._storageRevision, commitChanges, { source: 'foreground.regen-commit' })
-      if (!saved) throw new Error('重新生成流程的正文已被另一项操作修改')
-      committedChat = { ...next, _storageRevision: saved._storageRevision, updatedAt: saved.updatedAt, messages: createScopedMessages(prefix + 2) }
+      let committed = null
+      for (let attempt = 0; attempt < REGEN_WRITE_ATTEMPTS && committed === null; attempt++) {
+        if (attempt > 0) {
+          latest = await chats.readRecent(chat.id)
+          if (latest === undefined) throw new Error('聊天不存在: ' + chat.id)
+          latestMsgs = latest.messages
+        }
+        if (latest.regenRecovery?.id !== operationId) throw new Error('重新生成操作已失效')
+        const regeneratedUser = latestMsgs[latestMsgs.length - 2]
+        const newAssistant = latestMsgs[latestMsgs.length - 1]
+        if (regeneratedUser === null || typeof regeneratedUser !== 'object' || regeneratedUser.role !== 'user' ||
+            newAssistant === null || typeof newAssistant !== 'object' || newAssistant.role !== 'assistant' || Number(newAssistant.turn) !== syntheticTurn) {
+          throw new Error('重新生成流程未产生正文')
+        }
+        // 与完整路径同理：这一轮的行就是事实，重算投影时用它的正文。
+        body = str(newAssistant.text).trim()
+        if (body === '') throw new Error('重新生成失败：模型返回空文本')
+        const projection = placeRegeneration(session, oldSeq, eventStart, { turn: oldTurn, step: 1, message: { id: 'tavern-regen:' + operationId,
+          role: 'assistant', content: [{ type: 'text', text: body }], source: { ...oldSource, tavernStoryTurn: oldTurn } } }, operationId)
+        if (typeof sessions.flush === 'function') await sessions.flush(session)
+        const { messages: _latestRows, ...latestHeader } = latest
+        const merged = replaceLastRound({ originalChat: { messages: [originalUser, originalAssistant] }, regeneratedChat: { ...latestHeader, messages: [regeneratedUser, newAssistant] }, assistantIndex: 1 })
+        const next = merged.chat
+        if (next.nativeCommits !== null && typeof next.nativeCommits === 'object') delete next.nativeCommits[String(syntheticTurn)]
+        next.nativeCommits = next.nativeCommits && typeof next.nativeCommits === 'object' ? structuredClone(next.nativeCommits) : {}
+        if (originalHeader.nativeCommits && originalHeader.nativeCommits[String(oldTurn)]) next.nativeCommits[String(oldTurn)] = structuredClone(originalHeader.nativeCommits[String(oldTurn)])
+        next.regenInProgress = true
+        next.regenRecovery = { ...latest.regenRecovery, phase: 'committed', projection }
+        next.settleStatus = 'pending'
+        next.settleError = null
+        next.tavernHelperLifecycleRevision = lifecycleRevision + 1
+        // 旧正文的临时隐藏留到投影写入时（regenerationRecovery.complete）才撤：此刻日志里还没有
+        // 投影，行计划会把旧轮和生成轮都画出来，同一段正文显示两份（#312）。
+        next.suppressedDshTurns = Array.from(new Set((Array.isArray(next.suppressedDshTurns) ? next.suppressedDshTurns : []).concat([syntheticTurn]))).sort(function (left, right) { return left - right })
+        next.regeneratedDshTurns = next.regeneratedDshTurns && typeof next.regeneratedDshTurns === 'object' && !Array.isArray(next.regeneratedDshTurns)
+          ? structuredClone(next.regeneratedDshTurns) : {}
+        next.regeneratedDshTurns[String(oldTurn)] = syntheticTurn
+        const prefix = oldAssistantIndex - 1
+        const sinceOriginal = await chats.changedSince(chat.id, revision)
+        if (!sinceOriginal || sinceOriginal.revision !== latest._storageRevision) continue
+        const restoreIndices = sinceOriginal.indices.filter(index => index < prefix)
+        const originalRows = restoreIndices.length ? await chats.rowsAt(chat.id, revision, restoreIndices) : { chat: {}, denseMessages: true }
+        if (!originalRows?.denseMessages) throw new Error('找不到重新生成前的存档恢复点')
+        const commitChanges = headerChanges(latestHeader, next)
+        restoreIndices.forEach((index, offset) => commitChanges.push({ op: 'set', path: ['messages', index], value: originalRows.chat.messages[offset] }))
+        commitChanges.push({ op: 'splice', path: ['messages'], index: prefix, deleteCount: latestMsgs.length - prefix, items: merged.chat.messages })
+        const saved = await chats.patch(chat.id, latest._storageRevision, commitChanges, { source: 'foreground.regen-commit' })
+        if (!saved) continue
+        committed = { ...next, _storageRevision: saved._storageRevision, updatedAt: saved.updatedAt, messages: createScopedMessages(prefix + 2) }
+      }
+      if (committed === null) throw new Error('重新生成流程的正文已被另一项操作修改')
+      committedChat = committed
     } catch (error) {
       await restoreFailedRegen()
       throw error

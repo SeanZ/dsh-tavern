@@ -3681,7 +3681,6 @@ export async function apply(ctx) {
     ensureNativeSystemPrefix,
     foregroundHandoff,
     foregroundStrategies,
-    fullTemplateRuntime,
     nativeWorldBookTemplateContext,
     persistClearedBodyEdits,
     pluginPromptSections: pluginApi.promptSections,
