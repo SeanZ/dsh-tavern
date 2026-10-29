@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
+import { folderHoldsZip } from './transfer-folder-match.js'
 
 // 导出/导入里的字体子模块：一个自装字体族 = fontsDir 下一层文件夹，整目录打成一个 zip。
 // 导入只落盘，不启用、不校验 face 明细；真正能不能用交给 font-library 读取时判断。
@@ -165,6 +166,10 @@ export function createTransferFonts({ fontsDir } = {}) {
     const entries = readZipEntries(content, { label: '字体包' })
     const base = idOf(key)
     let id = base
+    // 同一个包再来一次：族目录内容一模一样就认它，不再造一个 -2。
+    if (existsSync(path.join(fontsDir, id)) && await folderHoldsZip(path.join(fontsDir, id), entries).catch(() => false)) {
+      return { id, reused: true }
+    }
     if (existsSync(path.join(fontsDir, id))) {
       id = ''
       for (let index = 2; index <= MAX_RENAME_ATTEMPTS; index += 1) {
