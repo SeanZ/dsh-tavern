@@ -83,7 +83,7 @@ dsh-tavern 面向的是想玩文字游戏的人，而不是愿意先学习酒馆
 
 借鉴范围包括格式解析、中间表示、纯语义执行器、生命周期划分和差异测试；不直接采用其酒馆生成循环与 DSH AgentLoop 并存的双运行时结构，也不把它作为正式运行依赖。参考结果最终仍需翻译为 DSH 原生能力，并通过真实酒馆资源和可观察效果独立验证。
 
-[Liyuan](https://github.com/weidu12123/Liyuan) v1.5 则是 Agent 原生兼容路线的重要参考，尤其验证了酒馆预设可以保留原文，并按历史前、Agent 原生历史、历史后三段接入，而动态世界书继续由独立召回流程负责。预设方面主要参考其文档层、结构化装配、宏求值和兼容诊断，见[酒馆预设与 DSH 预设](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Anative-preset#参考实践liyuan-v15)；上下文投影、长局记忆、分支状态、多 Agent 和工具层方面的借鉴范围，见[梨园架构研究](research/liyuan-architecture-reference.md)。
+[Liyuan](https://github.com/weidu12123/Liyuan) v1.5 则是 Agent 原生兼容路线的重要参考，尤其验证了酒馆预设可以保留原文，并按历史前、Agent 原生历史、历史后三段接入，而动态世界书继续由独立召回流程负责。预设方面主要参考其文档层、结构化装配、宏求值和兼容诊断，见[酒馆预设与 DSH 预设](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Anative-preset#参考实践liyuan-v15)；上下文投影、长局记忆、分支状态、多 Agent 和工具层方面的借鉴范围，见梨园架构研究。
 
 ## 不可放弃的核心体验
 
