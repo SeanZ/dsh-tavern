@@ -267,8 +267,14 @@ function normalizeOperation(raw, index) {
         return item
       })
     } catch (error) {
-      // Name the path and the usual cause so the retry fixes this operation, not guesses.
-      throw new Error(label + '（' + normalized.path + '）的 valueJson 不是有效 JSON：' + (error instanceof RangeError ? error.message : '无法解析') + '；文本值须带 JSON 双引号，例如 "城市街道"')
+      // Models often send a text value bare (得意 for "得意"). Text that starts like neither JSON
+      // nor a number can only mean that text; a broken object, list or number still goes back.
+      const bare = operation.valueJson.trim()
+      if (error instanceof RangeError || !bare || /^[[{"\d+\-.]/.test(bare)) {
+        // Name the path and the usual cause so the retry fixes this operation, not guesses.
+        throw new Error(label + '（' + normalized.path + '）的 valueJson 不是有效 JSON：' + (error instanceof RangeError ? error.message : '无法解析') + '；文本值须带 JSON 双引号，例如 "城市街道"')
+      }
+      value = bare
     }
   } else {
     // Pending deliveries and older in-flight callers already store decoded values.
