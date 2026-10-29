@@ -4972,25 +4972,33 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-catalog dt span { font-weight: 400; margin-left: 6px; color: var(--dsh-tavern-accent-muted); }
 .dsh-tavern-background-catalog dd { margin: 2px 0 0; }
 .dsh-tavern-background-catalog dd span { color: var(--dsh-tavern-accent-muted); }
-.dsh-tavern-timeline { overflow-x: auto; font-size: 12px; }
-.dsh-tavern-timeline-inner { position: relative; }
-.dsh-tavern-timeline-row { display: flex; height: 24px; align-items: center; border-bottom: 1px dashed color-mix(in srgb, currentColor 12%, transparent); }
-.dsh-tavern-timeline-label { flex: 0 0 150px; position: sticky; left: 0; z-index: 2; background: var(--dsw-alias-bg-primary, #fff); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 6px; }
-.dsh-tavern-timeline-track { position: relative; flex: 1; height: 100%; }
-.dsh-tavern-timeline-axis .dsh-tavern-timeline-track span { position: absolute; top: 4px; white-space: nowrap; color: var(--dsh-tavern-accent-muted); }
-.dsh-tavern-timeline-axis .dsh-tavern-timeline-moment-label { top: 4px; color: var(--dsh-tavern-accent); }
-.dsh-tavern-timeline-run, .dsh-tavern-timeline-wait { position: absolute; top: 3px; height: 18px; border-radius: 3px; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 18px; padding: 0 3px; box-sizing: border-box; }
-.dsh-tavern-timeline-wait { background: color-mix(in srgb, currentColor 10%, transparent); }
-.dsh-tavern-timeline-run { background: #7fb98a; color: #fff; }
-.dsh-tavern-timeline-run.running { background: #5a8fd6; }
-.dsh-tavern-timeline-run.failed { background: #c45f5f; }
-.dsh-tavern-timeline-run.cancelled { background: #9a9a9a; }
-.dsh-tavern-timeline-run.discarded { background: #b9b9b9; text-decoration: line-through; }
-.dsh-tavern-timeline-run.held { background: #c9a35b; }
-.dsh-tavern-timeline-refused { position: absolute; top: 3px; color: #c45f5f; font-style: normal; font-weight: 700; transform: translateX(-50%); }
-.dsh-tavern-timeline-overlay { position: absolute; top: 0; bottom: 0; left: 150px; pointer-events: none; }
-.dsh-tavern-timeline-moment { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--dsh-tavern-accent); }
-.dsh-tavern-timeline-break { position: absolute; top: 0; bottom: 0; border-left: 2px dotted color-mix(in srgb, currentColor 30%, transparent); }
+.dsh-tavern-run-tl-toggle { all: unset; cursor: pointer; margin: 2px 0 0 10px; font-size: 11px; color: var(--dsh-tavern-accent); }
+.dsh-tavern-run-tl-toggle:focus-visible { outline: 2px solid var(--dsh-tavern-accent); outline-offset: 1px; }
+.dsh-tavern-tl { margin: 4px 0 6px; font-size: 11px; }
+.dsh-tavern-tl-row { display: flex; align-items: center; height: 22px; }
+.dsh-tavern-tl-head { height: 30px; align-items: flex-end; }
+.dsh-tavern-tl-label { flex: 0 0 76px; padding-right: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--dsw-alias-label-secondary); }
+.dsh-tavern-tl-track { position: relative; flex: 1; min-width: 0; height: 100%; border-bottom: 1px solid color-mix(in srgb, currentColor 8%, transparent); }
+.dsh-tavern-tl-head .dsh-tavern-tl-track { border-bottom: none; }
+.dsh-tavern-tl-mark-label { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-tl-mark-label.low { top: 14px; }
+.dsh-tavern-tl-end { position: absolute; right: 0; top: 14px; color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-tl-line { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--dsh-tavern-accent-muted); opacity: .6; }
+.dsh-tavern-tl-bar, .dsh-tavern-tl-wait { position: absolute; top: 3px; height: 16px; border-radius: 3px; box-sizing: border-box; }
+.dsh-tavern-tl-bar { padding: 0 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 16px; color: #fff; background: #6fa97b; }
+.dsh-tavern-tl-bar.running { background: #5a8fd6; }
+.dsh-tavern-tl-bar.failed { background: #c45f5f; }
+.dsh-tavern-tl-bar.cancelled, .dsh-tavern-tl-bar.discarded { background: #a5a5a5; text-decoration: line-through; }
+.dsh-tavern-tl-wait { background: repeating-linear-gradient(135deg, color-mix(in srgb, currentColor 18%, transparent) 0 3px, transparent 3px 6px); }
+.dsh-tavern-tl-refused { position: absolute; top: 3px; transform: translateX(-50%); color: #c45f5f; font-style: normal; font-weight: 700; }
+.dsh-tavern-members { display: grid; gap: 6px; font-size: 12px; line-height: 1.5; }
+.dsh-tavern-member { padding: 5px 8px; border: 1px solid var(--dsw-alias-separator, rgba(127,127,127,.25)); border-radius: 6px; }
+.dsh-tavern-member-head { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; }
+.dsh-tavern-member-head span { color: var(--dsw-alias-label-secondary); }
+.dsh-tavern-member-now { margin-left: auto; }
+.dsh-tavern-member-tasks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; color: var(--dsw-alias-label-secondary); }
+.dsh-tavern-member-tasks button { all: unset; cursor: pointer; padding: 0 6px; border-radius: 4px; background: var(--dsw-alias-fill-secondary, rgba(127,127,127,.12)); color: var(--dsw-alias-label-primary); }
+.dsh-tavern-member-tasks button:focus-visible { outline: 2px solid var(--dsh-tavern-accent); }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }
 
 .dsh-tavern-auto-polished { font-size: 12px; color: var(--dsh-tavern-accent-muted); margin-top: 2px; }
