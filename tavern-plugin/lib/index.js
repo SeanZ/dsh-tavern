@@ -2659,7 +2659,8 @@ export async function apply(ctx) {
   const backgroundTasks = createBackgroundTaskCoordinator({
     store: { readChat, writeChat, updateChat, patchChat, readState: chatPersistence.readSessionState, readRecoveryState: taskStateReader.read, readSlice: chatPersistence.readSlice, readSettlementCheckpoint: chatPersistence.readSettlementCheckpoint },
     timeline: storyTimeline,
-    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) }
+    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) },
+    discarded: target => backgroundAgentRunner.discardRun(target)
   })
   const configuredCompactionEngines = new WeakSet()
   const overflowingCompactions = new Set()

@@ -4928,4 +4928,6 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-run-name { color: var(--dsw-alias-label-primary); font-weight: 600; }
 .dsh-tavern-background-run.running .dsh-tavern-background-run-name { color: var(--dsh-tavern-accent); }
 .dsh-tavern-background-run.failed .dsh-tavern-background-run-name, .dsh-tavern-background-run-error { color: #c45f5f; }
+.dsh-tavern-background-run.discarded .dsh-tavern-background-run-name { text-decoration: line-through; opacity: .7; }
+.dsh-tavern-background-run-note { color: var(--dsh-tavern-accent-muted); }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }

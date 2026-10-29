@@ -56,3 +56,16 @@ test('后台 Agent 运行失败时记录为失败并带错误原因', async () =
   assert.match(record.error, /前台会话不可用/)
   await runner.dispose()
 })
+
+test('结果因剧情变化作废：只改该后台会话里最近完成的同类任务', () => {
+  const ledger = createBackgroundRunLedger()
+  const older = ledger.begin({ sessionId: 'game', task: 'ledger', persistent: true }); older.bind('agent-1'); older.start(); older.finish()
+  const other = ledger.begin({ sessionId: 'game', task: 'candidate', persistent: true }); other.bind('agent-1'); other.start(); other.finish()
+  const latest = ledger.begin({ sessionId: 'game', task: 'ledger', persistent: true }); latest.bind('agent-1'); latest.start(); latest.finish()
+  ledger.discard({ sessionId: 'game', role: 'ledger', agentSessionId: 'agent-1' })
+  assert.deepEqual(ledger.list('game').map(record => record.status), ['discarded', 'completed', 'completed'])
+  ledger.discard({ sessionId: '', role: 'candidate', agentSessionId: 'agent-1' })
+  assert.equal(ledger.list('game')[1].status, 'discarded')
+  ledger.discard({ sessionId: 'game', role: 'phone', agentSessionId: 'agent-1' })
+  assert.equal(ledger.list('game')[2].status, 'completed')
+})

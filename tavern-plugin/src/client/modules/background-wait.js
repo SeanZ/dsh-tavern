@@ -42,7 +42,7 @@ function TavernBackgroundWait(props) {
         React.createElement(TavernStopBackgroundAction, {sessionId:props.sessionId}));
 }
 const BACKGROUND_RUN_TASKS = { polish: "正文精修", settlement: "变量结算", ledger: "手动记账", candidate: "生成选项", "worldbook-filter": "世界书预筛", "style-reference": "文风联想", "stage-director": "舞台导演", phone: "手机", "character-design": "人物设计", subagent: "子任务", edit: "编辑" };
-const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", failed: "失败", cancelled: "已取消" };
+const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消" };
 function backgroundRunName(run) {
     return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : BACKGROUND_RUN_TASKS[run.task] || run.task;
 }
@@ -83,7 +83,8 @@ function TavernBackgroundRunRow(props) {
         h("span", { className: "dsh-tavern-background-run-name" }, backgroundRunName(run)),
         h("span", null, BACKGROUND_RUN_STATUS[run.status] || run.status),
         h("span", null, (run.turn ? "第 " + run.turn + " 轮 · " : "") + (run.lane === "resident" ? "常驻" : "临时") + (run.model ? " · " + run.model : "") + " · " + backgroundRunSeconds(run, props.now)),
-        run.error ? h("span", { className: "dsh-tavern-background-run-error" }, run.error) : null);
+        run.error ? h("span", { className: "dsh-tavern-background-run-error" }, run.error) : null,
+        run.status === "discarded" ? h("span", { className: "dsh-tavern-background-run-note" }, "跑完时剧情已变化（回退、重写或编辑），结果没有保存。") : null);
 }
 // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
 function TavernBackgroundTasksTab(props) {

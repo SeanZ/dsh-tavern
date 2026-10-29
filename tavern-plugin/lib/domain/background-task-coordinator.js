@@ -286,7 +286,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
         })
       },
       async commit(input = {}) {
-        return await serialize(begun.chat.id, async function () {
+        const outcome = await serialize(begun.chat.id, async function () {
           const metadata = { source: 'background.' + str(role) + '.commit', operationId: begun.value.operationId }
           // This opt-in seam declares every floor the settlement callback can read/write.
           // Keep variable effects, delivery cleanup, receipt and timeline in one CAS frame.
@@ -346,6 +346,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
           }, metadata)
           return saved === undefined ? { chat: null, status: 'missing' } : { chat: saved, status }
         })
+        // The story moved on while the agent ran: its result was dropped, not saved.
+        if (outcome.status === 'stale') options.discarded?.({ sessionId: str(chat.sessionId), role: str(role), agentSessionId: str(input.participant?.sessionId) })
+        return outcome
       },
       async fail(trace) {
         // Failing marks the operation only: commit it through the header. A role whose

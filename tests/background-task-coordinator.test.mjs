@@ -20,6 +20,7 @@ function coordinatorHarness(options = {}) {
   const coordinator = createBackgroundTaskCoordinator({
     timeline,
     blocked: options.blocked,
+    discarded: options.discarded,
     store: {
       async readChat() { return current },
       async writeChat(chat) { current = chat; writes.push(chat) },
@@ -235,4 +236,15 @@ test('retired worldbook recall cannot create a persisted background operation', 
   const h = coordinatorHarness()
   await assert.rejects(h.coordinator.begin(h.current(), 'worldbook-filter'), /已停用/)
   assert.equal(h.writes.length, 0)
+})
+
+test('剧情在后台任务运行期间变化：提交作废，并通知运行记录', async () => {
+  const discarded = []
+  const { coordinator, current } = coordinatorHarness({ discarded: target => discarded.push(target) })
+  current().sessionId = 'game'
+  const task = await coordinator.begin(current(), 'ledger')
+  current().timeline.revision += 1
+  const outcome = await task.commit({ participant: task.participant({ traceSessionId: 'agent-1' }), stateChanged: true })
+  assert.equal(outcome.status, 'stale')
+  assert.deepEqual(discarded, [{ sessionId: 'game', role: 'ledger', agentSessionId: 'agent-1' }])
 })

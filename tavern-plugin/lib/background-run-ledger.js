@@ -3,7 +3,9 @@
 const TRANSITIONS = {
   queued: ['running', 'cancelled', 'failed'],
   running: ['completed', 'failed', 'cancelled'],
-  completed: [],
+  // The run finished, but the story changed before its result could be saved.
+  completed: ['discarded'],
+  discarded: [],
   failed: [],
   cancelled: []
 }
@@ -45,10 +47,20 @@ export function createBackgroundRunLedger(options = {}) {
     }
     games.set(gameId, list)
     return {
+      // The background session the run used, so a later discard can find it.
+      bind: agentSessionId => { record.agentSessionId = str(agentSessionId) },
       start: selection => move(record, 'running', { startedAt: now(), ...(selection?.model ? { model: str(selection.model) } : {}) }),
       finish: () => move(record, 'completed', { endedAt: now() }),
       fail: (error, cancelled) => move(record, cancelled ? 'cancelled' : 'failed', { endedAt: now(), ...(cancelled ? {} : { error: str(error?.message || error).slice(0, 300) }) })
     }
+  }
+
+  // The newest completed run of this task in that background session.
+  function discard({ sessionId, role, agentSessionId }) {
+    const pool = str(sessionId) ? games.get(str(sessionId)) || [] : [...games.values()].flat()
+    const record = pool.findLast(item => item.status === 'completed' && item.task === str(role) &&
+      (!agentSessionId || item.agentSessionId === str(agentSessionId)))
+    if (record) move(record, 'discarded', { discardedAt: now() })
   }
 
   // Newest first.
@@ -60,5 +72,5 @@ export function createBackgroundRunLedger(options = {}) {
     games.delete(str(gameId))
   }
 
-  return Object.freeze({ begin, list, forget })
+  return Object.freeze({ begin, discard, list, forget })
 }
