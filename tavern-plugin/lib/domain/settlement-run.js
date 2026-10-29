@@ -157,10 +157,10 @@ export function createSettlementRun(deps) {
     return { started: true }
   }
   async function onSettlementSettled(chatId, signal) {
-    const { chatPersistence, turnSettled } = deps
+    const { chatPersistence, storyEvents } = deps
     let latest
     try { latest = (await chatPersistence.readSlice(chatId, [], ['_storageRevision', 'sessionId', 'cardName']))?.chat } catch { latest = null }
-    if (!signal.aborted && latest !== undefined) turnSettled.emit({ chatId, latest })
+    if (!signal.aborted && latest !== undefined) storyEvents.emit('turn-settled', { chatId, latest })
   }
 
   return Object.freeze({ runSettlement, runCycle: runSettlementCycle, onSettled: onSettlementSettled, startPluginTask, pluginTaskJob: chatId => pluginTaskJobs.get(chatId) })

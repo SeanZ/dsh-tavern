@@ -5,7 +5,7 @@ import { createSettlementControls } from '../tavern-plugin/lib/domain/settlement
 import { createMvuSettlementResume } from '../tavern-plugin/lib/domain/mvu-settlement-resume.js'
 import {applyJsonChanges} from '../tavern-plugin/lib/domain/json-mutation.js'
 import { createSettlementJobs } from '../tavern-plugin/lib/domain/settlement-jobs.js'
-import { createTurnSettledEvents } from '../tavern-plugin/lib/domain/turn-settled-events.js'
+import { createStoryEvents } from '../tavern-plugin/lib/domain/story-events.js'
 import { createSessionStateView, projectChatSessionState } from '../tavern-plugin/lib/domain/chat-session-state.js'
 import { createMvuSettlementModule } from '../tavern-plugin/lib/domain/mvu-background-settlement.js'
 import { createTavernScriptHostAdapter } from '../tavern-plugin/lib/domain/tavern-script-host-adapter.js'
@@ -39,7 +39,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
   const running = beginRunning ? await tasks.begin(current, 'settlement') : null
   // The settlement's dependencies. The factories read them on every call, so tests swap services here.
   const sandbox = {
-    turnSettled: createTurnSettledEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
+    storyEvents: createStoryEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
     backgroundTasks: tasks, storyTimeline: timeline,
     readChat: store.readChat, chatForSession: store.readChat, writeChat: store.writeChat,

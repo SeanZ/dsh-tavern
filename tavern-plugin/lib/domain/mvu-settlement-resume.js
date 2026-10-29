@@ -40,7 +40,7 @@ export function createMvuSettlementResume(deps) {
     }
   })
   // An unreadable save after a settlement: scan every game for waiting MVU work instead.
-  const unsubscribeTurnSettled = deps.turnSettled.subscribe(({ latest }) => latest ? reconciler.wake(latest.sessionId) : reconciler.scan())
+  const unsubscribeTurnSettled = deps.storyEvents.on('turn-settled', '接续 MVU 结算', ({ latest }) => latest ? reconciler.wake(latest.sessionId) : reconciler.scan())
   // A card runtime that finished starting may now run a waiting delivery.
   const unsubscribeRuntimeReady = deps.tavernScriptDispatch.subscribeSettled(function (sessionId) {
     void reconciler.wake(sessionId)

@@ -104,7 +104,7 @@ async function fixture(t, bounded) {
       } : {}) },
     sessions: { get: () => agent, flush: async () => {} }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
-    bodyCommitted: sessionId => directed.push('director:' + sessionId),
+    replyCommitted: sessionId => directed.push('director:' + sessionId),
     queueSettlement: async () => { directed.push('settlement') }, cancelSettlement: async () => {},
     present: async value => { presented.push(isScopedMessages(value.messages) ? 'window' : 'full'); return { rolled: true } }
   })

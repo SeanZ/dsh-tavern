@@ -61,9 +61,7 @@ export function createForegroundHandoff(options = {}) {
         // 临时回合不能启动变量结算，否则可能把尚未采用的正文写进正式状态。
         if (chat.regenInProgress === true) return
         // Independent session: start from the host's committed body, never await settlement.
-        options.directRound?.(input.sessionId)
-        // The 精修 pre-review reads the reply as written; settlement never waits for it.
-        void Promise.resolve(options.afterReply?.(input.sessionId)).catch(error => logger.warn('dsh-tavern: 精修预审未启动', error && error.message || error))
+        options.replyCommitted?.(input.sessionId)
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)

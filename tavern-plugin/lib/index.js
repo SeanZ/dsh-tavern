@@ -73,7 +73,7 @@ import { openingPreviewPayload } from './domain/opening-transport.js'
 import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
-import { createTurnSettledEvents } from './domain/turn-settled-events.js'
+import { createStoryEvents } from './domain/story-events.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
 import { installHostSessionPatch } from './domain/host-session-patch.js'
@@ -665,8 +665,7 @@ export async function apply(ctx) {
     return result.renderedText
   }
 
-  const turnSettled = createTurnSettledEvents()
-  turnSettled.subscribe(({ latest }) => { if (latest) return gameTitles.afterTurn(latest.sessionId, latest.cardName) })
+  const storyEvents = createStoryEvents()
   const settlementJobs = createSettlementJobs({ run: (...args) => wholeReads.scope('结算', () => settlementRun.runCycle(...args)), onSettled: (...args) => settlementRun.onSettled(...args) })
   const scriptContinuity = createScriptContinuity()
   const storyTimeline = createStoryTimeline({ id: uid, now: Date.now })
@@ -1011,7 +1010,6 @@ export async function apply(ctx) {
     }
   })
   ctx.effect(() => () => saveMaintenance.dispose(), 'dsh-tavern: save maintenance')
-  turnSettled.subscribe(({ chatId, latest }) => { if (latest) saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) })
   const historyRecall = createHistoryRecall()
   const foregroundRecallScopes = new WeakMap()
   async function recallHistoryForSession(sessionId, args, scope, audience) {
@@ -2152,8 +2150,6 @@ export async function apply(ctx) {
       })
     }
   })
-  // A regenerated reply (no foreground end of its own) or one the pre-review has not read yet.
-  turnSettled.subscribe(({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
 
   // A new player input still cancels any optional independent polish pre-review.
   ctx.on('session/event', function (session, event) {
@@ -2313,11 +2309,6 @@ export async function apply(ctx) {
   function directRound(sessionId) {
     void directorJobs.cancel(sessionId, { wait: false }).then(() => directorJobs.start(sessionId))
       .catch(error => console.warn('dsh-tavern: 舞台导演任务失败', str(error?.message || error)))
-  }
-  // A committed reply: the director starts, and its dialogue bubbles are announced (they came with the text).
-  function bodyCommitted(sessionId) {
-    directRound(sessionId)
-    void castPresentation.announce(str(sessionId)).catch(error => console.warn('dsh-tavern: 台词通知失败', str(error?.message || error)))
   }
   ctx.effect(() => () => { stageDirectorStream.dispose(); return directorJobs.dispose() })
   const settlementItems = createSettlementItems({ plugins: () => pluginApi.settlement })
@@ -2644,7 +2635,6 @@ export async function apply(ctx) {
     publish: sessionId => sessionSignals.publish(sessionId, { kind: 'plugin-media', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
   })
   ctx.provide('tavern', pluginApi.service)
-  turnSettled.subscribe(({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
   cardRevisionListeners.add((cardPath, revision) => pluginApi.cardChanged(cardPath, revision))
   // Tell plugins the story line changed (informational: their turn data follows text versions
   // by itself). After an edit or an undone rollback the visible version may be new to them.
@@ -2871,7 +2861,6 @@ export async function apply(ctx) {
     onError:error=>console.warn('dsh-tavern: 候选上下文提前准备失败:',str(error.message||error))
   })
   ctx.effect(()=>()=>candidateWorldbookPreparation.dispose())
-  turnSettled.subscribe(({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })
   const candidateGenerator = createCandidateGenerator({
     backgroundTasks: async chat => normalizeBackgroundTasks((await backgroundConfigForSession(chat.sessionId))?.backgroundTasks),
     store: {
@@ -3001,13 +2990,13 @@ export async function apply(ctx) {
   const plainSettlementEngine = createPlainSettlementEngine({ pluginApi, pluginSettlementProgress, settlementItems, backgroundModelSelection, postureItem, backgroundAgentRunner, agentRegistry, sessionStore })
   const settlementRun = createSettlementRun({
     backgroundTasks, chatPersistence, readChat, writeChat, readChatCard, taskStateReader, worldBookScanDepth,
-    mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, turnSettled
+    mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, storyEvents
   })
   const { startPluginTask } = settlementRun
   function queueSettlement(chatId) { return settlementJobs.start(chatId) }
   function cancelSettlement(chatId, options) { return settlementJobs.cancel(chatId, options) }
   const mvuSettlementReconciler = createMvuSettlementResume({
-    conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, turnSettled,
+    conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, storyEvents,
     get serverScripts() { return serverScripts }
   })
   ctx.effect(() => function () {
@@ -3134,13 +3123,25 @@ export async function apply(ctx) {
     agentRegistry, sessionStore, chatForSession, chatSliceForSession, updateChat, turns: turnOrchestrator
   })
   const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
+  // 事件表: every background task a story moment starts. Settlement is not here: the
+  // reply and regeneration flows queue it themselves, since they wait for its outcome.
+  storyEvents.on('reply-committed', '舞台导演', ({ sessionId }) => directRound(sessionId))
+  // Its dialogue bubbles came with the text.
+  storyEvents.on('reply-committed', '台词气泡', ({ sessionId }) => castPresentation.announce(str(sessionId)))
+  // The 精修 pre-review reads the reply as written; settlement never waits for it.
+  storyEvents.on('reply-committed', '精修预审', ({ sessionId }) => polishPrereview.start(sessionId))
+  storyEvents.on('turn-settled', '对局标题', ({ latest }) => { if (latest) return gameTitles.afterTurn(latest.sessionId, latest.cardName) })
+  storyEvents.on('turn-settled', '存档整理', ({ chatId, latest }) => { if (latest) saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) })
+  // A reply the pre-review has not read yet (it was busy, or the reply changed since).
+  storyEvents.on('turn-settled', '精修预审', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
+  storyEvents.on('turn-settled', '插件轮次通知', ({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
+  storyEvents.on('turn-settled', '选项世界书预热', ({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
-    directRound: bodyCommitted,
-    afterReply: sessionId => polishPrereview.start(sessionId),
+    replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
     cancelDirector: (sessionId, turn) => {
       stageDirectorStream.cancel(sessionId, turn)
       if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
@@ -3257,7 +3258,7 @@ export async function apply(ctx) {
       dispatchEvent: function (event) { return tavernScriptHostAdapter.dispatchEvent(event) } },
     timeline: storyTimeline,
     queueSettlement,
-    bodyCommitted,
+    replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
     cancelSettlement,
     present: presentStory,
     sessionPatch,
