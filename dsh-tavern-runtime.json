@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "644bb2e9e4d65d51294082cea6869858a39926f3",
-  "releaseSequence": 972,
+  "revision": "7424c2dfa08b971b07a8cb41b4a771b5ee552be2",
+  "releaseSequence": 973,
   "version": "3.1.0",
   "files": [
     {
@@ -2936,8 +2936,8 @@
     },
     {
       "path": "tavern-plugin/lib/http/routes.js",
-      "sha256": "3cc8cd4fc7f070ad2804ffe243d3fde0e009e0fb76956acea9420d91d60f64b7",
-      "size": 31457
+      "sha256": "8f48407c269d35950a5f383913f7603742815d25add14f72b0cfe96d6f3de21e",
+      "size": 31875
     },
     {
       "path": "tavern-plugin/lib/index.js",
@@ -3026,8 +3026,8 @@
     },
     {
       "path": "tavern-plugin/lib/rpc/transfer.js",
-      "sha256": "3243a2e33fd105998e25b7921696ec495d5545e2016081d3deca0aaaa0262c5e",
-      "size": 10876
+      "sha256": "4e271d240d68be20c208b9679e690e1172f5eb7197d68ceb59d433e51be12576",
+      "size": 11128
     },
     {
       "path": "tavern-plugin/lib/rpc/worldbook-inspector.js",
@@ -5096,9 +5096,9 @@
     }
   ],
   "archive": {
-    "commit": "abbf2e80fe9c11f76a2f0d24f994bec89db0b4ff",
+    "commit": "fe3e602997359c7c845dd379e5a524055b47505e",
     "path": "runtime.zip",
-    "sha256": "6c686dec18139ceca60a0a409491a1e9ad2e6b8a305979ab686109faffca03ac",
-    "size": 10525755
+    "sha256": "6dbed67aea8089f1d2ad241b5baccd5e16d60c81ab66880152fa5326cf68d5c6",
+    "size": 10526096
   }
 }
