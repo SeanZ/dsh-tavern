@@ -28303,7 +28303,8 @@ function createTransferFeatureModule() {
 				) : null,
 				exported ? h("p", { className: "dsh-tavern-transfer-hint" },
 					"点「保存到手机」后没有弹出保存位置，是当前窗口不支持下载：把酒馆地址复制到系统浏览器（Chrome 等）打开，在那里再导出一次，文件会进手机的「下载」。"
-					+ "包在服务端保留一小时，期间同一个「保存到手机」可以反复点。")
+					+ "包在服务端保留一小时，期间同一个「保存到手机」可以反复点。"
+					+ "保存到手机「下载」时后缀可能被系统改成 .bin（系统按下载类型改名，内容仍是完整包），导入时直接选这个文件即可。")
 					: null
 			)
 		}
@@ -28495,7 +28496,7 @@ function createTransferFeatureModule() {
 			),
 			h("div", { className: "dsh-tavern-transfer-modes" }, modeButton("export", "导出"), modeButton("import", "导入")),
 			error ? h("div", { className: "dsh-tavern-transfer-error" }, error) : null,
-			h("input", { ref: fileInput, type: "file", accept: ".dshtransfer,.zip", style: { display: "none" }, onChange: pickImportFile }),
+			h("input", { ref: fileInput, type: "file", accept: ".dshtransfer,.zip,.bin,application/octet-stream", style: { display: "none" }, onChange: pickImportFile }),
 			mode === "export" ? renderExport() : renderImport(),
 			mode === "export" ? h("div", { className: "dsh-tavern-transfer-bar" },
 				h("div", { className: "dsh-tavern-transfer-summary" },
