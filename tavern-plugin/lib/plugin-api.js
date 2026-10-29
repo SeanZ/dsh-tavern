@@ -335,33 +335,45 @@ export function createTavernPluginApi(deps) {
     },
 
     // A task of the task table, declared like Tavern's own: the moments that start it (`on`),
-    // when it runs (`if`, given what the moment carries) and its `run`. It is listed on the
-    // 后台任务 page under those moments and in the task catalog; `member` names the plugin
-    // member it works through (runTask with that member), `description` what it does and
-    // `condition` its `if` in words.
-    job({ name, title, description, condition, on, member, if: when, run } = {}) {
+    // or the plugin tasks it runs after (`needs`: '<plugin>:<task>' — once they all finished
+    // the same turn), when it runs (`if`, given what started it) and its `run`. What `run`
+    // returns is its output for that turn: tasks that need it hear it as needs['<plugin>:<task>'].
+    // It is listed on the 后台任务 page; `member` names the plugin member it works through
+    // (runTask with that member), `description` what it does and `condition` its `if` in words.
+    job({ name, title, description, condition, on, needs, member, if: when, run } = {}) {
       const owner = ownerOf(this)
       if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('任务名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
-      const events = (Array.isArray(on) ? on : [on])
-      if (events.length === 0 || events.some(event => !Object.hasOwn(PLUGIN_STORY_EVENTS, event) && !CUSTOM_EVENT.test(String(event)))) {
+      const events = on === undefined ? [] : (Array.isArray(on) ? on : [on])
+      if (events.some(event => !Object.hasOwn(PLUGIN_STORY_EVENTS, event) && !CUSTOM_EVENT.test(String(event)))) {
         throw new Error('on 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、') + '，或别的插件的事件「插件名:事件名」')
       }
+      const after = needs === undefined ? [] : (Array.isArray(needs) ? needs : [needs])
+      if (after.some(need => !CUSTOM_EVENT.test(String(need)))) throw new Error('needs 写成「插件名:任务名」')
+      if (events.length === 0 && after.length === 0) throw new Error('tavern.job() 需要 on 或 needs')
       if (typeof run !== 'function') throw new TypeError('tavern.job() 需要 run 函数')
       if (when !== undefined && typeof when !== 'function') throw new TypeError('tavern.job() 的 if 必须是函数')
       if (member !== undefined && !pluginMember(pluginMemberId(owner, member))) throw new Error('成员 ' + member + ' 还没有用 tavern.member() 注册')
       if (!deps.workflow) throw new Error('当前酒馆不支持任务表')
       const id = 'plugin:' + owner + ':' + name
-      const entry = { id, owner, name, title: String(title || name), description: String(description || ''), member: member === undefined ? '' : String(member) }
+      const entry = { id, owner, name, title: String(title || name), description: String(description || ''), member: member === undefined ? '' : String(member), needs: after.map(String) }
+      const heard = (payload, event) => {
+        const value = heardOf(event, payload.gameId, payload)
+        if (payload.needs) value.needs = Object.fromEntries(Object.entries(payload.needs).map(([need, output]) => [need.replace(/^plugin:/, ''), structuredClone(output)]))
+        return value
+      }
       return owned(this, () => {
-        const stop = deps.workflow.job({ id, task: id, name: '插件「' + owner + '」' + entry.title, condition: String(condition || ''), on: events,
+        const stop = deps.workflow.job({ id, task: id, name: '插件「' + owner + '」' + entry.title, condition: String(condition || ''),
+          on: events, needs: entry.needs.map(need => 'plugin:' + need),
+          // A failing condition is this plugin's error, and the task does not run.
+          if: async (payload, event) => {
+            if ((await choicesFor(payload.gameId)).disabled.has(owner)) return false
+            try { return !when || Boolean(await when(heard(payload, event))) }
+            catch (error) { recordError(payload.gameId, owner, '任务 ' + entry.title, error); return false }
+          },
+          // A failing run is recorded as this plugin's error and leaves no output.
           run: async (payload, event) => {
-            const gameId = payload.gameId
-            if ((await choicesFor(gameId)).disabled.has(owner)) return
-            const heard = heardOf(event, gameId, payload)
-            try {
-              if (when && !(await when(heard))) return
-              await bounded(run(heard), 'tavern.job(' + name + ')')
-            } catch (error) { recordError(gameId, owner, '任务 ' + entry.title, error) }
+            try { return await bounded(run(heard(payload, event)), 'tavern.job(' + name + ')') }
+            catch (error) { recordError(payload.gameId, owner, '任务 ' + entry.title, error); throw error }
           } })
         jobs.set(id, entry)
         return () => { stop(); if (jobs.get(id) === entry) jobs.delete(id) }
@@ -1549,7 +1561,7 @@ export function createTavernPluginApi(deps) {
     // A job's start line comes from its declaration (describeTasks), so it brings none.
     const job = entry => ({ task: entry.id, name: entry.title, plugin: entry.owner,
       member: entry.member ? pluginMemberId(entry.owner, entry.member) : '', lane: entry.member ? 'resident' : 'ephemeral',
-      does: entry.description || '插件声明的任务。', manual: '', lock: false })
+      does: entry.description || '插件声明的任务。', manual: '', needs: entry.needs.map(need => 'plugin:' + need), lock: false })
     return [...Array.from(settlementTasks.values(), entry => item(entry, 'settlement')), ...Array.from(manualTasks.values(), entry => item(entry, 'manual')), ...Array.from(jobs.values(), job)]
       .sort((a, b) => a.plugin.localeCompare(b.plugin) || a.task.localeCompare(b.task))
   }

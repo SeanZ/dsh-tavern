@@ -58,7 +58,8 @@ export function describeTasks(catalog, jobs = [], momentName = event => event) {
   return catalog.map(item => {
     const starts = jobs.filter(job => job.task === item.task)
     const trigger = item.trigger || [
-      ...starts.map(job => moments(job.on) + (job.condition ? '（' + job.condition + '）' : '')),
+      ...starts.map(job => [moments(job.on), (job.needs || []).length ? job.needs.map(nameOf).join('、') + '完成后' : '']
+        .filter(Boolean).join('，') + (job.condition ? '（' + job.condition + '）' : '')),
       item.manual || ''
     ].filter(Boolean).join('；')
     const dependents = catalog.filter(other => (other.needs || []).includes(item.task)).map(other => other.name)

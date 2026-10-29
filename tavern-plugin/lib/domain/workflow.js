@@ -6,6 +6,9 @@
 // A task's `needs` (background-task-catalog.js) are kept here too: the task that owns a
 // piece of work says how to wait for it in a game (`waiter`), and a task that needs it
 // waits through `needs`, so no task reaches into another's queues.
+// Between declared tasks, `needs` names other tasks (by id) instead of moments: it runs
+// once they all finished the same turn, and hears what their runs returned — their
+// outputs, kept per game and turn until the story is rewound past that turn.
 
 function list(value) {
   return (Array.isArray(value) ? value : [value]).filter(item => item !== undefined && item !== null).map(String).filter(Boolean)
@@ -17,9 +20,15 @@ function gameOf(payload) {
   return String(payload?.sessionId || payload?.latest?.sessionId || '')
 }
 
-export function createWorkflow({ events, tasks = [] }) {
+const KEPT_TURNS = 8
+
+export function createWorkflow({ events, tasks = [], logger = console }) {
   if (!events || typeof events.on !== 'function') throw new Error('任务表缺少剧情事件')
   const jobs = new Map()
+  // Per game: turn → (task id → what its run returned).
+  const outputs = new Map()
+  // Per task id: run(payload) of each declared task that needs it.
+  const dependents = new Map()
   const catalog = new Map(tasks.map(item => [item.task, item]))
   const waiters = new Map()
 
@@ -47,11 +56,29 @@ export function createWorkflow({ events, tasks = [] }) {
     await waitAll(item.needs || [], chat)
   }
 
+  function outputsOf(gameId, turn) {
+    return outputs.get(gameId)?.get(turn)
+  }
+
+  // A finished run of `id` for this turn: keep what it returned, then start the tasks that
+  // need it once all they need has finished the turn.
+  function finished(id, gameId, turn, value) {
+    if (!Number.isSafeInteger(turn)) return
+    const turns = outputs.get(gameId) || new Map()
+    const done = turns.get(turn) || new Map()
+    done.set(id, value === undefined ? null : value)
+    turns.set(turn, done)
+    for (const old of [...turns.keys()].sort((a, b) => a - b).slice(0, -KEPT_TURNS)) turns.delete(old)
+    outputs.set(gameId, turns)
+    for (const start of [...(dependents.get(id) || [])]) start(gameId, turn)
+  }
+
   /** Declare a task; returns the function that removes it. */
   function job(declaration) {
     const id = String(declaration?.id || '')
     const name = String(declaration?.name || id)
     const on = list(declaration?.on)
+    const after = list(declaration?.needs)
     const cancelOn = list(declaration?.cancelOn)
     const { if: when, run, cancel } = declaration || {}
     // `task`: the background runner task it starts (background-task-catalog.js), and
@@ -60,11 +87,23 @@ export function createWorkflow({ events, tasks = [] }) {
     const condition = String(declaration?.condition || '')
     if (!id) throw new Error('任务缺少 id')
     if (jobs.has(id)) throw new Error('任务 ' + id + ' 已声明')
-    if (on.length === 0) throw new Error('任务 ' + name + ' 缺少触发事件')
+    if (on.length === 0 && after.length === 0) throw new Error('任务 ' + name + ' 缺少触发事件')
+    if (after.includes(id)) throw new Error('任务 ' + name + ' 不能等它自己')
     if (typeof run !== 'function') throw new Error('任务 ' + name + ' 缺少 run')
     if (when !== undefined && typeof when !== 'function') throw new Error('任务 ' + name + ' 的 if 必须是函数')
     if (cancelOn.length > 0 && typeof cancel !== 'function') throw new Error('任务 ' + name + ' 有 cancelOn 但缺少 cancel')
-    const entry = Object.freeze({ id, name, task, condition, on: Object.freeze(on), cancelOn: Object.freeze(cancelOn) })
+    const entry = Object.freeze({ id, name, task, condition, on: Object.freeze(on), needs: Object.freeze(after), cancelOn: Object.freeze(cancelOn) })
+    // Synchronous where the task is, so tasks on one moment start in declaration order.
+    function attempt(payload, event) {
+      const proceed = ok => {
+        if (!ok) return
+        const value = run(payload, event)
+        if (typeof value?.then !== 'function') return finished(id, payload.gameId, payload.turn, value)
+        return value.then(result => finished(id, payload.gameId, payload.turn, result))
+      }
+      const ok = when ? when(payload, event) : true
+      return typeof ok?.then === 'function' ? ok.then(proceed) : proceed(ok)
+    }
     // A failing `if`, run or cancel is the events' to report, under the task's name.
     const follow = (event, label, work) => events.on(event, label, payload => {
       const gameId = gameOf(payload)
@@ -72,18 +111,40 @@ export function createWorkflow({ events, tasks = [] }) {
       return work({ ...payload, gameId }, event)
     })
     const stops = [
-      ...on.map(event => follow(event, name, (payload, event) => {
-        if (when && !when(payload, event)) return
-        return run(payload, event)
-      })),
+      ...on.map(event => follow(event, name, attempt)),
       ...cancelOn.map(event => follow(event, '取消' + name, cancel))
     ]
+    // Started by what it needs: once every one of them finished this turn.
+    const start = (gameId, turn) => {
+      const done = outputsOf(gameId, turn)
+      if (!done || after.some(need => !done.has(need)) || done.has(id)) return
+      const payload = { gameId, sessionId: gameId, turn, needs: Object.fromEntries(after.map(need => [need, done.get(need)])) }
+      Promise.resolve().then(() => attempt(payload, 'needs'))
+        .catch(error => logger.warn?.('dsh-tavern: 「' + name + '」失败:', error?.message || error))
+    }
+    for (const need of after) dependents.set(need, [...(dependents.get(need) || []), start])
     jobs.set(id, entry)
     return () => {
       if (jobs.get(id) !== entry) return
       jobs.delete(id)
       for (const stop of stops) stop()
+      for (const need of after) dependents.set(need, (dependents.get(need) || []).filter(item => item !== start))
     }
+  }
+
+  // Rewinding or rewriting the story drops the outputs of the turns it took back (from the
+  // turn it names, or all of the game's when it names none).
+  events.on('story-rewound', '作废任务产出', payload => {
+    const gameId = gameOf(payload), turns = outputs.get(gameId)
+    if (!turns) return
+    if (!Number.isSafeInteger(payload?.turn)) { outputs.delete(gameId); return }
+    for (const turn of [...turns.keys()]) if (turn >= payload.turn) turns.delete(turn)
+  })
+
+  /** What a declared task's run returned for this game and turn, or undefined. */
+  function output(gameId, turn, id) {
+    const value = outputsOf(String(gameId), turn)?.get(String(id))
+    return value === undefined ? undefined : value
   }
 
   /** Declared tasks, in declaration order. */
@@ -96,5 +157,5 @@ export function createWorkflow({ events, tasks = [] }) {
     await waitAll([...catalog.values()].filter(item => item.blocksNextTurn).map(item => item.task), chat)
   }
 
-  return Object.freeze({ job, table, waiter, needs, beforeNextTurn })
+  return Object.freeze({ job, table, waiter, needs, beforeNextTurn, output })
 }

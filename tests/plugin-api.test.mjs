@@ -1380,3 +1380,33 @@ test('tavern.job 声明的任务进任务表：按事件和条件运行，列在
   assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed', member: 'ghost', run() {} }), /还没有用 tavern.member/)
   assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed' }), /run 函数/)
 })
+
+test('tavern.job 的 needs：等别的插件任务这一轮做完再跑，读到它的产出；任务目录写出先后', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const { createWorkflow } = await import('../tavern-plugin/lib/domain/workflow.js')
+  const { describeTasks } = await import('../tavern-plugin/lib/domain/background-task-catalog.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events: storyEvents, logger: { warn() {} } })
+  const h = await harness(t, { storyEvents, workflow })
+  const calls = []
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.job({ name: 'locate', title: '定位', on: 'task-finished', run: async ({ turn }) => ({ place: '花店', signal: turn === 4 ? 0 : 2 }) })
+  } })
+  let phone
+  await h.root.plugin({ name: 'phone-plugin', inject: ['tavern'], apply(ctx) {
+    phone = ctx.tavern
+    ctx.tavern.job({ name: 'call', title: '来电', needs: 'map-plugin:locate', if: ({ needs }) => needs['map-plugin:locate'].signal > 0,
+      run: async ({ turn, needs }) => { calls.push([turn, needs['map-plugin:locate'].place]) } })
+  } })
+  await tick()
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 3 })
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 4 })
+  for (let i = 0; i < 6; i++) await tick()
+  assert.deepEqual(calls, [[3, '花店']], 'no signal on turn 4: its condition keeps it from running')
+  const lines = describeTasks(h.api.taskCatalog(), workflow.table(), event => event)
+  const call = lines.find(item => item.task === 'plugin:phone-plugin:call')
+  assert.equal(call.trigger, '定位完成后')
+  assert.equal(call.waits, '等定位完成')
+  assert.throws(() => phone.job({ name: 'x', run() {} }), /需要 on 或 needs/)
+  assert.throws(() => phone.job({ name: 'x', needs: 'Bad', run() {} }), /插件名:任务名/)
+})
