@@ -1,6 +1,0 @@
-# Temporary overlay for the Desktop 0.1.5-rc.2 load-order probe.
-- insert:
-    - id: load-order-probe
-      name: file://~/Workspace/dsh-tavern-session-patch/scripts/experiments/host-load-order-probe.mjs
-      inject:
-        - webServer

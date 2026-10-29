@@ -32,7 +32,6 @@ v3.0 发布说明见 [变更记录](https://github.com/flizzywine/dsh-tavern/rel
 | [`implementation/`](implementation/) | 特定功能的实施记录 |
 | [`verification/`](verification/) | 测试、性能与真实环境验收证据 |
 | [`testing/`](testing/) | 测试边界与方法；运行入口见 [测试目录说明](../tests/README.md) |
-| [`experiments/`](experiments/) | 实验方法和结果；可执行脚本放在 [`scripts/experiments/`](../scripts/experiments/) |
 | [`releases/`](https://github.com/flizzywine/dsh-tavern/releases) | 历史版本发布记录 |
 
 历史方案和验证记录保留当时的结论，不自动代表当前实现；当前行为优先核对领域契约、正式实现及对应测试。本地研究副本和临时请求快照已清理，受跟踪的报告与证据仍保留。
