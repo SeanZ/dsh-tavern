@@ -55,10 +55,9 @@ test('补丁脚本排在页面 head 的第一位，且只注入一次', () => {
   assert.match(table[0].text, /__ModuleLoader__/)
 })
 
-test('回答步骤的思考跟着回复显示：回复座折叠显示思考，过程座不再重复（#415）', () => {
+test('回答步骤的两个座位各显示自己的块：过程座只有思考，回复座不重复思考（#254）', () => {
   const client = readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-  assert.match(client, /if \(props\.groupPart === "reasoning"\) \{/)
-  assert.match(client, /props\.node\.data\.status !== "running" \|\| !thinking\.length/)
-  assert.doesNotMatch(client, /input\.groupPart !== "response" \|\| block\.kind !== "reasoning"/)
+  assert.match(client, /if \(props\.groupPart === "reasoning"\) return React\.createElement\(TavernReasoningSeat/)
+  assert.match(client, /input\.groupPart !== "response" \|\| block\.kind !== "reasoning"/)
   assert.match(client, /groupPart: props\.groupPart,/)
 })

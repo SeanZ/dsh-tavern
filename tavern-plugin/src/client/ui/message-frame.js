@@ -518,10 +518,11 @@
 		// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
 		function renderTavernAssistantBlocks(input) {
 			const h = React.createElement;
-			// The answer step is drawn twice by DSH: in the process panel ("reasoning") and as the reply
-			// ("response"). A player reads the thinking with the reply, so the reply seat keeps it, folded
-			// above the story; the process panel's copy shows nothing (TavernReasoningSeat).
-			const blocks = Array.isArray(input.blocks) ? input.blocks : [];
+			// The answer step is drawn twice by DSH: its thinking in the process panel ("reasoning"),
+			// the reply below it ("response"). Each seat shows only its own blocks, as DSH's own view does.
+			const blocks = (Array.isArray(input.blocks) ? input.blocks : []).filter(function (block) {
+				return !block || input.groupPart !== "response" || block.kind !== "reasoning";
+			});
 			const translate = typeof input.t === "function" ? input.t : function (key, values) {
 				if (key === "copy") return "复制";
 				if (key === "copied") return "已复制";
