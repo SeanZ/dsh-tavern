@@ -47,19 +47,25 @@ test('narration-only turns and fresh instances retain state; explicit clears rem
   assert.deepEqual(await h.director.state('game', 4), emptyStageState())
 })
 
-for (const change of ['text', 'branch', 'revision', 'next-turn', 'cancel', 'stopped']) test('stale or cancelled tool cannot publish: ' + change, async () => {
+for (const change of ['text', 'branch', 'next-turn', 'cancel', 'stopped']) test('stale or cancelled tool cannot publish: ' + change, async () => {
   const h = await setup(), request = await h.prepare()
   if (change === 'stopped') request.close()
   else if (change !== 'cancel') await h.persistence.update('story', current => {
     if (change === 'text') current.messages.at(-1).text = 'Replaced.'
     if (change === 'branch') current.timeline.branchId = 'other'
-    if (change === 'revision') current.timeline.revision++
     if (change === 'next-turn') current.messages.push({ role: 'assistant', turn: 3, text: 'Later.' })
     return current
   })
   assert.equal((await request.call(delta(), change === 'cancel' ? AbortSignal.abort() : undefined)).ok, false)
   assert.equal(await h.data.snapshot('story'), null)
   assert.equal(h.stats().published, 0)
+})
+
+test('a revision moved by choices, the ledger or a character design leaves the same reply directable', async () => {
+  const h = await setup(), request = await h.prepare()
+  await h.persistence.update('story', current => { current.timeline.revision++; return current })
+  assert.equal((await request.call(delta())).ok, true)
+  assert.equal(h.stats().published, 1)
 })
 
 test('rollback, replaced history and another game do not read obsolete director records', async () => {

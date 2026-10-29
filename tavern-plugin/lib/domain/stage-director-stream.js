@@ -17,8 +17,10 @@ export function createStageDirectorStream({ director, source, catalog, publish =
   async function current(owner) {
     if (disposed || active.get(owner.sessionId) !== owner || owner.controller.signal.aborted) throw stale()
     const next = await source(owner.sessionId, owner.turn)
+    // The reply being directed, on the same branch; other background commits may move the
+    // revision meanwhile, and the final save checks the reply's text itself.
     if (!next || next.operationId !== owner.operationId || next.branchId !== owner.branchId ||
-        next.revision !== owner.revision + (next.status === 'completed' ? 1 : 0) || !['running', 'completed'].includes(next.status)) throw stale()
+        !['running', 'completed'].includes(next.status)) throw stale()
     if (active.get(owner.sessionId) !== owner || owner.controller.signal.aborted) throw stale()
     return next
   }
