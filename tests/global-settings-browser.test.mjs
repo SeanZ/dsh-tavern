@@ -34,3 +34,26 @@ test('状态栏位置是全局显示偏好，保存后通知现有对局刷新',
   assert.deepEqual(calls.filter(call => call.method === 'updateTavernSettings').at(-1).args.patch, { defaultPlaySettings: { statusBarPlacement: 'body' } })
   assert.equal(await page.evaluate(() => window.__statusSettingsChanged), 1)
 })
+
+test('界面皮肤：导入后立即生效，选「默认」恢复原样', async t => {
+  let index = { active: null, skins: [] }, css = ''
+  const { page, calls } = await openTavernSettings(t, { respond(method, args) {
+    if (method === 'getTavernSettings') return { settings: { defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [] }
+    if (method === 'listInterfaceSkins') return index
+    if (method === 'getActiveInterfaceSkin') return { id: index.active, css: index.active ? css : '' }
+    if (method === 'importInterfaceSkin') { css = args.css; index = { active: 'aaaaaaaaaaaa', skins: [{ id: 'aaaaaaaaaaaa', name: args.name.replace(/\.css$/, '') }] }; return index }
+    if (method === 'selectInterfaceSkin') { index = { ...index, active: args.id }; return index }
+  } })
+  const skinStyle = () => page.evaluate(() => document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]')?.textContent ?? null)
+  const select = page.getByLabel('界面皮肤', { exact: true })
+  await page.waitForFunction(() => document.querySelector('select[aria-label="界面皮肤"]')?.disabled === false)
+  await page.locator('input[type=file][accept^=".css"]').setInputFiles({ name: '纸感.css', mimeType: 'text/css', buffer: Buffer.from('body { color: rgb(1, 2, 3) }') })
+  await page.getByText('已导入并启用', { exact: true }).waitFor()
+  assert.deepEqual(calls.find(call => call.method === 'importInterfaceSkin').args, { name: '纸感.css', css: 'body { color: rgb(1, 2, 3) }' })
+  assert.equal(await select.inputValue(), 'aaaaaaaaaaaa')
+  await page.waitForFunction(() => getComputedStyle(document.body).color === 'rgb(1, 2, 3)')
+  await select.selectOption('')
+  await page.getByText('已切换', { exact: true }).waitFor()
+  await page.waitForFunction(() => !document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]'))
+  assert.equal(await skinStyle(), null)
+})

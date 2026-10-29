@@ -130,6 +130,7 @@ export function apply(ctx) {
 | [媒体与数据](plugin-api-data.md) | 挂图片等媒体、按轮与整局数据、插件数据、本局配置项、插件在哪些局生效 |
 | [人物卡、Skill 与演出](plugin-api-cards.md) | 人物卡库、改卡、Skill、台词标注、角色素材 |
 | [浏览器侧 tavernUi](plugin-api-ui.md) | 显示媒体、正文标记、按钮、面板、舞台、配音与音乐 |
+| [界面皮肤](interface-skin.md) | 只换外观不写代码：一个 .css 文件，可用的变量与类名 |
 
 ## 插件自建 Agent 的请求记录
 

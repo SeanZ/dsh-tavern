@@ -31,6 +31,8 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
       else if (method === 'listUserPlugins') result = { plugins: [], dir: '/tmp/tavern/plugins' }
       else if (method === 'listLegacyPlugins') result = { plugins: [] }
       else if (method === 'checkUserPluginUpdates') result = { plugins: [] }
+      else if (method === 'getActiveInterfaceSkin') result = { id: null, css: '' }
+      else if (method === 'listInterfaceSkins') result = { active: null, skins: [] }
       else if (method === 'getSpeechSettings') result = { enabled: false, provider: 'browser', providers: [{ id: 'browser', label: '浏览器朗读', browser: true, key: false, fields: [], voices: [], voice: '', narratorVoice: '' }] }
       else throw new Error('Unexpected settings request: ' + method)
     }

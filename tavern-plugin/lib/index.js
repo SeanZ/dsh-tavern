@@ -218,6 +218,7 @@ import { createDisplayRuntimeStore } from './domain/display-runtime-store.js'
 import { createDisplayRuntimeCapture } from './domain/display-runtime-capture.js'
 import { createPhoneChat } from './domain/phone-chat.js'
 import { createPresetLibrary } from './domain/preset-library.js'
+import { createInterfaceSkins } from './domain/interface-skins.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
 import { clearFailedTurnSurface, rollbackAvailability, interruptedSurfaceTurns } from './domain/rollback-surface.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
@@ -812,6 +813,7 @@ export async function apply(ctx) {
     return { path: sourcePath, title: record.title, sourceChars: record.sourceChars, chunkCount: record.chunks.length, importedAt: Date.now() }
   }
   const presetLibrary = createPresetLibrary({ resources: fileResources, state: profileData, prepareImport: prepareTextImport })
+  const interfaceSkins = createInterfaceSkins({ store: profileData })
   const { read: readPreset, readDocument: readPresetDocument, preview: previewPreset,
     import: importPreset, editor: presetEditor, runtime: runtimePresets } = presetLibrary
   const { exportSettingsBundle, importSettingsBundle } = createSettingsTransfer({
@@ -3447,7 +3449,7 @@ export async function apply(ctx) {
 
   const fontLibrary = createFontLibrary({ dataRoot })
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
-  const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
+  const rpcDeps = { interfaceSkins, worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
     applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow,
     backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
