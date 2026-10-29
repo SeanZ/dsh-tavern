@@ -8,7 +8,7 @@ import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/ses
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 import { turnRepliedByModel } from '../domain/story-alignment.js'
-import { sessionEvents } from '../domain/session-events.js'
+import { isSurfaceEditTurn, sessionEvents } from '../domain/session-events.js'
 import { withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
 import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
@@ -87,14 +87,16 @@ export function registerTurnLifecycleHooks({
 
   ctx.on('session/event', function (session, event) {
     // A new foreground request drops the previous reply's waiting automatic candidates.
+    // A Tavern edit (精修 write-back, body edit) opens a turn of its own: not 玩家发送.
+    const edit = isSurfaceEditTurn(session, event?.data?.turn)
     if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) {
       autoChoices.cancel(session.id)
-      turnStarted?.(session.id, event.data?.turn)
+      if (!edit) turnStarted?.(session.id, event.data?.turn)
     }
     if (!event || event.type !== 'turn/end') return
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''
-    foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason })
+    foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason, edit })
     const reply = assistantResultForTurn(session, event.data && event.data.turn)
     void autoChoices.completed({ sessionId: session.id, turn: event.data && event.data.turn, messageId: String(reply?.event?.data?.message?.id || ''), reason })
     // A turn whose record went missing (#196) is adopted before the player's next

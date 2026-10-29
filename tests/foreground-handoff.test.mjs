@@ -74,3 +74,15 @@ test('a failed or stopped reply announces 回合作废 and cleans the turn up', 
   assert.deepEqual(discarded, ['game:3'])
   assert.deepEqual(cleaned, [3])
 })
+
+test('a Tavern edit\'s own turn announces no 正文写完, but still starts a due settlement', async () => {
+  const announced = [], queued = []
+  const handoff = createForegroundHandoff({
+    turns: { async finalize() {}, async discard() {} }, store: { async chatForSession() { return { id: 'chat' } } },
+    tasks: { activity: () => ({ role: 'settlement', phase: 'pending' }) },
+    replyCommitted: id => announced.push(id), queueBackground: async id => { queued.push(id) }, defer: work => work()
+  })
+  handoff.end({ sessionId: 'game', turn: 9, reason: 'completed', edit: true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual([announced, queued], [[], ['chat']])
+})

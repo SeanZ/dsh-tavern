@@ -65,6 +65,21 @@ export function releaseOpeningTurn(session, agent) {
 // requireStep ("assistant/message does not match an open turn and step") and the
 // whole archive stops loading. Give such an edit its own turn, and publish it as
 // used so the Agent's next turn continues after it.
+// Turns Tavern opened for its own writes (withSurfaceEditTurn, a surface mutation's edit
+// step), per session: not the player's.
+const surfaceEditTurns = new WeakMap()
+
+/** Note a turn Tavern opens only to carry its own write; call before its turn/start. */
+export function markSurfaceEditTurn(session, turn) {
+  const marked = surfaceEditTurns.get(session) || new Set()
+  surfaceEditTurns.set(session, new Set([...marked, Number(turn)].slice(-16)))
+}
+
+/** Whether this turn of the session only carries a Tavern edit (no player message, no model reply). */
+export function isSurfaceEditTurn(session, turn) {
+  return Boolean(session && surfaceEditTurns.get(session)?.has(Number(turn)))
+}
+
 export function withSurfaceEditTurn(session, agent, write) {
   const current = openTurnStep(sessionEvents(session))
   const opened = current.turn === null || current.step === null
@@ -74,6 +89,7 @@ export function withSurfaceEditTurn(session, agent, write) {
     turn = sessionEvents(session).reduce((highest, event) =>
       event.type === 'turn/start' ? Math.max(highest, Number(event.data?.turn) || 0) : highest, 0) + 1
     step = 1
+    markSurfaceEditTurn(session, turn)
     appendSessionEvent(session, 'turn/start', { turn })
     appendSessionEvent(session, 'step/start', { turn, step })
   }
