@@ -257,10 +257,6 @@ export function applyTavernSettingsPatch(current, patch) {
     if (input[name] !== null && !selection) throw new Error('默认模型配置无效')
     next[name] = selection
   }
-  if (Object.hasOwn(input, 'hideContextAndReasoning')) {
-    if (typeof input.hideContextAndReasoning !== 'boolean') throw new Error('无效的对话显示设置')
-    next.hideContextAndReasoning = input.hideContextAndReasoning
-  }
   if (Object.hasOwn(input, 'polishPrereview')) {
     if (typeof input.polishPrereview !== 'boolean') throw new Error('无效的精修预审设置')
     next.polishPrereview = input.polishPrereview
@@ -426,7 +422,6 @@ export function presentTavernSettings(document, defaults) {
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
     defaultWorkbenchModel: normalizeBackgroundModel(object(document).defaultWorkbenchModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
-    hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
     headerItems: readHeaderItems(object(document).headerItems),
     viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',

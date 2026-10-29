@@ -2159,12 +2159,10 @@ html.dsh-tavern-hide-process [data-chat-flow-kind="turn-trigger"],
 html.dsh-tavern-hide-process [data-chat-flow-kind]:has([class*="_compactionRow"]),
 html.dsh-tavern-hide-process .dsh-tavern-assistant-reasoning,
 html.dsh-tavern-hide-process [data-chat-flow-kind="turn-process"]:has([data-turn-process-tool-calls="0"][data-turn-process-subagents="0"]),
-/* 已收起的回合整块是「已调用工具」这类步骤行；开关打开时它们也不该占行。
+/* 已收起的回合整块是「已调用工具」这类步骤行，也不该占行。
    正在跑的那一轮还没有分页锚点，进度照常可见。 */
 html.dsh-tavern-hide-process [data-chat-flow-kind="turn-process"]:has([data-chat-paging-anchor]) { display: none !important; }
 
-.dsh-tavern-display-preferences .dsh-tavern-settings-desc { margin: 6px 0 0; }
-.dsh-tavern-display-preferences > [role="status"] { margin: 0; padding: 0 20px 18px; }
 
 .dsh-tavern-default-skills { display: block; }
 .dsh-tavern-default-skills > summary { cursor: pointer; font-size: 15px; font-weight: 700; line-height: 1.5; }

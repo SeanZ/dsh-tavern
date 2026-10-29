@@ -14,7 +14,7 @@ function environment(options = {}) {
     presets: new Map(options.presets || [['presets/默认.json', JSON.stringify({ prompts: [{ identifier: 'main', content: 'x' }] })]]),
     profiles: options.profiles || [{ id: 'default', name: '默认长期偏好', confirmed: { injectionText: '少写心理描写', summary: '偏短句' } }],
     regex: options.regex || [{ id: 'rx-1', name: '去掉思维链', findRegex: '/<thinking>[\\s\\S]*?<\\/thinking>/g', replaceString: '', enabled: true, placement: [2], trimStrings: [] }],
-    settings: options.settings || { hideContextAndReasoning: true, candidateDismissMode: 'after-send', headerItems: { display: 'icon-text', items: [] }, promptSets: { sets: [{ id: 'default', name: '默认方案', active: true }], activeSetId: 'default' } },
+    settings: options.settings || { candidateDismissMode: 'after-send', headerItems: { display: 'icon-text', items: [] }, promptSets: { sets: [{ id: 'default', name: '默认方案', active: true }], activeSetId: 'default' } },
     imported: { cards: [], worldbooks: [], presets: [], profiles: [], prompts: [], settings: [], regex: 0 },
     backups: []
   }
