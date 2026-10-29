@@ -96,3 +96,19 @@ test('remove 在同一次写入里删掉开场旧状态块、旧说明条目和�
   assert.throws(() => planMvuApply(raw, { remove: { fromOpenings: '<不存在>' } }), /都没有匹配，未保存/)
   assert.throws(() => planMvuApply(raw, { remove: { regex: ['nope'] } }), /正则不存在/)
 })
+
+test('转 MVU 时 Agent 把键名写成网址编码：写进卡的是正常名字，面板字段路径也一样', () => {
+  const raw = card()
+  const plan = planMvuApply(raw, {
+    variables: { '%E5%9C%BA%E6%99%AF': { 地点: '办公室', 时间: '傍晚' }, 进度: { '100%': 1 } },
+    openings: [null, { '%E5%9C%BA%E6%99%AF': { 地点: '码头' } }],
+    rules: '规则',
+    panel: { sections: [{ title: '场景', fields: [{ path: '/%E5%9C%BA%E6%99%AF/地点' }, '/%25E5%259C%25BA%25E6%2599%25AF/时间'] }] }
+  })
+  apply(raw, plan)
+  assert.doesNotMatch(JSON.stringify(raw), /%E5%9C%BA/)
+  assert.match(raw.data.first_mes, /"场景": \{[\s\S]*"地点": "办公室"/)
+  assert.match(raw.data.alternate_greetings[0], /"地点": "码头"/)
+  assert.match(raw.data.first_mes, /"100%": 1/, 'a key that does not decode stays as written')
+  assert.match(raw.data.extensions.regex_scripts[1].replaceString, /\/场景\/地点[\s\S]*\/场景\/时间/)
+})
