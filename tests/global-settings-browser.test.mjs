@@ -88,13 +88,18 @@ test('旧搜索配置不再显示设置窗口或发起诊断请求', async t => 
   assert.equal(calls.some(c => ['getWebSearchStatus', 'testWebSearch', 'useBuiltinWebSearch'].includes(c.method)), false)
 })
 
-test('自动生成候选项在「剧情」里，挨着上下文压缩，默认关闭；开关只保存自己，失败保留原值', async t => {
+test('自动生成候选项在「剧情」里，默认关闭；开关只保存自己，失败保留原值', async t => {
   const backend = fixture()
   const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
   const group = page.getByRole('region', { name: '剧情', exact: true })
   const toggle = group.getByRole('switch', { name: '自动生成候选项', exact: true })
   await toggle.waitFor()
-  assert.equal(await group.getByRole('heading', { name: '上下文压缩', exact: true }).count(), 1)
+  assert.equal(await group.getByRole('heading', { name: '上下文压缩', exact: true }).count(), 0)
+  const advanced = page.getByRole('region', { name: '高级', exact: true })
+  const compression = advanced.getByRole('heading', { name: '上下文压缩', exact: true })
+  assert.equal(await compression.isVisible(), false)
+  await advanced.locator('summary').filter({ hasText: '上下文压缩设置' }).click()
+  assert.equal(await compression.isVisible(), true)
   assert.equal(await page.getByRole('region', { name: '显示与交互', exact: true }).getByRole('switch', { name: '自动生成候选项' }).count(), 0)
   assert.match(await group.locator('.dsh-tavern-settings-row').filter({ hasText: '自动生成候选项' }).innerText(), /每轮会多一次后台请求/)
   assert.equal(await toggle.isChecked(), false)
