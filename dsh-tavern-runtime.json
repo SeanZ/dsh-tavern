@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "687b0080361848834fbd5656222d5c1bae6e5b68",
-  "releaseSequence": 986,
+  "revision": "182b5225195fa4282cf1e892208b606c21fc1f1d",
+  "releaseSequence": 987,
   "version": "3.1.0",
   "files": [
     {
@@ -366,8 +366,8 @@
     },
     {
       "path": "bin/vendor-dream-skin.mjs",
-      "sha256": "8d3ec5c909daf6a4268a674520784e69ec6db5a4caccd6d38314ccc7ffd1b808",
-      "size": 7348
+      "sha256": "97dfd7018a2b885260b4f480ac634638ea3ded4c25990e339231bd323398dc50",
+      "size": 8598
     },
     {
       "path": "bin/verify-conversation-migration.mjs",
@@ -531,8 +531,8 @@
     },
     {
       "path": "presets/tavern/skills/tavern-plugin/references/interface-skin.md",
-      "sha256": "41879201d8f6a19ec7ae0748666c418e5ee0dec948a5ea165f834996af194ed4",
-      "size": 5103
+      "sha256": "0d195d959732600fefad5e58e42ab68215a7efa9235ad2fcd8fe94552421541b",
+      "size": 5632
     },
     {
       "path": "presets/tavern/skills/tavern-plugin/references/plugin-api-cards.md",
@@ -796,8 +796,8 @@
     },
     {
       "path": "tavern-plugin/lib/client.js",
-      "sha256": "dab708ec7961ed257d4878313e0a45f3a85000e1621927e7dce8dd2aad4cf8e8",
-      "size": 2953717
+      "sha256": "8005a4c28f3218a379bfcfc6e618ec6ad20538b156ee6a1d809cb42ecf2fe004",
+      "size": 2955905
     },
     {
       "path": "tavern-plugin/lib/cordis-inspect.js",
@@ -1571,8 +1571,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/interface-skins.js",
-      "sha256": "4ec40d9910ee40fa89eceee6cf03523102073114925df8c354aff2ecac3f4cc3",
-      "size": 4164
+      "sha256": "51b39051adee4b44b7db095d6f49aa47b41fc43060eb33b291f06a80993a0e08",
+      "size": 4401
     },
     {
       "path": "tavern-plugin/lib/domain/json-mutation.js",
@@ -4161,8 +4161,8 @@
     },
     {
       "path": "tavern-plugin/packages/dsh-dream-skin/lib/client.js",
-      "sha256": "f4fbc23e2238d50dded669de702c390e9ac3c5c8516020cca627efe3b4260d86",
-      "size": 272133
+      "sha256": "23a40076d4a0ba6339e9582a708e911f15515fd397d39ece5fcaf08b31388398",
+      "size": 272426
     },
     {
       "path": "tavern-plugin/packages/dsh-dream-skin/lib/index.js",
@@ -5141,9 +5141,9 @@
     }
   ],
   "archive": {
-    "commit": "f2402b25edbac1e28eae384c95e7708671eb5a57",
+    "commit": "cdc2cbeba650fd7a6bd73e3f697a31e8483fdf80",
     "path": "runtime.zip",
-    "sha256": "11f2645ef554b8d43ef047df1519159463bf08d12fcfaa7a31568b4b0ed400c6",
-    "size": 10660943
+    "sha256": "ebb49561aed5e10c71c5974ab7f2570af8f65711ed20eb4eae1314786e569332",
+    "size": 10662285
   }
 }
