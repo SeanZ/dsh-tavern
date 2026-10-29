@@ -27,3 +27,14 @@ test('the table lists each event with the tasks it starts, in registration order
   assert.throws(() => events.on('nope', 'x', () => {}), /未知的剧情事件/)
   assert.throws(() => events.emit('nope'), /未知的剧情事件/)
 })
+
+test('history keeps when each moment happened, per game', () => {
+  let clock = 100
+  const events = createStoryEvents({ now: () => clock })
+  events.emit('reply-committed', { sessionId: 'game' })
+  clock = 200
+  events.emit('turn-settled', { chatId: 'c', latest: { sessionId: 'game' } })
+  events.emit('turn-settled', { chatId: 'c', latest: null })
+  assert.deepEqual(events.history('game'), [{ event: 'reply-committed', name: '正文写完', at: 100 }, { event: 'turn-settled', name: '本轮结算完', at: 200 }])
+  assert.deepEqual(events.history('other'), [])
+})

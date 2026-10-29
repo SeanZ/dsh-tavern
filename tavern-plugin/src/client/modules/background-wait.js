@@ -59,6 +59,7 @@ function useTavernBackgroundRuns(sessionId) {
     const [runs, setRuns] = React.useState(null);
     const [now, setNow] = React.useState(Date.now);
     const [triggers, setTriggers] = React.useState([]);
+    const [moments, setMoments] = React.useState([]);
     React.useEffect(function () {
         let disposed = false, loading = false;
         setRuns(null);
@@ -71,6 +72,7 @@ function useTavernBackgroundRuns(sessionId) {
                 if (disposed) return;
                 setRuns(Array.isArray(result.runs) ? result.runs : []);
                 setTriggers(Array.isArray(result.triggers) ? result.triggers : []);
+                setMoments(Array.isArray(result.moments) ? result.moments : []);
             } catch (_) { /* Diagnostic only; the next poll retries. */ }
             finally { loading = false; }
         }
@@ -78,7 +80,73 @@ function useTavernBackgroundRuns(sessionId) {
         const timer = window.setInterval(refresh, 2000);
         return function () { disposed = true; window.clearInterval(timer); };
     }, [sessionId]);
-    return { runs, now, triggers };
+    return { runs, now, triggers, moments };
+}
+// A development view: one row per background Agent session, time running left to right,
+// so which task ran on which Agent, what waited for what and what ran side by side shows.
+const TIMELINE_SCALE = 12; // px per second while something runs
+const TIMELINE_GAP = 8000; // idle longer than this folds into one break
+const TIMELINE_BREAK = 18;
+function backgroundTimelineLanes(runs) {
+    const lanes = new Map();
+    for (const run of runs.slice().sort((a, b) => a.queuedAt - b.queuedAt)) {
+        // A resident run still queued has no session yet: it waits on the resident lane.
+        const key = run.agentSessionId || (run.lane === "resident" ? "resident-waiting" : run.id);
+        if (!lanes.has(key)) lanes.set(key, { key, resident: run.lane === "resident", runs: [] });
+        lanes.get(key).runs.push(run);
+    }
+    return [...lanes.values()].map(lane => {
+        const names = [...new Set(lane.runs.map(backgroundRunName))];
+        const tail = lane.key.startsWith("run-") || lane.key === "resident-waiting" ? "" : " …" + lane.key.slice(-4);
+        return { ...lane, label: (lane.resident ? "常驻" : "临时") + tail + " · " + names.join("、") };
+    }).sort((a, b) => (b.resident - a.resident) || (a.runs[0].queuedAt - b.runs[0].queuedAt));
+}
+// Busy spans keep their length; idle gaps longer than TIMELINE_GAP fold into a fixed break.
+function backgroundTimelineScale(runs, moments, now) {
+    const spans = runs.map(run => [run.queuedAt, run.endedAt || now]).concat(moments.map(item => [item.at - 500, item.at + 500]))
+        .sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const [from, to] of spans) {
+        const last = merged[merged.length - 1];
+        if (last && from - last.to <= TIMELINE_GAP) last.to = Math.max(last.to, to);
+        else merged.push({ from, to });
+    }
+    let offset = 0;
+    for (const span of merged) { span.x = offset; offset += (span.to - span.from) / 1000 * TIMELINE_SCALE + TIMELINE_BREAK; }
+    const x = time => {
+        const span = merged.slice().reverse().find(item => item.from <= time) || merged[0];
+        return span ? span.x + Math.max(0, Math.min(time, span.to) - span.from) / 1000 * TIMELINE_SCALE : 0;
+    };
+    return { x, width: Math.max(0, offset - TIMELINE_BREAK), breaks: merged.slice(1).map(span => span.x - TIMELINE_BREAK / 2), starts: merged };
+}
+function TavernBackgroundTimeline(props) {
+    const h = React.createElement, now = props.now;
+    const runs = props.runs || [], moments = (props.moments || []).filter(item => runs.length && item.at >= Math.min(...runs.map(run => run.queuedAt)) - TIMELINE_GAP);
+    if (!runs.length) return h("div", { className: "dsh-tavern-status-empty" }, "还没有后台运行。");
+    const lanes = backgroundTimelineLanes(runs), scale = backgroundTimelineScale(runs, moments, now);
+    const clock = time => new Date(time).toTimeString().slice(0, 8);
+    const block = run => {
+        const start = run.startedAt || now, end = run.endedAt || now;
+        const title = backgroundRunName(run) + " · " + (BACKGROUND_RUN_STATUS[run.status] || run.status) + (run.turn ? " · 第 " + run.turn + " 轮" : "") +
+            (run.model ? " · " + run.model : "") + "\n排队 " + Math.round((start - run.queuedAt) / 1000) + " 秒，运行 " + Math.round((end - start) / 1000) + " 秒" + (run.error ? "\n" + run.error : "");
+        return [
+            start > run.queuedAt ? h("div", { key: run.id + ":wait", className: "dsh-tavern-timeline-wait", style: { left: scale.x(run.queuedAt), width: Math.max(2, scale.x(start) - scale.x(run.queuedAt)) }, title }) : null,
+            run.startedAt ? h("div", { key: run.id, className: "dsh-tavern-timeline-run " + run.status, style: { left: scale.x(start), width: Math.max(4, scale.x(end) - scale.x(start)) }, title },
+                backgroundRunName(run) + (run.turn ? " #" + run.turn : "")) : null];
+    };
+    return h("div", { className: "dsh-tavern-timeline" },
+        h("div", { className: "dsh-tavern-timeline-inner", style: { width: scale.width + 150 } },
+            h("div", { className: "dsh-tavern-timeline-row dsh-tavern-timeline-axis" },
+                h("div", { className: "dsh-tavern-timeline-label" }, "时间"),
+                h("div", { className: "dsh-tavern-timeline-track" },
+                    scale.starts.map(span => h("span", { key: span.from, style: { left: span.x } }, clock(span.from))),
+                    moments.map((item, index) => h("span", { key: "m" + index, className: "dsh-tavern-timeline-moment-label", style: { left: scale.x(item.at) } }, "▼" + item.name)))),
+            lanes.map(lane => h("div", { key: lane.key, className: "dsh-tavern-timeline-row" },
+                h("div", { className: "dsh-tavern-timeline-label", title: lane.key }, lane.label),
+                h("div", { className: "dsh-tavern-timeline-track" }, lane.runs.flatMap(block)))),
+            h("div", { className: "dsh-tavern-timeline-overlay", style: { width: scale.width } },
+                moments.map((item, index) => h("i", { key: index, className: "dsh-tavern-timeline-moment", style: { left: scale.x(item.at) } })),
+                scale.breaks.map((left, index) => h("i", { key: "b" + index, className: "dsh-tavern-timeline-break", style: { left } })))));
 }
 function TavernBackgroundRunRow(props) {
     const h = React.createElement, run = props.run;
@@ -92,7 +160,7 @@ function TavernBackgroundRunRow(props) {
 // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
 function TavernBackgroundTasksTab(props) {
     const h = React.createElement;
-    const { runs, now, triggers } = useTavernBackgroundRuns(props.sessionId);
+    const { runs, now, triggers, moments } = useTavernBackgroundRuns(props.sessionId);
     const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
     const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
     const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
@@ -101,6 +169,9 @@ function TavernBackgroundTasksTab(props) {
             h("div", { className: "dsh-tavern-status-title" }, "后台任务"),
             h("div", { className: "dsh-tavern-status-settle" }, runs === null ? "正在读取…" : backgroundRunsSummary(runs) || "空闲")),
         h("div", { className: "dsh-tavern-status-body" },
+            h("section", { className: "dsh-tavern-status-section" },
+                h("div", { className: "dsh-tavern-status-label" }, "时序（每行一个后台 Agent，浅色为排队，⋯ 为折叠的空闲）"),
+                runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now })),
             h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "进行中"),
                 list(active, "没有正在运行或排队的后台任务。"),

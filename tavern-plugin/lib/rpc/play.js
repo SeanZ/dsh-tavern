@@ -259,7 +259,7 @@ export function createPlayHandlers(deps) {
       return { progress: backgroundAgentRunner.progress(args && args.sessionId) || pluginSettlementProgress.snapshot(args && args.sessionId) }
     },
     async getBackgroundRuns(args) {
-      return { runs: backgroundAgentRunner.runs(args && args.sessionId), triggers: storyEvents?.table() || [] }
+      return { runs: backgroundAgentRunner.runs(args && args.sessionId), triggers: storyEvents?.table() || [], moments: storyEvents?.history(args && args.sessionId) || [] }
     },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }

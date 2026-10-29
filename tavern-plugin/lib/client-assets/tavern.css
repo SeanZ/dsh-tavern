@@ -4933,4 +4933,21 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-triggers { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
 .dsh-tavern-background-triggers dt { color: var(--dsh-tavern-accent-muted); }
 .dsh-tavern-background-triggers dd { margin: 0; }
+.dsh-tavern-timeline { overflow-x: auto; font-size: 12px; }
+.dsh-tavern-timeline-inner { position: relative; }
+.dsh-tavern-timeline-row { display: flex; height: 24px; align-items: center; border-bottom: 1px dashed color-mix(in srgb, currentColor 12%, transparent); }
+.dsh-tavern-timeline-label { flex: 0 0 150px; position: sticky; left: 0; z-index: 2; background: var(--dsw-alias-bg-primary, #fff); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 6px; }
+.dsh-tavern-timeline-track { position: relative; flex: 1; height: 100%; }
+.dsh-tavern-timeline-axis .dsh-tavern-timeline-track span { position: absolute; top: 4px; white-space: nowrap; color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-timeline-axis .dsh-tavern-timeline-moment-label { top: 4px; color: var(--dsh-tavern-accent); }
+.dsh-tavern-timeline-run, .dsh-tavern-timeline-wait { position: absolute; top: 3px; height: 18px; border-radius: 3px; overflow: hidden; white-space: nowrap; font-size: 11px; line-height: 18px; padding: 0 3px; box-sizing: border-box; }
+.dsh-tavern-timeline-wait { background: color-mix(in srgb, currentColor 10%, transparent); }
+.dsh-tavern-timeline-run { background: #7fb98a; color: #fff; }
+.dsh-tavern-timeline-run.running { background: #5a8fd6; }
+.dsh-tavern-timeline-run.failed { background: #c45f5f; }
+.dsh-tavern-timeline-run.cancelled { background: #9a9a9a; }
+.dsh-tavern-timeline-run.discarded { background: #b9b9b9; text-decoration: line-through; }
+.dsh-tavern-timeline-overlay { position: absolute; top: 0; bottom: 0; left: 150px; pointer-events: none; }
+.dsh-tavern-timeline-moment { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--dsh-tavern-accent); }
+.dsh-tavern-timeline-break { position: absolute; top: 0; bottom: 0; border-left: 2px dotted color-mix(in srgb, currentColor 30%, transparent); }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }

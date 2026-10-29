@@ -11,8 +11,12 @@ export const STORY_EVENTS = Object.freeze({
   'turn-discarded': '回合作废'
 })
 
-export function createStoryEvents({ logger = console } = {}) {
+const KEPT_PER_GAME = 30
+
+export function createStoryEvents({ logger = console, now = Date.now } = {}) {
   const followers = new Map(Object.keys(STORY_EVENTS).map(event => [event, []]))
+  // When each moment happened, per game, for the background task timeline.
+  const moments = new Map()
 
   function on(event, label, listener) {
     const list = followers.get(event)
@@ -26,6 +30,12 @@ export function createStoryEvents({ logger = console } = {}) {
   function emit(event, payload) {
     const list = followers.get(event)
     if (!list) throw new Error('未知的剧情事件：' + event)
+    const gameId = String(payload?.sessionId || payload?.latest?.sessionId || '')
+    if (gameId) {
+      const kept = moments.get(gameId) || []
+      kept.push({ event, name: STORY_EVENTS[event], at: now() })
+      moments.set(gameId, kept.slice(-KEPT_PER_GAME))
+    }
     for (const { label, listener } of [...list]) {
       const warn = error => logger.warn('dsh-tavern: ' + STORY_EVENTS[event] + '后「' + label + '」失败:', error?.message || error)
       try {
@@ -39,5 +49,10 @@ export function createStoryEvents({ logger = console } = {}) {
     return Object.entries(STORY_EVENTS).map(([event, name]) => ({ event, name, followers: followers.get(event).map(item => item.label) }))
   }
 
-  return Object.freeze({ on, emit, table })
+  // Oldest first.
+  function history(gameId) {
+    return (moments.get(String(gameId || '')) || []).map(item => ({ ...item }))
+  }
+
+  return Object.freeze({ on, emit, table, history })
 }
