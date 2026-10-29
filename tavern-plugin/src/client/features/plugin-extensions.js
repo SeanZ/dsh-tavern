@@ -461,17 +461,10 @@
 					const entry = Object.assign({ owner: ownerOf(this), kinds: input.kinds.slice() }, handlers);
 					return owned(this, function () { return addTo(illustrators, entry); }, "tavernUi.registerIllustrator()");
 				},
-				// Pictures Tavern's own scene images drew, every game, newest first; read-only (apiVersion 4).
+				// Pictures Tavern itself drew before image plugins (apiVersion 4). Those old pictures
+				// are no longer kept, so the list is always empty; the method stays for plugins that call it.
 				listIllustrations() {
-					return rpc("listSceneImageHistory", {}).then(function (reply) {
-						return ((reply && reply.items) || []).flatMap(function (item) {
-							return item.versions.map(function (version) {
-								return { gameId: item.sessionId || "", gameTitle: item.title || item.cardName || "", cardName: item.cardName || "", turn: item.turn, gameDeleted: item.deleted === true,
-									description: version.description, createdAt: version.createdAt,
-									url: "/api/dsh-tavern/scene-image-stored?" + new URLSearchParams({ chatId: item.chatId, key: item.key, versionId: version.id }).toString() };
-							});
-						}).sort(function (a, b) { return b.createdAt - a.createdAt; });
-					});
+					return Promise.resolve([]);
 				},
 				// Names of the given games, { [gameId]: { title, cardName } }; deleted games are left out (apiVersion 4).
 				getGames(gameIds) {

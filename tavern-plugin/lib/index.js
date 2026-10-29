@@ -132,7 +132,7 @@ import { fileURLToPath } from 'node:url'
 import { createBackgroundAgentRunner, executeBackgroundCompaction } from './background-agent-runner.js'
 import { createApplicationUpdater } from './application-updater.js'
 import { CANDIDATE_SUBMIT_TOOL, SCRIPT_POINT_TOOL, SCRIPT_READ_TOOL, createCandidateGenerator } from './domain/candidate-generation.js'
-import { computeSceneTarget, createSceneIllustrations, projectedSceneText } from './domain/scene-illustration.js'
+import { computeSceneTarget, projectedSceneText } from './domain/scene-illustration.js'
 import { createPluginMedia } from './domain/plugin-media.js'
 import { createPluginMediaViews } from './domain/plugin-media-views.js'
 import { createPluginData } from './domain/plugin-data.js'
@@ -155,7 +155,7 @@ import { createModelCalls } from './domain/model-calls.js'
 import { createPlayCardSnapshots } from './domain/play-card-snapshots.js'
 import { createUserPreferenceProfile } from './domain/user-preference-profile.js'
 import { createContextPlanner } from './domain/context-planner.js'
-import { createConversationMarkdownExport, conversationStoryTurns } from './domain/conversation-text-export.js'
+import { createConversationMarkdownExport } from './domain/conversation-text-export.js'
 import { createCoordinationEventPublisher } from './domain/coordination-event-publisher.js'
 import { createSessionSignalTransport } from './domain/session-signal-transport.js'
 import { createCandidateTasks } from './domain/candidate-tasks.js'
@@ -244,7 +244,7 @@ import { resolveTavernDataRoot } from './domain/tavern-data.js'
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import { createTavernSkillProvider } from './domain/tavern-skill-provider.js'
 import { canonicalTavernSkillName, createTavernSkillModule } from './domain/tavern-skills.js'
-import { readZipEntries, writeZipEntries } from './domain/zip-entries.js'
+import { readZipEntries } from './domain/zip-entries.js'
 import { createGameFootprint } from './domain/game-footprint.js'
 import { createGameSaveExporter } from './domain/game-save-export.js'
 import { readFileSync } from 'node:fs'
@@ -1420,19 +1420,9 @@ export async function apply(ctx) {
     const chat = str(chatId) === '' ? await chatForSession(str(sessionId)) : await readChat(str(chatId))
     if (chat === undefined) throw new Error('当前 Session 没有绑定 Tavern 对话')
     const full = (await readChat(chat.id)) || chat
-    const pictures = chat.sessionId ? await sceneIllustrations.exportImages(chat.sessionId, conversationStoryTurns(full)) : []
-    const extension = { 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
-    // A turn's added pictures follow its first: images/002.png, images/002-2.png, …
-    const pathOf = image => 'images/' + String(image.turn).padStart(3, '0') + (image.slot ? '-' + (image.slot + 1) : '') + '.' + (extension[image.mediaType] || 'png')
-    const images = new Map()
-    for (const image of pictures) images.set(image.turn, [...(images.get(image.turn) || []), { path: pathOf(image), anchor: image.anchor }])
-    const exported = createConversationMarkdownExport(full, { title: str(title), images })
+    const exported = createConversationMarkdownExport(full, { title: str(title), images: new Map() })
     if (exported.messageCount === 0) throw new Error('暂无可导出的对话')
-    if (!pictures.length) return { filename: exported.filename, text: exported.text }
-    // Pictures are linked from the Markdown, so the story and its images travel as one zip.
-    const zip = writeZipEntries([{ path: exported.filename, content: exported.text },
-      ...pictures.map(image => ({ path: pathOf(image), content: Buffer.from(image.data) }))])
-    return { filename: exported.title + '.zip', base64: zip.toString('base64'), images: pictures.length }
+    return { filename: exported.filename, text: exported.text }
   }
   const gameSaveSnapshot = createGameSaveSnapshot({
     readChat,
@@ -2271,11 +2261,6 @@ export async function apply(ctx) {
     characterDesign: characterDesignDocuments
   })
   ctx.effect(() => () => backgroundAgentRunner.dispose(), 'dsh-tavern: dispose resident background agents')
-  // Pictures Tavern drew before image plugins took over: shown, exported, listed and deleted, never drawn.
-  const sceneIllustrations = createSceneIllustrations({
-    store: profileData, chatForSession, chatSummaries: async () => (await readIndex()).chats || [], sceneStateForSession: sessionChats.readSceneImageState,
-    attachments: () => ctx.get('attachments')
-  })
   // Public extension service for third-party DSH plugins (docs/plugin-api.md).
   const pluginMedia = createPluginMedia({ store: profileData })
   const pluginData = createPluginData({ store: profileData })
@@ -3484,7 +3469,7 @@ export async function apply(ctx) {
     readOpeningWindow, readRawTavernSettings, readScript, readSessionMap, readTavernSettings, reconcileStory, reconcileWhenIdle,
     regenBody, regexLibrary, regexManager, removePluginGalleryItems, removePluginMediaVersion, renameResource,
     replayFailedTurn, requestPerformance, retrySettlement, retryStyleReference, rollbackTurn, rollbackToTurn,
-    runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, sceneIllustrations, scriptContinuity,
+    runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, scriptContinuity,
     scriptNavigation, sessionActivity, sessionInventory, sessionOperation, sessionPatch,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setCardPlugins, setPlayerName,
     fontLibrary, skillImportFiles, sleep, speakLine, prepareVoices, speech, speechReply, stageJudge, stageMaterial, stageMaterialChanged, stageMusicTracks, stageSkinOf, startChat, startPluginTask, stopBackground, str,
@@ -3578,7 +3563,6 @@ export async function apply(ctx) {
     performanceDiagnostics,
     runtimeGeneration,
     runtimeReadiness,
-    sceneIllustrations,
     readPluginMediaFile: (...args) => readPluginMediaFile(...args),
     sessionResources,
     str,

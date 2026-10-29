@@ -397,27 +397,6 @@
 						React.createElement(DshUi.Tooltip, { label: copied ? "已复制" : "复制", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-copy", "aria-label": copied ? "已复制" : "复制", onClick: copy }, React.createElement(copied ? DshUi.IconCheckOutlineRegular : DshUi.IconCopyOutlineRegular, null))))
 				);
 			}
-			// A picture Tavern itself drew in an older version, read-only: page through its versions
-			// and enlarge it. Deleting lives in the gallery; new pictures come from image plugins.
-			function SceneIllustration(props) {
-				const fetchedState = useSceneImageRecord(props.record === undefined ? props.sessionId : null, props.turn);
-				const state = props.record === undefined ? fetchedState : props.record;
-				const [selected, setSelected] = React.useState("");
-				const versions = state && state.versions || [];
-				const version = versions.find(function (item) { return item.id === selected; }) || versions[versions.length - 1];
-				const index = version ? versions.findIndex(function (item) { return item.id === version.id; }) : -1;
-				const lastId = versions.length ? versions[versions.length - 1].id : "";
-				React.useEffect(function () { setSelected(lastId); }, [lastId]);
-				if (!state || !version) return null;
-				const url = "/api/dsh-tavern/scene-image?" + new URLSearchParams({ sessionId: props.sessionId, turn: String(props.turn), key: state.key, versionId: version.id }).toString();
-				return React.createElement("div", { className: "dsh-tavern-illustration" },
-					React.createElement("a", { href: url, "aria-label": "放大场景插画", onClick: function (event) { event.preventDefault(); openSceneImagePreview(url, event.currentTarget, version, null); } }, React.createElement("img", { src: url, alt: "本段场景插画", loading: "lazy" })),
-					versions.length > 1 ? React.createElement("div", { className: "dsh-tavern-image-actions" },
-						React.createElement("button", { type: "button", className: "dsh-tavern-btn", "aria-label": "上一张插图", disabled: index <= 0, onClick: function () { setSelected(versions[index - 1].id); } }, "‹"),
-						React.createElement("span", null, String(index + 1) + " / " + String(versions.length)),
-						React.createElement("button", { type: "button", className: "dsh-tavern-btn", "aria-label": "下一张插图", disabled: index >= versions.length - 1, onClick: function () { setSelected(versions[index + 1].id); } }, "›")
-					) : null);
-			}
 			function tavernAssistantViewPaths(turn, eager = true) {
 				return ["mode", eager ? "tavernHelper" : "$helperAvailable",
 					"cardSave", "tavernRuntimePolicy", "tavernMvuRuntime", "statusBarPlacement"].map(field => [field]).concat([["$projectionTurn", String(turn)], ["$projectionLatestTurn", String(turn)]]);
@@ -595,26 +574,7 @@
 					return castState ? { sessionId: props.sessionId, lines: castState.lines, characters: castState.characters, characterName: castName,
 						characterImageUrl: castPath ? "/api/dsh-tavern/card-image?path=" + encodeURIComponent(castPath) : "" } : null;
 				}, [props.sessionId, castState, castName, castPath]);
-				// Pictures Tavern drew in older versions show once the turn is settled.
-				const sceneShown = settled && playView;
-				const sceneRecord = useSceneImageRecord(sceneShown ? props.sessionId : null, storyTurn);
-				const sceneAnchor = (function () {
-					const versions = sceneRecord && sceneRecord.versions || [];
-					for (let index = versions.length - 1; index >= 0; index -= 1) if (versions[index].anchor) return versions[index].anchor;
-					return "";
-				})();
-				const sceneExtras = sceneShown && sceneRecord && sceneRecord.extras || [];
-				const illustration = sceneShown ? React.createElement(SceneIllustration, { key: props.sessionId + ":" + storyTurn + ":" + JSON.stringify(projection), sessionId: props.sessionId, turn: storyTurn, record: sceneRecord }) : null;
-				// Added pictures sit at their own sentences; unplaced ones follow the text.
-				const extraPictures = sceneExtras.map(function (extra) {
-					const versions = extra.versions || [];
-					let anchor = "";
-					for (let index = versions.length - 1; index >= 0 && !anchor; index -= 1) anchor = versions[index].anchor || "";
-					return { id: "scene-illustration-" + extra.slot, anchor: anchor, node: React.createElement(SceneIllustration, { key: props.sessionId + ":" + storyTurn + ":slot:" + extra.slot + ":" + JSON.stringify(projection), sessionId: props.sessionId, turn: storyTurn, record: extra }) };
-				});
-				const sceneAnchors = (illustration && sceneAnchor ? [{ id: "scene-illustration", anchor: sceneAnchor, render: function () { return illustration; } }] : [])
-					.concat(extraPictures.filter(function (picture) { return picture.anchor; }).map(function (picture) { return { id: picture.id, anchor: picture.anchor, render: function () { return picture.node; } }; }));
-				const pluginText = playView ? createTavernPluginTextContext({ items: pluginMedia.items, extras: sceneAnchors, sessionId: props.sessionId, turn: storyTurn, streaming: data.status === "running" }) : null;
+				const pluginText = playView ? createTavernPluginTextContext({ items: pluginMedia.items, extras: [], sessionId: props.sessionId, turn: storyTurn, streaming: data.status === "running" }) : null;
 
                 // 正文走工具调用时整段正文一次性落地：宿主把提交折叠成一条普通回复，
                 // 消息 ID 带 tavern-tool-reply: 前缀。普通逐字流式的回复没有这个前缀，
@@ -689,9 +649,6 @@
 					onClick: function () { tavernReplyFoldOpen.delete(foldKey); setFoldRevision(function (value) { return value + 1; }); }
 				}, "🐾 收起") : null;
 				const mvuReceiptNode = settled && ownsTurn ? React.createElement(TavernTurnMvuReceipt, { sessionId: props.sessionId, turn: storyTurn }) : null;
-				const trailingIllustration = React.createElement(React.Fragment, null,
-					pluginText && pluginText.placed.has("scene-illustration") ? null : illustration,
-					extraPictures.map(function (picture) { return pluginText && pluginText.placed.has(picture.id) ? null : React.createElement(React.Fragment, { key: picture.id }, picture.node); }));
                 const inlineStatus = liveState.view?.statusBarPlacement === "body" && !sessionTransitioning && storyTurn > 0 && storyTurn === latestProjectionTurn && data.finalNode && tail?.closing?.finalNode?.seq === data.finalNode.seq
                     ? React.createElement(TavernInlineStatusRuntime, { sessionId: props.sessionId, executeSlash: props.executeSlash }) : null;
                 const helper = liveState.view?.tavernHelper;
@@ -719,7 +676,7 @@
 				})) : null;
 				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
-				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, trailingIllustration, pluginActions, mvuReceiptNode, inlineStatus);
+				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}
 			function TavernForkAssistantAction(props) {
 				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["forkTurnsByMessageId", String(props.messageId || "")]]);

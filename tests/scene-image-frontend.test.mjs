@@ -134,7 +134,6 @@ test('gallery ignores an old session response and keeps the newest of overlappin
   h.render({ gallerySessionId: 'B' })
   let urls = walk(h.tree, node => node.type === 'img').map(node => node.props.src)
   assert.ok(urls.some(url => url.includes('B-plugin')))
-  assert.ok(urls.some(url => url.includes('B-native')))
   assert.ok(urls.every(url => !url.includes('A-')))
 
   const refresh = walk(h.tree, node => node.type === 'button' && node.children.includes('刷新'))[0]
@@ -153,7 +152,7 @@ test('gallery ignores an old session response and keeps the newest of overlappin
   assert.ok(urls.every(url => !url.includes('stale-')))
 })
 
-test('an old native illustration is shown read-only; gallery deletes the selected plugin image in its session', async t => {
+test('gallery deletes the selected plugin image in its session', async t => {
   const calls = []
   const h = componentHarness(declaration(gallerySource, 'SceneImageGallery'), {
     rpc: async (method, args, sessionId) => {
@@ -167,8 +166,7 @@ test('an old native illustration is shown read-only; gallery deletes the selecte
   h.render({ gallerySessionId: 'session-B' })
 
   const galleryImages = walk(h.tree, node => node.type === 'img')
-  assert.equal(galleryImages.length, 2)
-  assert.ok(galleryImages.some(node => node.props.src.includes('scene-image-stored')))
+  assert.equal(galleryImages.length, 1, 'only plugin pictures: old native ones are no longer kept')
   assert.ok(galleryImages.some(node => node.props.src.includes('game-B-plugin')))
 
   const removePluginButton = walk(h.tree, node => node.type === 'figure' && node.props.title === 'game-B plugin')[0]
@@ -179,25 +177,11 @@ test('an old native illustration is shown read-only; gallery deletes the selecte
   assert.equal(deletion.sessionId, 'session-B')
   assert.equal(deletion.args.sessionId, 'session-B')
   assert.deepEqual(Array.from(deletion.args.pluginItems), ['game-B-plugin'])
-  assert.deepEqual(Array.from(deletion.args.items), [])
+  assert.equal(deletion.args.items, undefined)
 
-  const Illustration = vm.runInNewContext(`(${declaration(rendererSource, 'SceneIllustration')})`, {
-    React: hReact(),
-    useSceneImageRecord: () => null,
-    rpc: async () => { throw new Error('an old illustration must not call the server') },
-    URLSearchParams,
-    openSceneImagePreview() {}
-  })
-  const legacyTree = Illustration({ sessionId: 'session-B', turn: 1, record: {
-    key: 'legacy-key', versions: [{ id: 'legacy-v1', description: 'legacy art', createdAt: 1 }]
-  } })
-  const legacyImages = walk(legacyTree, node => node.type === 'img')
-  assert.equal(legacyImages.length, 1)
-  assert.ok(legacyImages[0].props.src.includes('legacy-v1'))
-  assert.deepEqual(walk(legacyTree, node => node.type === 'button'), [], 'no drawing or deleting under the picture')
 })
 
-test('gallery sends selected native and plugin pictures together with their session scope', async t => {
+test('gallery sends selected plugin pictures with their session scope', async t => {
   const calls = []
   const h = componentHarness(declaration(gallerySource, 'SceneImageGallery'), {
     rpc: async (method, args, sessionId) => {
@@ -215,7 +199,7 @@ test('gallery sends selected native and plugin pictures together with their sess
   walk(h.tree, node => node.type === 'button' && node.children.includes('批量删除'))[0].props.onClick()
   h.render({ gallerySessionId: 'mixed-session' })
   const checkboxes = walk(h.tree, node => node.type === 'input' && node.props.type === 'checkbox')
-  assert.equal(checkboxes.length, 2)
+  assert.equal(checkboxes.length, 1)
   checkboxes.forEach(node => node.props.onChange({ target: { checked: true } }))
   h.render({ gallerySessionId: 'mixed-session' })
   const removeSelected = walk(h.tree, node => node.type === 'button' && node.children[0]?.startsWith('删除选中的'))[0]
@@ -225,7 +209,7 @@ test('gallery sends selected native and plugin pictures together with their sess
   const deletion = calls.find(call => call.method === 'removeSceneImageHistory')
   assert.equal(deletion.sessionId, 'mixed-session')
   assert.equal(deletion.args.sessionId, 'mixed-session')
-  assert.deepEqual(Array.from(deletion.args.items, item => item.versionId), ['mixed-game-native'])
+  assert.equal(deletion.args.items, undefined)
   assert.deepEqual(Array.from(deletion.args.pluginItems), ['mixed-game-plugin'])
 })
 
