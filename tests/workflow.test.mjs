@@ -78,3 +78,13 @@ test('needs waits for the work each needed task registered a waiter for, in orde
   const bare = createWorkflow({ events: createStoryEvents(), tasks })
   await assert.rejects(bare.needs('candidate', { id: 'c' }), /没有登记等待方式/)
 })
+
+test('before the next turn, the work of every task that blocks it is waited for', async () => {
+  const tasks = [{ task: 'settlement', blocksNextTurn: true }, { task: 'phone' }, { task: 'plugin', blocksNextTurn: true }]
+  const workflow = createWorkflow({ events: createStoryEvents(), tasks }), waited = []
+  workflow.waiter('settlement', chat => { waited.push('settlement ' + chat.id) })
+  workflow.waiter('phone', () => assert.fail('the next turn does not wait for the phone'))
+  workflow.waiter('plugin', async chat => { waited.push('plugin ' + chat.id) })
+  await workflow.beforeNextTurn({ id: 'c' })
+  assert.deepEqual(waited, ['settlement c', 'plugin c'])
+})

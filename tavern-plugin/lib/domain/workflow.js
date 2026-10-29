@@ -91,5 +91,10 @@ export function createWorkflow({ events, tasks = [] }) {
     return [...jobs.values()]
   }
 
-  return Object.freeze({ job, table, waiter, needs })
+  /** Wait for the work of this game that the next turn waits for (blocksNextTurn). */
+  async function beforeNextTurn(chat) {
+    await waitAll([...catalog.values()].filter(item => item.blocksNextTurn).map(item => item.task), chat)
+  }
+
+  return Object.freeze({ job, table, waiter, needs, beforeNextTurn })
 }

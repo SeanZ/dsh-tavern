@@ -3044,6 +3044,8 @@ export async function apply(ctx) {
     if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) await queueSettlement(chat.id)
     await settlementJobs.pending(chat.id)
   })
+  // A plugin task of the last turn (or one the player started) runs to its end.
+  workflow.waiter('plugin', chat => settlementRun.pluginTaskJob(chat.id))
   function cancelSettlement(chatId, options) { return settlementJobs.cancel(chatId, options) }
   const mvuSettlementReconciler = createMvuSettlementResume({
     conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, storyEvents,
@@ -3201,7 +3203,7 @@ export async function apply(ctx) {
     replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
     turnDiscarded: (sessionId, turn) => storyEvents.emit('turn-discarded', { sessionId, turn }),
     cancelDirector,
-    waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
+    beforeNextTurn: chat => workflow.beforeNextTurn(chat),
     waitReconcile: storyReconciliation.waitReconcile,
     syncWorldBook: async function (chat) {
       if (!['story', 'script'].includes(chat.mode || 'story')) return

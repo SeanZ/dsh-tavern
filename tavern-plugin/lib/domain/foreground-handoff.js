@@ -28,12 +28,8 @@ export function createForegroundHandoff(options = {}) {
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
-    const activity = chat === undefined ? { phase: 'idle', busy: false, role: '' } : tasks.activity(chat)
-    if (chat !== undefined && activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
-      await queueBackground(chat.id)
-    }
-    // Plugin tasks of the last turn (or one the player started) finish before the next turn.
-    if (chat !== undefined) await options.waitBackground?.(chat.id)
+    // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
+    if (chat !== undefined) await options.beforeNextTurn?.(chat)
     // A failed turn is cleaned up after the failure, but that may not have happened (no live
     // session then, or it failed). Its input must not reach this request beside the new one.
     if (chat !== undefined) await options.clearFailedTurns?.(input.sessionId)
