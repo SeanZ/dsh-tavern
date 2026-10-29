@@ -6,7 +6,9 @@ export const STORY_EVENTS = Object.freeze({
   'reply-committed': '正文写完',
   // { chatId, latest }: a turn's background settlement finished; `latest` is the
   // save's header after it, or null when it could not be read.
-  'turn-settled': '本轮结算完'
+  'turn-settled': '本轮结算完',
+  // { sessionId, turn }: a reply failed or was stopped, and its turn is thrown away.
+  'turn-discarded': '回合作废'
 })
 
 export function createStoryEvents({ logger = console } = {}) {

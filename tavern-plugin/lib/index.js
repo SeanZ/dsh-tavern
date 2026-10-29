@@ -3123,6 +3123,11 @@ export async function apply(ctx) {
     agentRegistry, sessionStore, chatForSession, chatSliceForSession, updateChat, turns: turnOrchestrator
   })
   const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
+  // One turn's stream, or (no turn: the next one starts) every director job of the game.
+  function cancelDirector(sessionId, turn) {
+    stageDirectorStream.cancel(sessionId, turn)
+    if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
+  }
   // 事件表: every background task a story moment starts. Settlement is not here: the
   // reply and regeneration flows queue it themselves, since they wait for its outcome.
   storyEvents.on('reply-committed', '舞台导演', ({ sessionId }) => directRound(sessionId))
@@ -3135,6 +3140,7 @@ export async function apply(ctx) {
   // A reply the pre-review has not read yet (it was busy, or the reply changed since).
   storyEvents.on('turn-settled', '精修预审', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
   storyEvents.on('turn-settled', '插件轮次通知', ({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
+  storyEvents.on('turn-discarded', '取消舞台导演', ({ sessionId, turn }) => cancelDirector(sessionId, turn))
   storyEvents.on('turn-settled', '选项世界书预热', ({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
@@ -3142,10 +3148,8 @@ export async function apply(ctx) {
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
     replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
-    cancelDirector: (sessionId, turn) => {
-      stageDirectorStream.cancel(sessionId, turn)
-      if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
-    },
+    turnDiscarded: (sessionId, turn) => storyEvents.emit('turn-discarded', { sessionId, turn }),
+    cancelDirector,
     waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
     waitReconcile: storyReconciliation.waitReconcile,
     syncWorldBook: async function (chat) {

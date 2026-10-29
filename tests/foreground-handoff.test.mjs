@@ -59,3 +59,19 @@ test('开场与无结算的正文完成均不启动旧世界书预备任务', as
   for (const run of deferred) run()
   await new Promise(resolve => setImmediate(resolve))
 })
+
+test('a failed or stopped reply announces 回合作废 and cleans the turn up', async () => {
+  const discarded = [], cleaned = []
+  const handoff = createForegroundHandoff({
+    turns: { async finalize() {}, async discard(target) { cleaned.push(target.turn) } },
+    store: { async chatForSession() { return { id: 'chat-1' } } },
+    tasks: { activity() { return { phase: 'idle', busy: false, role: '' } } },
+    async queueBackground() {},
+    turnDiscarded: (sessionId, turn) => discarded.push(sessionId + ':' + turn),
+    defer: run => run()
+  })
+  assert.equal(handoff.end({ sessionId: 'game', turn: 3, reason: 'error' }), true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(discarded, ['game:3'])
+  assert.deepEqual(cleaned, [3])
+})

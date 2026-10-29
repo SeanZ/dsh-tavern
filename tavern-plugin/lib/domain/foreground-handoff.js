@@ -69,7 +69,7 @@ export function createForegroundHandoff(options = {}) {
       }, '启动后台结算')
       return true
     }
-    options.cancelDirector?.(input.sessionId, input.turn)
+    options.turnDiscarded?.(input.sessionId, input.turn)
     later(async function () {
       const target = { sessionId: input.sessionId, turn: input.turn }
       await turns.discard(target)
