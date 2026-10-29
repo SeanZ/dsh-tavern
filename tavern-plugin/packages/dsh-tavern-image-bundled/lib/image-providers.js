@@ -19,11 +19,22 @@ const PROVIDERS = {
 export const IMAGE_PROVIDERS = Object.entries(PROVIDERS).map(([id, [label, baseUrl, model]]) => ({ id, label, baseUrl, model }))
 
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
-const secretValues = channel => [channel?.apiKey, channel?.password].filter(Boolean).map(String)
+const secretValues = channel => [channel?.apiKey, channel?.password,
+  channel?.authMode === 'basic' && (channel.username || channel.password) ? `${channel.username || ''}:${channel.password || ''}` : '',
+].filter(Boolean).map(String)
 function redact(text, channel) {
-  let out = String(text ?? '').replace(/[\r\n\t]+/g, ' ')
+  let out = String(text ?? '').replace(/\r\n?|\n|\t/g, ' ')
   const secrets = secretValues(channel).flatMap(secret => [secret, encodeURIComponent(secret), Buffer.from(secret).toString('base64')])
   for (const secret of secrets) if (secret) out = out.split(secret).join('[redacted]')
+  // Provider/network errors can echo signed URLs, URL userinfo or local file
+  // names. None are needed to explain an API failure, and they must not reach
+  // the job log/UI. Decode JSON slash escaping before removing entire URLs.
+  out = out.replace(/\\\//g, '/')
+    .replace(/data:[^\s,]+,[a-z\d+/=_\s-]+/gi, '[redacted-image]')
+    .replace(/\b(?:https?|file)(?::\/\/|%3a%2f%2f)[^\s"'<>]+/gi, '[redacted-url]')
+    .replace(/\b[a-z]:[\\/][^\r\n"'<>]*/gi, '[redacted-path]')
+    .replace(/\\\\[^\r\n"'<>]+/g, '[redacted-path]')
+    .replace(/(^|[\s("'])\/(?!\/)[^\r\n"'<>]+/g, '$1[redacted-path]')
   return out.slice(0, 500)
 }
 function validateBase(channel) {
@@ -477,6 +488,55 @@ async function fetchAtlasJson(ctx, path, init) {
   return task
 }
 
+// Official upload contract: multipart POST /model/uploadMedia, field `file`,
+// response data.download_url (official skill) or top-level url (docs examples).
+// Seedream/GPT Image multi-image endpoints accept these URLs in top-level
+// `images` on /model/generateImage:
+// https://github.com/AtlasCloudAI/atlas-cloud-skills/blob/main/atlas-cloud/references/upload.md
+// https://www.atlascloud.ai/docs/upload-files
+// https://www.atlascloud.ai/docs/more-models/bytedance/seedream-v5.0-pro-edit/generateImage
+// No model allowlist, automatic model switch, reference selection or truncation:
+// the caller supplies only this picture's references, in prompt-number order.
+function atlasReferenceFiles(references, max) {
+  return Array.from(references ?? [], (reference, index) => {
+    const label = `第 ${index + 1} 张参考图`
+    if (!(reference?.data instanceof Uint8Array) || !reference.data.byteLength) throw new Error(`${label}缺少本地图片数据`)
+    if (reference.data.byteLength > max) throw new Error(`${label}超过允许大小`)
+    const mediaType = String(reference.mediaType ?? '').split(';')[0].trim().toLowerCase()
+    if (!imageTypes.has(mediaType)) throw new Error(`${label}格式不受支持`)
+    const bytes = Buffer.from(reference.data.buffer, reference.data.byteOffset, reference.data.byteLength)
+    let detected
+    try { detected = imageType(bytes) } catch { throw new Error(`${label}不是有效图片`) }
+    if (detected !== mediaType) throw new Error(`${label}内容与声明的图片格式不符`)
+    const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }[mediaType]
+    // `name`, local paths and other caller metadata are deliberately never sent.
+    return { bytes, mediaType, name: `reference-${index + 1}.${extension}` }
+  })
+}
+
+async function uploadAtlasReferences(references, ctx) {
+  // Validate every image before uploading any, rather than drawing with a
+  // successful subset when a later reference is invalid or fails to upload.
+  const files = atlasReferenceFiles(references, ctx.max)
+  const urls = []
+  for (const [index, file] of files.entries()) {
+    ctx.signal.throwIfAborted()
+    try {
+      const body = new FormData()
+      body.append('file', new Blob([file.bytes], { type: file.mediaType }), file.name)
+      const uploaded = await fetchAtlasJson({ ...ctx, fetchImpl: ctx.uploadFetch }, '/model/uploadMedia', {
+        method: 'POST', headers: requestHeaders(ctx.channel, 'atlascloud', false), body,
+      })
+      const url = uploaded?.download_url || uploaded?.url
+      if (typeof url !== 'string' || !url.trim()) throw new Error('未返回参考图下载地址')
+      urls.push(checkedRemoteUrl(url))
+    } catch (error) {
+      throw new Error(`第 ${index + 1} 张参考图上传失败：${redact(error?.message || '上传请求失败', ctx.channel)}`)
+    }
+  }
+  return urls
+}
+
 async function generateAtlascloud(channel, request, ctx) {
   const { fetchImpl, signal, max, channel: ch } = ctx
   let task
@@ -492,9 +552,17 @@ async function generateAtlascloud(channel, request, ctx) {
     } else if (sizeMode === 'aspect_ratio') {
       payload.aspect_ratio = String(option(ch, 'aspectRatio', closestRatio(width, height))).trim()
     } else if (sizeMode !== 'none') throw new Error('atlas cloud 尺寸参数模式无效')
-    task = await fetchAtlasJson(ctx, endpointFromOption(ch, 'generatePath', '/model/generateImage'), {
-      method: 'POST', headers: requestHeaders(ch, 'atlascloud'), body: JSON.stringify(payload),
-    })
+    // Resolve the endpoint and construct the request before recording a paid
+    // submission. Upload failures (even lost upload responses) cannot incur a
+    // generation charge; their errors must remain safe-to-retry.
+    const path = endpointFromOption(ch, 'generatePath', '/model/generateImage')
+    joinUrl(ctx.base, path)
+    if (request.references?.length) payload.images = await uploadAtlasReferences(request.references, ctx)
+    const init = { method: 'POST', headers: requestHeaders(ch, 'atlascloud'), body: JSON.stringify(payload) }
+    signal.throwIfAborted()
+    await ctx.onGenerationSubmit?.()
+    signal.throwIfAborted()
+    task = await fetchAtlasJson(ctx, path, init)
   }
   const taskId = task?.id
   if (taskId !== undefined && !validTaskId(taskId)) throw new Error('atlas cloud 返回了无效的平台任务编号')
@@ -545,25 +613,46 @@ async function generateSdwebui(channel, request, ctx) {
   return decodeBase64(String(data.images[0]).replace(/^data:image\/[^;]+;base64,/i, ''), max)
 }
 
-export async function generateImage(channel, request, { signal, fetchImpl = globalThis.fetch, maxImageBytes = DEFAULT_MAX, onTask, resumeTaskId } = {}) {
-  if (!channel || !PROVIDERS[channel.provider]) throw new Error('不支持的生图渠道')
-  if (typeof fetchImpl !== 'function') throw new Error('当前环境没有可用的网络请求功能')
-  const base = validateBase(channel), max = bounded(maxImageBytes, 1024, 128 * 1024 * 1024)
-  const jsonLimit = Math.min(192 * 1024 * 1024, max * 2 + 1024 * 1024)
-  if (resumeTaskId !== undefined && (!supportsImageTaskResume(channel.provider) || !validTaskId(resumeTaskId))) throw new Error('无效的平台任务编号')
-  const scope = abortScope(signal, bounded(channel.options?.timeoutMs, 1000, 600_000))
-  let sentGeneration = Boolean(resumeTaskId)
-  let generationStatus = resumeTaskId ? 200 : null
-  const trackedFetch = async (url, init = {}) => {
-    if (scope.signal.aborted) throw scope.signal.reason || new Error('请求已取消')
-    const generation = String(init.method ?? 'GET').toUpperCase() === 'POST'
-    if (generation) sentGeneration = true
-    const response = await fetchImpl(url, init)
-    if (generation) generationStatus = response.status
-    return response
-  }
-  const ctx = { base, fetchImpl: trackedFetch, signal: scope.signal, max, jsonLimit, channel, onTask, resumeTaskId }
+/**
+ * request.references?: Array<{ data: Uint8Array | Buffer, mediaType: string, name?: string }>
+ * Only Atlas accepts references. Callers load local bytes; no path/URL fetching
+ * happens here. Array order is the image-number order used by the prompt.
+ * onGenerationSubmit is Atlas-only, awaited immediately before its billable POST
+ * (also for text-only jobs). Uploads and task resumption never invoke the hook.
+ */
+export async function generateImage(channel, request = {}, { signal, fetchImpl = globalThis.fetch, maxImageBytes = DEFAULT_MAX, onTask, onGenerationSubmit, resumeTaskId } = {}) {
+  let scope
+  let sentGeneration = false
+  let generationStatus = null
   try {
+    if (!channel || !PROVIDERS[channel.provider]) throw new Error('不支持的生图渠道')
+    if (typeof fetchImpl !== 'function') throw new Error('当前环境没有可用的网络请求功能')
+    const base = validateBase(channel), max = bounded(maxImageBytes, 1024, 128 * 1024 * 1024)
+    const jsonLimit = Math.min(192 * 1024 * 1024, max * 2 + 1024 * 1024)
+    if (resumeTaskId !== undefined && (!supportsImageTaskResume(channel.provider) || !validTaskId(resumeTaskId))) throw new Error('无效的平台任务编号')
+    // A recovered Atlas task needs neither the original images nor their local
+    // availability. Never inspect or load them, let alone upload/POST them again.
+    if (!(resumeTaskId && channel.provider === 'atlascloud')) {
+      const references = request?.references
+      if (references !== undefined && !Array.isArray(references)) throw new Error('参考图必须是数组')
+      if (references?.length && channel.provider !== 'atlascloud') throw new Error('参考图模式仅支持 atlas cloud；当前渠道不能接收参考图')
+    }
+    sentGeneration = Boolean(resumeTaskId)
+    generationStatus = resumeTaskId ? 200 : null
+    scope = abortScope(signal, bounded(channel.options?.timeoutMs, 1000, 600_000))
+    const uploadFetch = (url, init) => {
+      scope.signal.throwIfAborted()
+      return fetchImpl(url, init)
+    }
+    const trackedFetch = async (url, init = {}) => {
+      scope.signal.throwIfAborted()
+      const generation = String(init.method ?? 'GET').toUpperCase() === 'POST'
+      if (generation) sentGeneration = true
+      const response = await fetchImpl(url, init)
+      if (generation) generationStatus = response.status
+      return response
+    }
+    const ctx = { base, fetchImpl: trackedFetch, uploadFetch, signal: scope.signal, max, jsonLimit, channel, onTask, onGenerationSubmit, resumeTaskId }
     if (channel.provider === 'novelai') return await generateNovelai(channel, request, ctx)
     if (channel.provider === 'openai' || channel.provider === 'grok' || channel.provider === 'seedream') return await generateOpenai(channel, request, ctx, channel.provider)
     if (channel.provider === 'gemini') return await generateGemini(channel, request, ctx)
@@ -572,13 +661,14 @@ export async function generateImage(channel, request, { signal, fetchImpl = glob
     if (channel.provider === 'atlascloud') return await generateAtlascloud(channel, request, ctx)
     return await generateSdwebui(channel, request, ctx)
   } catch (error) {
-    const message = scope.signal.aborted && !signal?.aborted ? '生图请求超时' : redact(error.message || '生图请求失败', channel)
+    const message = scope?.signal.aborted && !signal?.aborted ? '生图请求超时' : redact(error?.message || '生图请求失败', channel)
     const failure = new Error(message)
-    // A lost POST response or a later image-download error does not prove the
-    // paid generation failed. Never silently turn it into a safe-to-retry job.
-    failure.requestMayHaveSucceeded = error.providerDefinitiveFailure !== true && sentGeneration && (generationStatus === null || generationStatus >= 500 || generationStatus < 400)
+    failure.submissionNotStarted = !sentGeneration
+    // Upload POSTs do not count as generation. A lost generation POST response
+    // or a later download error does not prove that the paid generation failed.
+    failure.requestMayHaveSucceeded = error?.providerDefinitiveFailure !== true && sentGeneration && (generationStatus === null || generationStatus >= 500 || generationStatus < 400)
     throw failure
-  } finally { scope.close() }
+  } finally { scope?.close() }
 }
 
 export async function testImageChannel(channel, { signal, fetchImpl = globalThis.fetch } = {}) {
