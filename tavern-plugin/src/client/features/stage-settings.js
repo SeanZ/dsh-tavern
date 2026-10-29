@@ -97,9 +97,9 @@ function TavernStageSwitches(props) {
 		catch (err) { setStatus("idle"); setError(String(err && err.message || err)); }
 	}
 	const prefs = { dialogue: settings ? settings.castPresentation === true : false, voice: Boolean(speech && speech.enabled), stage: settings ? settings.stageToggles?.stage !== false : false,
-		music: settings ? settings.stageToggles?.music !== false : true, sfx: settings ? settings.stageToggles?.sfx !== false : true,
-		ambience: settings ? settings.stageToggles?.ambience !== false : true, items: settings ? settings.stageToggles?.items !== false : true,
-		entrance: settings ? settings.stageToggles?.entrance !== false : true };
+		music: settings ? settings.stageToggles?.music !== false : false, sfx: settings ? settings.stageToggles?.sfx !== false : false,
+		ambience: settings ? settings.stageToggles?.ambience !== false : false, items: settings ? settings.stageToggles?.items !== false : false,
+		entrance: settings ? settings.stageToggles?.entrance !== false : false };
 	const busy = status === "saving", blocked = key => TAVERN_STAGE_REQUIRES[key].filter(need => !prefs[need]);
 	const help = key => blocked(key).length ? "需要" + blocked(key).map(need => TAVERN_STAGE_NAMES[need]).join("和") : undefined;
 	const setTavern = patch => save(async () => {
