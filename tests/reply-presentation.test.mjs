@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { projectReplyLayers } from "../tavern-plugin/lib/domain/reply-presentation.js"
+import { projectReplyLayers, projectReplyHistory, resolveDisplayIdentityMacros } from "../tavern-plugin/lib/domain/reply-presentation.js"
+import { renderTavernMacros } from "../tavern-plugin/lib/domain/tavern-macro-engine.js"
 
 function script(name, findRegex, replaceString, flags = {}) {
   return {
@@ -19,6 +20,38 @@ function script(name, findRegex, replaceString, flags = {}) {
     maxDepth: null
   }
 }
+
+test('显示身份替换与完整宏引擎兼容旧 USER/CHAR/BOT 标记，不执行有状态宏', () => {
+  const source = '<user> / <USER> / {{ user }} / <char> / <BOT> / {{char}}'
+  const options = { charName: '向导', macroState: { userName: '林舟' } }
+  assert.equal(resolveDisplayIdentityMacros(source, options), renderTavernMacros(source, { userName: '林舟', charName: '向导' }).text)
+  assert.equal(resolveDisplayIdentityMacros('<user>', {}), '你')
+  assert.equal(resolveDisplayIdentityMacros('<char>', {}), '<char>')
+  assert.equal(resolveDisplayIdentityMacros('<user>{{incvar::count}}{{setvar::name::x}}', options), '林舟{{incvar::count}}{{setvar::name::x}}')
+  assert.equal(resolveDisplayIdentityMacros('<user-card><user data-id="1">正文</user></user-card>', options), '<user-card><user data-id="1">正文</user></user-card>')
+})
+
+test('开场历史投影在分段前替换尖括号玩家标记，源文与模型正文保持', () => {
+  const source = '你好，<user>。<char>正在等你。'
+  const options = { macroState: { userName: '林舟' }, charName: '向导' }
+  const message = { role: 'assistant', greeting: true, turn: 1, text: source, sourceText: source }
+  const original = structuredClone(message)
+  const projected = projectReplyHistory([message], options)
+  assert.deepEqual(projected.projections[0].parts, [{ kind: 'markdown', text: '你好，林舟。向导正在等你。' }])
+  assert.deepEqual(message, original)
+  const layers = projectReplyLayers(source, options)
+  assert.equal(layers.sourceText, source)
+  assert.equal(layers.sessionText, source)
+})
+
+test('正则引入的旧身份标记与 HTML 属性都在共同展示层解析', () => {
+  const result = projectReplyLayers('开场', {
+    macroState: { userName: '林舟' }, charName: '向导', placement: 2,
+    regexScripts: [script('玩家面板', '开场', '<div title="<USER>"><user>，<bot>欢迎你。</div>', { markdownOnly: true })]
+  })
+  assert.deepEqual(result.displayParts, [{ kind: 'html', content: '<div title="林舟">林舟，向导欢迎你。</div>' }])
+  assert.equal(result.sessionText, '开场')
+})
 
 test('损坏规则只产生目标诊断，后续规则继续执行', () => {
   const result = projectReplyLayers('进入校园', {

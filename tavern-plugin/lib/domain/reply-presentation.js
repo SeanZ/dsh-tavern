@@ -11,7 +11,9 @@ function str(value) {
 
 /** Display refreshes resolve identity only; never replay stateful/random macros. */
 export function resolveDisplayIdentityMacros(value, options = {}) {
-  return str(value).replace(/\{\{\s*(user|char)\s*\}\}/gi, (token, name) => {
+  // 与完整宏引擎的旧标记兼容保持一致；显示刷新不重跑变量或随机宏。
+  return str(value).replace(/\{\{\s*(user|char)\s*\}\}|<(user|char|bot)>/gi, (token, curlyName, legacyName) => {
+    const name = curlyName || legacyName
     if (name.toLowerCase() === 'user') return str(options.macroState?.userName) || '你'
     return str(options.charName) || token
   })
