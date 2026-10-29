@@ -113,9 +113,40 @@ test('只保留最近一次精修，那轮正文换了版本就不再显示、�
     now: () => 5
   })
   await records.save('s', 3, { original: ['甲。乙。', '丙。'], edits: [{ find: '乙。', replace: '乙改。', reason: '套话' }], seconds: 20 })
-  assert.deepEqual(await records.latest('s'), { turn: 3, at: 5, seconds: 20, count: 1, segments: [{ kind: 'same', text: '甲。' }, { kind: 'edit', n: 1, find: '乙。', replace: '乙改。', reason: '套话' }, { kind: 'same', text: '\n\n丙。' }] })
+  assert.deepEqual(await records.latest('s'), { turn: 3, at: 5, seconds: 20, count: 1, auto: false, segments: [{ kind: 'same', text: '甲。' }, { kind: 'edit', n: 1, find: '乙。', replace: '乙改。', reason: '套话' }, { kind: 'same', text: '\n\n丙。' }] })
   assert.deepEqual((await records.current('s')).original, ['甲。乙。', '丙。'])
   key = 'k2'
   assert.equal(await records.latest('s'), null)
   assert.equal(await records.current('s'), null)
+})
+
+test('自动精修的记录标明是自动的', async () => {
+  const { createPolishRecords } = await import('../tavern-plugin/lib/domain/polish-records.js')
+  let saved
+  const records = createPolishRecords({ data: { saveGame: async ({ data }) => { saved = data }, readGame: async () => saved },
+    turns: { resolveGame: async () => ({ sessionId: 's', chatId: 'c' }), currentKey: async () => 'k' }, now: () => 5 })
+  await records.save('s', 3, { original: ['甲。'], edits: [{ find: '甲。', replace: '甲改。', reason: '套话' }], seconds: 2, auto: true })
+  assert.equal((await records.latest('s')).auto, true)
+})
+
+test('自动精修：审完就交给写回；新消息取消后不写回', async () => {
+  const { createPolishPrereview } = await import('../tavern-plugin/lib/domain/polish-run.js')
+  const applied = []
+  let finish
+  const prereview = createPolishPrereview({ enabled: async () => true, readTexts: async () => ['正文。'], logger: { warn() {} },
+    review: (_id, _texts, signal) => new Promise((resolve, reject) => { finish = resolve; signal.addEventListener('abort', () => reject(new Error('aborted'))) }),
+    apply: async (id, texts, review) => { applied.push([id, texts, review.edits.length]) } })
+  await prereview.start('s')
+  finish({ edits: [{ status: 'ok' }] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(applied, [['s', ['正文。'], 1]])
+  prereview.settle('s', ['不同的'])
+  const again = createPolishPrereview({ enabled: async () => true, readTexts: async () => ['另一段。'], logger: { warn() {} },
+    review: (_id, _texts, signal) => new Promise((resolve, reject) => { finish = resolve; signal.addEventListener('abort', () => reject(new Error('aborted'))) }),
+    apply: async () => { applied.push('should not') } })
+  await again.start('s')
+  again.cancel('s')
+  finish({ edits: [{ status: 'ok' }] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(applied.length, 1)
 })

@@ -4931,3 +4931,5 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-run.running .dsh-tavern-background-run-name { color: var(--dsh-tavern-accent); }
 .dsh-tavern-background-run.failed .dsh-tavern-background-run-name, .dsh-tavern-background-run-error { color: #c45f5f; }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }
+
+.dsh-tavern-auto-polished { font-size: 12px; color: var(--dsh-tavern-accent-muted); margin-top: 2px; }

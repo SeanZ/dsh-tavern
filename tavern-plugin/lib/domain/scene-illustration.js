@@ -31,6 +31,11 @@ export function sceneTarget(chat, turn) {
 }
 
 /** The key from the chat itself, ignoring any precomputed sceneTargets (they embed the chat id). */
+/** The digest a reply's scene key uses for its text (computeSceneTarget). */
+export function sceneSourceDigest(text) {
+  return hash(String(text ?? ''))
+}
+
 export function computeSceneTarget(chat, turn) {
   turn = Number(turn)
   const index = (chat.messages || []).findIndex(message => message?.role === 'assistant' && Number(message.turn || (message.greeting ? 1 : 0)) === Number(turn))
@@ -38,7 +43,8 @@ export function computeSceneTarget(chat, turn) {
   const message = chat.messages[index]
   const swipeId = Math.max(0, Number(message.swipeId) || 0)
   const source = String(message.swipes?.[swipeId] ?? message.sourceText ?? message.text ?? '')
-  const sourceDigest = hash(source)
+  // 自动精修 rewords a reply without changing its scene: it keeps the original text's digest.
+  const sourceDigest = message.polishedFrom || hash(source)
   // A prefix digest distinguishes rolled-back/replaced story branches, while
   // appending later rounds or changing variable metadata does not invalidate art.
   const prefix = chat.messages.slice(0, index).map(item => [item.role, item.turn, item.sourceText ?? item.text])

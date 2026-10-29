@@ -189,6 +189,7 @@ import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
 import { createPolishRecords } from './domain/polish-records.js'
 import { createPolishPrereview, createPolishReviewer } from './domain/polish-run.js'
+import { applyPolishEdits } from './domain/polish-review.js'
 import { createCardAutoReload } from './domain/card-auto-reload.js'
 import { createRuntimeLogBuffer, runtimeHealthReport } from './domain/runtime-health.js'
 import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
@@ -2241,12 +2242,43 @@ export async function apply(ctx) {
     if (!selected) throw new Error('没有可用的模型配置，请先选择模型')
     return selected
   }, data: pluginData })
-  // 精修预审 (a setting, off by default): each reply is reviewed as soon as it is written.
+  // 自动精修 (setting polishPrereview, off by default): each reply is reviewed as soon as it is
+  // written, beside settlement, and the review is written back into the reply in place.
   const polishPrereview = createPolishPrereview({
     enabled: async () => (await readTavernSettings()).polishPrereview === true,
     readTexts: async sessionId => (await bodyEditor.read(sessionId)).parts.filter(part => part.kind === 'text').map(part => part.text),
-    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal)
+    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal),
+    apply: autoPolish
   })
+  // A reworded reply (body.polish) keeps its settlement, choices and stage. The write waits
+  // for this turn's background work, which writes the same reply; a new message cancels it.
+  async function autoPolish(sessionId, texts, review, signal) {
+    const started = Date.now()
+    const edits = (review?.edits || []).filter(item => item.status === 'ok')
+    if (review?.fallback || !edits.length) return polishPrereview.settle(sessionId, texts)
+    for (let waited = 0; ; waited += 1000) {
+      signal.throwIfAborted()
+      const chat = await chatHeaderForSession(sessionId, ['timeline', 'settleStatus', 'regenInProgress'])
+      if (!chat) return
+      const busy = agentRegistry.get(sessionId)?.phase?.kind === 'running' || chat.regenInProgress ||
+        ['pending', 'running'].includes(chat.settleStatus) || backgroundTasks.activity(chat).busy
+      if (!busy) break
+      if (waited > 300000) throw new Error('后台任务一直未结束，本轮不写回')
+      await sleep(1000)
+    }
+    const edit = await bodyEditor.read(sessionId)
+    const current = edit.parts.filter(part => part.kind === 'text').map(part => part.text)
+    // The reply changed meanwhile (an edit, a regeneration, a 精修): this review is not for it.
+    if (JSON.stringify(current) !== JSON.stringify(texts)) return
+    signal.throwIfAborted()
+    const polished = applyPolishEdits(texts, edits)
+    await bodyEditor.polish(sessionId, { token: edit.token, texts: polished })
+    polishPrereview.settle(sessionId, texts, polished)
+    notifyPluginTimeline(sessionId, 'edit', { settled: true })
+    sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'auto-polish:' + Date.now() })
+    await polishRecords.save(sessionId, edit.turn, { original: texts, edits, seconds: Math.round((Date.now() - started) / 1000), auto: true })
+      .catch(error => console.warn('dsh-tavern: 自动精修记录保存失败', error))
+  }
   // Who speaks each line and how they feel: the story model's dialogue bubbles (docs/design/cast-presentation.md).
   const castPresentation = createCastPresentation({
     // On for every game with 对话气泡; 舞台模式 needs it too, so the stage always has its speakers.
