@@ -127,7 +127,7 @@ export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prep
         console.log('dsh-tavern: 导入存档「' + str(saved.title) + '」用时 ' + elapsed + ' ms（' +
           Object.entries(stageMs).map(function (row) { return row[0] + ' ' + row[1] }).join(' / ') + '）')
       }
-      return { chatId, sessionId, cardPath, title: saved.title, revisions: save.revisions.length, images: replacedRefs.size, stageMs: elapsed >= 1000 ? stageMs : undefined }
+      return { chatId, sessionId, cardPath, title: saved.title, revisions: save.revisions.length, images: replacedRefs.size, stageMs: elapsed >= 300 ? stageMs : undefined }
     } catch (error) {
       try { await importedResources?.rollback() } catch {}
       throw error

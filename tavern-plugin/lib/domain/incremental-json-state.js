@@ -3,6 +3,11 @@ import {createHash} from 'node:crypto'
 import {isDeepStrictEqual} from 'node:util'
 
 const fail=message=>Object.assign(new Error(message),{code:'STATE_DELTA_INVALID'})
+// 一个子树整体小于这个字节数就不拆块了：直接内联在父节点的条目里。以前每个对象都要
+// 一个 object 块 + 一个 bucket 块 + 每个键一条目，一局对话的状态就被拆成两千多块；
+// 小对象内联之后块数掉一个量级，代价是改到内联区域时重写那一小块（≤ INLINE_BYTES）。
+const INLINE_BYTES=1024
+const fits=(value)=>{try{return JSON.stringify(value).length<=INLINE_BYTES}catch{return false}}
 const digest=key=>createHash('sha256').update(key).digest('hex')
 const own=(value,key)=>Object.hasOwn(value,key)
 export function captureJson(value){
@@ -100,16 +105,18 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
   for(const child of Object.values(node.children))result.push(...await entries(s,child))
   return result
  }
- async function encode(s,value){
+ async function encode(s,value,{split=false}={}){
   if(value===null||typeof value!=='object'){
    return JSON.stringify(value).length<=128?{value}:{ref:await s.put({type:'scalar',value})}
   }
+  if(!split&&fits(value))return {inline:copyJsonTree(value)}
   const items=[],array=Array.isArray(value),keys=Object.keys(value)
   for(let order=0;order<keys.length;order++)items.push([keys[order],await encode(s,value[keys[order]]),order])
   return {ref:await s.put({type:array?'array':'object',size:keys.length,nextOrder:keys.length,entries:items.length?await bucket(s,items):null})}
  }
  async function decode(s,link,cacheResult=true){
   if(own(link,'value'))return link.value
+  if(own(link,'inline'))return copyJsonTree(link.inline)
   const previous=decodedCache.get(link.ref)
   // With shared subtrees a nested result stays inside a decoder-owned tree.
   if(previous)return subtrees&&!cacheResult?previous.value:copyJsonTree(previous.value)
@@ -138,6 +145,15 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
  }
  async function locate(s,link,parts){
   for(const key of parts){
+   if(own(link,'inline')){
+    const value=link.inline
+    if(value===null||typeof value!=='object')return undefined
+    if(Array.isArray(value))indexOf(key,value.length)
+    if(!own(value,key))return undefined
+    const child=value[key]
+    link=child===null||typeof child!=='object'?{value:child}:{inline:child}
+    continue
+   }
    if(!link.ref)return undefined
    const node=await s.get(link.ref)
    if(!['object','array'].includes(node.type))return undefined
@@ -148,6 +164,35 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
   }
   return link
  }
+ // 内联子树上的改写：在内存里改完再编码回去，块数不涨。
+ function applyInMemory(value,parts,op){
+  if(!parts.length){
+   if(op.op==='remove')throw fail('Cannot remove root')
+   if(op.op==='delta'){
+    if(typeof value!=='number'||!Number.isFinite(value+op.value))throw fail('Delta requires a finite numeric target')
+    const next=value+op.value
+    return {root:next,leaf:next}
+   }
+   const next=copyJsonTree(op.value)
+   return {root:next,leaf:next}
+  }
+  if(value===null||typeof value!=='object')throw fail('Missing parent object')
+  const array=Array.isArray(value),[key,...rest]=parts
+  if(array)indexOf(key,value.length,!rest.length&&op.op==='set')
+  const normalized=array&&key==='-'?String(value.length):key
+  const has=own(value,normalized)
+  if(rest.length&&!has)throw fail('Missing parent path')
+  if(!rest.length&&op.op==='remove'){
+   if(!has)throw fail('Cannot remove missing path')
+   if(array)value.splice(Number(normalized),1)
+   else delete value[normalized]
+   return {root:value,leaf:undefined}
+  }
+  if(!has&&op.op==='delta'&&!rest.length)throw fail('Delta target missing')
+  const result=applyInMemory(has?value[normalized]:null,rest,op)
+  value[normalized]=result.root
+  return {root:value,leaf:result.leaf}
+ }
  async function modify(s,link,parts,op){
   if(!parts.length){
    if(op.op==='remove')throw fail('Cannot remove root')
@@ -157,7 +202,12 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
     if(typeof previous!=='number'||!Number.isFinite(previous+value))throw fail('Delta requires a finite numeric target')
     value+=previous
    }
-   return {link:await encode(s,value),value}
+   // 根节点始终结构化：世界根被别人按 ref 引用，内联块没法当根用。
+   return {link:await encode(s,value,{split:true}),value}
+  }
+  if(own(link,'inline')){
+   const result=applyInMemory(copyJsonTree(link.inline),parts,op)
+   return {link:await encode(s,result.root),value:result.leaf}
   }
   if(!link.ref)throw fail('Missing parent object')
   const node=await s.get(link.ref),[key,...rest]=parts
@@ -182,7 +232,10 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
    entries:await change(s,node.entries,normalized,[normalized,result.link,item?.[2]??node.nextOrder])}
   return {link:{ref:await s.put(next)},value:result.value}
  }
- async function create(value){return (await encode(session(),captureJson(value))).ref??write({type:'scalar',value:captureJson(value)})}
+ async function create(value){
+  const root=captureJson(value),encoded=await encode(session(),root,{split:true})
+  return encoded.ref??write({type:'scalar',value:root})
+ }
  async function get(root,path=''){
   const s=session(),link=await locate(s,{ref:root},pathParts(path))
   return link?decode(s,link):undefined
@@ -221,6 +274,7 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
  }
  async function keys(root,path=''){
   const s=session(),link=await locate(s,{ref:root},pathParts(path))
+  if(link&&own(link,'inline')&&link.inline!==null&&typeof link.inline==='object')return Object.keys(link.inline)
   if(!link?.ref)throw fail('Expected container')
   const node=await s.get(link.ref)
   if(!['array','object'].includes(node.type))throw fail('Expected container')
@@ -228,6 +282,7 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
  }
  async function size(root,path=''){
   const s=session(),link=await locate(s,{ref:root},pathParts(path))
+  if(link&&own(link,'inline')&&link.inline!==null&&typeof link.inline==='object')return Array.isArray(link.inline)?link.inline.length:Object.keys(link.inline).length
   if(!link?.ref)throw fail('Expected container')
   const node=await s.get(link.ref)
   if(!['array','object'].includes(node.type))throw fail('Expected container')
@@ -237,6 +292,7 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
   const s=session(),link=await locate(s,{ref:root},pathParts(path))
   if(!link)return undefined
   if(own(link,'value'))return link.value===null?'null':typeof link.value
+  if(own(link,'inline'))return link.inline===null?'null':Array.isArray(link.inline)?'array':typeof link.inline
   const node=await s.get(link.ref)
   return node.type==='scalar'?(node.value===null?'null':typeof node.value):node.type
  }
