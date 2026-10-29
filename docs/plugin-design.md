@@ -122,7 +122,8 @@ const data = await ctx.tavern.readGameData({ gameId })
 | `onTurnSettled`、`onTimelineChanged`、`onGameRemoved` | 生命周期 | 观察 |
 | `on(event, handler)` | 生命周期（事件表：玩家发送、正文开始、正文写完、本轮结算完、回合作废、剧情回退或改写、任务完成） | 观察；列在后台任务页「触发关系」里。「任务完成」带任务、成员和状态，可接在别的任务之后 |
 | `emit(name, { gameId, data })` | 插件自己的事件 `<插件名>:<name>` | 添加：别的插件用 `on('<插件名>:<name>')` 接；data 至多 8 KB，每局每 10 秒至多 60 次 |
-| `publishOutput`、`readOutput` | 任务产出 | 添加：按轮次存一份带名字的结果（至多 64 KB），别的插件按插件名和名字读。示例见 examples/tavern-plugin-map 与 examples/tavern-plugin-phone-call |
+| `job({ name, title, on, needs, if, member, run })` | 任务表 | 添加：和酒馆自己的任务一样声明一项任务（仿 GitHub Actions 的 workflow）。`on` 是启动它的事件；`needs` 是它要等的别的插件任务（「插件名:任务名」），那些任务同一轮都做完才跑，`run` 收到它们返回的产出（`needs['插件名:任务名']`）。`run` 返回的就是本轮产出，只在内存，剧情回退到那一轮时作废。列在后台任务页的任务目录和触发关系里。示例见 examples/tavern-plugin-map 与 examples/tavern-plugin-phone-call |
+| `publishOutput`、`readOutput` | 任务产出 | 添加：按轮次在存档里存一份带名字的结果（至多 64 KB），重启后也读得到；别的插件按插件名和名字读 |
 | `member({ name, title })` | 后台成员 | 添加：插件的常驻后台 Agent，每局一个，有自己的会话和缓存；不进存档时间线，不随剧情回退 |
 | `getTurn`、`getTurnState`、`getCardContext`、`backgroundModel` | 上下文 | 观察（按需读取） |
 | `promptSection`、`turnSection`、`worldbookSource` | 上下文 | 添加 |
