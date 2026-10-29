@@ -1,5 +1,6 @@
 {
   "name": "tavern-plugin-hello",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -9,7 +10,9 @@
   "dsh": {
     "client": {
       "platform": "web",
-      "inject": ["dsh-tavern-plugin"]
+      "inject": [
+        "dsh-tavern-plugin"
+      ]
     }
   }
 }
