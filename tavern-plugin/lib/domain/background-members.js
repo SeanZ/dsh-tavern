@@ -1,10 +1,16 @@
 // The named resident background Agents of a game. Each keeps its own Session (and prompt
 // cache); tasks on one member run one at a time, tasks on different members may overlap.
 // `background` is the Session every game already has, so old saves keep using it.
+// `timeline`: its Session is bound in the save (timeline.participants[id]), rewound with the
+// story, compacted with it and counted as the game's own; a member without it keeps its
+// Session itself (润色师: plugin data).
 export const BACKGROUND_MEMBERS = Object.freeze([
-  { id: 'background', name: '书记' },
-  { id: 'polish', name: '润色师' }
+  { id: 'background', name: '书记', timeline: true },
+  { id: 'polish', name: '润色师', timeline: false }
 ])
+
+// Members whose Sessions the save binds, in table order.
+export const TIMELINE_MEMBERS = Object.freeze(BACKGROUND_MEMBERS.filter(member => member.timeline).map(member => member.id))
 
 // Coordinator roles (and runner tasks) by the member whose Session and slot they use.
 const ROLE_MEMBER = Object.freeze({

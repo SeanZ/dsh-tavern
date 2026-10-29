@@ -74,6 +74,7 @@ import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createStoryEvents } from './domain/story-events.js'
+import { TIMELINE_MEMBERS, participantOf } from './domain/background-members.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
 import { installHostSessionPatch } from './domain/host-session-patch.js'
@@ -2716,8 +2717,8 @@ export async function apply(ctx) {
       const replaced = summary && events.some(event => event.type === 'user/message' && event.surfaceOp?.op === 'replace' && event.data?.source?.compactionId === summary.data.compactionId)
       return completed && replaced ? 'succeeded' : 'unknown'
     }),
-    markBackground: (id, target) => updateChat(id, chat => {
-      const participant = chat.timeline?.participants?.background
+    markBackground: (id, target, member = 'background') => updateChat(id, chat => {
+      const participant = chat.timeline?.participants?.[member]
       if (participant?.sessionId === target) { participant.requiresNewSessionOnRewind = true; participant.compactionPlannedAt = Date.now() }
       return chat
     }, { source: 'compaction.background' }),
@@ -2783,8 +2784,10 @@ export async function apply(ctx) {
       if (!background || background.task === 'phone') return
       const chat = await chatHeaderForSession(background.parentSessionId, [])
       if (!chat) throw new Error('后台压缩找不到所属对话')
+      // The Session belongs to its task's member (书记 for a task without a timeline member).
+      const member = TIMELINE_MEMBERS.includes(participantOf(background.task)) ? participantOf(background.task) : 'background'
       await updateChat(chat.id, current => {
-        const participant = current.timeline?.participants?.background
+        const participant = current.timeline?.participants?.[member]
         if (participant?.sessionId !== target.session.id) throw new Error('后台会话已变更，取消旧会话压缩')
         participant.requiresNewSessionOnRewind = true
         participant.compactionPlannedAt = Date.now()

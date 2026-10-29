@@ -2,7 +2,7 @@ import { taskStateFields } from './task-state-reader.js'
 import { createScopedMessages } from './scoped-messages.js'
 import { diffMvuChanges } from './mvu-settlement-effect.js'
 import { diffJson } from './json-mutation.js'
-import { slotOf } from './background-members.js'
+import { participantOf, slotOf } from './background-members.js'
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
@@ -237,7 +237,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
               // Begin may already have bound a durable reused session. Still
               // validate the operation above; a late callback must not bypass it.
               if (state.timeline.operations[begun.value.operationId]?.startedSessionId === sessionId &&
-                state.timeline.participants?.background?.sessionId === sessionId) {
+                state.timeline.participants?.[participantOf(role)]?.sessionId === sessionId) {
                 return stateOnly ? state : store.readChat(chatId)
               }
               const saved = await store.patchChat(chatId, state._storageRevision,

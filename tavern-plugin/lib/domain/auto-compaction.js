@@ -2,6 +2,7 @@ import { compactionFailureMessage } from './compaction-failure.js'
 import { RETAINED_STORY_ROUNDS } from './story-compaction.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
+import { TIMELINE_MEMBERS, memberName } from './background-members.js'
 
 const CAPACITY_WARNING = '无法取得当前模型上下文容量，自动压缩暂停；请配置模型窗口或改用轮数模式。'
 
@@ -142,16 +143,22 @@ export function createAutoCompaction(deps) {
           }
           return { status: target ? 'pending' : 'skipped' }
         }
-        const backgroundSessionId = chat.timeline?.participants?.background?.sessionId || ''
         operation = { id: randomUUID(), status: 'running', reason: options.manual ? 'manual' : policy.mode, startedAt: Date.now(),
-          foregroundSessionId: chat.sessionId, backgroundSessionId, rounds, branch: chat.timeline?.branchId || '', revision: chat.timeline?.revision,
-          foreground: await receipt('foreground', chat.sessionId),
-          background: await receipt('background', backgroundSessionId) }
+          foregroundSessionId: chat.sessionId, rounds, branch: chat.timeline?.branchId || '', revision: chat.timeline?.revision,
+          foreground: await receipt('foreground', chat.sessionId) }
+        // Every member whose Session the save binds is compacted beside the foreground.
+        for (const member of TIMELINE_MEMBERS) {
+          const target = chat.timeline?.participants?.[member]?.sessionId || ''
+          operation[member + 'SessionId'] = target
+          operation[member] = await receipt(member, target)
+        }
         await save(chat.id, old => ({ ...old, operation, warning: '' }))
       }
     })
     try {
-      for (const side of ['foreground', 'background']) {
+      // An operation saved before a member existed has no side for it.
+      const sides = ['foreground', ...TIMELINE_MEMBERS].filter(side => operation[side])
+      for (const side of sides) {
         const target = operation[side + 'SessionId']
         if (!target || ['succeeded', 'skipped'].includes(operation[side].status)) continue
         try {
@@ -164,7 +171,7 @@ export function createAutoCompaction(deps) {
             const before = await deps.checkpoint(target)
             operation[side] = { status: 'dispatching', before }
             await save(chat.id, old => ({ ...old, operation: structuredClone(operation) }))
-            if (side === 'background') await deps.markBackground(chat.id, target)
+            if (side !== 'foreground') await deps.markBackground(chat.id, target, side)
             const result = await deps.compact(target, side, options, signal)
             operation[side] = { status: 'succeeded', after: await deps.checkpoint(target), message: result?.message || (result ? '压缩完成' : '没有可压缩的历史') }
           }
@@ -181,7 +188,7 @@ export function createAutoCompaction(deps) {
         await save(chat.id, old => ({ ...old, operation: structuredClone(operation) }))
       }
       const success = side => ['succeeded', 'skipped'].includes(operation[side].status)
-      operation.status = success('foreground') && success('background') ? 'completed' : operation.foreground.status === 'succeeded' || operation.background.status === 'succeeded' ? 'partial' : 'failed'
+      operation.status = sides.every(success) ? 'completed' : sides.some(side => operation[side].status === 'succeeded') ? 'partial' : 'failed'
       operation.completedAt = Date.now()
       let measurementWarning = ''
       if (policy.mode === 'percent') {
@@ -194,8 +201,8 @@ export function createAutoCompaction(deps) {
           measurementWarning = '压缩后上下文占用测量失败，压缩结果已保存。'
         }
       }
-      const failures = ['foreground', 'background'].filter(side => operation[side].status === 'failed')
-        .map(side => `${side === 'foreground' ? '前台' : '后台'}：${operation[side].message}`).join('；')
+      const failures = sides.filter(side => operation[side].status === 'failed')
+        .map(side => `${side === 'foreground' ? '前台' : side === 'background' ? '后台' : '后台' + memberName(side)}：${operation[side].message}`).join('；')
       chat = await deps.readChat(initial.sessionId)
       const resultWarning = operation.status === 'completed'
         ? (operation.afterPercent >= policy.percent ? '压缩后上下文仍较高，请检查固定背景长度或选择更大窗口的模型。' : '')
