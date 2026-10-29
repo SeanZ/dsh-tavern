@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { bounded, untilAborted } from './plugin-callback.js'
+import { pluginMember, pluginMemberId } from './background-members.js'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{2,47}$/
 const MAX_TOOL_RESULT = 20000
@@ -45,8 +46,11 @@ export function createPluginTaskExecution({ runTask, currentKey, readLatestSettl
 
   // A one-off task in a fresh background session of this game: same background model,
   // card background and world book as Tavern's own tasks, never Tavern's resident session.
-  async function runTaskAs(owner, { gameId, prompt, tools = [], signal } = {}) {
+  async function runTaskAs(owner, { gameId, prompt, tools = [], signal, member } = {}) {
     const game = await requireGame(gameId)
+    // A member of this plugin only (tavern.member): its resident Session, its queue.
+    const memberId = member === undefined ? '' : pluginMemberId(owner, String(member))
+    if (member !== undefined && !pluginMember(memberId)) throw new Error('插件 ' + owner + ' 没有注册成员 ' + member)
     if ((await choicesFor(game.sessionId)).disabled.has(owner)) throw new Error('玩家在本局关闭了插件 ' + owner)
     if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('prompt 必须是非空字符串')
     if (prompt.length > MAX_TASK_PROMPT) throw new Error('prompt 不能超过 20000 字')
@@ -76,7 +80,7 @@ export function createPluginTaskExecution({ runTask, currentKey, readLatestSettl
     try {
       const result = await bounded(runTask({ gameId: game.sessionId, owner, prompt: prompt.trim(),
         tools: Array.from(byName.values()).map(tool => ({ name: tool.name, description: tool.description.trim(), parameters: structuredClone(tool.parameters) })),
-        call, signal }), '后台任务', TASK_TIMEOUT_MS)
+        call, signal, member: memberId }), '后台任务', TASK_TIMEOUT_MS)
       return { text: String(result?.text || '') }
     } catch (error) {
       if (!signal?.aborted) recordError(game.sessionId, owner, '后台任务', error)
@@ -94,7 +98,8 @@ export function createPluginTaskExecution({ runTask, currentKey, readLatestSettl
     taskRuns.set(context.gameId, run)
     const finish = onStart?.(entry.owner + ' · ' + entry.title)
     const stage = (kind === 'manual' ? '手动任务 ' : '结算任务 ') + entry.title
-    const runAgent = (input = {}) => runTaskAs(entry.owner, { ...input, gameId: context.gameId, signal: combined })
+    // A task registered on a member runs there unless the call names another.
+    const runAgent = (input = {}) => runTaskAs(entry.owner, { ...(entry.member ? { member: entry.member } : {}), ...input, gameId: context.gameId, signal: combined })
     try {
       combined.throwIfAborted()
       const scope = { owner: entry.owner, gameId: context.gameId, textVersion: context.textVersion, phase: context.phase, run, signal: combined, operationId }

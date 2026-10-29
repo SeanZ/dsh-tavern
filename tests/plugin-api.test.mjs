@@ -1259,3 +1259,29 @@ test('台账整理替换：交回的增量先过校验；不合格、出错或�
   assert.equal(h.api.stopTasks('game-1'), true)
   await assert.rejects(running, /停止了台账整理/)
 })
+
+test('插件成员：注册后任务可以挂上去，在它的常驻会话里跑；只能用自己的成员；插件卸载时成员一起移除', { skip: !cordis }, async t => {
+  const { listMembers } = await import('../tavern-plugin/lib/domain/background-members.js')
+  const requests = []
+  const h = await harness(t, { data: createPluginData({ store: memoryStore() }), readPendingTurn: async () => turnMaterial(),
+    runTask: async input => { requests.push(input); return { text: 'ok' } } })
+  let tavern
+  const fork = await h.root.plugin({ name: 'npc-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'luna', title: '露娜' })
+    ctx.tavern.settlementTask({ name: 'diary', title: '露娜日记', member: 'luna', run: async input => { await input.runAgent({ prompt: '写日记' }) } })
+  } })
+  await tick()
+  assert.ok(listMembers().some(member => member.id === 'plugin:npc-plugin:luna' && member.name === '露娜' && member.plugin === 'npc-plugin'))
+  await tavern.runTask({ gameId: 'game-1', prompt: '回忆', member: 'luna' })
+  assert.equal(requests.at(-1).member, 'plugin:npc-plugin:luna')
+  await tavern.runTask({ gameId: 'game-1', prompt: '一次性' })
+  assert.equal(requests.at(-1).member, '', 'without member: a fresh one-off')
+  await assert.rejects(tavern.runTask({ gameId: 'game-1', prompt: 'x', member: 'nobody' }), /没有注册成员/)
+  assert.throws(() => tavern.member({ name: 'luna' }), /已注册/)
+  await h.api.runSettlementTasks({ gameId: 'game-1', phase: 'after' })
+  assert.equal(requests.at(-1).member, 'plugin:npc-plugin:luna', 'a task registered on a member runs there')
+  fork.dispose?.()
+  await tick()
+  assert.ok(!listMembers().some(member => member.id === 'plugin:npc-plugin:luna'))
+})

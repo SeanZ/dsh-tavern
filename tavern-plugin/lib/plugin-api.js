@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isMvuUpdateEntry } from './domain/worldbook-recall.js'
 import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
+import { pluginMember, pluginMemberId, registerPluginMember } from './domain/background-members.js'
 import { bounded, untilAborted } from './domain/plugin-callback.js'
 import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
@@ -726,31 +727,42 @@ export function createTavernPluginApi(deps) {
       return await snapshotOf(await requireTurn(material.sessionId, material.turn))
     },
 
-    // A one-off task in a fresh background session of this game: same background model,
-    // card background and world book as Tavern's own tasks, never Tavern's resident session.
+    // A task of this game in a background session: a fresh one-off by default; with `member`, the
+    // resident session of that member of this plugin (tavern.member), queued behind its other tasks.
     async runTask(input = {}) {
       return await taskExecution.runAgent(ownerOf(this), input)
     },
 
+    // A resident background Agent of this plugin: one per game, its own Session and prompt cache.
+    // Tasks given `member: name` run in it one at a time, beside Tavern's own members.
+    member({ name, title } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      const label = taskTitle(title, name)
+      return owned(this, () => registerPluginMember({ owner, name, title: label }), 'tavern.member()')
+    },
+
     // A task of this plugin run after each turn, before or after Tavern's own settlement.
-    settlementTask({ name, title, phase = 'after', run } = {}) {
+    settlementTask({ name, title, phase = 'after', member, run } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
       if (!Object.hasOwn(TASK_PHASES, phase)) throw new Error("phase 只能是 'before'、'parallel' 或 'after'")
       if (typeof run !== 'function') throw new TypeError('run 必须是函数')
-      const entry = { owner, name, title: taskTitle(title, name), phase, run }
+      if (member !== undefined) sectionName(member)
+      const entry = { owner, name, title: taskTitle(title, name), phase, member, run }
       return register.call(this, settlementTasks, taskKey(owner, name), entry, 'tavern.settlementTask()', '结算任务 ' + name + ' 已注册')
     },
 
     // A task the player starts by hand (a button in the game), or the plugin through startTask.
-    manualTask({ name, title, description = '', input, run } = {}) {
+    manualTask({ name, title, description = '', input, member, run } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
       if (typeof description !== 'string' || description.length > MAX_TASK_DESCRIPTION) throw new Error('description 最多 ' + MAX_TASK_DESCRIPTION + ' 字')
       if (input !== undefined && (!input || typeof input !== 'object' || typeof input.label !== 'string' || !input.label.trim())) throw new Error('input 要写成 { label, placeholder? }')
       if (typeof run !== 'function') throw new TypeError('run 必须是函数')
       const ask = input ? { label: input.label.trim().slice(0, 200), placeholder: typeof input.placeholder === 'string' ? input.placeholder.slice(0, 500) : '' } : null
-      const entry = { owner, name, title: taskTitle(title, name), description: description.trim(), input: ask, run }
+      if (member !== undefined) sectionName(member)
+      const entry = { owner, name, title: taskTitle(title, name), description: description.trim(), input: ask, member, run }
       return register.call(this, manualTasks, taskKey(owner, name), entry, 'tavern.manualTask()', '手动任务 ' + name + ' 已注册')
     },
 

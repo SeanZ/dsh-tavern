@@ -2549,13 +2549,14 @@ export async function apply(ctx) {
     patch: patchChat
   })
   // A plugin's one-off task: a fresh background Session, never the resident one settlement uses.
-  async function runPluginTask({ gameId, owner, prompt, tools, call, signal }) {
+  async function runPluginTask({ gameId, owner, prompt, tools, call, signal, member = '' }) {
     const selection = backgroundModelSelection(await backgroundConfigForSession(gameId))
     if (!selection) throw new Error('这局没有可用的后台模型')
     const chat = await storyContext({ sessionId: gameId })
     const recent = (chat?.messages || []).filter(message => message && !message.greeting && ['user', 'assistant'].includes(message.role)).slice(-2)
       .map(message => ({ role: message.role, content: [{ type: 'text', text: pluginSource(message).slice(-2400) }] }))
-    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: owner, persistent: false, sessionId: gameId, selection, signal,
+    // With a plugin member, its resident Session (one per game) instead of a fresh one.
+    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: owner, member, persistent: Boolean(member), sessionId: gameId, selection, signal,
       turn: Number(chat?.messages?.at(-1)?.turn) || 0, system: prompt, messages: recent, tools, maxToolCalls: 16,
       onToolCall: request => call(request.name, typeof request.arguments === 'string' ? JSON.parse(request.arguments || '{}') : request.arguments) })
   }

@@ -3,7 +3,7 @@ import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
 import { createBackgroundRunLedger } from './background-run-ledger.js'
-import { memberOf } from './domain/background-members.js'
+import { memberOf, pluginMember } from './domain/background-members.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -141,9 +141,10 @@ export function createBackgroundAgentSessions(options, task) {
     return reaping
   }
 
-  // The resident member a persistent task runs on (background-members.js); 书记 by default.
+  // The resident member a persistent task runs on (background-members.js): the plugin member it
+  // names, else its built-in one, else 书记.
   function memberFor(input) {
-    return memberOf(input.task) || 'background'
+    return (pluginMember(input.member) && input.member) || memberOf(input.task) || 'background'
   }
 
   // One queue per member: its tasks share one Session, so they run one at a time.
@@ -164,6 +165,8 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function descriptorFor(input, persistent) {
+    const member = persistent ? pluginMember(input.member) : null
+    if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: LEGACY_BACKGROUND_PROVIDER, label: '插件成员：' + member.name })
     if (input.task === 'polish') return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-polish', label: '正文精修', agentProvider: input.selection.provider, agentModel: input.selection.model, persona: '只审读正文，通过精修工具逐处提交修改。' })
     if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
@@ -203,7 +206,8 @@ export function createBackgroundAgentSessions(options, task) {
     const requestedSessionId = startOver ? '' : str(persistent && typeof input.resolvePersistentSessionId === 'function'
       ? await input.resolvePersistentSessionId() : input.persistentSessionId)
     const key = residentKey(input)
-    const needsSession = persistent && input.task !== 'polish' && typeof options.needsNewBackgroundSession === 'function'
+    // Only 书记's Session is bound in the save and may need a fresh one after a rewind.
+    const needsSession = persistent && memberFor(input) === 'background' && typeof options.needsNewBackgroundSession === 'function'
       && await options.needsNewBackgroundSession(input.sessionId)
     const residentSessionId = startOver || needsSession && requestedSessionId === '' ? '' : str(residentSessionByParent.get(key))
     let traceSessionId = requestedSessionId || (persistent ? residentSessionId : '') || makeId()
