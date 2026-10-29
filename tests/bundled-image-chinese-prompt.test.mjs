@@ -2,14 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizePrompts } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/planner.js'
 
-const zh = '侧面特写，她跪在石板上，口中含着他的肉棒，唾液顺着下巴滴落，upper body, night'
+const zh = '侧面特写，她坐在石阶上，雨水顺着发梢滴落，upper body, night'
 
 test('默认（开关关闭）：comfyui 后端仍按原规则清掉中文，行为不变', () => {
   const mixed = normalizePrompts('莉洁 kneeling on the floor', {}, { backend: 'comfyui', style: 'natural' })
   assert.equal(mixed.replace(/\s+/g, ' ').trim(), 'kneeling on the floor')
   // 整段中文被清空时照旧报错，提示改用英文（纯中文才会清空）
   assert.throws(
-    () => normalizePrompts('侧面特写，她跪在石板上，唾液滴落', {}, { backend: 'comfyui', style: 'natural' }),
+    () => normalizePrompts('侧面特写，她坐在石阶上，雨水滴落', {}, { backend: 'comfyui', style: 'natural' }),
     /ComfyUI 提示词清理后为空/,
   )
 })
@@ -17,7 +17,7 @@ test('默认（开关关闭）：comfyui 后端仍按原规则清掉中文，行
 test('开关打开：comfyui 后端保留中文长句，句尾英文 tag 也保留', () => {
   const out = normalizePrompts(zh, {}, { backend: 'comfyui', style: 'natural', allowChinese: true })
   assert.match(out, /侧面特写/)
-  assert.match(out, /唾液顺着下巴滴落/)
+  assert.match(out, /雨水顺着发梢滴落/)
   assert.match(out, /upper body/)
 })
 
