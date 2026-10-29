@@ -159,6 +159,14 @@
         plugins:
           # Tavern 后台 Agent 的最小 DSH 预设。
           # 提供压缩与 Tavern Skill 按需加载，不继承前台正文提示词、其他工具或正则。
+          # 原生世界书 Skill 需要 read；后台不注册写入、编辑或读图能力。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: false
+              write: false
+              edit: false
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
 

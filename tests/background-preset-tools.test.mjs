@@ -46,6 +46,7 @@ test('tavern-background 预设声明了后台任务 restrict 会点名的全部�
   // 每个点名都必须在后台预设里有对应的宿主工具行。
   const hostToolRowFor = {
     skill: '@deepseek-ai/dsh-tool-skill',
+    read: '@deepseek-ai/dsh-tool-fs',
     web_search: '@deepseek-ai/dsh-tool-web',
   }
   for (const name of names) {

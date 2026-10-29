@@ -8,14 +8,14 @@ import { pathToFileURL } from 'node:url'
 import { createBackgroundAgentRunner } from '../../tavern-plugin/lib/background-agent-runner.js'
 import { createProfileDataStore } from '../../tavern-plugin/lib/profile-data-store.js'
 
-export async function createBackgroundNativeRuntime(bootPath, { systemAppend, resolveModelSelection, beforeModelRequest, residentOptions = {}, setupHost } = {}) {
+export async function createBackgroundNativeRuntime(bootPath, { systemAppend, resolveModelSelection, beforeModelRequest, residentOptions = {}, setupHost, fileTools = true } = {}) {
   const bootUrl = pathToFileURL(bootPath)
   const { boot } = await import(bootUrl.href)
   const { LlmAdapter } = await import(new URL('../../dsh-llm/lib/index.js', bootUrl))
   const root = await mkdtemp(join(tmpdir(), 'tavern-background-native-'))
   const config = join(root, 'host.yml')
   const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-session-query', 'dsh-subagent', 'dsh-session-persistence-jsonl', 'dsh-token-meter', 'dsh-agent-loop', 'dsh-attachment-local', 'dsh-fs-local', 'dsh-working-directory', 'dsh-tool-fs', 'dsh-tool-executor-native']
-  await writeFile(config, packages.map(name => '- id: ' + name + '\n  name: ' + new URL('../../' + name + '/lib/index.js', bootUrl).href + (name === 'dsh-attachment-local' ? '\n  config:\n    dshHome: ' + root : name === 'dsh-session-persistence-jsonl' ? '\n  config:\n    root: ' + join(root, 'sessions') + '\n    compression: none' : '') + '\n').join(''))
+  await writeFile(config, packages.filter(name => fileTools || name !== 'dsh-tool-fs').map(name => '- id: ' + name + '\n  name: ' + new URL('../../' + name + '/lib/index.js', bootUrl).href + (name === 'dsh-attachment-local' ? '\n  config:\n    dshHome: ' + root : name === 'dsh-tool-fs' && typeof fileTools === 'object' ? '\n  config: ' + JSON.stringify(fileTools) : name === 'dsh-session-persistence-jsonl' ? '\n  config:\n    root: ' + join(root, 'sessions') + '\n    compression: none' : '') + '\n').join(''))
   const ctx = await boot('background-native-test', config)
   ctx.baseUrl = bootUrl.href
   const disposeHost = await setupHost?.(ctx)
