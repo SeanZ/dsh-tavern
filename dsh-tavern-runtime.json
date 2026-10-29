@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "339f54b6f1a9d295fac089d0fa8fe0cc2467a69d",
-  "releaseSequence": 971,
+  "revision": "7424c2dfa08b971b07a8cb41b4a771b5ee552be2",
+  "releaseSequence": 973,
   "version": "3.1.0",
   "files": [
     {
@@ -2926,8 +2926,8 @@
     },
     {
       "path": "tavern-plugin/lib/hooks/turn-lifecycle.js",
-      "sha256": "9c0a6e8e420b5b4e6465680dd984383ec488b91b3386ac767e0315886a999299",
-      "size": 7769
+      "sha256": "aa367d0e5152a3d38e73886997b4352b7adb6934883dc959bf6ed32b786b491c",
+      "size": 7859
     },
     {
       "path": "tavern-plugin/lib/http-file.js",
@@ -2936,13 +2936,13 @@
     },
     {
       "path": "tavern-plugin/lib/http/routes.js",
-      "sha256": "3cc8cd4fc7f070ad2804ffe243d3fde0e009e0fb76956acea9420d91d60f64b7",
-      "size": 31457
+      "sha256": "8f48407c269d35950a5f383913f7603742815d25add14f72b0cfe96d6f3de21e",
+      "size": 31875
     },
     {
       "path": "tavern-plugin/lib/index.js",
-      "sha256": "12d5ee387c73f2f59dfcbc06eab514a39c67688b78480fcafac6fb7f3d26b3ae",
-      "size": 241393
+      "sha256": "6cc1a0f4209474a87d04aed554cefe64b167f459abafc7e3faf447568d313917",
+      "size": 241368
     },
     {
       "path": "tavern-plugin/lib/plugin-api.js",
@@ -3026,8 +3026,8 @@
     },
     {
       "path": "tavern-plugin/lib/rpc/transfer.js",
-      "sha256": "3243a2e33fd105998e25b7921696ec495d5545e2016081d3deca0aaaa0262c5e",
-      "size": 10876
+      "sha256": "4e271d240d68be20c208b9679e690e1172f5eb7197d68ceb59d433e51be12576",
+      "size": 11128
     },
     {
       "path": "tavern-plugin/lib/rpc/worldbook-inspector.js",
@@ -5096,9 +5096,9 @@
     }
   ],
   "archive": {
-    "commit": "a50ccb63bc517dcea536476105b2e5b21db93d97",
+    "commit": "fe3e602997359c7c845dd379e5a524055b47505e",
     "path": "runtime.zip",
-    "sha256": "e0c924dd4c8ca590e21399b0c9d545263c5bb90c2125af0ae33023cde8c6620c",
-    "size": 10525658
+    "sha256": "6dbed67aea8089f1d2ad241b5baccd5e16d60c81ab66880152fa5326cf68d5c6",
+    "size": 10526096
   }
 }

@@ -315,7 +315,7 @@ export function registerTavernHttpRoutes({
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
             return
           }
-          if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/dsh-tavern/transfer-export') {
+          if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/api/dsh-tavern/transfer-export' || pathname.startsWith('/api/dsh-tavern/transfer-export/'))) {
             const token = new URL(req.url, 'http://x').searchParams.get('token') || ''
             const found = transferExports ? await transferExports.take(token) : null
             if (!found) {
@@ -323,13 +323,16 @@ export function registerTavernHttpRoutes({
               res.end('export expired')
               return
             }
-            const name = String(found.filename || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
+            // 名字优先取服务端记录；URL 路径段只是给下载器的兜底（见 rpc 里 downloadUrl 的注释）。
+            const requested = pathname.slice('/api/dsh-tavern/transfer-export/'.length)
+            const name = String(found.filename || requested || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
             res.writeHead(200, {
               'Content-Type': 'application/zip',
               'Content-Length': found.bytes,
               'Cache-Control': 'no-store',
               'X-Content-Type-Options': 'nosniff',
-              'Content-Disposition': 'attachment; filename="backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
+              // ASCII 名给只认 filename= 的下载器，filename* 给浏览器，路径段给 Android WebView。
+              'Content-Disposition': 'attachment; filename="tavern-backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
             })
             if (req.method === 'HEAD' || found.bytes === 0) { res.end(); return }
             const stream = found.stream()

@@ -437,8 +437,9 @@ export function presentTavernSettings(document, defaults) {
     storyInputToolCall: storyToolCalls.input,
     storyOutputToolCall: storyToolCalls.output,
     castPresentation: object(document).castPresentation === true,
-    // 舞台模式, BGM, 音效, 环境音, 物品 and 入场演出: one switch each for every card, on by default; the stage also needs 对话气泡 (castPresentation).
-    stageToggles: Object.fromEntries(STAGE_TOGGLES.map(key => [key, object(object(document).stageToggles)[key] !== false])),
+    // 舞台模式, BGM, 音效, 环境音, 物品 and 入场演出: one switch each for every card, all off until turned on
+    // (舞台模式 starts the stage director); the stage also needs 对话气泡 (castPresentation).
+    stageToggles: Object.fromEntries(STAGE_TOGGLES.map(key => [key, object(object(document).stageToggles)[key] === true])),
     stageDimensions: stageDimensions(document),
     stageActionCaps: stageActionCaps(document),
     // Unset by default: no judge stage, green entries follow their triggers.

@@ -143,9 +143,12 @@ export function createTransferHandlers(deps) {
         return { kind: part.kind, label: part.label, items: part.items.length, bytes: part.bytes }
       })
       // Past this size the page downloads by URL instead of carrying base64 through JSON.
+      // 文件名放进路径：Android 的 URLUtil.guessFileName 在 DownloadListener 拿不到
+      // Content-Disposition 时会退回 URL 最后一段，只写 query 会得到 transfer-export.bin。
       if (transferExports && buffer.length > STREAM_THRESHOLD_BYTES) {
         const stored = await transferExports.put(buffer, filename)
-        return { filename, name: manifest.name, downloadUrl: '/api/dsh-tavern/transfer-export?token=' + stored.token,
+        return { filename, name: manifest.name,
+          downloadUrl: '/api/dsh-tavern/transfer-export/' + encodeURIComponent(filename) + '?token=' + stored.token,
           bytes: buffer.length, totals: manifest.totals, parts }
       }
       return {
