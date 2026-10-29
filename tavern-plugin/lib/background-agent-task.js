@@ -1,8 +1,8 @@
+import { withWorldbookFileInstructions } from './domain/worldbook-virtual-surface.js'
 import { createBackgroundProgress } from './domain/background-progress.js'
 import { worldbookSnapshot } from './domain/worldbook-snapshot.js'
 import { CARD_SYSTEM_PROMPT_SECTION, cardSystemPromptSnapshot, cardSystemPromptSource } from './domain/card-system-prompt.js'
 import { projectCandidateScriptContext } from './domain/candidate-script-context.js'
-import { projectWorldbookFilterContext } from './domain/worldbook-filter-context.js'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { prependSystemInstruction } from './domain/system-append.js'
 import { markTavernSectionsLiteral } from './domain/literal-sections.js'
@@ -37,7 +37,7 @@ function backgroundPrompt(messages, turnContext, task, taskProtocol, input = {})
       : (message && message.role === 'assistant' ? '正文' : '用户')
     return '[' + role + ']\n' + messageText(message)
   }).filter(function (text) { return text.trim() !== '' }).join('\n\n')
-  const taskName = task === 'stage-director' ? '舞台导演' : task === 'worldbook-filter' ? '世界书筛选' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
+  const taskName = task === 'stage-director' ? '舞台导演' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
   sections.push('【最近剧情与本次任务】\n任务类型：' + taskName + '\n' + recent)
   const protocol = str(taskProtocol).trim()
   if (protocol !== '') sections.push('【任务要求】\n' + protocol)
@@ -176,13 +176,15 @@ export function createBackgroundAgentTask(options) {
             if (state.input.task === 'phone') return []
             return [{ ...section, text: '以下人物卡系统提示仅用于候选文本的写作；结算、筛选、人物设计等后台任务遵循各自任务协议。\n' + section.text }]
           })
-          const sections = state.currentWorldbook === undefined ? fixed : withCurrentWorldbook(fixed, state.currentWorldbook)
+          let sections = state.currentWorldbook === undefined ? fixed : withCurrentWorldbook(fixed, state.currentWorldbook)
+          if (state.input.worldbookSkillsEnabled) sections = withWorldbookFileInstructions(sections)
+          else sections = sections.filter(section => section.name !== 'tavern:worldbook-skills')
           const assembly = { sections: [...sections, { name: 'deployment:persona', text: backgroundPersona }] }
           return prependSystemInstruction(assembly, options.systemAppend?.()).sections.map(section => section.text).join('\n\n')
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'worldbook_list', 'worldbook_grep', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
         if (state.input.task === 'polish') {
@@ -202,8 +204,8 @@ export function createBackgroundAgentTask(options) {
           return assembly
         }
         if (!state.input.worldbookSkillsEnabled) {
-          assembly.sections = (assembly.sections || []).filter(section => section?.name !== 'tool:read')
-          assembly.tools = (assembly.tools || []).filter(tool => tool?.name !== 'read')
+          assembly.sections = (assembly.sections || []).filter(section => !['tool:read', 'tool:worldbook_list', 'tool:worldbook_grep'].includes(section?.name))
+          assembly.tools = (assembly.tools || []).filter(tool => !['read', 'worldbook_list', 'worldbook_grep'].includes(tool?.name))
         }
         if (state.input.webSearchEnabled === true) return assembly
         assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })
@@ -272,8 +274,7 @@ export function createBackgroundAgentTask(options) {
       state.activeToolTask = {
         async execute(tool, args, execution) {
           const registeredShared = sharedByName.get(tool.name)
-          const shared = (input.task !== 'worldbook-filter' || registeredShared?.allowDuringWorldbookFilter === true) &&
-            (input.task !== 'character-design' || registeredShared?.allowDuringCharacterDesign === true) ? registeredShared : undefined
+          const shared = (input.task !== 'character-design' || registeredShared?.allowDuringCharacterDesign === true) ? registeredShared : undefined
           const current = allowed.get(tool.name) || (shared && shared.tool)
           if (current === undefined && input.task === 'settlement' && state.settlementCall && settlementItems()?.has(tool.name)) {
             const result = await state.settlementCall(tool.name, args)
@@ -429,20 +430,14 @@ export function createBackgroundAgentTask(options) {
         if (input.task === 'polish') ensureSessionSystemHead(agent.session)
         releaseOpeningTurn(agent.session, agent)
       }
-      // The filter reuses the last projection (or makes the first one after a restart) so the
-      // shared system prefix stays byte-identical and the filter reads settlement's cache.
-      const nextTurnPreparation = input.task === 'worldbook-filter' || input.task === 'style-reference'
-      const projectsWorldbook = !isolated && (!nextTurnPreparation || state.currentWorldbook === undefined)
+      const projectsWorldbook = !isolated
       const worldbook = projectsWorldbook && typeof options.resolveCurrentWorldbook === 'function'
         ? await options.resolveCurrentWorldbook(input) : undefined
       if (projectsWorldbook) state.currentWorldbook = worldbook && typeof worldbook === 'object' ? worldbook.prefixContext : worldbook
-      const turnWorldbookSource = nextTurnPreparation ? undefined : worldbook
+      const turnWorldbookSource = worldbook
       const turnWorldbook = turnWorldbookSource && typeof turnWorldbookSource === 'object' ? str(turnWorldbookSource.foregroundContext).trim() : ''
       const eventStart = sessionEvents(agent.session).length
-      const filterContext = projectWorldbookFilterContext(agent.session, input)
       const scriptContext = projectCandidateScriptContext(agent.session, input)
-      const foregroundReads = !isolated && typeof options.resolveForegroundWorldbookReads === 'function'
-        ? await options.resolveForegroundWorldbookReads(input) : ''
       const snapshot = turnWorldbookSource && typeof turnWorldbookSource === 'object'
         ? worldbookSnapshot(agent.session, turnWorldbook) : null
       const systemUpdate = input.task === 'candidate' && typeof input.systemPromptText === 'string'
@@ -453,16 +448,14 @@ export function createBackgroundAgentTask(options) {
       const candidateNotes = input.task === 'candidate' && typeof options.pluginCandidate === 'function'
         ? await options.pluginCandidate()?.sections(pluginContext).catch(() => []) || [] : []
       const candidateText = candidateNotes.length ? ['【插件附加的候选要求】', ...candidateNotes.map(note => note.text)].join('\n\n') : ''
-      const taskText = input.task === 'polish' ? (typeof input.taskText === 'function' ? input.taskText() : input.taskText) : [foregroundReads, snapshot?.rendered, systemUpdate?.rendered,
-        backgroundPrompt(filterContext?.messages || input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
+      const taskText = input.task === 'polish' ? (typeof input.taskText === 'function' ? input.taskText() : input.taskText) : [snapshot?.rendered, systemUpdate?.rendered,
+        backgroundPrompt(input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
       agent.followup({
         id: randomUUID(),
         role: 'user',
         content: [{ type: 'text', text: taskText }],
         source: { kind: 'plugin:dsh-tavern', ...(systemUpdate ? { trace: cardSystemPromptSource(systemUpdate) } : {}), ...(snapshot ? { worldbookSnapshot: snapshot } : {}), ...(scriptContext?.body ? {
           candidateScriptWindow: { version: 1, start: taskText.indexOf(scriptContext.body), length: scriptContext.body.length, digest: scriptContext.digest }
-        } : {}), ...(filterContext ? {
-          worldbookFilterPayload: { version: 1, start: taskText.indexOf(filterContext.payloadText), length: filterContext.payloadText.length }
         } : {}) }
       })
       await progress.wait(agent.whenIdle())

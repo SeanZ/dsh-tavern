@@ -959,9 +959,9 @@ window.__ModuleLoader__.load({
             }, SceneImageGallery)), "dsh-tavern: picture gallery");
             ctx.effect(() => slots.inject("conversation.view", () => slots.register({
                 name: "conversation.view", id: "dsh-tavern:polish", order: 13,
-                label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
+                label: "精修", inject: sessionId => ({ polishSessionId: sessionId })
             }, PolishComparisonView)), "dsh-tavern: polish comparison");
-            // 顶部标签（对话/轨迹/完整上下文/画廊/精修对比）的设置：设置页读这份
+            // 顶部标签（对话/轨迹/完整上下文/画廊/精修）的设置：设置页读这份
             // 目录，标签行由 installTavernViewTabLayout 按保存的顺序显示或隐藏。
             ctx.effect(function () {
                 const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };

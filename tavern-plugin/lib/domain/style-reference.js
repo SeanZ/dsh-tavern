@@ -1,8 +1,8 @@
-// 文风联想：正文提交后，后台模型凭记忆找一部笔调接近当前场景的小说（按题材选，不限名家），
-// 给出一段范文（不要求是原文，书名、作者有就附上）；下一轮前台像剧本参考一样带上它，借小说的笔致压住 AI 腔。
-// 选段的提示词是系统提示词「文风联想选段」（prompts/style-reference-recall.md），可在面板修改。
+// Foreground style association shares the writer context. The saved reference is
+// for inspection; it is not automatically injected into the next turn.
 
 import { prompt } from '../prompt-catalog.js'
+import { activeStoryTurn } from './story-tool-submission.js'
 
 export const STYLE_REFERENCE_SUBMIT_TOOL = {
   name: 'style_reference_submit',
@@ -155,5 +155,35 @@ export function createStyleReferenceRecall({ runAgent, selection, beginTask, sys
       throw error
     }
     return submitted
+  }
+}
+
+
+export function foregroundStyleReferencePrompt(chat, selectionPrompt, writingPrompt) {
+  if ((chat?.mode || 'story') !== 'story' || chat?.backgroundTasks?.styleReference !== true) return ''
+  return ['【前台文风联想】', selectionPrompt, writingPrompt,
+    '本轮由你结合当前玩家输入与前情，在写正文之前完成文风联想。调用 style_reference_submit 记录参考后继续生成本轮正文，不要结束回合，也不要等待后台。选段要求中的“刚写完正文”指当前场景；历史上的旧参考不是本轮必须沿用的参考。',
+    chat.styleReferenceGuidance ? '【玩家选段偏好】\n' + String(chat.styleReferenceGuidance) : ''
+  ].filter(Boolean).join('\n\n')
+}
+
+export function createForegroundStyleReferenceTool({ chatForSession, save, isBackground = () => false }) {
+  return {
+    name: STYLE_REFERENCE_SUBMIT_TOOL.name,
+    description: '记录本轮前台文风参考。成功后继续写本轮正文，不结束回合、不启动后台。',
+    parameters: { book: { type: 'string' }, author: { type: 'string' }, quote: { type: 'string', required: true } },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      exec.signal?.throwIfAborted()
+      const session = exec.agent?.session, sessionId = session?.id
+      if (!sessionId || isBackground(sessionId)) throw Error('文风联想由前台写作回合执行')
+      const turn = activeStoryTurn(session), chat = await chatForSession(sessionId)
+      if (!turn || !chat || chat.sessionId !== sessionId || chat.disabledForegroundTools?.includes('style_reference_submit') || (chat.mode || 'story') !== 'story' || chat.backgroundTasks?.styleReference !== true) throw Error('本局未开启前台文风联想，或当前没有写作回合')
+      const reference = readStyleReference(args)
+      exec.signal?.throwIfAborted()
+      await save(chat, reference, turn)
+      return JSON.stringify({ ok: true, reference, next: '参考已记录，请继续生成本轮正文。' })
+    }
   }
 }

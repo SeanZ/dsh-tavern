@@ -18,11 +18,11 @@ const TAB_ENTRIES = [
   { id: 'trajectory', label: '轨迹' },
   { id: 'dsh-tavern:full-context', label: '完整上下文' },
   { id: 'dsh-tavern:gallery', label: '画廊' },
-  { id: 'dsh-tavern:polish', label: '精修对比' }
+  { id: 'dsh-tavern:polish', label: '精修' }
 ]
 
-test('顶部标签默认 5 个，对话固定首位；保存、读取与恢复默认都守住这条', () => {
-  assert.deepEqual([...DEFAULT_VIEW_TABS.items], ['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish'])
+test('顶部标签默认 4 个，对话固定首位；保存、读取与恢复默认都守住这条', () => {
+  assert.deepEqual([...DEFAULT_VIEW_TABS.items], ['chat', 'trajectory', 'dsh-tavern:gallery', 'dsh-tavern:polish'])
   assert.equal(VIEW_TAB_RESIDENT, 'chat')
   assert.deepEqual(presentTavernSettings({}, {}).viewTabs, { items: [...DEFAULT_VIEW_TABS.items] })
 
@@ -51,7 +51,7 @@ function loadModule(extra = {}) {
   return context.api
 }
 
-function tabRow(dom, labels = ['对话', '轨迹', '完整上下文', '画廊', '精修对比'], active = '画廊') {
+function tabRow(dom, labels = ['对话', '轨迹', '完整上下文', '画廊', '精修'], active = '画廊') {
   const row = dom.window.document.createElement('div')
   row.setAttribute('data-conversation-tabs', '')
   for (const label of labels) {
@@ -76,11 +76,11 @@ test('客户端标签行按设置的清单显示与排序，隐藏当前标签�
   const api = loadModule()
   const dom = new JSDOM('<body></body>', { pretendToBeVisual: true })
   try {
-    // 默认：五个都显示，顺序与宿主一致。
+    // 默认隐藏完整上下文，其余标签按配置排序。
     let row = tabRow(dom)
-    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, [...DEFAULT_VIEW_TABS.items]), 5)
+    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, [...DEFAULT_VIEW_TABS.items]), 4)
     assert.deepEqual(styleOf(row).map(item => [item.id, item.display, item.order]), [
-      ['chat', '', '0'], ['trajectory', '', '1'], ['dsh-tavern:full-context', '', '2'], ['dsh-tavern:gallery', '', '3'], ['dsh-tavern:polish', '', '4']
+      ['chat', '', '0'], ['trajectory', '', '1'], ['dsh-tavern:full-context', 'none', ''], ['dsh-tavern:gallery', '', '2'], ['dsh-tavern:polish', '', '3']
     ])
 
     // 只留对话 + 完整上下文，并把画廊藏起来（它正被选中）。
@@ -91,7 +91,7 @@ test('客户端标签行按设置的清单显示与排序，隐藏当前标签�
     assert.equal(clicked, 1, '当前「画廊」被隐藏后切回「对话」')
 
     // 开发者工具关闭时宿主不画「轨迹」：按钮少一个也要对齐正确。
-    row = tabRow(dom, ['对话', '完整上下文', '画廊', '精修对比'])
+    row = tabRow(dom, ['对话', '完整上下文', '画廊', '精修'])
     api.applyTavernViewTabRow(row, TAB_ENTRIES, [...DEFAULT_VIEW_TABS.items])
     assert.deepEqual(styleOf(row).map(item => item.id), ['chat', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish'])
   } finally { dom.window.close() }
@@ -133,7 +133,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   t.after(() => { Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act }); dom.window.close() })
 
   const saved = []
-  let value = { hideContextAndReasoning: false, headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: [...DEFAULT_VIEW_TABS.items] } }
+  let value = { hideContextAndReasoning: false, headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: TAB_ENTRIES.map(entry => entry.id) } }
   const listeners = new Set()
   const displayPreferences = {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -151,7 +151,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   const press = node => act(async () => { node.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
 
   const rows = () => [...dom.window.document.querySelectorAll('.dsh-tavern-view-tab-row')]
-  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '画廊', '精修对比'])
+  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '画廊', '精修'])
   // 对话：固定标记，没有上移/下移/移除。
   assert.equal(rows()[0].querySelector('.dsh-tavern-view-tab-lock').textContent, '固定')
   assert.equal(rows()[0].querySelectorAll('button').length, 0)
@@ -162,7 +162,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   const remove = rows()[3].querySelector('[aria-label="移除"]')
   await press(remove)
   assert.deepEqual(saved.at(-1), { viewTabs: { items: ['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:polish'] } })
-  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '精修对比'])
+  assert.deepEqual(rows().map(row => row.querySelector('.dsh-tavern-view-tab-name strong').textContent), ['对话', '轨迹', '完整上下文', '精修'])
   const chip = [...dom.window.document.querySelectorAll('.dsh-tavern-view-tab-chip')].find(node => node.textContent.includes('画廊'))
   assert.ok(chip, '移除的标签出现在「可添加的标签」里')
 

@@ -100,7 +100,7 @@ export function createTavernSkillModule(options = {}) {
   async function edit(input) {
     const skill = await read(input.name)
     if (!skill) throw new Error('Skill 不存在')
-    const content = input.content
+    const content = typeof input.content === 'string' ? input.content.replace(/^\uFEFF/, '') : input.content
     if (typeof content !== 'string' || content.length > 100000) throw new Error('Skill 内容不能超过 100000 个字符')
     const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
     const meta = match ? parse(match[1]) : null
@@ -123,7 +123,7 @@ export function createTavernSkillModule(options = {}) {
       const source = { kind: root.kind, path: target(root.path, normalized) }
       try {
         if ((await lstat(path.dirname(source.path))).isSymbolicLink() || (await lstat(source.path)).isSymbolicLink()) throw new Error('Skill 入口不能是符号链接')
-        const content = (await override(normalized))?.content ?? await readFile(source.path, 'utf8')
+        const content = ((await override(normalized))?.content ?? await readFile(source.path, 'utf8')).replace(/^\uFEFF/, '')
         const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
         const meta = match ? parse(match[1]) || {} : {}
         const purpose = meta.metadata?.tavern?.purpose || root.role

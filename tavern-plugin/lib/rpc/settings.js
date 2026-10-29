@@ -9,9 +9,6 @@ export function createSettingsHandlers(deps) {
     llm, playCardSnapshots, presentSystemPrompts, presentUserPreferenceProfile, readTavernSettings,
     sessionActivity, stageJudge, str, tavernModelCatalog, updateChat, updateTavernSettings, userPreferenceProfile } = deps
   const handlers = {
-    async getWebSearchStatus() { return deps.webAccess.status() },
-    async useBuiltinWebSearch() { await deps.webAccess.useBuiltin(); return deps.webAccess.status() },
-    async testWebSearch() { return deps.webAccess.test() },
     async getUserPreferenceProfile(args) {
       const chat = args?.sessionId && args.globalDefaults !== true ? await chatHeaderForSession(args.sessionId, ['userProfileEnabled','userProfileContextSnapshot','userProfileId','userProfileRevision']) : null
       return {

@@ -139,13 +139,6 @@ function readRecorder(entries, turn) {
   }
 }
 
-/** Entries the filter model excluded after a reply stay excluded for the next ten turns. */
-export function recordScreenedExclusions(existing, entries, turn) {
-  const next = clone(existing !== null && typeof existing === 'object' && !Array.isArray(existing) ? existing : {})
-  for (const entry of entries) next[str(entry.ref)] = { turn: Number(turn) || 0, fingerprint: fingerprint(entry.content), kind: 'screened' }
-  return next
-}
-
 /** Snapshot constant content; request projection partitions mixed positions separately. */
 export function constantWorldBookContext(input = {}) {
   const entries = promptOrder(enabledEntries(input.worldBook).filter(function (entry) {

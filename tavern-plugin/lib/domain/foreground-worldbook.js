@@ -1,9 +1,8 @@
-import { classifyWorldbookEntry, hasWorldbookPreprocessingSyntax } from './worldbook-entry-classification.js'
+import { worldbookTitleHints } from './worldbook-title-hints.js'
+import { classifyWorldbookEntry, hasWorldbookPreprocessingSyntax, isWorldbookRuntimeEntry } from './worldbook-entry-classification.js'
 import { currentVirtualState, virtualEntryVersion, virtualDependencyHash, virtualHash, virtualScope, virtualDependencyHasDynamicValue } from './worldbook-virtual-state.js'
 import { promptOrder } from './worldbook-activation.js'
 import { worldbookRandomState, hasWorldbookRandom, entryRandom } from './worldbook-random.js'
-import { estimateWorldBookTokens } from './worldbook-activation.js'
-import { compactRecallDiagnostics, describeRecallEntries } from './worldbook-recall-log.js'
 import { fingerprint, isMvuUpdateEntry } from './worldbook-recall.js'
 import { prepareTemplateWorldbook, prepareWorldBookRecall, projectWorldBookTemplates } from './worldbook-recall.js'
 
@@ -48,128 +47,64 @@ function unreadCharacterDesigns(worldBook, chat) {
 /** One request uses one bound-book snapshot for both selection and rendering. */
 export function createForegroundWorldbook({ bound, runtime, globalVariables, scanText = () => '' }) {
   const requests = new Map()
-  const project = async function project({ requestKey, chat, card, userText, userTextInHistory = false, worldBook: snapshot, purpose = 'generation', signal, strategy = chat.worldbookStrategy || 'legacy', selectedRefs = [] }) {
+  const project = async function project({ requestKey, chat, card, userText, userTextInHistory = false, worldBook: snapshot, purpose = 'generation', signal, selectedRefs = [] }) {
     try {
       let worldBook = snapshot || await bound(chat.cardPath, card, chat, {purpose,userText})
       const turn = Number([...(chat.messages || [])].reverse().find(message => message?.role === 'assistant')?.turn) || 0
       const randomState = worldbookRandomState(chat, turn)
-      // Older versions recorded the next-turn preview as a read. Let the first
-      // real request re-evaluate that preview without suppressing its entries.
-      const reads = { ...chat.worldBookReads }
-      if (chat.preparedWorldBook && chat.preparedWorldBook.schemaVersion !== 2) {
-        for (const ref of chat.preparedWorldBook.refs || []) {
-          if (Number(reads[ref]?.turn) === Number(chat.preparedWorldBook.turn)) delete reads[ref]
-        }
-      }
-      // Retired model screening must not suppress entries in older saves.
-      for (const ref of Object.keys(reads)) if (reads[ref]?.kind === 'screened') delete reads[ref]
       const templateRuntime = await runtime(chat.sessionId), globals = await globalVariables()
-      if (strategy === 'native-skills') {
-        const sourceEntries = worldBook?.view?.entries || []
-        const executionKey = String(requestKey ?? `${turn}:${purpose}:${virtualHash(userText || '')}`)
-        const scope = virtualScope(chat)
-        const version = virtualHash([executionKey, sourceEntries, selectedRefs])
-        const previous = requests.get(scope)
-        if (previous?.version === version) return await previous.result
-        // Upstream preprocessing is an effectful whole-book batch without a
-        // per-entry guard. Freeze it for one explicit execution request; ordinary
-        // body edits may refresh, but new/changed decorators wait for next round.
-        const persistedPreparation = chat.worldBookVirtualState?.scope === scope && chat.worldBookVirtualState.preprocessing?.requestKey === executionKey
-          ? chat.worldBookVirtualState.preprocessing : null
-        const reusingPreparation = previous?.requestKey === executionKey || Boolean(persistedPreparation)
-        const preparation = previous?.requestKey === executionKey ? previous.preparation
-          : persistedPreparation ? Promise.resolve({ sources: persistedPreparation.sources, snapshot: persistedPreparation.prepared, prepared: restorePreparation(persistedPreparation.prepared, worldBook) })
-          : prepareTemplateWorldbook(worldBook, templateRuntime, chat, globals).then(prepared => ({ prepared, snapshot: preparationSnapshot(prepared, sourceEntries),
-            sources: sourceEntries.map(entry => ({ ref: entry.ref, version: virtualEntryVersion(entry), decorated: hasWorldbookPreprocessingSyntax(entry), enabled: entry.enabled })) }))
-        const result = (async () => {
-          const initial = await preparation
-          const preparationDiagnostics = []
-          if (reusingPreparation) {
-            const oldSources = new Map(initial.sources.map(entry => [entry.ref, entry]))
-            const transformed = new Map((initial.prepared?.view?.entries || []).map(entry => [entry.ref, entry]))
-            const current = new Map(sourceEntries.map(entry => [entry.ref, entry]))
-            const revokedController = initial.sources.some(entry => entry.decorated && (!current.has(entry.ref) || (entry.enabled !== false && current.get(entry.ref).enabled === false)))
-            const entries = sourceEntries.flatMap(entry => {
-              const old = oldSources.get(entry.ref)
-              if (old && old.version === virtualEntryVersion(entry)) return transformed.has(entry.ref) ? [transformed.get(entry.ref)] : []
-              if (hasWorldbookPreprocessingSyntax(entry) || old?.decorated) {
-                preparationDiagnostics.push({ kind: 'worldbook-template', code: 'preprocessing-edit-deferred-to-next-request', ref: entry.ref })
-                return []
-              }
-              return [entry]
-            })
-            worldBook = { ...worldBook, templatePrepared: true, templateScopes: revokedController ? undefined : initial.prepared.templateScopes,
-              templateActivationRequests: revokedController ? [] : initial.prepared.templateActivationRequests?.filter(request => entries.some(entry => entry.ref === request.ref)),
-              view: { ...worldBook.view, entries } }
-          } else worldBook = initial.prepared
-          const preparedActivations = [...(worldBook?.templateActivationRequests || []), ...unreadCharacterDesigns(worldBook, chat), ...(worldBook?.pluginActivationRequests || []), ...selectedRefs.map(ref => ({ ref, force: false, sourceRef: '[STRATEGY]' }))]
-          const previousState = previous?.requestKey === executionKey ? (await previous.result).virtualState : undefined
-          const executionChat = previousState ? { ...chat, worldBookVirtualState: previousState } : chat
-          const projected = await projectMandatoryWorldbook({ worldBook, sourceEntries, chat: executionChat, card, templateRuntime, globals, preparedActivations, randomState, turn, requestKey: executionKey, userText, userTextInHistory, scanText: scanText(chat) })
-          if (initial.sources.some(entry => entry.decorated)) projected.virtualState.preprocessing = {
-            requestKey: executionKey, sources: initial.sources,
-            prepared: initial.snapshot
-          }
-          projected.diagnostics.push(...preparationDiagnostics)
-          return projected
-        })()
-        requests.set(scope, { version, requestKey: executionKey, preparation, result })
-        // A bounded foreground-request cache. No background scope is admitted.
-        if (requests.size > 32) requests.delete(requests.keys().next().value)
-        try { return await result } catch (error) { if (requests.get(scope)?.result === result) requests.delete(scope); throw error }
-      }
-      worldBook = await prepareTemplateWorldbook(worldBook, templateRuntime, chat, globals)
-      const preparedActivations = [...(worldBook?.templateActivationRequests || []), ...unreadCharacterDesigns(worldBook, chat), ...(worldBook?.pluginActivationRequests || [])]
-      let activationRequests = preparedActivations, recalled, projected
-      const tokenCosts = {}
-      const protectedRefs = () => new Set(activationRequests.flatMap(request => [request.ref, request.sourceRef]))
-      // Rebuild from the same snapshot and original scopes; speculative passes never mutate Chat.
-      // Only requests from controllers still selected survive to the next pass.
-      const randomValues = []
-      let converged = false
-      for (let pass = 0; pass < 16; pass++) {
-        let randomIndex = 0
-        const random = () => { const index = randomIndex++; return randomValues[index] ?? (randomValues[index] = Math.random()) }
-        recalled = prepareWorldBookRecall({ worldBook, chat: { ...chat, worldBookReads: reads }, card, turn, userText, userTextInHistory,
-          scanText: scanText(chat), activationRequests, random, tokenCosts, ignoreBudget: pass === 0, protectedRefs: protectedRefs() })
-        projected = await projectWorldBookTemplates({ worldBook, selectedEntries: recalled.entries || [], includeConstants: true,
-          runtime: templateRuntime, globalVariables: globals, chat, card, activationRequests, random, randomSeed: randomState.seed })
-        let costsChanged = false
-        for (const entry of recalled.entries || []) {
-          const output = projected.renderedEntries.find(output => output.ref === entry.ref)
-          const cost = output ? estimateWorldBookTokens(output.text) + 2 : 0
-          if (tokenCosts[entry.ref] !== cost) costsChanged = true
-          tokenCosts[entry.ref] = cost
+      const sourceEntries = worldBook?.view?.entries || []
+      const executionKey = String(requestKey ?? `${turn}:${purpose}:${virtualHash(userText || '')}`)
+      const scope = virtualScope(chat)
+      const version = virtualHash([executionKey, sourceEntries, selectedRefs])
+      const previous = requests.get(scope)
+      if (previous?.version === version) return await previous.result
+      // Upstream preprocessing is an effectful whole-book batch without a
+      // per-entry guard. Freeze it for one explicit execution request; ordinary
+      // body edits may refresh, but new/changed decorators wait for next round.
+      const persistedPreparation = chat.worldBookVirtualState?.scope === scope && chat.worldBookVirtualState.preprocessing?.requestKey === executionKey
+        ? chat.worldBookVirtualState.preprocessing : null
+      const reusingPreparation = previous?.requestKey === executionKey || Boolean(persistedPreparation)
+      const preparation = previous?.requestKey === executionKey ? previous.preparation
+        : persistedPreparation ? Promise.resolve({ sources: persistedPreparation.sources, snapshot: persistedPreparation.prepared, prepared: restorePreparation(persistedPreparation.prepared, worldBook) })
+        : prepareTemplateWorldbook(worldBook, templateRuntime, chat, globals).then(prepared => ({ prepared, snapshot: preparationSnapshot(prepared, sourceEntries),
+          sources: sourceEntries.map(entry => ({ ref: entry.ref, version: virtualEntryVersion(entry), decorated: hasWorldbookPreprocessingSyntax(entry), enabled: entry.enabled })) }))
+      const result = (async () => {
+        const initial = await preparation
+        const preparationDiagnostics = []
+        if (reusingPreparation) {
+          const oldSources = new Map(initial.sources.map(entry => [entry.ref, entry]))
+          const transformed = new Map((initial.prepared?.view?.entries || []).map(entry => [entry.ref, entry]))
+          const current = new Map(sourceEntries.map(entry => [entry.ref, entry]))
+          const revokedController = initial.sources.some(entry => entry.decorated && (!current.has(entry.ref) || (entry.enabled !== false && current.get(entry.ref).enabled === false)))
+          const entries = sourceEntries.flatMap(entry => {
+            const old = oldSources.get(entry.ref)
+            if (old && old.version === virtualEntryVersion(entry)) return transformed.has(entry.ref) ? [transformed.get(entry.ref)] : []
+            if (hasWorldbookPreprocessingSyntax(entry) || old?.decorated) {
+              preparationDiagnostics.push({ kind: 'worldbook-template', code: 'preprocessing-edit-deferred-to-next-request', ref: entry.ref })
+              return []
+            }
+            return [entry]
+          })
+          worldBook = { ...worldBook, templatePrepared: true, templateScopes: revokedController ? undefined : initial.prepared.templateScopes,
+            templateActivationRequests: revokedController ? [] : initial.prepared.templateActivationRequests?.filter(request => entries.some(entry => entry.ref === request.ref)),
+            view: { ...worldBook.view, entries } }
+        } else worldBook = initial.prepared
+        const preparedActivations = [...(worldBook?.templateActivationRequests || []), ...unreadCharacterDesigns(worldBook, chat), ...(worldBook?.pluginActivationRequests || []), ...selectedRefs.map(ref => ({ ref, force: false, sourceRef: '[STRATEGY]' }))]
+        const previousState = previous?.requestKey === executionKey ? (await previous.result).virtualState : undefined
+        const executionChat = previousState ? { ...chat, worldBookVirtualState: previousState } : chat
+        const projected = await projectMandatoryWorldbook({ worldBook, sourceEntries, chat: executionChat, card, templateRuntime, globals, preparedActivations, randomState, turn, requestKey: executionKey, userText, userTextInHistory, scanText: scanText(chat) })
+        if (initial.sources.some(entry => entry.decorated)) projected.virtualState.preprocessing = {
+          requestKey: executionKey, sources: initial.sources,
+          prepared: initial.snapshot
         }
-        const next = [...preparedActivations, ...(projected.activationRequests || [])]
-        const key = requests => JSON.stringify(requests.map(request => [request.sourceRef, request.ref, request.force]).sort())
-        if (pass > 0 && !costsChanged && key(next) === key(activationRequests)) {
-          converged = true; break
-        }
-        activationRequests = next
-      }
-      if (!converged) throw new Error('世界书脚本激活未在 16 次投影内收敛')
-      // A failed/empty template was not injected and must not consume cooldown.
-      const renderedRefs = new Set(projected.refs)
-      const accepted = recalled.refs.filter(ref => renderedRefs.has(ref))
-      const recorded = recalled.recordReads(chat.worldBookReads)
-      const nextReads = { ...chat.worldBookReads }
-      for (const ref of accepted) nextReads[ref] = recorded[ref]
-      const evaluatedRefs = new Set((recalled.diagnostics || []).map(entry => entry.ref))
-      const excluded = (worldBook?.view?.entries || []).filter(entry => !evaluatedRefs.has(entry.ref) && (entry.enabled === false || !String(entry.content || '').trim() || isMvuUpdateEntry(entry)))
-        .map(entry => ({ ref: entry.ref, title: entry.title || entry.comment, reason: entry.enabled === false ? 'disabled' : !String(entry.content || '').trim() ? 'empty' : 'mvu-update' }))
-      const outputs = projected.renderedEntries || []
-      const entries = describeRecallEntries([...(recalled.diagnostics || []), ...excluded]).map(entry => {
-        const outputIndex = outputs.findIndex(output => output.ref === entry.ref)
-        const failure = projected.diagnostics.find(item => item.ref === entry.ref)
-        return { ...entry, outputOrder: outputIndex >= 0 ? outputIndex + 1 : null,
-          rendering: outputIndex >= 0 ? 'rendered' : failure ? failure.code : entry.reason === 'selected' ? 'empty-output' : 'not-selected' }
-      })
-      const log = { settings: { ...recalled.settings, cooldownTurns: 10 }, budget: recalled.budget,  scanSources: recalled.scanSources || [],
-        counts: entries.reduce((result, entry) => { result[entry.reason] = (result[entry.reason] || 0) + 1; return result }, {}), entries, outputs,
-        dynamicRefs: accepted, activationRequests, templateDiagnostics: projected.diagnostics }
-      return { ...projected, randomState: { ...randomState, outputs: Object.fromEntries(outputs.filter(output => hasWorldbookRandom(worldBook.view.entries.find(entry => entry.ref === output.ref)?.content)).map(output => [output.ref, output.text])) }, log, context: projected.foregroundContext, refs: accepted, reads: nextReads,
-        activation: { schemaVersion: 2, turn, refs: accepted, diagnostics: compactRecallDiagnostics(recalled.diagnostics), mode: recalled.kind }, error: null }
+        projected.diagnostics.push(...preparationDiagnostics)
+        return projected
+      })()
+      requests.set(scope, { version, requestKey: executionKey, preparation, result })
+      // A bounded foreground-request cache. No background scope is admitted.
+      if (requests.size > 32) requests.delete(requests.keys().next().value)
+      try { return await result } catch (error) { if (requests.get(scope)?.result === result) requests.delete(scope); throw error }
     } catch (error) {
       if (error.code === 'FULL_TEMPLATE_UNAVAILABLE') throw error
       return { log: { error: String(error?.message || error), entries: [], outputs: [], counts: {} }, context: '', refs: [], diagnostics: [], activation: { schemaVersion: 2, refs: [], mode: 'error' }, error: String(error?.message || error) }
@@ -179,7 +114,7 @@ export function createForegroundWorldbook({ bound, runtime, globalVariables, sca
   return project
 }
 
-/** Native strategy: static optional content is discoverable only as a skill;
+/** Native strategy: static optional content is available only through file search/read;
  * dynamic optional entries retain native conditions. Each controller executes at
  * most once per request, including activation convergence and empty outputs. */
 async function projectMandatoryWorldbook({ worldBook, sourceEntries, chat, card, templateRuntime, globals, preparedActivations, randomState, turn, requestKey, userText, userTextInHistory, scanText }) {
@@ -224,7 +159,7 @@ async function projectMandatoryWorldbook({ worldBook, sourceEntries, chat, card,
     const toRender = selectedEntries.filter(entry => {
       const type = classify(entry), source = original.get(entry.ref) || entry
       if (type.kind === 'static-constant') return false // always prefix, never a history frame
-      if (!type.dynamic) return false // static optional bodies are skill resources only, even for force requests
+      if (!type.dynamic) return false // static optional bodies are file resources only, even for force requests
       const previous = virtualState.entries[entry.ref]
       const dependencyHash = virtualDependencyHash(type, chat, card, globals)
       return !previous || previous.version !== virtualEntryVersion(source) || hasNativeController ||
@@ -249,7 +184,11 @@ async function projectMandatoryWorldbook({ worldBook, sourceEntries, chat, card,
         if (contextText && previous?.renderHash !== renderHash) changed.push({ ...output, ref: entry.ref, text: contextText, renderHash })
       }
       const refs = changed.filter(output => !original.get(output.ref)?.constant).map(output => output.ref)
-      const context = changed.map(output => output.text).join('\n\n')
+      const hints = worldbookTitleHints({ worldBook: { ...worldBook, view: { ...worldBook?.view, entries: (worldBook?.view?.entries || []).filter(entry => classify(entry).kind === 'static-skill') } }, chat, turn, userText, userTextInHistory, scanText, random: entryRandom(virtualHash([executionSeed, requestKey]), 'title-hints') })
+      const runtimeChanged = changed.filter(output => isWorldbookRuntimeEntry(original.get(output.ref) || {}))
+      // File-version notifications are emitted once by the shared pre-step hook,
+      // for both foreground and background agents; do not duplicate them here.
+      const context = [runtimeChanged.map(output => output.text).join('\n\n'), hints].filter(Boolean).join('\n\n')
       return { ...projected, context, foregroundContext: context, prefixContext: staticPrefix, staticPrefix, virtualState, changedVirtualRefs: changed.filter(output => classify(original.get(output.ref) || {}).dynamic).map(output => output.ref), renderedEntries: changed, refs, reads: { ...chat.worldBookReads },
         randomState: { ...randomState, seed: executionSeed, outputs: { ...randomState.outputs, ...Object.fromEntries(projected.renderedEntries
           .filter(output => hasWorldbookRandom(original.get(output.ref)?.content)).map(output => [output.ref, output.text])) } },

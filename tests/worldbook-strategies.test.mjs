@@ -18,18 +18,21 @@ function setup(extra = {}) {
     globalVariables: async () => ({}), filterCandidates: async () => { screened++; throw Error('should not screen') } })
   return { project, worldBook, screened: () => screened }
 }
-test('strategy registry defaults to legacy, registers and unloads without mutating saved selection', async () => {
-  const registry = createWorldbookStrategies({ legacy: async () => 'legacy', nativeSkills: async () => 'native' })
-  assert.equal(await registry.project({ chat: {} }), 'legacy')
+test('strategy registry migrates legacy to retrieval, registers and unloads without mutating saved selection', async () => {
+  const registry = createWorldbookStrategies({ nativeSkills: async () => 'native' })
+  assert.equal(await registry.project({ chat: {} }), 'native')
+  assert.equal(await registry.project({ chat: { worldbookStrategy: 'legacy' } }), 'native')
+  assert.equal(registry.has('legacy'), false)
+  assert.throws(() => registry.register({ id: 'legacy', label: 'Legacy', project() {} }), /已停用/)
   assert.equal(await registry.project({ chat: { worldbookStrategy: 'native-skills' } }), 'native')
   const chat = { worldbookStrategy: 'plugin-demo' }
   const dispose = registry.register({ id: 'plugin-demo', label: 'Demo', project: async () => 'plugin' })
   assert.equal(await registry.project({ chat }), 'plugin')
   assert.equal(registry.has('plugin-demo'), true)
   dispose(); dispose()
-  assert.equal(await registry.project({ chat }), 'legacy')
+  assert.equal(await registry.project({ chat }), 'native')
   assert.equal(chat.worldbookStrategy, 'plugin-demo')
-  assert.throws(() => registry.register({ id: 'legacy', label: 'collision', project() {} }), /已注册/)
+  assert.throws(() => registry.register({ id: 'native-skills', label: 'collision', project() {} }), /已注册/)
 })
 test('native strategy never injects optional bodies or invokes screening and preserves legacy reads', async () => {
   const { project, screened } = setup()
@@ -53,7 +56,7 @@ test('native strategy keeps even explicitly forced static entries in skills and 
   const defaultLegacy = await project({ chat: { ...chat, worldbookStrategy: undefined }, card: {}, userText: '秘密' })
   assert.deepEqual(legacy.refs, defaultLegacy.refs)
   assert.equal(legacy.context, defaultLegacy.context)
-  assert.match(legacy.context, /OPTIONAL/)
+  assert.doesNotMatch(legacy.context, /OPTIONAL|FORCED/)
 })
 test('mandatory template activations converge without promoting unrelated keyword entries', async () => {
   const { worldBook } = setup()

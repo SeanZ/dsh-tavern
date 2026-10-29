@@ -1,16 +1,16 @@
-		// 顶部视图标签（对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比）：设置决定
+		// 顶部视图标签（对话 / 轨迹 / 完整上下文 / 画廊 / 精修）：设置决定
 		// 显示哪些、按什么顺序。「对话」由宿主注册，始终保留在最前，不能移除。
 		// 标签行由宿主渲染，这里只给每个标签按钮设置 order / display。
 		const TAVERN_VIEW_TAB_RESIDENT = "chat";
 		const TAVERN_VIEW_TAB_ITEM_LIMIT = 24;
-		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "trajectory", "dsh-tavern:full-context", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
+		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "trajectory", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
 		// 槽位就绪前设置页也能列出这些标签；就绪后用槽位里的实际名称覆盖。
 		const TAVERN_VIEW_TAB_KNOWN = Object.freeze([
 			Object.freeze({ id: "chat", label: "对话", locked: true }),
 			Object.freeze({ id: "trajectory", label: "轨迹" }),
 			Object.freeze({ id: "dsh-tavern:full-context", label: "完整上下文" }),
 			Object.freeze({ id: "dsh-tavern:gallery", label: "画廊" }),
-			Object.freeze({ id: "dsh-tavern:polish", label: "精修对比" })
+			Object.freeze({ id: "dsh-tavern:polish", label: "精修" })
 		]);
 
 		// 读取统一的可见清单：「对话」缺失时补上，排在后面时挪回首位。
@@ -275,11 +275,11 @@
 			return h("section", { className: "dsh-tavern-view-tabs", "aria-label": "顶部标签" },
 				h("div", { className: "dsh-tavern-settings-copy" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "顶部标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方「对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比」这排标签显示哪些、按什么顺序。「对话」始终显示并排在最前，不能移除。")),
+					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方「对话 / 轨迹 / 完整上下文 / 画廊 / 精修」这排标签显示哪些、按什么顺序。「对话」始终显示并排在最前，不能移除。")),
 				h("ul", { className: "dsh-tavern-view-tab-list" }, items.map(row)),
 				h("div", { className: "dsh-tavern-view-tab-catalog" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "可添加的标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；手机端默认显示全部 5 个，放不下时可左右滑动。"),
+					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；默认显示对话、轨迹、画廊和精修；完整上下文可按需添加。手机端放不下时可左右滑动。"),
 					h("div", { className: "dsh-tavern-view-tab-chips" },
 						addable.length
 							? addable.map(entry => h("button", { key: entry.id, type: "button", className: "dsh-tavern-view-tab-chip", disabled: busy, onClick: function () { void toggle(entry.id); } },

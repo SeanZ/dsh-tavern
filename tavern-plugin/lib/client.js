@@ -23906,19 +23906,19 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 						})));
 				}));
 		}
-		// 顶部视图标签（对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比）：设置决定
+		// 顶部视图标签（对话 / 轨迹 / 完整上下文 / 画廊 / 精修）：设置决定
 		// 显示哪些、按什么顺序。「对话」由宿主注册，始终保留在最前，不能移除。
 		// 标签行由宿主渲染，这里只给每个标签按钮设置 order / display。
 		const TAVERN_VIEW_TAB_RESIDENT = "chat";
 		const TAVERN_VIEW_TAB_ITEM_LIMIT = 24;
-		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "trajectory", "dsh-tavern:full-context", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
+		const TAVERN_VIEW_TABS_DEFAULT = Object.freeze({ items: Object.freeze(["chat", "trajectory", "dsh-tavern:gallery", "dsh-tavern:polish"]) });
 		// 槽位就绪前设置页也能列出这些标签；就绪后用槽位里的实际名称覆盖。
 		const TAVERN_VIEW_TAB_KNOWN = Object.freeze([
 			Object.freeze({ id: "chat", label: "对话", locked: true }),
 			Object.freeze({ id: "trajectory", label: "轨迹" }),
 			Object.freeze({ id: "dsh-tavern:full-context", label: "完整上下文" }),
 			Object.freeze({ id: "dsh-tavern:gallery", label: "画廊" }),
-			Object.freeze({ id: "dsh-tavern:polish", label: "精修对比" })
+			Object.freeze({ id: "dsh-tavern:polish", label: "精修" })
 		]);
 
 		// 读取统一的可见清单：「对话」缺失时补上，排在后面时挪回首位。
@@ -24183,11 +24183,11 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 			return h("section", { className: "dsh-tavern-view-tabs", "aria-label": "顶部标签" },
 				h("div", { className: "dsh-tavern-settings-copy" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "顶部标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方「对话 / 轨迹 / 完整上下文 / 画廊 / 精修对比」这排标签显示哪些、按什么顺序。「对话」始终显示并排在最前，不能移除。")),
+					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方「对话 / 轨迹 / 完整上下文 / 画廊 / 精修」这排标签显示哪些、按什么顺序。「对话」始终显示并排在最前，不能移除。")),
 				h("ul", { className: "dsh-tavern-view-tab-list" }, items.map(row)),
 				h("div", { className: "dsh-tavern-view-tab-catalog" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "可添加的标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；手机端默认显示全部 5 个，放不下时可左右滑动。"),
+					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；默认显示对话、轨迹、画廊和精修；完整上下文可按需添加。手机端放不下时可左右滑动。"),
 					h("div", { className: "dsh-tavern-view-tab-chips" },
 						addable.length
 							? addable.map(entry => h("button", { key: entry.id, type: "button", className: "dsh-tavern-view-tab-chip", disabled: busy, onClick: function () { void toggle(entry.id); } },
@@ -24765,15 +24765,13 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
                 return h("div", { className: "dsh-tavern-settings-section dsh-local-settings dsh-tavern-global-defaults" },
                     h("section", { className: "dsh-local-section" }, h("h3", null, "游玩"),
                         h("label", { className: "dsh-local-field" }, "默认玩家称呼", h("input", { key: data?.playerName, defaultValue: data?.playerName || "", disabled, maxLength: 80, onBlur: event => { if (event.target.value !== data.playerName) save({ playerName: event.target.value }); } })),
-                        h("label", { className: "dsh-local-field" }, "默认世界书机制", h("select", { "aria-label": "默认世界书机制", disabled, value: data?.worldbookStrategy || "native-skills", onChange: event => save({ worldbookStrategy: event.target.value }) }, h("option", { value: "native-skills" }, "主动检索（推荐）"), h("option", { value: "legacy" }, "外部注入（旧机制）"))),
-                        h("p", { className: "dsh-local-help" }, "主动检索：模型按需查阅世界书资料。外部注入：系统按触发条件自动提供资料。常驻和动态条目仍按原规则处理。此设置只影响新游戏。"),
                         h("label", { className: "dsh-local-field" }, "默认状态栏位置", h("select", { disabled, value: data?.statusBarPlacement || "sidebar", onChange: event => save({ statusBarPlacement: event.target.value }) }, h("option", { value: "sidebar" }, "侧边栏"), h("option", { value: "body" }, "正文下方"))),
                         h("label", { className: "dsh-local-field" }, "默认预设", h("select", { disabled, value: data?.preset || "", onChange: event => save(null, "selectPreset", { path: event.target.value }) }, h("option", { value: "" }, "不使用酒馆预设"), (data?.presets || []).filter(item => item.valid && item.recognized).map(item => h("option", { key: item.path, value: item.path }, item.title)))),
                         h("label", { className: "dsh-local-field" }, "默认长期偏好", h("select", { disabled, value: data?.profile.defaultProfileId || "", onChange: event => save(null, "manageUserPreferenceProfile", { action: "default", profileId: event.target.value }) }, h("option", { value: "" }, "不启用"), (data?.profile.profiles || []).filter(item => item.hasConfirmed).map(item => h("option", { key: item.id, value: item.id }, item.name))))),
                     // Same names and order as 功能 in 本局设置, where each game changes them later.
                     h("section", { className: "dsh-local-section" }, h("h3", null, "功能"),
                         toggle("variables", "变量结算", "MVU 卡建议开启；普通卡不执行此任务。", true), toggle("posture", "人物姿势", "总结本轮结束时人物的位置、动作和姿势。", true),
-                        toggle("styleReference", "文风联想", "仅自由模式。每轮后台凭记忆摘一段风格相近的小说原文，供下一轮正文借鉴笔调。多一次后台请求。", true),
+                        toggle("styleReference", "文风联想", "仅自由模式。前台写正文前，结合本轮场景联想一段笔调参考；与写作共享上下文，不另开后台任务。", true),
                         toggle("webSearchEnabled", "联网搜索", "允许新游戏的前台和后台按需搜索。")),
                     message ? h("p", { role: "status" }, message) : null);
             }
@@ -24799,87 +24797,6 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
                             h("p", { className: "dsh-tavern-settings-desc" }, description)),
                         h("input", { type: "checkbox", role: "switch", "aria-label": title, checked: enabled, disabled: busy, onChange: event => save(event.target.checked) })),
                     message ? h("div", { className: "dsh-tavern-settings-row", role: "status" }, h("span", { className: "dsh-tavern-settings-desc" }, message)) : null);
-            }
-
-            function WebAccessSettings({ settings }) {
-                const h = React.createElement;
-                const [config, setConfig] = React.useState(settings.webAccess || { sources: ["bing", "ddg"], searxngUrl: "", searxngEngines: [], proxyUrl: "", sourceProxies: {}, fetchEnabled: false });
-                const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState(""), [error, setError] = React.useState(""), [status, setStatus] = React.useState(null);
-                const labels = { bing: "Bing", ddg: "DuckDuckGo", searxng: "SearXNG" };
-                const [engines, setEngines] = React.useState(config.searxngEngines.join(","));
-                React.useEffect(() => {
-                    let live = true;
-                    rpc("getWebSearchStatus").then(value => { if (live) setStatus(value); }, err => { if (live) setError(err.message); });
-                    return () => { live = false; };
-                }, []);
-                const change = patch => setConfig(value => ({ ...value, ...patch }));
-                async function save(test) {
-                    setBusy(true); setError(""); setNotice("");
-                    try {
-                        const result = await rpc("updateTavernSettings", { patch: { webAccess: { ...config, searxngEngines: engines.split(",").map(v => v.trim()).filter(Boolean) } } });
-                        setConfig(result.settings.webAccess); notifySettingsChanged(); setNotice("卡片工作台搜索设置已保存，后续调用生效。");
-                        if (test) {
-                            const checked = await rpc("testWebSearch");
-                            setNotice("已保存，内置搜索测试成功，返回 " + checked.count + " 条结果。");
-                        }
-                        setStatus(await rpc("getWebSearchStatus"));
-                    } catch (err) { setError(String(err.message || err)); }
-                    finally { setBusy(false); }
-                }
-                async function activate() {
-                    setBusy(true); setError("");
-                    try { setStatus(await rpc("useBuiltinWebSearch")); setNotice("已切换到内置搜索。"); }
-                    catch (err) { setError(String(err.message || err)); }
-                    finally { setBusy(false); }
-                }
-                function copy(title, description) {
-                    return h("span", { className: "dsh-tavern-settings-copy" }, h("strong", null, title), description ? h("span", { className: "dsh-tavern-settings-desc" }, description) : null);
-                }
-                function field(title, value, onChange, placeholder, description) {
-                    return h("label", { className: "dsh-local-field" }, copy(title, description), h("input", { "aria-label": title, value, disabled: busy, placeholder, onChange: e => onChange(e.target.value) }));
-                }
-                function move(source, step) {
-                    const next = config.sources.slice(), at = next.indexOf(source), target = at + step;
-                    if (target < 0 || target >= next.length) return;
-                    [next[at], next[target]] = [next[target], next[at]]; change({ sources: next });
-                }
-                return h("div", { className: "dsh-tavern-web-settings", "aria-label": "卡片工作台搜索设置" },
-                    h("section", { className: "dsh-tavern-settings-group" },
-                        h("div", { className: "dsh-tavern-settings-row" }, copy("搜索服务", "用于工作台查找作品、人物和世界观资料。"),
-                            h("span", { className: "dsh-tavern-settings-desc", role: "status" }, status ? (status.provider === "tavern-search" ? "酒馆内置搜索" : status.provider || "未选择") : "正在读取…"),
-                            status && status.provider !== "tavern-search" ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: activate }, "使用内置搜索") : null),
-                        h("div", { className: "dsh-tavern-settings-row" }, copy("搜索源", "按顺序尝试，当前来源不可用时使用下一项。")),
-                        [...config.sources, ...Object.keys(labels).filter(source => !config.sources.includes(source))].map(source => {
-                            const at = config.sources.indexOf(source);
-                            return h("div", { key: source, className: "dsh-tavern-settings-row" },
-                                h("label", { className: "dsh-tavern-web-source dsh-tavern-background-task" },
-                                    h("input", { type: "checkbox", role: "switch", "aria-label": labels[source], disabled: busy, checked: at >= 0, onChange: e => change({ sources: e.target.checked ? [...config.sources, source] : config.sources.filter(s => s !== source) }) }),
-                                    h("span", null, labels[source])),
-                                at >= 0 ? h("span", { className: "dsh-tavern-web-actions" },
-                                    h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": labels[source] + "优先", disabled: busy || at === 0, onClick: () => move(source, -1) }, "上移"),
-                                    h("button", { type: "button", className: "dsh-tavern-btn", "aria-label": labels[source] + "后移", disabled: busy || at === config.sources.length - 1, onClick: () => move(source, 1) }, "下移")) : null);
-                        })),
-                    h("details", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" },
-                        h("summary", { className: "dsh-tavern-header-summary" }, h("strong", { className: "dsh-tavern-settings-title" }, "SearXNG 配置"), h("span", { className: "dsh-tavern-header-summary-meta" }, "自定义搜索源"), h("span", { className: "dsh-tavern-header-summary-chevron", "aria-hidden": true }, "▾")),
-                        field("SearXNG 实例地址", config.searxngUrl, value => change({ searxngUrl: value }), "https://你的实例地址"),
-                        field("SearXNG 引擎", engines, setEngines, "例如 wikipedia,bing", "用逗号分隔；留空使用实例默认。")),
-                    h("section", { className: "dsh-tavern-settings-group" },
-                        h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" }, copy("允许读取网页正文", "让工作台继续阅读搜索结果中的网页，核对原文并保留出处。"), h("input", { type: "checkbox", role: "switch", "aria-label": "允许读取网页正文", checked: config.fetchEnabled, disabled: busy, onChange: e => change({ fetchEnabled: e.target.checked }) }))),
-                    h("details", { className: "dsh-tavern-settings-group dsh-tavern-header-settings-group" },
-                        h("summary", { className: "dsh-tavern-header-summary" }, h("strong", { className: "dsh-tavern-settings-title" }, "搜索代理"), h("span", { className: "dsh-tavern-header-summary-meta" }, "高级设置"), h("span", { className: "dsh-tavern-header-summary-chevron", "aria-hidden": true }, "▾")),
-                        field("默认搜索代理", config.proxyUrl, value => change({ proxyUrl: value }), "http://127.0.0.1:7890", "留空直连。网页正文读取沿用 DSH 的代理设置。"),
-                        Object.keys(labels).map(source => h(React.Fragment, { key: source },
-                            h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" }, copy(labels[source] + " 单独设置代理"), h("input", { type: "checkbox", role: "switch", "aria-label": labels[source] + " 单独设置代理", disabled: busy, checked: Object.hasOwn(config.sourceProxies, source), onChange: e => {
-                                const proxies = { ...config.sourceProxies }; if (e.target.checked) proxies[source] = ""; else delete proxies[source]; change({ sourceProxies: proxies });
-                            } })),
-                            Object.hasOwn(config.sourceProxies, source) ? field(labels[source] + "代理地址", config.sourceProxies[source], value => change({ sourceProxies: { ...config.sourceProxies, [source]: value } }), "留空强制直连") : null))),
-                    h("div", { className: "dsh-tavern-web-actions dsh-tavern-web-save" },
-                        h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: () => save(false) }, "保存搜索设置"),
-                        h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: () => save(true) }, "保存并测试搜索")),
-                    h("p", { className: "dsh-tavern-gs-notice" }, "游玩中开启本局联网搜索时，也会复用这些搜索源。"),
-                    notice ? h("p", { className: "dsh-tavern-gs-notice", role: "status" }, notice) : null,
-                    error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null,
-                    (status?.attempts || []).length ? h("p", { className: "dsh-tavern-gs-notice" }, "最近搜索：" + status.attempts.map(a => (labels[a.source] || a.source) + "：" + (a.ok ? "成功" : a.error)).join("；")) : null);
             }
 
             function TavernSettingsSection() {
@@ -24928,7 +24845,6 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
                         // Off by default: it adds a background model request after every reply.
                         state.settings ? h(SettingSwitch, { settings: state.settings, name: "candidateAutoGenerate", title: "自动生成候选项",
                             description: "打开后每轮会多一次后台请求：正文写完，酒馆在后台自动生成这一轮的候选项，不用再点「生成候选项」。只对打开后的新回复生效，失败时可手动重试。" }) : null),
-                    group("卡片工作台搜索", "为制卡和改卡补充作品资料，设置搜索来源、网页读取与连接方式。", state.settings ? h(WebAccessSettings, { settings: state.settings }) : null),
                     group("显示与交互", "对所有游戏生效，只改界面，不影响正文和存档。",
                         state.settings ? h(SettingSwitch, { settings: state.settings, name: "autoOpenStatusPanel", title: "进入游戏时打开酒馆状态",
                             description: "进入或切换到一局游戏时，右侧面板自动展开并显示本局设置和酒馆状态。关闭后右侧面板保持你上次的样子。" }) : null,
@@ -26963,30 +26879,25 @@ function TavernWorldbookInspector(props) {
         finally { if (request === generation.current) setBusy(false); }
     }
     const button = (label, onClick, disabled) => h('button', { className: 'dsh-tavern-btn', onClick, disabled }, label);
-    const clusters = data?.catalog?.clusters || [];
+    const files = data?.catalog?.files || [];
     const matches = value => String(value || '').toLowerCase().includes(query.toLowerCase());
-    return h('aside', { className: 'dsh-tavern-status dsh-wb-inspector', 'aria-label': '虚拟 Skill 排查' },
-        h('header', null, h('strong', null, '虚拟 Skill'), button(busy ? '加载中…' : '刷新', refresh, busy)),
-        h('p', { className: 'dsh-wb-muted' }, '本局世界书生成的实体 Skill。只读查看不会计入模型调用。'),
+    return h('aside', { className: 'dsh-tavern-status dsh-wb-inspector', 'aria-label': '世界书文件 排查' },
+        h('header', null, h('strong', null, '世界书文件'), button(busy ? '加载中…' : '刷新', refresh, busy)),
+        h('p', { className: 'dsh-wb-muted' }, '本局静态世界书生成的 Markdown 文件。只读查看不会计入模型调用。'),
         error && h('p', { role: 'alert' }, error),
         data && h(React.Fragment, null,
-            h('div', { className: 'dsh-wb-stats' }, `${clusters.length} 类 · ${clusters.reduce((n, c) => n + c.entries.length, 0)} 条原文`, h('br'), `成功加载 ${data.counts.skills} 次 · 独立读取 ${data.counts.entries} 次 · 随 Skill 载入 ${data.counts.inlineEntries || 0} 条次 · 错误 ${data.counts.errors} 次`),
+            h('div', { className: 'dsh-wb-stats' }, `${files.length} 条原文`, h('br'), `成功读取 ${data.counts.entries} 次 · 错误 ${data.counts.errors} 次`),
             data.catalog?.directory && h('details', null, h('summary', null, '实体文件夹'), h('code', null, data.catalog.directory), h('p', { className: 'dsh-wb-muted' }, '由世界书自动同步；修改生成文件不会修改世界书。')),
-            h('nav', null, button('分类与内容', () => { setMode('catalog'); setSource(null); }), button(`调用记录 (${data.total})`, () => { setMode('history'); setSource(null); })),
-            h('input', { type: 'search', placeholder: '搜索分类、条目或本页调用', 'aria-label': '搜索虚拟 Skill', value: query, onChange: e => setQuery(e.target.value) }),
+            h('nav', null, button('文件与内容', () => { setMode('catalog'); setSource(null); }), button(`调用记录 (${data.total})`, () => { setMode('history'); setSource(null); })),
+            h('input', { type: 'search', placeholder: '搜索条目或本页调用', 'aria-label': '搜索世界书文件', value: query, onChange: e => setQuery(e.target.value) }),
             source ? h('section', null, button('← 返回目录', () => setSource(null)), h('h3', null, source.title), h('pre', null, source.content)) : mode === 'catalog' ? h('section', null,
-                !data.catalog && h('p', null, '当前对局未启用虚拟 Skill，或原生读取工具不可用。'),
-                data.catalog && !clusters.length && h('p', null, '当前没有可用的静态 Skill 条目；预处理尚未完成或条目被排除时，目录也可能为空。'),
+                !data.catalog && h('p', null, '当前对局未启用世界书文件，或原生读取工具不可用。'),
+                data.catalog && !files.length && h('p', null, '当前没有可用的静态条目；预处理尚未完成或条目被排除时，目录也可能为空。'),
                 h('p', { className: 'dsh-wb-muted' }, '仅收录可见、启用的静态非常驻条目；动态模板、常驻条目和 MVU 不在此目录。'),
-                clusters.filter(c => matches(c.title) || matches(c.keywords.join(' ')) || c.entries.some(e => matches(e.title))).map(c => h('details', { key: c.name },
-                    h('summary', null, `${c.title} · ${c.entries.length} 条 · ${c.inline ? "内联" : "参考文件"} · 约 ${c.estimatedTokens} token · 加载 ${c.readCount} 次`),
-                    h('p', { className: 'dsh-wb-muted' }, c.keywords.join(' · ')),
-                    h('code', null, c.name),
-                    h('details', null, h('summary', null, 'SKILL.md · 主题与资料'), h('pre', null, c.guide)),
-                    c.entries.map(e => h('div', { key: e.ref, className: 'dsh-wb-entry' }, button(e.title + " · 载入 " + (e.readCount + (e.inlineReadCount || 0)) + " 次", () => read(e), busy), h('small', null, `原始条目 ID ${e.uid ?? e.ref} · ${e.inline ? "内联于 SKILL.md" : "references/" + e.path.split(/[\\/]/).pop()}`)))))) : h('section', null,
+                files.filter(e => matches(e.title)).map(e => h('div', { key: e.ref, className: 'dsh-wb-entry' }, button(e.title + ' · 读取 ' + e.readCount + ' 次', () => read(e), busy), h('small', null, e.path)))) : h('section', null,
                 h('p', { className: 'dsh-wb-muted' }, '原生调用历史（含重试／回退前记录）。成功读取不代表正文一定采用；轮次为原生会话轮次。'),
                 !data.historyLoaded && h('p', null, '会话事件尚未加载，统计暂不可用。'),
-                data.records.filter(r => matches(r.target) || matches(r.title)).map(r => h('details', { key: r.id }, h('summary', null, `第 ${r.turn} 轮 · ${r.kind === 'skill' ? '加载 Skill' : r.reference ? '读取原文' : '读取目录／指南'} · ${{ success: '成功', error: '失败', pending: '等待结果' }[r.status]}`), h('p', null, r.title), h('code', null, r.target), h('p', null, `步骤 ${r.step}${r.offset ? ' · 起始行 ' + r.offset : ''}${r.totalLines !== undefined ? ' · 共 ' + r.totalLines + ' 行' : ''}`), h('pre', null, r.result || '暂无返回内容'))),
+                data.records.filter(r => matches(r.target) || matches(r.title)).map(r => h('details', { key: r.id }, h('summary', null, `第 ${r.turn} 轮 · ${r.kind === 'skill' ? '历史 Skill' : r.kind === 'worldbook_grep' ? '搜索原文' : r.kind === 'worldbook_list' ? '浏览目录' : '读取原文'} · ${{ success: '成功', error: '失败', pending: '等待结果' }[r.status]}`), h('p', null, r.title), h('code', null, r.target), h('p', null, `步骤 ${r.step}${r.offset ? ' · 起始行 ' + r.offset : ''}${r.totalLines !== undefined ? ' · 共 ' + r.totalLines + ' 行' : ''}`), h('pre', null, r.result || '暂无返回内容'))),
                 h('nav', null, button('上一页', () => setPage(Math.max(0, page - 40)), busy || page === 0), h('small', null, `${data.total ? page + 1 : 0}–${Math.min(page + 40, data.total)} / ${data.total}`), button('下一页', () => setPage(page + 40), busy || page + 40 >= data.total)))));
 }
 
@@ -30010,7 +29921,7 @@ function createConversationSettingsModule({
             try {
                 const result = await rpc("getConversationBackgroundConfig", { sessionId: props.sessionId }, props.sessionId);
                 setCatalog(result.modelCatalog || []); setSelection(result.backgroundModel);
-                setTasks(result.backgroundTasks); setFeatures({ worldbookStrategy: result.worldbookStrategy || "legacy", worldbookStrategies: result.worldbookStrategies || [], webSearchEnabled: result.webSearchEnabled === true, mvuCard: result.mvuCard === true }); setLoaded(true);
+                setTasks(result.backgroundTasks); setFeatures({ webSearchEnabled: result.webSearchEnabled === true, mvuCard: result.mvuCard === true }); setLoaded(true);
             } catch (err) { setError(String(err.message || err)); }
         }
         React.useEffect(() => { void load(); }, []);
@@ -30026,7 +29937,7 @@ function createConversationSettingsModule({
             setBusy(true); setError(""); setNotice("");
             try {
                 const result = await rpc("setConversationBackgroundConfig", Object.assign({ sessionId: props.sessionId }, patch), props.sessionId);
-                setSelection(result.backgroundModel); setTasks(result.backgroundTasks); setFeatures({ ...features, worldbookStrategy: result.worldbookStrategy || "legacy", webSearchEnabled: result.webSearchEnabled });
+                setSelection(result.backgroundModel); setTasks(result.backgroundTasks); setFeatures({ ...features, webSearchEnabled: result.webSearchEnabled });
                 setNotice("已保存");
                 invalidateView(props.sessionId);
             } catch (err) { setError(String(err.message || err)); }
@@ -30047,16 +29958,10 @@ function createConversationSettingsModule({
                     modelOptions())),
                 h("label", null, "推理强度", h("select", { "aria-label": "本局后台推理强度", className: "dsh-tavern-settings-select", value: selection?.reasoningEffort || "", disabled: !key || !efforts.length || busy, onChange: event => { const next = { ...selection }; if (event.target.value) next.reasoningEffort = event.target.value; else delete next.reasoningEffort; return save({ backgroundModel: next }); } },
                     h("option", { value: "" }, key ? "模型默认" : "跟随前台"), efforts.map(item => h("option", { key: item.id, value: item.id }, item.name || item.id))))),
-            h("section", { className: "dsh-local-section" }, h("h3", null, "世界书"),
-                h("label", null, "读取方式", h("select", { "aria-label": "本局世界书策略", className: "dsh-tavern-settings-select", value: features.worldbookStrategy || "legacy", disabled: !loaded || busy,
-                    onChange: event => save({ worldbookStrategy: event.target.value }) },
-                    (features.worldbookStrategies?.length ? features.worldbookStrategies : [{ id: "legacy", label: "外部注入（旧机制）" }, { id: "native-skills", label: "主动检索（推荐）" }]).map(strategy => h("option", { key: strategy.id, value: strategy.id }, strategy.label)))),
-                h("p", { className: "dsh-tavern-settings-desc" }, "主动检索：模型按需查阅世界书资料。外部注入：系统按触发条件自动提供资料。常驻和动态条目仍按原规则处理。切换后从下一轮生效，已加载的历史内容保留。"),
-                ),
             h("section", { className: "dsh-local-section" }, h("h3", null, "功能"),
                 features.mvuCard ? toggle("variables", "变量结算", "关闭后变量和状态栏不再更新。", tasks.variables, checked => ({ backgroundTasks: { variables: checked } })) : null,
                 toggle("posture", "人物姿势", "每轮总结人物的位置、动作和姿势，供前台保持一致。", tasks.posture, checked => ({ backgroundTasks: { posture: checked } })),
-                toggle("styleReference", "文风联想", "仅自由模式。每轮后台凭记忆摘一段风格相近的小说原文，供下一轮正文借鉴笔调。多一次后台请求。", tasks.styleReference === true, checked => ({ backgroundTasks: { styleReference: checked } })),
+                toggle("styleReference", "文风联想", "仅自由模式。前台写正文前，结合本轮场景联想一段笔调参考；与写作共享上下文，不另开后台任务。", tasks.styleReference === true, checked => ({ backgroundTasks: { styleReference: checked } })),
                 toggle("webSearchEnabled", "联网搜索", "前台和后台可按需搜索。", features.webSearchEnabled, checked => ({ webSearchEnabled: checked }))),
             error || key && reasoning.key === key && reasoning.error ? h("p", { role: "alert", className: "dsh-tavern-prompt-error" }, error || reasoning.error) : null,
             notice ? h("p", { role: "status" }, notice) : null,
@@ -30618,7 +30523,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
                 return interactions.regenerateBody(panel, guidance, { restyle: styleEnabled && restyle, styleGuidance });
             }
             // 精修: like a regeneration, the panel waits and closes once the polished reply is in;
-            // the comparison and its undo live on the 精修对比 page.
+            // the comparison and its undo live on the 精修 page.
             async function runPolish() {
                 setReviewing(true); setReviewNote("");
                 try {
@@ -30638,7 +30543,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             }
 			return h(RegenGuideForm, {
 				title: "重新生成正文",
-				hint: "不填意见是重新来一次；填了意见就在当前正文基础上改；精修：按原则直接改好，填了意见会在精修后再照意见改一次，对比和撤销在「精修对比」页",
+				hint: "不填意见是重新来一次；填了意见就在当前正文基础上改；精修：按原则直接改好，填了意见会在精修后再照意见改一次，对比和撤销在「精修」页",
 				loading: reviewing ? "正在精修正文… " + reviewSeconds + " 秒" + (reviewProgress?.edits?.length ? " · 已修 " + reviewProgress.edits.length + " 处" : "") : panel.phase === "loading" ? (panel.restyle ? "正在换文风联想并重新生成…" : panel.rewrite ? "正在按意见改写正文…" : "正在重新生成正文…") : "",
 				loadingExtra: reviewing && reviewProgress?.edits?.length ? h("div", { className: "dsh-tavern-settings-desc", role: "status" },
                     h("p", null, "逐处生成中，完成后统一保存："),
@@ -30654,7 +30559,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 				placeholder: "指导意见（可选）",
 				examples: ["写得更长", "侧重心理描写", "加快节奏"],
 				submitLabel: "生成并替换正文",
-				secondary: { label: "精修", title: "按「正文精修原则」审读当前正文，直接改掉问题（一句到整段）；填了指导意见，精修后再只照意见改一次；不重新生成；前后对比、撤销和「后台预审」开关在顶部「精修对比」页", disabled: reviewing, onClick: runPolish },
+				secondary: { label: "精修", title: "按「正文精修原则」审读当前正文，直接改掉问题（一句到整段）；填了指导意见，精修后再只照意见改一次；不重新生成；前后对比、撤销和「后台预审」开关在顶部「精修」页", disabled: reviewing, onClick: runPolish },
 				onSubmit: generate,
 				onCancel: function () { setRegenPanel(null); }
 			});
@@ -31719,15 +31624,15 @@ function createTurnRailFilter(root, options) {
                     view.styleReferenceEnabled && view.styleReference ? h("section", { className: "dsh-tavern-status-section dsh-tavern-style-section" },
                         // Only the source and the passage's opening show; the passage opens on click, the retry input on demand.
                         h("div", { className: "dsh-tavern-style-head" },
-                            h("div", { className: "dsh-tavern-status-label" }, "下一轮文风联想"),
+                            h("div", { className: "dsh-tavern-status-label" }, "最近一次文风联想"),
                             view.styleReference.book ? h("span", { className: "dsh-tavern-style-source", title: "《" + view.styleReference.book + "》" + (view.styleReference.author || "") }, "《" + view.styleReference.book + "》" + (view.styleReference.author || "")) : null,
-                            styleEditing ? null : h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy || running || view.regenInProgress, onClick: () => setStyleEditing(true) }, styleBusy ? "正在换…" : "换一段")),
+                            styleEditing ? null : h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy || running || view.regenInProgress, onClick: () => setStyleEditing(true) }, styleBusy ? "保存中…" : "设置下轮偏好")),
                         h("blockquote", { className: "dsh-tavern-style-reference" + (styleExpanded ? " is-expanded" : ""), title: styleExpanded ? "点击收起" : "点击展开全文", onClick: () => setStyleExpanded(value => !value) }, view.styleReference.quote),
                         styleEditing ? h("div", { className: "dsh-tavern-guide-add" },
-                            h("textarea", { className: "dsh-tavern-regen-input", rows: 2, maxLength: 500, autoFocus: true, value: styleDraft, "aria-label": "换参考的要求", placeholder: "要求（可选），例如：要金庸的打斗描写；不要鲁迅", onChange: event => setStyleDraft(event.target.value) }),
+                            h("textarea", { className: "dsh-tavern-regen-input", rows: 2, maxLength: 500, autoFocus: true, value: styleDraft, "aria-label": "下轮文风偏好", placeholder: "要求（可选），例如：要金庸的打斗描写；不要鲁迅", onChange: event => setStyleDraft(event.target.value) }),
                             h("div", { className: "dsh-tavern-style-actions" },
                                 h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy, onClick: () => { setStyleEditing(false); setStyleDraft(""); } }, "取消"),
-                                h("button", { className: "dsh-card-primary", disabled: styleBusy || running || view.regenInProgress, onClick: retryStyleReference }, styleBusy ? "正在换…" : "换一段"))) : null,
+                                h("button", { className: "dsh-card-primary", disabled: styleBusy || running || view.regenInProgress, onClick: retryStyleReference }, styleBusy ? "保存中…" : "设置下轮偏好"))) : null,
                         styleError ? h("div", { className: "dsh-card-error", role: "alert" }, styleError) : null) : null,
 					h("section", { className: "dsh-tavern-status-section dsh-tavern-guide-section" },
 						h("div", { className: "dsh-tavern-status-label" }, "Guide", h("span", { className: "dsh-tavern-guide-caption" }, (view.guides || []).length + " 条")),
@@ -32920,7 +32825,7 @@ function createTurnRailFilter(root, options) {
                 request ? h("p", { className: "dsh-context-footnote" }, "发送时的上下文快照 · 供应商协议转换前 · 消息顺序保持不变") : null
             );
 		}
-		// 精修对比: the latest 精修 of this game, original and polished text side by side, each change
+		// 精修: the latest 精修 of this game, original and polished text side by side, each change
 		// numbered and coloured with its reason. Shown while that turn still holds the polished text.
 		// Pointing at a change shows its reason and lights up the same change in the other column.
 		function tavernPolishParagraphs(segments, side, hover) {
@@ -33013,7 +32918,7 @@ function createTurnRailFilter(root, options) {
 						: "开启后，每轮正文写完就在后台审稿，点「精修」不用再等；每轮多一次模型调用。关闭时点「精修」才开始审稿，要等半分钟到一分钟。")),
 					h("input", { type: "checkbox", role: "switch", "aria-label": "后台预审", checked: prereview, disabled: !current || saving, onChange: function (event) { void togglePrereview(event.target.checked); } })),
 				h("header", { className: "dsh-context-header" },
-					h("div", null, h("h3", null, "精修对比"),
+					h("div", null, h("h3", null, "精修"),
 						h("p", null, !current ? "读取中…" : comparison
 							? "第 " + comparison.turn + " 轮 · 改了 " + comparison.count + " 处" + (comparison.seconds ? " · 用时 " + comparison.seconds + " 秒" : "") + " · " + new Date(comparison.at).toLocaleString()
 							: current.error ? "读取失败" : "最近一次精修")),
@@ -33056,9 +32961,9 @@ function createTurnRailFilter(root, options) {
             }, SceneImageGallery)), "dsh-tavern: picture gallery");
             ctx.effect(() => slots.inject("conversation.view", () => slots.register({
                 name: "conversation.view", id: "dsh-tavern:polish", order: 13,
-                label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
+                label: "精修", inject: sessionId => ({ polishSessionId: sessionId })
             }, PolishComparisonView)), "dsh-tavern: polish comparison");
-            // 顶部标签（对话/轨迹/完整上下文/画廊/精修对比）的设置：设置页读这份
+            // 顶部标签（对话/轨迹/完整上下文/画廊/精修）的设置：设置页读这份
             // 目录，标签行由 installTavernViewTabLayout 按保存的顺序显示或隐藏。
             ctx.effect(function () {
                 const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };

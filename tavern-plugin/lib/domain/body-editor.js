@@ -80,7 +80,7 @@ export async function synchronizeBodyEdits(session, chat, flush, persistChat) {
 }
 
 /** Edit prose only; do not replay macros, scripts or settlement. */
-export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative, cancelPreparation, beforeReplyEdit }) {
+export function createBodyEditor({ chats, sessions, timeline, activity, project, present, sessionPatch, repairNative, beforeReplyEdit }) {
   const pending = new Set()
   function refuseClosedPatch() {
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
@@ -94,13 +94,6 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (!chat) throw new Error('会话不存在')
     const agent = sessions.get(sessionId)
     if (!agent?.session) throw new Error('无法访问原生会话')
-    // What the next turn prepares (worldbook pool, style reference) comes from the reply
-    // being edited: stop it instead of refusing the edit.
-    if (cancelPreparation && activity(chat)?.busy) {
-      await cancelPreparation(chat.id)
-      chat = await chats.forSession(sessionId)
-      if (!chat) throw new Error('会话不存在')
-    }
     idle(chat, agent)
     await synchronizeBodyEdits(agent.session, chat, sessions.flush, async (dirty, cleared) => {
       const drop = new Set(cleared)

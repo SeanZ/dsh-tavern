@@ -35,12 +35,13 @@ test('包含组支持优先级、权重、计分和多个组，不会重复入�
   assert.deepEqual(recall(entries, { userText: 'Alice Bob' }).refs, ['entry:0'])
 })
 
-test('失败的绿灯 EJS 不泄露源码、不消耗冷却；脚本扫描与玩家输入共享 token 预算', async () => {
+test('失败的 EJS 不泄露源码、不消耗冷却；静态资料只提供标题提醒', async () => {
   const entries = Array.from({ length: 6 }, (_, uid) => e(uid, uid > 2 ? 'script' : 'player', { order: uid }))
   entries.push(e(9, 'player', { content: '<% if ( %>', order: 999 }))
   const project = createForegroundWorldbook({ bound: async () => book(entries, { token_budget: 15 }), runtime: async () => runtime, globalVariables: async () => ({}), scanText: () => 'script' })
   const result = await project({ chat: { messages: [] }, card: {}, userText: 'player' })
-  assert.equal(result.refs.length, 4)
+  assert.equal(result.refs.length, 0)
+  assert.doesNotMatch(result.context, /设定[0-9]/)
   assert.equal(result.reads['entry:9'], undefined)
   assert.doesNotMatch(result.context, /<%/)
   assert.equal(result.diagnostics[0].code, 'syntax-error')

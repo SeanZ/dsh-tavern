@@ -75,7 +75,7 @@ for (const conflict of [false,true,'cancel']) test(`narrow background mutations 
   assert.equal((await restarted.read('c')).messages[0].text,conflict?'concurrent':'keep')
 })
 
-for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery uses ${readMethod} and active recovery reloads the full Chat`, async () => {
+for (const role of ['candidate', 'worldbook-filter']) for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery uses ${readMethod} and active ${role} recovery reloads the full Chat`, async () => {
   const timeline = createStoryTimeline()
   let chat = timeline.apply({ chat: { id: 'c', messages: [{ role: 'assistant', text: 'preserve' }] }, intent: { kind: 'ensure' } }).chat
   let reads = 0, writes = 0
@@ -87,10 +87,11 @@ for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery
   } })
   assert.equal((await coordinator.recover({ id: 'c' })).status, 'unchanged')
   assert.equal(reads, 0)
-  chat = timeline.apply({ chat, intent: { kind: 'agent.begin', role: 'candidate' } }).chat
+  chat = timeline.apply({ chat, intent: { kind: 'agent.begin', role } }).chat
   await coordinator.recover({ id: 'c' })
   assert.equal(reads, 1); assert.equal(writes, 1)
   assert.equal(chat.messages[0].text, 'preserve')
+  assert.equal(coordinator.activity(chat).busy, false)
 })
 
 for(const conflict of [false,true])test(`settlement begin reuses an exact snapshot without full reads; conflict=${conflict}`,async()=>{
@@ -228,4 +229,10 @@ test('候选任务开始时合并任务状态，不丢掉已读的正文', async
     updateChat: p.update, patchChat: (...args) => p.patch(...args) } })
   const task = await coordinator.begin(await p.read('c'), 'candidate')
   assert.equal(task.chat.messages.at(-1)?.text, '改过的正文')
+})
+
+test('retired worldbook recall cannot create a persisted background operation', async () => {
+  const h = coordinatorHarness()
+  await assert.rejects(h.coordinator.begin(h.current(), 'worldbook-filter'), /已停用/)
+  assert.equal(h.writes.length, 0)
 })

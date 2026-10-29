@@ -1,4 +1,4 @@
-		// 精修对比: the latest 精修 of this game, original and polished text side by side, each change
+		// 精修: the latest 精修 of this game, original and polished text side by side, each change
 		// numbered and coloured with its reason. Shown while that turn still holds the polished text.
 		// Pointing at a change shows its reason and lights up the same change in the other column.
 		function tavernPolishParagraphs(segments, side, hover) {
@@ -91,7 +91,7 @@
 						: "开启后，每轮正文写完就在后台审稿，点「精修」不用再等；每轮多一次模型调用。关闭时点「精修」才开始审稿，要等半分钟到一分钟。")),
 					h("input", { type: "checkbox", role: "switch", "aria-label": "后台预审", checked: prereview, disabled: !current || saving, onChange: function (event) { void togglePrereview(event.target.checked); } })),
 				h("header", { className: "dsh-context-header" },
-					h("div", null, h("h3", null, "精修对比"),
+					h("div", null, h("h3", null, "精修"),
 						h("p", null, !current ? "读取中…" : comparison
 							? "第 " + comparison.turn + " 轮 · 改了 " + comparison.count + " 处" + (comparison.seconds ? " · 用时 " + comparison.seconds + " 秒" : "") + " · " + new Date(comparison.at).toLocaleString()
 							: current.error ? "读取失败" : "最近一次精修")),

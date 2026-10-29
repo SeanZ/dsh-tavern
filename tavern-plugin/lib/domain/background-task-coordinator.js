@@ -31,7 +31,6 @@ export function createBackgroundTaskCoordinator(options = {}) {
   const blocked = typeof options.blocked === 'function' ? options.blocked : function () { return false }
   // Optional work (the worldbook prefilter) yields to any other task instead of blocking it.
   // Runs outside the per-chat lock: the yielding task commits through that lock.
-  const preempt = typeof options.preempt === 'function' ? options.preempt : null
   const mutationTails = new Map()
   if (!store || typeof store.readChat !== 'function' || typeof store.writeChat !== 'function' || typeof store.updateChat !== 'function' || !timeline) {
     throw new Error('Background Task Coordinator 缺少存储或时间线 adapter')
@@ -112,9 +111,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
   }
 
   async function begin(chat, role, input = {}) {
+    if (role === 'worldbook-filter') throw new Error('独立世界书召回任务已停用')
     const chatId = str(chat && chat.id)
     const requestId = str(input.requestId).trim().slice(0, 160)
-    if (preempt !== null && chatId !== '') await preempt(chatId, role)
     const begun = await serialize(chatId, async function () {
       if (role === 'candidate' && store.readRecoveryState) {
         // Header fields only: its empty message slice must not replace the story the

@@ -4,6 +4,7 @@ export const FOREGROUND_TOOL_CATALOG = Object.freeze([
   { name: 'tavern_read_variables', label: '读取变量', description: '只读查询当前变量和结算状态。' },
   { name: 'skill', label: '加载 Skill', description: '按需加载写作或任务 Skill。' },
   { name: 'tavern_read_skill_reference', label: '读取 Skill 参考', description: '读取已加载 Skill 的参考文件。' },
+  { name: 'style_reference_submit', label: '文风联想', description: '前台记录本轮笔调参考；还需本局开启文风联想。', modes: ['story'] },
   { name: 'tavern_recall_history', label: '召回历史', description: '按关键词或轮次检索已压缩的历史正文。' },
   { name: 'web_search', label: '联网搜索', description: '联网查找资料；还需本局开启「联网搜索」。' },
   { name: 'web_fetch', label: '读取网页', description: '读取网页正文；需全局开启网页读取，且本局开启联网搜索。' },

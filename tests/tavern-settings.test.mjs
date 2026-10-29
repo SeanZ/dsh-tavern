@@ -161,11 +161,11 @@ test('世界书模型筛选是本局开关，默认关闭', () => {
   assert.deepEqual([saved.backgroundTasks.worldbookScreening, saved.backgroundTasks.styleReference], [false, true])
 })
 
-test('新游戏默认使用 Skill 世界书，全局可切回旧机制且严格校验', () => {
+test('新游戏统一主动检索，旧默认值归一化且严格校验', () => {
   assert.equal(normalizePlayDefaults({}).worldbookStrategy, 'native-skills')
   const saved = applyTavernSettingsPatch({}, { defaultPlaySettings: { worldbookStrategy: 'legacy' } })
-  assert.equal(presentTavernSettings(saved, {}).defaultPlaySettings.worldbookStrategy, 'legacy')
+  assert.equal(presentTavernSettings(saved, {}).defaultPlaySettings.worldbookStrategy, 'native-skills')
   const updated = applyTavernSettingsPatch(saved, { defaultPlaySettings: { playerName: '旅人' } })
-  assert.equal(updated.defaultPlaySettings.worldbookStrategy, 'legacy')
+  assert.equal(updated.defaultPlaySettings.worldbookStrategy, 'native-skills')
   assert.throws(() => applyTavernSettingsPatch({}, { defaultPlaySettings: { worldbookStrategy: 'unknown' } }), /默认世界书策略无效/)
 })

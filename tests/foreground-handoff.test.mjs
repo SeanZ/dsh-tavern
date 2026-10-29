@@ -41,3 +41,21 @@ test('发送前先清掉遗留的失败回合，再准备本轮（#193）', asyn
   await handoff.prepare({ sessionId: 'session-4', turn: 3, userText: '教室写字' })
   assert.deepEqual(order, ['clear:session-4', 'prepare'])
 })
+
+test('开场与无结算的正文完成均不启动旧世界书预备任务', async () => {
+  const deferred = []
+  const chat = { id: 'chat', mode: 'story', messages: [{ greeting: true }] }
+  const retired = () => assert.fail('retired recall hook')
+  const handoff = createForegroundHandoff({
+    store: { chatForSession: async () => chat },
+    turns: { discard: async () => {}, prepare: async () => ({}), finalize: async () => ({ saved: true, chatId: chat.id }) },
+    tasks: { activity: () => ({ phase: 'idle', busy: false }) },
+    prepareOpeningWorldBook: retired, prefilterWorldbook: retired, cancelPrefilter: retired,
+    queueBackground: retired, defer: fn => deferred.push(fn), logger: { error: retired }
+  })
+  await handoff.prepare({ sessionId: 'parent', turn: 1 })
+  await handoff.finalize({ sessionId: 'parent', turn: 1 })
+  handoff.end({ sessionId: 'parent', turn: 1, reason: 'completed' })
+  for (const run of deferred) run()
+  await new Promise(resolve => setImmediate(resolve))
+})

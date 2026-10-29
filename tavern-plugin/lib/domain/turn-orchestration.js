@@ -13,7 +13,6 @@ import { diffJson } from './json-mutation.js'
 import { hasTavernCredit, withTavernCredit } from './card-credit.js'
 import { STORY_SUBMIT_TOOL_NAME, storyToolCallEnabled } from './story-tool-submission.js'
 import { normalizeDisabledForegroundTools } from './foreground-tools.js'
-import { styleReferenceFor } from './style-reference.js'
 import { variableUpdateFor } from './variable-update.js'
 import { replyProse } from './reply-prose.js'
 
@@ -444,7 +443,7 @@ export function createTurnOrchestrator(options) {
     }
     const templateWorldBook = foregroundWorldBook || await projectWorldBookTemplates({ chat, card, turn, userText: runtimeUserText })
     const scriptWorldBook = !foregroundWorldBook && typeof options.projectScriptPromptWorldbook === 'function' ? await options.projectScriptPromptWorldbook({ chat, card, turn }) : null
-    const worldBookContext = foregroundWorldBook ? str(foregroundWorldBook.context) : [str(chat.preparedWorldBookContext).trim(), str(scriptWorldBook && scriptWorldBook.context).trim(), templateWorldBook?.dynamicConstants ? '' : str(templateWorldBook && templateWorldBook.context).trim()].filter(Boolean).join('\n\n')
+    const worldBookContext = foregroundWorldBook ? str(foregroundWorldBook.context) : [str(scriptWorldBook && scriptWorldBook.context).trim(), templateWorldBook?.dynamicConstants ? '' : str(templateWorldBook && templateWorldBook.context).trim()].filter(Boolean).join('\n\n')
     if (foregroundWorldBook) {
       if (foregroundWorldBook.randomState) chat.worldBookRandomState = foregroundWorldBook.randomState
       if (foregroundWorldBook.virtualState) chat.worldBookVirtualState = foregroundWorldBook.virtualState
@@ -454,7 +453,7 @@ export function createTurnOrchestrator(options) {
       chat.lastWorldBookRecall = clone(chat.preparedWorldBook)
       chat.worldBookError = foregroundWorldBook.error
     }
-    const plan = await planner.plan({ purpose: 'body', card, chat: templateWorldBook?.macroState ? { ...chat, macroState: templateWorldBook.macroState } : chat, userText: runtimeUserText, sessionId: input.sessionId, nativeTurn: turn, scriptReference, styleReference: mode === 'story' ? styleReferenceFor(chat) : null, variableUpdate: variableUpdateFor(chat), worldBookContext,
+    const plan = await planner.plan({ purpose: 'body', card, chat: templateWorldBook?.macroState ? { ...chat, macroState: templateWorldBook.macroState } : chat, userText: runtimeUserText, sessionId: input.sessionId, nativeTurn: turn, scriptReference, styleReference: null, variableUpdate: variableUpdateFor(chat), worldBookContext,
       dialogueSpeakers: typeof options.dialogueSpeakers === 'function' ? await options.dialogueSpeakers({ sessionId: input.sessionId, chat, card }) : null })
     // Seam to the plugin layer; it never throws and drops a failing plugin's part.
     const pluginSections = typeof options.pluginTurnContext === 'function'
@@ -467,6 +466,7 @@ export function createTurnOrchestrator(options) {
     source.worldBook.templateRefs = Array.isArray(templateWorldBook && templateWorldBook.refs) ? clone(templateWorldBook.refs) : []
     if (foregroundWorldBook?.virtualState) source.worldBook.virtualWorldbook = {
       scope: foregroundWorldBook.virtualState.scope,
+      texts: Object.fromEntries((foregroundWorldBook.changedVirtualRefs || []).map(ref => [ref, foregroundWorldBook.virtualState.entries[ref]?.contextText ?? foregroundWorldBook.virtualState.entries[ref]?.text])),
       entries: Object.fromEntries((foregroundWorldBook.changedVirtualRefs || []).map(ref => [ref, foregroundWorldBook.virtualState.entries[ref]?.renderHash]))
     }
     source.worldBook.templateDiagnostics = Array.isArray(templateWorldBook && templateWorldBook.diagnostics) ? clone(templateWorldBook.diagnostics) : []
@@ -905,7 +905,7 @@ export function createTurnOrchestrator(options) {
 
   async function visibleTools(sessionId) {
     // Every model call asks: mode, the web-search switch and the disabled tools live in the header.
-    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled', 'disabledForegroundTools', 'worldbookStrategy'])
+    const chat = store.headerForSession ? await store.headerForSession(sessionId, ['mode', 'webSearchEnabled', 'disabledForegroundTools', 'worldbookStrategy', 'backgroundTasks'])
       : await (store.stateForSession || store.chatForSession)(sessionId)
     if (chat === undefined || chat === null) return []
     const mode = chat.mode || 'story'
@@ -916,13 +916,14 @@ export function createTurnOrchestrator(options) {
     const inputToolCall = (await options.storyInputToolCall?.()) === true
     const storyTools = storyToolCallEnabled(chat, outputToolCall || inputToolCall) ? [STORY_SUBMIT_TOOL_NAME] : []
     // Card workbenches keep their fixed editing tools; the per-game switches are play-only.
-    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', 'web_fetch', 'tavern_research', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
-    // Native virtual resources use the existing read protocol; the host restricts
-    // this gameplay read to the calling game's virtual worldbook namespace.
-    const worldbookTools = chat.worldbookStrategy === 'native-skills' ? ['read'] : []
+    if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', 'web_fetch', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
+    // Search and browse expose current real files; native read is restricted
+    // to the calling game's effective static worldbook generation.
+    const worldbookTools = ['read', 'worldbook_list', 'worldbook_grep']
     const names = mode === 'script'
       ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
       : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
+    if (mode === 'story' && chat.backgroundTasks?.styleReference === true) names.push('style_reference_submit')
     const disabled = new Set(normalizeDisabledForegroundTools(chat.disabledForegroundTools))
     return names.filter(name => !disabled.has(name))
   }

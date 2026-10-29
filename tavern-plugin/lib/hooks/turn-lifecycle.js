@@ -9,7 +9,7 @@ import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 import { turnRepliedByModel } from '../domain/story-alignment.js'
 import { sessionEvents } from '../domain/session-events.js'
-import { virtualWorldbookRestoreRefs, withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
+import { withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
 import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
 export function registerTurnLifecycleHooks({
@@ -118,7 +118,7 @@ export function registerTurnLifecycleHooks({
     if (chat && ['story', 'script'].includes(chat.mode || 'story')) {
       const native = chat.worldbookStrategy === 'native-skills'
       const projected = await nativeWorldBookTemplateContext(chat, await readChatCard(chat), native
-        ? { restoreRefs: virtualWorldbookRestoreRefs(agent.session, chat.worldBookVirtualState) } : undefined)
+        ? { restore: false } : undefined)
       fixedSystemSections = (native ? withVirtualWorldbook : withCurrentWorldbook)(fixedSystemSections, projected.prefixContext ?? '')
     }
     const assembled = await foregroundStrategies.assembleSystemPrompt(assembly, {

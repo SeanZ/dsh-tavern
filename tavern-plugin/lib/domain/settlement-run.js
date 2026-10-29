@@ -14,7 +14,7 @@ function str(value) {
 // `deps` is read on each call, so a test may swap a service after creation.
 export function createSettlementRun(deps) {
   async function runSettlement(chatId, signal) {
-    const { backgroundTasks, chatPersistence, mvuSettlementEngine, prepareNextWorldBookContext, readChat, readChatCard, worldBookScanDepth, writeChat } = deps
+    const { backgroundTasks, chatPersistence, mvuSettlementEngine, readChat, readChatCard, worldBookScanDepth, writeChat } = deps
     const retryStale = createSettlementProgressGuard({ backgroundTasks, onStopped: ({ operationId, error }) => {
       console.error('dsh-tavern: 结算连续三次未能提交且剧情状态未前进，已停止，可重新结算', chatId, operationId, str(error?.message || error || '提交已过期'))
     } })
@@ -23,9 +23,6 @@ export function createSettlementRun(deps) {
       let snapshot = await readSettlementInput(chatId, {readWindow:chatPersistence.readWindow,readChat,scanDepth:worldBookScanDepth})
       signal?.throwIfAborted()
       if (snapshot === undefined) return
-      snapshot = await prepareNextWorldBookContext(snapshot, signal)
-      signal?.throwIfAborted()
-      if (snapshot === null) return
       const taskRun = await backgroundTasks.begin(snapshot, 'settlement', { reuseSnapshot: true })
       snapshot = taskRun.chat
       const trace = { sessionId: str(taskRun.participantRequest.sessionId), boundary: null }

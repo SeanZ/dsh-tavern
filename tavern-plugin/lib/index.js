@@ -1,11 +1,10 @@
+import { createSkillTextContext } from './domain/skill-text-context.js'
 import { resolveWorldbookSkillChat } from './domain/worldbook-skill-scope.js'
 import { appendWorldbookSkillChanges } from './domain/worldbook-skill-changes.js'
 // Must stay first: it has to run before anything loads jsdom.
 import { createSessionViewProjection } from './domain/session-view-projection.js'
 import { createNetworkToolPolicy, installNetworkToolPolicy } from './domain/network-tools.js'
-import { installWebAccess } from './tools/web-access.js'
-import { readWebAccess } from './domain/web-access-settings.js'
-import { registerWorkbenchResearchTool } from './tools/workbench-research.js'
+import { clearRetiredSearchProvider } from './domain/retired-search-provider.js'
 import { createConversationBackgroundSettings } from './domain/conversation-background-settings.js'
 import { createChatWrites } from './domain/chat-writes.js'
 import { voiceTranslates } from '../src/client/bubble-line.cjs'
@@ -73,7 +72,6 @@ import { createCardSummaryCache } from './domain/card-summary-cache.js'
 import { openingPreviewPayload } from './domain/opening-transport.js'
 import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
-import { settlementTurn } from './domain/chat-session-state.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createTurnSettledEvents } from './domain/turn-settled-events.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
@@ -94,9 +92,7 @@ import { createManualCharacterDesign } from './domain/manual-character-design.js
 import { prepareTemplateHistory, synchronizeTemplateHistory } from './domain/template-history.js'
 import { createServerTemplateSync } from './domain/server-template-sync.js'
 import { createServerTemplateRuntime } from './domain/server-template-runtime.js'
-import { createWorldbookFilter, WORLD_BOOK_FILTER_TOOLS } from './domain/worldbook-filter.js'
-import { createWorldbookPrefilter } from './domain/worldbook-prefilter.js'
-import { createStyleReferenceRecall, STYLE_REFERENCE_SUBMIT_TOOL } from './domain/style-reference.js'
+import { createForegroundStyleReferenceTool, foregroundStyleReferencePrompt, rememberStyleReference } from './domain/style-reference.js'
 import { adoptConversationFeatures, adoptConversationBackground } from './domain/conversation-background.js'
 import { clearLegacyTavernDefault } from './domain/legacy-agent-default.js'
 import { conversationStateAtTurn, conversationForkBoundary } from './domain/conversation-fork-point.js'
@@ -257,14 +253,13 @@ import { installTavernTokenMeter } from './domain/tavern-token-meter.js'
 import { cordisToolNames, createTurnOrchestrator, dshFileToolNames } from './domain/turn-orchestration.js'
 import { resourceWorkspaceContext } from './domain/workspace-resources.js'
 import { createWorldBookLibrary } from './domain/worldbook-library.js'
-import { createWorldbookRecallLog, compactRecallDiagnostics } from './domain/worldbook-recall-log.js'
-import { foregroundWorldbookReads } from './domain/worldbook-read-handoff.js'
+import { createWorldbookRecallLog } from './domain/worldbook-recall-log.js'
 import { createForegroundWorldbook } from './domain/foreground-worldbook.js'
 import { createWorldbookStrategies } from './domain/worldbook-strategies.js'
-import { createWorldbookSkillProvider } from './domain/worldbook-skill-provider.js'
+import { createWorldbookFiles } from './domain/worldbook-files.js'
+import { registerWorldbookFileTools } from './tools/worldbook-files.js'
 import { projectVirtualWorldbookPrefix } from './domain/worldbook-virtual-state.js'
 import { installWorldbookSkillRead, nativeWorldbookReadAvailable } from './domain/worldbook-skill-read.js'
-import { prepareTemplateWorldbook, prepareWorldBookRecall, projectWorldBookTemplates } from './domain/worldbook-recall.js'
 import {
   createBackgroundTaskCoordinator,
   isOpeningAwaitingSettlement
@@ -509,7 +504,7 @@ export async function apply(ctx) {
     if (name === 'system-append' && tavernSettingsDocument?.systemAppendEnabled === false) return ''
     return resolveSystemPrompt(tavernSettingsDocument, name, promptFile)
   }
-  const webAccess = installWebAccess({ ctx, getConfig: () => tavernSettingsDocument?.webAccess })
+  ctx.inject(['settings'], async sctx => { await clearRetiredSearchProvider(sctx.settings) })
   const promptDocuments = createSystemPromptDocuments()
   const presentSystemPrompts = promptDocuments.present
   const applicationUpdater = createApplicationUpdater({
@@ -536,6 +531,7 @@ export async function apply(ctx) {
     }
     return files
   }
+  const skillTextContext = createSkillTextContext(ctx)
   const tavernSkills = createTavernSkillModule({
     directory: dataRoot + '/skills',
     builtInDirectory: sourceRoot + '/presets/tavern/skills',
@@ -591,7 +587,7 @@ export async function apply(ctx) {
   skillRegistry.registerProvider(control => {
     invalidateTavernSkills = () => control.invalidate()
     const providers = [
-      new FileSystemSkillProvider(ctx, control, { providerName: 'tavern-interactive-files', includeDefaultRoots: false, customSkillDirs: [dataRoot + '/skills'], bundledSkillDir: sourceRoot + '/presets/tavern/skills' }),
+      new FileSystemSkillProvider(skillTextContext, control, { providerName: 'tavern-interactive-files', includeDefaultRoots: false, customSkillDirs: [dataRoot + '/skills'], bundledSkillDir: sourceRoot + '/presets/tavern/skills' }),
       new FileSystemSkillProvider(ctx, control, { providerName: 'tavern-background-files', includeDefaultRoots: false, bundledSkillDir: sourceRoot + '/presets/tavern-background/skills' })
     ]
     skillHost = { control, providers }
@@ -1893,46 +1889,33 @@ export async function apply(ctx) {
     bound: (cardPath, card, chat) => playWorldBook(chat, card),
     runtime: promptTemplateRuntime,
     globalVariables: readPromptTemplateGlobalVariables,
-    scanText: scriptPromptScanText,
-    filterCandidates: input => worldbookFilter(input)
+    scanText: scriptPromptScanText
   })
   ctx.effect(() => () => projectBuiltinWorldbook.dispose())
   const worldbookStrategies = createWorldbookStrategies({
-    legacy: input => projectBuiltinWorldbook({ ...input, strategy: 'legacy' }),
-    nativeSkills: input => projectBuiltinWorldbook({ ...input, strategy: 'native-skills' })
+    nativeSkills: projectBuiltinWorldbook
   })
   const projectForegroundWorldbook = async input => {
     const projected = await worldbookStrategies.project(input)
-    // Native preprocessing may revoke visibility without changing source JSON.
-    // Its runtime result must invalidate an earlier pre-step discovery snapshot.
-    if (input.chat?.worldbookStrategy === 'native-skills') invalidateWorldbookSkills()
     return projected
   }
-  let invalidateWorldbookSkills = () => {}
-  let worldbookSkillProvider
-  skillRegistry.registerProvider(control => {
-    invalidateWorldbookSkills = () => control.invalidate()
-    worldbookSkillProvider = createWorldbookSkillProvider({
-      directory: path.join(dataRoot, 'worldbook-skills'),
-      resourcesAvailable: scope => nativeWorldbookReadAvailable(ctx.get('tools'), scope),
-      async load(agent) {
-        const binding = await resolveWorldbookSkillChat(agent, { background: backgroundAgentRunner, readChat: chatForSession })
-        if (!binding) return null
-        const { chat } = binding
-        try {
-          const card = await readChatCard(chat)
-          return { ...binding, card, worldBook: await playWorldBook(chat, card) }
-        } catch (error) {
-          // A removed/unreadable source revokes the virtual library, never keeps
-          // a cached body and never prevents unrelated core skills from loading.
-          console.warn('dsh-tavern: 本局世界书 Skill 库不可用:', str(error?.message || error))
-          return null
-        }
+  const worldbookSkillProvider = createWorldbookFiles({
+    directory: path.join(dataRoot, 'worldbook-files'),
+    resourcesAvailable: scope => nativeWorldbookReadAvailable(ctx.get('tools'), scope),
+    async load(agent) {
+      const binding = await resolveWorldbookSkillChat(agent, { background: backgroundAgentRunner, readChat: chatForSession })
+      if (!binding) return null
+      const { chat } = binding
+      try {
+        const card = await readChatCard(chat)
+        return { ...binding, card, worldBook: await playWorldBook(chat, card) }
+      } catch (error) {
+        console.warn('dsh-tavern: 本局世界书文件不可用:', str(error?.message || error))
+        return null
       }
-    })
-    control.signal.addEventListener('abort', () => worldbookSkillProvider.dispose(), { once: true })
-    return worldbookSkillProvider
+    }
   })
+  registerWorldbookFileTools(ctx.get('tools'), worldbookSkillProvider)
   installWorldbookSkillRead(ctx, worldbookSkillProvider, {
     async virtualOnly(agent) {
       // Background read is never a general filesystem capability, even when its lease ends.
@@ -1940,11 +1923,9 @@ export async function apply(ctx) {
       return Boolean(await resolveWorldbookSkillChat(agent, { background: backgroundAgentRunner, readChat: chatForSession }))
     }
   })
-  // The native registry caches by agent scope. Refresh before its catalog hook on
-  // EVERY step: this includes cold loads, plugin entries, external edits and switches.
-  // Provider.get still revalidates, so an old catalog never authorizes a stale read.
+  // Observe source changes before each step; tools also revalidate every access.
   ctx.on('agent/pre-step', async (payload, next) => {
-    if (await worldbookSkillProvider.refresh(payload.agent, { signal: payload.signal })) invalidateWorldbookSkills()
+    await worldbookSkillProvider.refresh(payload.agent, { signal: payload.signal })
     const snapshot = worldbookSkillProvider.changeSnapshot(payload.agent)
     if (snapshot && (snapshot.entries.length || sessionEvents(payload.agent.session).some(event => event.data?.source?.worldbookSkills))) {
       if (appendWorldbookSkillChanges(payload, snapshot)) await sessionStore.flush(payload.agent.session)
@@ -2100,7 +2081,7 @@ export async function apply(ctx) {
   })
   void branchOrigin.sweep().catch(error => console.warn('dsh-tavern: 检查旧分支会话头部失败', error?.message || error))
   const runtimePresetSnapshots = new Map()
-  const BACKGROUND_TOOLS = [...WORLD_BOOK_FILTER_TOOLS, POSTURE_SUBMIT_TOOL, CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL, CHARACTER_DESIGN_REUSE_TOOL, MVU_SUBMIT_UPDATE_TOOL, CANDIDATE_SUBMIT_TOOL, SCRIPT_READ_TOOL, SCRIPT_POINT_TOOL, LEDGER_SUBMIT_TOOL, STYLE_REFERENCE_SUBMIT_TOOL]
+  const BACKGROUND_TOOLS = [POSTURE_SUBMIT_TOOL, CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL, CHARACTER_DESIGN_REUSE_TOOL, MVU_SUBMIT_UPDATE_TOOL, CANDIDATE_SUBMIT_TOOL, SCRIPT_READ_TOOL, SCRIPT_POINT_TOOL, LEDGER_SUBMIT_TOOL]
   const backgroundAgentRunner = createBackgroundAgentRunner({
     retirement: backgroundRetirement,
     // The browser's session list keeps a disposed subagent as an idle row until the list is
@@ -2111,7 +2092,7 @@ export async function apply(ctx) {
     systemAppend: () => runtimePrompt('system-append'),
     resolveModelSelection: async input => ['stage-director', 'polish'].includes(input.task) ? input.selection : backgroundModelSelection(await backgroundConfigForSession(input.sessionId)) || input.selection,
     resolveWebSearch: async input => input.task !== 'stage-director' && (await backgroundConfigForSession(input.sessionId))?.webSearchEnabled === true,
-    resolveWorldbookSkills: async input => (await backgroundConfigForSession(input.sessionId))?.worldbookStrategy === 'native-skills',
+    resolveWorldbookSkills: async () => true,
     backgroundTools: BACKGROUND_TOOLS,
     // Set up after the runner: plugin tools are read when a background Session is set up.
     settlementItems: () => settlementItems,
@@ -2128,13 +2109,6 @@ export async function apply(ctx) {
     needsNewBackgroundSession: async sessionId => {
       const chat = await backgroundConfigForSession(sessionId)
       return chat?.backgroundSessionStatus === 'needs-session'
-    },
-    resolveForegroundWorldbookReads: async input => {
-      if (!['settlement', 'candidate', 'character-design'].includes(input.task)) return ''
-      // The latest reply's turn and the regeneration map: the header and the latest floors.
-      const chat = await chatHeaderWithLatestFloors(input.sessionId, 3)
-      const session = agentRegistry.get(input.sessionId)?.session || sessionStore.get(input.sessionId)
-      return foregroundWorldbookReads(chat, session)
     },
     resolveCurrentWorldbook: async function (input) {
       if (input.preparedWorldbook !== undefined) return input.preparedWorldbook
@@ -2178,76 +2152,22 @@ export async function apply(ctx) {
       })
     }
   })
-  const worldbookFilter = createWorldbookFilter({
-    runAgent: input => backgroundAgentRunner.run(input), selection: backgroundModelSelection,
-    // The caller's bounded snapshot (header and recent floors) is reused, as settlement does.
-    beginTask: chat => backgroundTasks.begin(chat, 'worldbook-filter', { reuseSnapshot: true })
-  })
-  const styleReferenceRecall = createStyleReferenceRecall({
-    runAgent: input => backgroundAgentRunner.run(input), selection: backgroundModelSelection,
-    beginTask: chat => backgroundTasks.begin(chat, 'style-reference', { reuseSnapshot: true }),
-    systemPrompt: () => runtimePrompt('style-reference-recall')
-  })
-  // After each reply, prepare what that reply brings into the next turn, so sending never
-  // waits for a model: the worldbook pool (usually below the threshold, no request at all),
-  // then the experimental style reference. A new send cancels both.
-  const worldbookPrefilter = createWorldbookPrefilter({
-    run: (chatId, signal) => wholeReads.scope('回复后预备', () => prepareAfterReply(chatId, signal))
-  })
-  turnSettled.subscribe(({ chatId, latest }) => { if (latest) return worldbookPrefilter.start(chatId) })
   // A regenerated reply (no foreground end of its own) or one the pre-review has not read yet.
   turnSettled.subscribe(({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
 
-  // The replies each game prepared for (round and version, the latest few). Tavern's own
-  // turns — a rollback, a body edit, a repair — end like replies but bring no new one:
-  // preparing again would only rewrite the save (and void the rollback's undo point).
-  const preparedReplies = new Map()
-  async function prepareAfterReply(chatId, signal) {
-    const chat = await storyContext({ chatId })
-    if (!chat || !['story', 'script'].includes(chat.mode || 'story') || chat.requestMode === 'sillytavern' || chat.regenInProgress) return
-    const latest = chat.messages?.at(-1)
-    if (latest?.role !== 'assistant' || latest.greeting === true || backgroundTasks.activity(chat).busy) return
-    if (backgroundModelSelection(chat) === null) return
-    const reply = latest.turn + ':' + (Number(latest.swipeId) || 0), prepared = preparedReplies.get(chatId) || []
-    if (prepared.includes(reply)) return
-    preparedReplies.set(chatId, [...prepared, reply].slice(-16))
-    const card = await readChatCard(chat)
-    signal.throwIfAborted()
-    await projectForegroundWorldbook({ chat, card, userText: '', purpose: 'prefilter', signal })
-      .catch(error => { if (signal.aborted) throw error; console.warn('dsh-tavern: 世界书预筛失败，下一轮按关键词与预算注入:', str(error?.message || error)) })
-    if ((chat.mode || 'story') !== 'story' || chat.backgroundTasks?.styleReference !== true) return
-    signal.throwIfAborted()
-    await styleReferenceRecall({ chat: await storyContext({ chatId }), signal })
-      .catch(error => { if (signal.aborted) throw error; console.warn('dsh-tavern: 文风联想失败，下一轮不带参考:', str(error?.message || error)) })
-  }
-  // What the prefilter prepares (worldbook pool, style reference) serves the reply the player
-  // has just answered: abort it the moment their message lands, not when the new turn's
-  // preparation reaches its cancel. Tavern's own edit turns carry no player message.
+  // A new player input still cancels any optional independent polish pre-review.
   ctx.on('session/event', function (session, event) {
     if (event?.type !== 'user/message' || event.surfaceOp !== 'append' || event.data?.source?.kind !== 'user' || event.data.source.repair) return
     if (!session?.id || backgroundAgentRunner.owns(session.id)) return
     polishPrereview.cancel(session.id)
-    void readSessionMap().then(links => { const chatId = links[str(session.id)]; if (chatId) return worldbookPrefilter.cancel(chatId) }).catch(() => {})
   })
-  ctx.effect(() => () => worldbookPrefilter.dispose())
-  // A player asking for another passage, optionally saying what they want. 'next' replaces the
-  // reference waiting for the next turn; 'regenerate' re-recalls the one the latest turn used,
-  // just before that turn is regenerated.
-  async function retryStyleReference(sessionId, { target = 'next', guidance = '' } = {}) {
-    const header = await chatForSession(str(sessionId))
-    if (!header || (header.mode || 'story') !== 'story') throw new Error('文风联想只用于自由模式')
-    if (header.backgroundTasks?.styleReference !== true) throw new Error('请先在本局设置里开启文风联想')
-    if (agentRegistry.get(header.sessionId)?.phase?.kind === 'running' || header.regenInProgress) throw new Error('前台正在生成，请完成后再换参考')
-    await worldbookPrefilter.cancel(header.id)
-    if (target === 'regenerate') await cancelSettlement(header.id)
-    else if (backgroundTasks.activity(header).busy) throw new Error('后台结算中，请稍后再换参考')
-    const base = target === 'regenerate' ? 'previous' : 'latest'
-    // The background agent runs off the foreground session: load it when the page has not yet.
-    if (!agentRegistry.get(header.sessionId)?.session) await agentRegistry.resume({ resumeSessionId: header.sessionId })
-    let chat = await storyContext({ chatId: header.id })
-    // The bounded read may stop short of the reply before the latest one.
-    if (base === 'previous' && (chat.messages || []).filter(message => message?.role === 'assistant').length < 2) chat = await readChat(header.id)
-    return await styleReferenceRecall({ chat, signal: new AbortController().signal, base, guidance: str(guidance).slice(0, 500), retry: true })
+  // Store a preference; the foreground chooses its reference when it next writes.
+  async function retryStyleReference(sessionId, { guidance = '' } = {}) {
+    const chat = await chatForSession(str(sessionId))
+    if (!chat || (chat.mode || 'story') !== 'story' || chat.backgroundTasks?.styleReference !== true) throw Error('请先开启本局文风联想')
+    if (agentRegistry.get(chat.sessionId)?.phase?.kind === 'running' || chat.regenInProgress) throw Error('前台正在生成，请完成后再修改文风要求')
+    await updateChatHeader(chat.id, ['styleReferenceGuidance'], current => ({ ...current, styleReferenceGuidance: str(guidance).slice(0, 500) || '请换一种贴合当前场景的笔调参考。' }), { source: 'foreground.style-guidance' })
+    return null
   }
   const publishCharacterDesign = createCharacterDesignPublisher({ worldBooks, readCard })
   const characterDesignDocuments = createCharacterDesignDocumentTools({
@@ -2622,7 +2542,7 @@ export async function apply(ctx) {
     settingsChanged: (gameId, plugin) => sessionSignals.publish(gameId, { kind: 'plugin-settings', version: plugin + ':' + Date.now() + ':' + Math.random().toString(36).slice(2) }),
     // A plugin published new state for its page side (tavernUi.watchState re-reads it).
     publishState: (gameId, plugin, name) => sessionSignals.publish(gameId, { kind: 'plugin-state:' + plugin + ':' + name, version: Date.now() + ':' + Math.random().toString(36).slice(2) }),
-    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat([STORY_SUBMIT_TOOL_NAME, STAGE_UPDATE_TOOL.name, 'character_design_finish', 'worldbook_search', 'web_search', 'web_fetch', 'tavern_research', 'skill']).filter(Boolean),
+    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat(['style_reference_submit', STORY_SUBMIT_TOOL_NAME, STAGE_UPDATE_TOOL.name, 'character_design_finish', 'worldbook_search', 'web_search', 'web_fetch', 'skill']).filter(Boolean),
     media: pluginMedia,
     data: pluginData,
     pluginData: pluginDataStore,
@@ -2683,7 +2603,7 @@ export async function apply(ctx) {
     worldbookStrategies,
     worldbookStrategyEntries: input => input.worldBook || playWorldBook(input.chat, input.card),
     projectWorldbookSelection: (input, refs) => projectBuiltinWorldbook({ ...input,
-      strategy: refs === null ? 'legacy' : 'native-skills', selectedRefs: refs || [] }),
+      selectedRefs: refs || [] }),
     readCardImage: async sessionId => {
       const header = await chatHeaderForSession(sessionId, ['cardPath'])
       const cardPath = str(header?.cardPath)
@@ -2739,8 +2659,7 @@ export async function apply(ctx) {
   const backgroundTasks = createBackgroundTaskCoordinator({
     store: { readChat, writeChat, updateChat, patchChat, readState: chatPersistence.readSessionState, readRecoveryState: taskStateReader.read, readSlice: chatPersistence.readSlice, readSettlementCheckpoint: chatPersistence.readSettlementCheckpoint },
     timeline: storyTimeline,
-    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) },
-    preempt: async (chatId, role) => { if (role !== 'worldbook-filter' && role !== 'style-reference') await worldbookPrefilter.cancel(chatId) }
+    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) }
   })
   const configuredCompactionEngines = new WeakSet()
   const overflowingCompactions = new Set()
@@ -2888,7 +2807,8 @@ export async function apply(ctx) {
     const id = payload.agent.session.id, background = backgroundAgentRunner.requestContext(id)
     // Every model step asks: the header's mode answers it.
     const chat = background ? null : await chatHeaderForSession(id, [])
-    if (chat && ['story', 'script'].includes(chat.mode)) await retireOldForegroundFrames(payload.agent, payload.turn)
+    // Keep historical turn frames byte-stable during normal generation. Retire
+    // scaffolding only at an explicit compaction boundary, never before each step.
     if (background && background.task === 'phone') return next()
     if (background || chat && ['story', 'script'].includes(chat.mode)) {
       const engine = await configureAgentCompaction(payload.agent)
@@ -2924,25 +2844,7 @@ export async function apply(ctx) {
       return { context: '', refs: [], diagnostics: [{ kind: 'worldbook-template', code: 'worldbook-read-failed' }] }
     }
     if (!worldBook || !worldBook.view) return { context: '', refs: [], diagnostics: [] }
-    if (chat.worldbookStrategy === 'native-skills') return projectVirtualWorldbookPrefix(worldBook, chat, options)
-    try {
-      const runtime = await promptTemplateRuntime(chat.sessionId)
-      worldBook = await prepareTemplateWorldbook(worldBook, runtime, chat, await readPromptTemplateGlobalVariables())
-      return projectWorldBookTemplates({
-        includeConstants: true,
-        randomSeed: chat.worldBookRandomState?.seed,
-        randomOutputs: chat.worldBookRandomState?.outputs,
-        worldBook,
-        runtime,
-        globalVariables: await readPromptTemplateGlobalVariables(),
-        card,
-        chat
-      })
-    } catch (error) {
-      if (error.code === 'FULL_TEMPLATE_UNAVAILABLE') throw error
-      console.warn('dsh-tavern: 动态世界书解析失败，已跳过:', str(error && error.message || error))
-      return { context: '', refs: [], diagnostics: [{ kind: 'worldbook-template', code: 'projection-failed' }] }
-    }
+    return projectVirtualWorldbookPrefix(worldBook, chat, options)
   }
   const candidateContextReader = createCandidateContextReader({headerForSession:chatHeaderForSession,readWindow:chatPersistence.readWindow,readChat})
   candidateWorldbookPreparation=createCandidateWorldbookPreparation({
@@ -3093,55 +2995,11 @@ export async function apply(ctx) {
     if (selected && ['story', 'script'].includes(selected.chat.mode || 'story') && selected.chat.requestMode !== 'sillytavern') return normalizeChat(selected.chat)
     return chatId === undefined ? chatForSession(sessionId) : readChat(chatId)
   }
-  async function prepareNextWorldBookContext(snapshot, signal) {
-    const turn = settlementTurn(snapshot)
-    const inspected = storyTimeline.inspect({ chat: snapshot })
-    if (snapshot.preparedWorldBook && Number(snapshot.preparedWorldBook.revision) === Number(inspected.revision)) return snapshot
-    let prepared = null
-    let error = null
-    try {
-      const card = await readChatCard(snapshot)
-      const worldBook = await playWorldBook(snapshot, card)
-      prepared = prepareWorldBookRecall({ turn, chat: snapshot, card, worldBook, activationRequests: worldBook?.pluginActivationRequests })
-    } catch (caught) {
-      error = str(caught && caught.message || caught)
-      prepared = prepareWorldBookRecall({ turn, chat: snapshot, card: null, worldBook: null })
-    }
-    const context = error === null ? str(prepared.context).trim() : ''
-    const preparedWorldBook = {
-      schemaVersion: 2,
-      diagnostics: compactRecallDiagnostics(prepared.diagnostics),
-      ts: Date.now(),
-      turn,
-      branchId: inspected.branchId,
-      revision: inspected.revision,
-      mode: error === null ? str(prepared.kind) : 'error',
-      refs: error === null ? prepared.refs : [],
-      totalChars: Number(prepared.totalChars) || 0,
-      contextChars: Array.from(context).length,
-      empty: error !== null || context === '',
-      failed: error !== null
-    }
-    const fields = { preparedWorldBookContext: context, preparedWorldBook, worldBookError: error, lastWorldBookRecall: { ...preparedWorldBook } }
-    signal?.throwIfAborted()
-    // Unchanged since the snapshot: patch only these header fields instead of
-    // rewriting and diffing the complete history.
-    const saved = Number.isSafeInteger(snapshot._storageRevision) && await patchChat(snapshot.id, snapshot._storageRevision,
-      Object.entries(fields).map(([key, value]) => ({ op: 'set', path: [key], value })), { source: 'worldbook.projection' })
-    if (saved) return Object.assign(snapshot, fields, { _storageRevision: saved._storageRevision, updatedAt: saved.updatedAt })
-    const latest = await readChat(snapshot.id)
-    if (latest === undefined) return null
-    const current = storyTimeline.inspect({ chat: latest })
-    if (current.branchId !== inspected.branchId || Number(current.revision) !== Number(inspected.revision)) return latest
-    Object.assign(latest, structuredClone(fields))
-    await writeChat(latest, { source: 'worldbook.projection' })
-    return latest
-  }
   const mvuSettlementEngine = createMvuSettlementEngine({ mvuSettlement, mvuUpdateRules, backgroundModelSelection, postureItem, tavernScriptDispatch,
     pluginApi, readPendingTurn: gameId => pluginTurns.readPendingTurn(gameId) })
   const plainSettlementEngine = createPlainSettlementEngine({ pluginApi, pluginSettlementProgress, settlementItems, backgroundModelSelection, postureItem, backgroundAgentRunner, agentRegistry, sessionStore })
   const settlementRun = createSettlementRun({
-    backgroundTasks, chatPersistence, readChat, writeChat, readChatCard, taskStateReader, worldBookScanDepth, prepareNextWorldBookContext,
+    backgroundTasks, chatPersistence, readChat, writeChat, readChatCard, taskStateReader, worldBookScanDepth,
     mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, turnSettled
   })
   const { startPluginTask } = settlementRun
@@ -3156,7 +3014,7 @@ export async function apply(ctx) {
     settlementJobs.dispose()
   }, 'dsh-tavern: reconcile deferred MVU settlement')
   const { stopBackground, retrySettlement, pullBackgroundCycle } = createSettlementControls({
-    chatForSession, readOpeningWindow, projectOpeningWindow, view, readChatCard, backgroundTasks, worldbookPrefilter, storyTimeline,
+    chatForSession, readOpeningWindow, projectOpeningWindow, view, readChatCard, backgroundTasks, storyTimeline,
     patchChat, writeChat, queueSettlement, cancelSettlement, mvuSettlementEngine, pluginApi, backgroundAgentRunner
   })
   // ---------- 卡片工作台：剧本素材与新卡创建 ----------
@@ -3267,12 +3125,6 @@ export async function apply(ctx) {
     projectWorldBookTemplates: input => nativeWorldBookTemplateContext(input.chat, input.card),
     projectForegroundWorldbook,
     recordWorldbookRecall: worldbookRecallLog.record,
-    projectScriptPromptWorldbook: async function ({ chat, card, turn }) {
-      const text = scriptPromptScanText(chat)
-      if (!text.trim()) return null
-      const worldBook = await playWorldBook(chat, card)
-      return prepareWorldBookRecall({ chat, card, turn, worldBook, latestBody: text, activationRequests: worldBook?.pluginActivationRequests })
-    },
     resolvePresetRegexScripts: async chat => presetRegexScripts(chat),
     now: Date.now,
     shellToolName: process.platform === 'win32' ? 'pwsh' : 'bash'
@@ -3283,7 +3135,6 @@ export async function apply(ctx) {
   const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
-    prepareOpeningWorldBook: prepareNextWorldBookContext,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
@@ -3294,8 +3145,6 @@ export async function apply(ctx) {
       if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
     },
     waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
-    prefilterWorldbook: chatId => worldbookPrefilter.start(chatId),
-    cancelPrefilter: chatId => worldbookPrefilter.cancel(chatId),
     waitReconcile: storyReconciliation.waitReconcile,
     syncWorldBook: async function (chat) {
       if (!['story', 'script'].includes(chat.mode || 'story')) return
@@ -3419,7 +3268,6 @@ export async function apply(ctx) {
     sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
     timeline: storyTimeline,
     activity: chat => backgroundTasks.activity(chat),
-    cancelPreparation: chatId => worldbookPrefilter.cancel(chatId),
     beforeReplyEdit: sessionId => castPresentation.beforeEdit(sessionId),
     project: async (text, chat) => {
       const extensions = await readCardExtensions(chat.cardPath, chat)
@@ -3511,13 +3359,11 @@ export async function apply(ctx) {
           .sort((left, right) => left.name.localeCompare(right.name))
       } catch { return [] }
     },
-    // Unloaded sessions recall after their next reply.
-    onStyleEnabled: (sessionId, chatId) => { if (agentRegistry.get(sessionId)?.session) void worldbookPrefilter.start(chatId) }
   })
 
   const fontLibrary = createFontLibrary({ dataRoot })
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
-  const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, webAccess, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
+  const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
     applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog,
     backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
@@ -3728,10 +3574,11 @@ export async function apply(ctx) {
   }
 
   const skillGatedTools = createSkillGatedTools()
-  const controlledToolNames = new Set([STORY_SUBMIT_TOOL_NAME, 'tavern_read_variables', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'web_fetch', 'tavern_research', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
+  const controlledToolNames = new Set(['style_reference_submit', STORY_SUBMIT_TOOL_NAME, 'tavern_read_variables', 'worldbook_list', 'worldbook_grep', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'web_fetch', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
   const foregroundStrategies = createForegroundOrchestrationStrategies({
     nativePlay: {
       // Input side: replay past bodies as calls of the submission tool.
+      styleReferencePrompt: chat => foregroundStyleReferencePrompt(chat, runtimePrompt('style-reference-recall'), runtimePrompt('style-reference')),
       historyToolCall: async () => (await readTavernSettings()).storyInputToolCall,
       // Output side: whether a new body must be submitted through the tool.
       storyOutputToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
@@ -3782,6 +3629,7 @@ export async function apply(ctx) {
   })
 
   registerRequestHooks({
+    projectWorldbookRecovery: async (chat, options) => nativeWorldBookTemplateContext(chat, await readChatCard(chat), options),
     backgroundAgentRunner,
     cardMemory,
     chatForSession: hookChatForSession,
@@ -3797,8 +3645,7 @@ export async function apply(ctx) {
   installNetworkToolPolicy(ctx, createNetworkToolPolicy({
     readHeader: chatHeaderForSession,
     backgroundContext: id => backgroundAgentRunner.requestContext(id),
-    capabilityFor: name => pluginApi.toolNetworkFor(name),
-    settings: () => readWebAccess(tavernSettingsDocument?.webAccess)
+    capabilityFor: name => pluginApi.toolNetworkFor(name)
   }))
 
   registerModelStreamHooks({
@@ -3863,6 +3710,11 @@ export async function apply(ctx) {
       },
       isBackground: function (sessionId) { return backgroundAgentRunner.owns(sessionId) }
     })))
+    tools.register(defineTool(createForegroundStyleReferenceTool({
+      chatForSession,
+      isBackground: sessionId => backgroundAgentRunner.owns(sessionId),
+      save: (chat, reference, turn) => updateChatHeader(chat.id, ['styleReferences'], current => ({ ...current, styleReferences: rememberStyleReference(current.styleReferences, reference, turn) }), { source: 'foreground.style-reference' })
+    })))
     registerGameplayTools({
       activeTurnOf,
       cardResponseTest,
@@ -3914,7 +3766,6 @@ export async function apply(ctx) {
       displayRuntimeStore,
     })
 
-    registerWorkbenchResearchTool({ ctx, tools, readHeader: chatHeaderForSession, getConfig: () => readWebAccess(tavernSettingsDocument?.webAccess) })
     registerRuntimeHealthTool({ chatForSession, tools,
       runtimeHealth: () => runtimeHealthReport({ version: TAVERN_PACKAGE_VERSION, performance: requestPerformance, logs: runtimeLogs }) })
 

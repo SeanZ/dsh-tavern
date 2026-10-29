@@ -17,7 +17,7 @@ test('one persisted batch notice identifies add/edit/remove and survives restart
   const text = notice.content[0].text
   assert.match(text, /新增（1 条）：资料3/)
   assert.match(text, /改写（1 条）：资料1/)
-  assert.match(text, /移出静态 Skill（1 条）：资料2/)
+  assert.match(text, /撤回资料（1 条）：资料2/)
   assert.match(text, /旧绝对路径不再适用/)
   assert.equal(restarted.messages[0], notice)
   assert.equal(appendWorldbookSkillChanges(restarted, b), null)
@@ -28,7 +28,7 @@ test('removing whole book revokes old knowledge in one notice; titles cannot flo
   const p = payload()
   appendWorldbookSkillChanges(p, snapshot('large', Array.from({length:40}, (_,i)=>entry('x'.repeat(200)+i,'hash'))))
   const notice = appendWorldbookSkillChanges(p, snapshot('empty', []))
-  assert.match(notice.content[0].text, /移出静态 Skill（40 条）/)
+  assert.match(notice.content[0].text, /撤回资料（40 条）/)
   assert.ok(notice.content[0].text.length < 1500)
   assert.equal(appendWorldbookSkillChanges(p,snapshot('empty',[])),null)
 })

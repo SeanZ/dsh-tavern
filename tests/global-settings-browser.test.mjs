@@ -73,38 +73,18 @@ test('卡片工作台默认模型可单独保存，留空表示跟随前台', as
   assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { defaultWorkbenchModel: { provider: 'p', model: 'm' } })
 })
 
-test('联网资料保存源顺序与网页开关，测试显式触发，失败保留草稿', async t => {
-  let config = { sources: ['bing', 'ddg'], searxngUrl: '', searxngEngines: [], proxyUrl: '', sourceProxies: {}, fetchEnabled: false }
-  let fail = false
+test('旧搜索配置不再显示设置窗口或发起诊断请求', async t => {
   const backend = fixture()
   const { page, calls } = await openTavernSettings(t, { respond(method, args) {
-    if (method === 'getTavernSettings') return { ...backend.respond(method, args), settings: { ...backend.respond(method, args).settings, webAccess: config } }
-    if (method === 'updateTavernSettings' && args.patch.webAccess) {
-      if (fail) throw Error('模拟保存失败')
-      config = args.patch.webAccess
-      return { settings: { webAccess: config } }
-    }
-    if (method === 'testWebSearch') return { count: 2 }
-    return backend.respond(method, args)
+    const result = backend.respond(method, args)
+    if (method === 'getTavernSettings') result.settings.webAccess = { sources: ['bing'], fetchEnabled: false }
+    return result
   } })
-  await page.getByLabel('DuckDuckGo优先', { exact: true }).click()
-  await page.getByRole('switch', { name: '允许读取网页正文', exact: true }).click()
-  await page.getByText('SearXNG 配置', { exact: true }).click()
-  await page.getByLabel('SearXNG 引擎', { exact: true }).fill('wikipedia,bing')
-  await page.getByRole('button', { name: '保存搜索设置', exact: true }).click()
-  await page.getByText('卡片工作台搜索设置已保存，后续调用生效。', { exact: true }).waitFor()
-  assert.deepEqual(config.sources, ['ddg', 'bing'])
-  assert.equal(config.fetchEnabled, true)
-  assert.deepEqual(config.searxngEngines, ['wikipedia', 'bing'])
-  assert.equal(calls.some(c => c.method === 'testWebSearch'), false)
-  await page.getByRole('button', { name: '保存并测试搜索', exact: true }).click()
-  await page.getByText('已保存，内置搜索测试成功，返回 2 条结果。', { exact: true }).waitFor()
-  fail = true
-  await page.getByLabel('SearXNG 实例地址', { exact: true }).fill('https://search.example')
-  await page.getByRole('button', { name: '保存搜索设置', exact: true }).click()
-  await page.getByText('模拟保存失败', { exact: true }).waitFor()
-  assert.equal(await page.getByLabel('SearXNG 实例地址', { exact: true }).inputValue(), 'https://search.example')
-  assert.equal(config.searxngUrl, '')
+  await page.getByLabel('默认前台模型', { exact: true }).waitFor()
+  assert.equal(await page.getByLabel('卡片工作台搜索设置', { exact: true }).count(), 0)
+  assert.equal(await page.getByText('卡片工作台搜索', { exact: true }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: '保存并测试搜索', exact: true }).count(), 0)
+  assert.equal(calls.some(c => ['getWebSearchStatus', 'testWebSearch', 'useBuiltinWebSearch'].includes(c.method)), false)
 })
 
 test('自动生成候选项在「剧情」里，挨着上下文压缩，默认关闭；开关只保存自己，失败保留原值', async t => {

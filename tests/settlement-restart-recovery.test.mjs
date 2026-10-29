@@ -51,7 +51,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
       return {...structuredClone(current),messages:[]}
     },
     sessionStateForSession: async () => projectChatSessionState(await store.readChat()),
-    prepareNextWorldBookContext: async chat => chat, worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
+    prepareNextWorldBookContext: async () => assert.fail('retired recall preparation'), worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
     view: async chat => chat,
     mvuUpdateRules: async () => [],
     backgroundModelSelection: () => ({}), runtimePrompt: () => '',
@@ -352,7 +352,7 @@ test('接续刚创建新 operation 再次崩溃，仍能从原持久任务恢复
   assert.equal(run.tasks.activity(run.get()).phase, 'failed', 'changed target cannot reuse the old task')
 })
 
-for (const stage of ['read', 'prepare']) test(`销毁期间结束的 ${stage} 不能再启动后台结算`, async () => {
+for (const stage of ['read']) test(`销毁期间结束的 ${stage} 不能再启动后台结算`, async () => {
   const run = await harness({ beginRunning: false })
   let release, entered
   const held = new Promise(resolve => { release = resolve })

@@ -34,23 +34,12 @@ export function createForegroundHandoff(options = {}) {
     }
     // Plugin tasks of the last turn (or one the player started) finish before the next turn.
     if (chat !== undefined) await options.waitBackground?.(chat.id)
-    // An unfinished prefilter is optional: sending cancels it instead of waiting.
-    if (chat !== undefined) await options.cancelPrefilter?.(chat.id)
     // A failed turn is cleaned up after the failure, but that may not have happened (no live
     // session then, or it failed). Its input must not reach this request beside the new one.
     if (chat !== undefined) await options.clearFailedTurns?.(input.sessionId)
     // The stable prefix is rebuilt after this, so a world book edit received by
     // the previous turn must be adopted now rather than one turn later.
     if (chat !== undefined) await options.syncWorldBook?.(chat)
-    // A greeting is already story text. Direct typing may bypass candidate
-    // preparation, so project its keywords locally before the first body request.
-    const onlyGreeting = opening ? opening.messageCount === 1 && opening.firstGreeting === true
-      : chat?.messages?.length === 1 && chat.messages[0]?.greeting === true
-    if (chat && ['story', 'script'].includes(chat.mode) && !chat.preparedWorldBook && onlyGreeting &&
-        typeof options.prepareOpeningWorldBook === 'function') {
-      const latest = await store.chatForSession(input.sessionId)
-      if (latest && !latest.preparedWorldBook) await options.prepareOpeningWorldBook(latest)
-    }
     return await turns.prepare(input)
   }
 
@@ -78,9 +67,6 @@ export function createForegroundHandoff(options = {}) {
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)
-        } else {
-          // No settlement this turn; the prefilter otherwise starts once settlement finishes.
-          void options.prefilterWorldbook?.(chat.id)
         }
       }, '启动后台结算')
       return true

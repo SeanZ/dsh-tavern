@@ -36,7 +36,7 @@ export async function createBackgroundNativeRuntime(bootPath, { systemAppend, re
     }
   }
   ctx.llm.registerAdapter(['scene-fixture', 'scene-fixture-other', 'deepseek-official'], new FixtureModel())
-  for (const name of ['skill', 'read', 'tavern_read_skill_reference', 'web_search']) ctx.tools.register({
+  for (const name of ['skill', 'read', 'tavern_read_skill_reference', 'web_search'].filter(name => !ctx.tools.get(name))) ctx.tools.register({
     name, description: 'Fixture tool', parameters: { type: 'object', properties: {} },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute() { return 'fixture' }

@@ -1,5 +1,4 @@
 import { compactionPolicy } from './auto-compaction.js'
-import { readWebAccess, validateWebAccess } from './web-access-settings.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
 import { readJudgeConfig, validateJudgeConfig } from './engine-judge.js'
@@ -94,7 +93,7 @@ export function readHeaderItems(value) {
 // 完整上下文 / 画廊 / 精修对比). The host owns the chat view, so it is always
 // kept first and cannot be removed; the rest are an ordered visible list.
 export const VIEW_TAB_RESIDENT = 'chat'
-export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'trajectory', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish']) })
+export const DEFAULT_VIEW_TABS = Object.freeze({ items: Object.freeze(['chat', 'trajectory', 'dsh-tavern:gallery', 'dsh-tavern:polish']) })
 
 export function viewTabs(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的顶部标签设置')
@@ -218,7 +217,7 @@ export function normalizeBackgroundTasks(value) {
 export function normalizePlayDefaults(value) {
   const input = object(value)
   return { playerName: typeof input.playerName === 'string' ? input.playerName.trim().slice(0, 80) || '你' : '你',
-    worldbookStrategy: input.worldbookStrategy === 'legacy' ? 'legacy' : 'native-skills',
+    worldbookStrategy: 'native-skills',
     statusBarPlacement: input.statusBarPlacement === 'body' ? 'body' : 'sidebar',
     // New games get 文风联想 unless the defaults turn it off; an existing game without the key stays off.
     backgroundTasks: { ...normalizeBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
@@ -228,10 +227,8 @@ export function normalizePlayDefaults(value) {
 export function applyTavernSettingsPatch(current, patch) {
   const next = Object.assign({}, object(current))
   const input = object(patch)
-  if (Object.hasOwn(input, 'webAccess')) {
-    if (!input.webAccess || typeof input.webAccess !== 'object' || Array.isArray(input.webAccess)) throw new Error('联网资料设置无效')
-    next.webAccess = validateWebAccess({ ...readWebAccess(next.webAccess), ...input.webAccess })
-  }
+  delete next.webAccess // Retired Tavern search settings never affect the host.
+
   if (Object.hasOwn(input, 'defaultPlaySettings')) {
     const patch = object(input.defaultPlaySettings)
     if (Object.hasOwn(patch, 'worldbookStrategy') && !['legacy', 'native-skills'].includes(patch.worldbookStrategy)) throw new Error('默认世界书策略无效')
@@ -418,7 +415,6 @@ export function presentTavernSettings(document, defaults) {
   const storyToolCalls = storyToolCallSettings(document)
   return {
     defaultPlaySettings: normalizePlayDefaults(object(document).defaultPlaySettings),
-    webAccess: readWebAccess(object(document).webAccess),
     defaultDisabledWritingSkills: Array.isArray(object(document).defaultDisabledWritingSkills) ? object(document).defaultDisabledWritingSkills.filter(name => typeof name === 'string') : [],
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
