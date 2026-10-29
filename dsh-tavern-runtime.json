@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "7424c2dfa08b971b07a8cb41b4a771b5ee552be2",
-  "releaseSequence": 973,
+  "revision": "cd5a9974cdc9041533ec633792c1a6f2c4187246",
+  "releaseSequence": 974,
   "version": "3.1.0",
   "files": [
     {
@@ -786,8 +786,8 @@
     },
     {
       "path": "tavern-plugin/lib/client.js",
-      "sha256": "662fbcaeef6ff17cc808834df5311333be9dffc8eac330d56d23915e9b69feed",
-      "size": 2923346
+      "sha256": "0bd666b89a2f9cdca536fa79ceb14f3df84fc8936a460e36a3f27dcea440a66a",
+      "size": 2923351
     },
     {
       "path": "tavern-plugin/lib/cordis-inspect.js",
@@ -911,8 +911,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/candidate-generation.js",
-      "sha256": "9dd6fc853dacc310dc2dd9a18bf46436efb941b7946120fe7d9bec40da8e8d11",
-      "size": 25256
+      "sha256": "2d2a537d51a50e4df971f312dd11ffd1360c26dd82577b79ded0d4898c26df93",
+      "size": 25441
     },
     {
       "path": "tavern-plugin/lib/domain/candidate-script-context.js",
@@ -2561,8 +2561,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/tavern-settings.js",
-      "sha256": "c38040085621d51cd3fc48c56cad7d4b7593b0e85b4f07c39934316ad55fae7f",
-      "size": 28271
+      "sha256": "48c07e7ef098dc9153d30f8923c2e3a62e48c831e1716ca7de921004fa624dd1",
+      "size": 28328
     },
     {
       "path": "tavern-plugin/lib/domain/tavern-skill-provider.js",
@@ -5096,9 +5096,9 @@
     }
   ],
   "archive": {
-    "commit": "fe3e602997359c7c845dd379e5a524055b47505e",
+    "commit": "e39672e5ba712fe2c5f063395f53020ebf91bca3",
     "path": "runtime.zip",
-    "sha256": "6dbed67aea8089f1d2ad241b5baccd5e16d60c81ab66880152fa5326cf68d5c6",
-    "size": 10526096
+    "sha256": "2c1712f9099c256357a801c96409f7cb9c08d6418e93f3ea317a2cd80737be83",
+    "size": 10526223
   }
 }
