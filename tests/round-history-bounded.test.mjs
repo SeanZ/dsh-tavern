@@ -97,7 +97,17 @@ async function fixture(t, bounded) {
       readCard: async () => ({ name: '角色' }), readRevision: async (id, revision) => { calls.push('readRevision'); return p.readRevision(id, revision) },
       write: p.write, update: async (...args) => { calls.push('update:' + args[2]?.source); return p.update(...args) },
       ...(bounded ? {
-        patch: async (...args) => { calls.push('patch:' + args[3]?.source); const hook = hooks.beforePatch; hooks.beforePatch = null; await hook?.(); return p.patch(...args) },
+        patch: async (...args) => {
+          const source = String(args[3]?.source || '')
+          calls.push('patch:' + source)
+          const hook = hooks.beforePatch
+          hooks.beforePatch = null
+          await hook?.()
+          // A write another operation makes between the read and this patch.
+          const keyed = hooks.beforePatchOf?.[source]
+          if (keyed) { delete hooks.beforePatchOf[source]; await keyed() }
+          return p.patch(...args)
+        },
         readRecent: async id => (await history.read(id, undefined, { storyRows: 2, lastAssistant: true }))?.chat,
         changedSince: (id, revision) => p.readChangedIndices(id, revision),
         rowsAt: (id, revision, indices) => readRowsAt(p.readWindow, id, revision, indices)
@@ -294,4 +304,44 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
     return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
   }
   assert.deepEqual(strip(results[0]), strip(results[1]))
+})
+
+// A failed turn's own cleanup (foreground.discard restoring the staged template
+// input) writes the save right after the attempt; the regeneration commit then
+// read a revision that had already moved. It used to abort the whole round.
+test('bounded regeneration retries its commit when another operation wrote the save first', async t => {
+  const h = await fixture(t, true)
+  const before = await h.p.read('chat')
+  h.hooks.beforePatchOf = { 'foreground.regen-commit': () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'foreground.discard' }) }
+  const view = await h.rounds.regenerate('chat', '', 'session')
+  const after = await h.p.read('chat')
+  assert.equal(view.adopted.text, '重写正文82')
+  assert.equal(after.messages.length, before.messages.length)
+  assert.equal(after.messages.at(-1).text, '重写正文82')
+  assert.equal(after.messages.at(-1).turn, 81)
+  assert.deepEqual(after.guides, ['并发'], 'the other operation\'s write survives the retried commit')
+  assert.equal(after.regenInProgress, undefined)
+  assert.equal(after.regenRecovery, undefined)
+  assert.ok(!h.calls.includes('patch:foreground.regen-abort'))
+  assert.equal(h.calls.filter(call => call === 'patch:foreground.regen-commit').length, 2, JSON.stringify(h.calls))
+})
+
+test('被截断的重新生成在提交前被别的写入顶掉 revision 时仍保留部分正文，不撤回', async t => {
+  const h = await fixture(t, true)
+  const before = await h.p.read('chat')
+  h.hooks.partialGeneration = '半截正文'
+  h.hooks.beforePatchOf = { 'foreground.regen-commit': () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'foreground.discard' }) }
+  const view = await h.rounds.regenerate('chat', '', 'session')
+  const after = await h.p.read('chat')
+  assert.equal(view.adopted.text, '半截正文')
+  assert.match(view.regenerationWarning, /已保留生成到的部分正文/)
+  assert.equal(after.messages.length, before.messages.length)
+  assert.equal(after.messages.at(-2).text, before.messages.at(-2).text)
+  assert.equal(after.messages.at(-1).turn, 81)
+  assert.equal(after.messages.at(-1).text, '半截正文')
+  assert.equal(after.messages.at(-1).incomplete, true)
+  assert.deepEqual(after.guides, ['并发'])
+  assert.equal(after.regenInProgress, undefined)
+  assert.equal(after.regenRecovery, undefined)
+  assert.ok(!h.calls.includes('patch:foreground.regen-abort'))
 })

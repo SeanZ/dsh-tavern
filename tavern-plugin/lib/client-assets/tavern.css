@@ -4822,14 +4822,18 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-transfer-switch { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .dsh-tavern-transfer-switch input { width: 13px; height: 13px; margin: 0; accent-color: var(--dsh-tavern-accent); }
 .dsh-tavern-transfer-switch.is-off { opacity: .5; }
-.dsh-tavern-transfer-bar .dsh-tavern-btn.primary {
-  margin-left: auto;
+.dsh-tavern-transfer-bar .dsh-tavern-btn.primary { margin-left: auto; }
+.dsh-tavern-transfer-bar .dsh-tavern-btn.primary,
+.dsh-tavern-transfer-exported .dsh-tavern-btn.primary {
   background: var(--dsh-tavern-accent-active);
   color: #fff;
   font-weight: 600;
   border-color: transparent;
 }
-.dsh-tavern-transfer-bar .dsh-tavern-btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+.dsh-tavern-transfer-bar .dsh-tavern-btn.primary:hover:not(:disabled),
+.dsh-tavern-transfer-exported .dsh-tavern-btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+/* 导出后的「保存到手机」是真链接（长按可复制地址），按按钮样子画。 */
+.dsh-tavern-transfer-save { display: inline-flex; align-items: center; text-decoration: none; }
 .dsh-tavern-transfer-drop {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 26px 16px;
