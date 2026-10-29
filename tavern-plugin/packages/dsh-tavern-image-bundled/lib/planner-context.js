@@ -1,4 +1,5 @@
 import { RULE_ENTRY_HINT, stripEngineSyntax } from './planner.js'
+import { PROMPT_FORMATS } from './prompt-presets.js'
 
 const list = value => Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，\n]/) : []
 const clean = values => [...new Set(values.map(v => String(v ?? '').trim()).filter(Boolean))]
@@ -56,7 +57,7 @@ function characterTerms(character) {
 }
 
 /** Split resident/dynamic rules and scope character detail to names found in the story. */
-const PROMPT_MODES = new Set(['tags', 'natural', 'mixed'])
+const PROMPT_MODES = new Set(PROMPT_FORMATS)
 
 export function selectPlannerContext({ entries = [], selected = [], text = '', definitions = {}, backend = '', promptMode = '', characterUpdates = false } = {}) {
   const staticBlocks = [], dynamicBlocks = []

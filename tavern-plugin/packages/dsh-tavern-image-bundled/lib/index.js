@@ -45,6 +45,8 @@ import { transcodeImageOutputAsync, isBlankImage } from './image-output.js'
 import { buildComfySimpleWorkflow, inspectComfySimple, normalizeComfySimpleConfig } from './comfy-simple.js'
 import { createDiagnostics } from './diagnostics.js'
 import { deleteWorkflow } from './workflow-delete.js'
+import { createFormatWorldbooks } from './format-worldbooks.js'
+import { composeStructuredPrompt, combineStructuredPrompt } from './prompt-presets.js'
 
 export const name = 'dsh-tavern-image'
 export const inject = ['webServer']
@@ -264,7 +266,7 @@ const VISION_SYSTEM = [
 export function expandRosterCalls(text, scoped, mode, options = {}) {
       // options.onMacro(entry)：诊断用，报告每个宏解析成了谁、哪套衣服、丢掉了哪些负面词。
       const note = (entry) => { if (typeof options?.onMacro === 'function') { try { options.onMacro(entry) } catch {} } }
-      const natural = options?.style === 'natural'
+      const natural = options?.style === 'natural' || options?.style === 'structured'
       let lastPerson = null
       const nameKey = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
       const standaloneNames = new Set([...String(text ?? '').matchAll(/\$\{([\s\S]*?)\}\$/g)].flatMap((m) => {
@@ -464,7 +466,8 @@ function resolveWearText(person, text) {
 
 /** 人物宏展开 / 规范化用自然语言还是 tag 写法（与 prepareImagePrompt 的判断一致）。 */
 function rosterStyle(config, workflow = null) {
-  return resolvePromptMode(config, promptBackendContext(config, workflow)) === 'natural' ? 'natural' : 'tags'
+  const mode = resolvePromptMode(config, promptBackendContext(config, workflow))
+  return mode === 'structured' ? 'structured' : mode === 'natural' ? 'natural' : 'tags'
 }
 
 /** 服装字段里的占位值（如 "none"）不写进提示词。 */
@@ -664,6 +667,7 @@ export function apply(ctx, config = {}) {
   route(`${BASE}/img`, (request, response, url, engine) => engine.handleConsole('img', request, response, url))
   route(`${BASE}/cards`, (request, response, url, engine) => engine.handleConsole('cards', request, response, url))
   route(`${BASE}/delete-job`, (request, response, url, engine) => engine.handleConsole('delete-job', request, response, url))
+  route(`${BASE}/worldbook`, (request, response, url, engine) => engine.handleConsole('worldbook', request, response, url))
   route(`${BASE}/worldbook-import`, (request, response, url, engine) => engine.handleConsole('worldbook-import', request, response, url))
   route(`${BASE}/worldbook-entry`, (request, response, url, engine) => engine.handleConsole('worldbook-entry', request, response, url))
   route(`${BASE}/worldbook-add`, (request, response, url, engine) => engine.handleConsole('worldbook-add', request, response, url))
@@ -1308,7 +1312,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             job.controller.signal.throwIfAborted()
             if (!jobs.has(job.id)) return
             const result = await generateImage(channel, {
-              positive: compiled.positive, negative: compiled.negative, seed: compiled.seed, characters: compiled.characters,
+              positive: compiled.positive, negative: compiled.negative, promptMode: compiled.promptMode, seed: compiled.seed, characters: compiled.characters,
               width: compiled.size.width, height: compiled.size.height, steps: job.params.steps, cfg: job.params.cfg,
             }, { signal: job.controller.signal, maxImageBytes, onTask: info => {
               if (info?.provider && info?.taskId) {
@@ -1800,132 +1804,30 @@ function createRuntime(ctx, overrides, logger, deps) {
       return next
     }
 
-    /** 读世界书文件（保留 enabled 标记），返回 { name, entries }。 */
-    // 两本世界书并列，互不覆盖：
-//   1. 生图规则      worldbook.json         ← 种子 世界书-通用生图规则.json
-//   2. 角色与服装库  worldbook-outfits.json ← 种子 世界书-角色与服装库.json
-// 每本各自独立落盘、独立编辑；加载时按固定顺序合并进同一份提示词。
-const WORLD_BOOKS = [
-  { data: 'worldbook.json', seed: '世界书-通用生图规则.json', label: '生图规则', fallbackName: '生图世界书' },
-  { data: 'worldbook-outfits.json', seed: '世界书-角色与服装库.json', label: '角色与服装库', fallbackName: '角色与服装库' },
-]
-
-async function loadOneWorldbook(book) {
-  let raw = await readJson(join(ROOT, book.data), null)
-  // 首次运行：这两个文件都是使用者自己的数据，不进公开仓库。
-  // 仓库各带一份种子 —— 只在对应文件不存在时生成一次，之后永不覆盖。
-  if (!raw) {
-    const seed = await readJson(join(ROOT, book.seed), null)
-    const seeded = seed ? normalizeWorldbook(seed) : null
-    if (seeded && seeded.entries.length) {
-      raw = seeded
-      try {
-        await writeJsonSafe(join(ROOT, book.data), seeded, join(ROOT, 'backups'))
-        logger.info?.('dsh-tavern-image: 首次运行，已用种子生成「' + book.label + '」（' + seeded.entries.length + ' 条）')
-      } catch (error) {
-        logger.warn?.('dsh-tavern-image: 「' + book.label + '」落盘失败 ' + (error?.message ?? error))
-      }
+    // Each prompt format owns both rule books. Migration is atomic and leaves the
+    // original files untouched; edits never spill into another format.
+    const formatWorldbooks = createFormatWorldbooks({ root: ROOT })
+    const worldbookFormat = value => {
+      const mode = value || resolvePromptMode(config, promptBackendContext(config, styleWorkflow()))
+      if (!['tags', 'natural', 'mixed', 'structured'].includes(mode)) throw new Error('世界书格式无效')
+      return mode
     }
-  }
-  const norm = raw ? normalizeWorldbook(raw) : null
-  return norm ?? { name: book.fallbackName, entries: [] }
-}
-
-async function loadWorldbook() {
-  const loaded = []
-  for (const book of WORLD_BOOKS) {
-    try {
-      const one = await loadOneWorldbook(book)
-      loaded.push({ label: book.label, name: one.name, entries: one.entries })
-    } catch (error) {
-      // 单本坏掉不能连累另一本，也不能连累生图。
-      logger.warn?.('dsh-tavern-image: 世界书「' + book.label + '」加载失败：' + (error?.message ?? error))
+    const BOOK_KEYS = { main: 'worldbook.json', outfits: 'worldbook-outfits.json' }
+    const normalizeBookKey = key => {
+      if (key && !Object.hasOwn(BOOK_KEYS, key)) throw new Error('世界书分组无效')
+      return key || 'main'
     }
-  }
-  if (!loaded.length) return { name: '生图世界书', entries: [] }
-  const entries = []
-  for (const book of loaded) for (const entry of book.entries) entries.push(entry)
-  return {
-    name: loaded[0].name,
-    entries,
-    // 便于 /state 与前端区分两本，并显示各自条数
-    books: loaded.map(book => ({ label: book.label, name: book.name, count: book.entries.length })),
-  }
-}
-
-    /**
- * 按「本」读写（编辑用）。
- * loadWorldbook() 是给提示词用的合并视图；编辑必须落到某一本上，
- * 否则改第二本的条目时会把合并结果写回第一本，两本互相污染。
- */
-const BOOK_KEYS = { main: 'worldbook.json', outfits: 'worldbook-outfits.json' }
-const BOOK_SEEDS = { main: '世界书-通用生图规则.json', outfits: '世界书-角色与服装库.json' }
-
-function normalizeBookKey(key) {
-  const k = String(key ?? '').trim()
-  return Object.prototype.hasOwnProperty.call(BOOK_KEYS, k) ? k : 'main'
-}
-
-/** 读某一本（不含合并），文件不存在时用对应种子兜底。 */
-async function loadOneBook(key) {
-  const bookKey = normalizeBookKey(key)
-  const raw = await readJson(join(ROOT, BOOK_KEYS[bookKey]), null)
-  if (raw) return normalizeWorldbook(raw) ?? { name: BOOK_KEYS[bookKey], entries: [] }
-  const seed = await readJson(join(ROOT, BOOK_SEEDS[bookKey]), null)
-  const seeded = seed ? normalizeWorldbook(seed) : null
-  return seeded ?? { name: BOOK_KEYS[bookKey], entries: [] }
-}
-
-/** 写某一本，并清掉合并缓存。 */
-async function saveOneBook(key, doc) {
-  const bookKey = normalizeBookKey(key)
-  await writeJsonSafe(join(ROOT, BOOK_KEYS[bookKey]), doc, join(ROOT, 'backups'))
-  worldbookCache = null
-  return doc
-}
-
-/** 两本各自的摘要 + 条目正文，随 /state 给前端做书选择器与折叠列表。 */
-async function worldbookBookIndex() {
-  const out = []
-  for (const key of Object.keys(BOOK_KEYS)) {
-    try {
-      const one = await loadOneBook(key)
-      out.push({
-        key,
-        file: BOOK_KEYS[key],
-        seed: BOOK_SEEDS[key],
-        name: one.name,
-        count: one.entries.length,
-        enabled: one.entries.filter(entry => entry.enabled !== false).length,
-        entries: one.entries.map((entry, index) => ({
-          index,
-          comment: String(entry.comment ?? ''),
-          content: String(entry.content ?? ''),
-          enabled: entry.enabled !== false,
-          activation: entry.activation === 'keywords' ? 'keywords' : 'always',
-          keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
-        })),
-      })
-    } catch (error) {
-      out.push({ key, file: BOOK_KEYS[key], name: '', count: 0, enabled: 0, entries: [], error: String(error?.message ?? error) })
-    }
-  }
-  return out
-}
-
-let worldbookCache = null
+    const loadWorldbook = (format) => formatWorldbooks.readFormat(worldbookFormat(format))
+    const loadOneBook = (key, format) => formatWorldbooks.readBook(worldbookFormat(format), normalizeBookKey(key))
+    const saveOneBook = (key, doc, format) => formatWorldbooks.writeBook(worldbookFormat(format), normalizeBookKey(key), doc)
+    const worldbookBookIndex = (format) => formatWorldbooks.listBooks(worldbookFormat(format))
     let lastPlannerContext = null
-    async function worldbook() {
-      if (!worldbookCache) {
-        const wb = await loadWorldbook()
-        // 统一成 worldbookEntries 的形状（index / comment / content / length）
-        worldbookCache = wb.entries.map((e, index) => ({
-          index, comment: e.comment, content: e.content, length: e.content.length,
-          enabled: e.enabled !== false,
-          ...normalizeEntryActivation(e),
-        }))
-      }
-      return worldbookCache
+    async function worldbook(format) {
+      const wb = await loadWorldbook(format)
+      return wb.entries.map((e, index) => ({
+        index, comment: e.comment, content: e.content, length: e.content.length,
+        enabled: e.enabled !== false, ...normalizeEntryActivation(e),
+      }))
     }
 
     const plansByMessage = new Map()
@@ -2082,7 +1984,7 @@ let worldbookCache = null
         rules: plannerContext.staticRules, dynamicRules: plannerContext.dynamicRules,
         roster, rosterIndex: plannerContext.rosterIndex, count: want,
         extra: [config.plannerExtra, guidance].filter(Boolean).join('\n\n'),
-        smartSelection: smart, characterUpdates, force: Boolean(force || manual),
+        smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode,
       })
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
       lastPlannerContext = {
@@ -2728,6 +2630,7 @@ let worldbookCache = null
           ...normalizeEntryActivation(entry),
         })),
         // 顺手把当前世界书的名字也带上
+        worldbookFormat: worldbookFormat(),
         worldbookName: String((await loadWorldbook().catch(() => ({ name: '' }))).name ?? ''),
         // 启用条数：生图规划 tab 用它显示"几条第几条在生效"
         worldbookEnabledCount: worldbookList.filter(e => e.enabled !== false && String(e.content ?? '').trim()).length,
@@ -2761,8 +2664,8 @@ let worldbookCache = null
           promptPresets: normalizePromptPresets(config.promptPresets),
           promptPresetLibrary: BUILTIN_PROMPT_PRESETS,
           activePromptPreset: String(config.activePromptPreset ?? ''),
-          promptMode: ['auto', 'tags', 'natural', 'mixed'].includes(config.promptMode) ? config.promptMode : 'auto',
-          promptEffectiveFormat: resolvePromptMode(config, config.imageBackend),
+          promptMode: ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode) ? config.promptMode : 'auto',
+          promptEffectiveFormat: resolvePromptMode(config, promptBackendContext(config, styleWorkflow())),
           promptEffectiveName: effectivePromptPreset(config)?.name ?? '',
           promptPreviewPositive: composePresetText(String(config.promptManualPositive ?? ''), config, config.imageBackend),
           promptPreviewNegative: [activeArtistText(config).negative, promptPresetNegative(config), String(config.promptManualNegative ?? '')].filter(Boolean).join(', '),
@@ -2949,8 +2852,13 @@ let worldbookCache = null
           } catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
           return
         }
-        if (action === 'worldbook-export') {
-          try { sendJson(response, 200, { ok: true, worldbook: await loadWorldbook() }) }
+        if (action === 'worldbook' || action === 'worldbook-export') {
+          try {
+            const format = worldbookFormat(_url?.searchParams?.get('format'))
+            const book = _url?.searchParams?.get('book')
+            const wb = action === 'worldbook-export' && book ? await loadOneBook(book, format) : await loadWorldbook(format)
+            sendJson(response, 200, { ok: true, worldbookFormat: format, worldbookName: wb.name, worldbook: wb, worldbookBooks: await worldbookBookIndex(format) })
+          }
           catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
           return
         }
@@ -3335,22 +3243,15 @@ let worldbookCache = null
         if (action === 'worldbook-import') {
           try {
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
             let src = body?.worldbook
             if (typeof src === 'string') {
               try { src = JSON.parse(src) } catch { /* 当纯文本处理 */ }
             }
             const norm = normalizeWorldbook(src)
             if (!norm || !norm.entries.length) { sendJson(response, 400, { ok: false, error: '没能从这份内容里读出任何条目' }); return }
-            // 导入前备份旧的
-            try {
-              const old = await readJson(join(ROOT, BOOK_KEYS[bookKey]), null)
-              if (old) {
-                const dir = join(ROOT, 'backups'); await mkdir(dir, { recursive: true })
-                await copyFile(join(ROOT, BOOK_KEYS[bookKey]), join(dir, BOOK_KEYS[bookKey].replace(/\.json$/, '') + '-' + Date.now() + '.json'))
-              }
-            } catch {}
-            await queueWorldbookWrite(() => saveOneBook(bookKey, norm))
-            worldbookCache = null
+            // The per-format store backs up the exact destination before replacing it.
+            await queueWorldbookWrite(() => saveOneBook(bookKey, norm, format))
             logger.info?.('dsh-tavern-image: 已导入世界书《' + norm.name + '》' + norm.entries.length + ' 条')
             sendJson(response, 200, { ok: true, book: bookKey, name: norm.name, count: norm.entries.length })
           } catch (error) {
@@ -3367,12 +3268,13 @@ let worldbookCache = null
             if (patch.activation !== undefined && !['always', 'keywords'].includes(patch.activation)) throw new Error('注入方式只能选常驻或关键词触发')
             if (patch.keywords !== undefined && (!Array.isArray(patch.keywords) || patch.keywords.length > 64 || patch.keywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('关键词最多 64 个，每个最多 200 字')
             if (patch.andKeywords !== undefined && (!Array.isArray(patch.andKeywords) || patch.andKeywords.length > 64 || patch.andKeywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('附加条件最多 64 个，每个最多 200 字')
-            const backendIds = new Set(['comfyui', ...IMAGE_PROVIDERS.map(item => item.id)])
+            const backendIds = new Set(['comfyui', 'tags', 'natural', 'mixed', 'structured', ...IMAGE_PROVIDERS.map(item => item.id)])
             if (patch.backends !== undefined && (!Array.isArray(patch.backends) || patch.backends.some(id => !backendIds.has(id)))) throw new Error('请选择支持的生图渠道类型')
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
     const count = await queueWorldbookWrite(async () => {
       // 编辑必须落在单本上：用合并视图会把第二本的内容写回第一本。
-      const wb = await loadOneBook(bookKey)
+      const wb = await loadOneBook(bookKey, format)
               if (!Number.isInteger(index) || index < 0 || index >= wb.entries.length) throw new Error('条目不存在')
               if (body?.remove === true) wb.entries.splice(index, 1)
               else {
@@ -3382,7 +3284,7 @@ let worldbookCache = null
                 if (typeof patch.enabled === 'boolean') e.enabled = patch.enabled
                 Object.assign(e, normalizeEntryActivation({ ...e, ...patch }))
               }
-              await saveOneBook(bookKey, wb)
+              await saveOneBook(bookKey, wb, format)
               return wb.entries.length
             })
             sendJson(response, 200, { ok: true, book: bookKey, count })
@@ -3396,10 +3298,11 @@ let worldbookCache = null
         if (action === 'worldbook-add') {
           try {
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
     const count = await queueWorldbookWrite(async () => {
-      const wb = await loadOneBook(bookKey)
+      const wb = await loadOneBook(bookKey, format)
               wb.entries.push({ comment: String(body?.comment ?? '新条目'), content: String(body?.content ?? ''), enabled: true, ...normalizeEntryActivation({}) })
-              await saveOneBook(bookKey, wb)
+              await saveOneBook(bookKey, wb, format)
               return wb.entries.length
             })
             sendJson(response, 200, { ok: true, book: bookKey, count, index: count - 1 })
@@ -3412,8 +3315,9 @@ let worldbookCache = null
         // ---- 导出当前世界书 ----
         if (action === 'worldbook-export') {
           try {
-            const wb = await loadWorldbook()
-            sendJson(response, 200, { ok: true, worldbook: wb })
+            const format = worldbookFormat(body?.format)
+            const wb = body?.book ? await loadOneBook(body.book, format) : await loadWorldbook(format)
+            sendJson(response, 200, { ok: true, worldbookFormat: format, worldbook: wb })
           } catch (error) {
             sendJson(response, 400, { ok: false, error: String(error?.message ?? error) })
           }
@@ -3438,7 +3342,7 @@ let worldbookCache = null
         if (patch.clearComfyAuthToken === true) config.comfyAuthToken = ''
         if (patch.clearComfyAuthPass === true) config.comfyAuthPass = ''
         for (const key of ['lockWorkflow', 'overrideSteps', 'autoImageGen', 'imageEnabled', 'plannerEnabled', 'jpegOutput', 'smartImageSelection', 'characterAutoUpdate']) if (typeof patch[key] === 'boolean') config[key] = patch[key]
-        if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed'].includes(patch.promptMode)) config.promptMode = patch.promptMode
+        if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(patch.promptMode)) config.promptMode = patch.promptMode
         if (typeof patch.activePromptPreset === 'string') config.activePromptPreset = patch.activePromptPreset.slice(0, 80)
         if (Array.isArray(patch.promptPresets)) config.promptPresets = normalizePromptPresets(patch.promptPresets)
         config.activePromptPreset = validPromptPresetId(config)
@@ -3762,12 +3666,16 @@ let worldbookCache = null
   if (action === 'export-all') {
     const [defs, wbMain, wbOutfits, cfg] = await Promise.all([
       readJson(DEFS_PATH, null),
-      readJson(join(ROOT, BOOK_KEYS.main), null),
-      readJson(join(ROOT, BOOK_KEYS.outfits), null),
+      loadOneBook('main'),
+      loadOneBook('outfits'),
       readJson(CONFIG_PATH, null),
     ])
     const jobs = await readJson(join(ROOT, 'jobs-store.json'), null)
     const plans = await readJson(join(ROOT, 'plans-store.json'), null)
+    const formatBooks = {}
+    for (const mode of ['tags', 'natural', 'mixed', 'structured']) {
+      formatBooks[mode] = { main: await loadOneBook('main', mode), outfits: await loadOneBook('outfits', mode) }
+    }
     const pkg = await readJson(join(ROOT, 'package.json'), {}).catch(() => ({}))
     const bundle = {
       kind: 'dsh-tavern-image/backup',
@@ -3781,7 +3689,7 @@ let worldbookCache = null
         worldbookOutfits: Array.isArray(wbOutfits?.entries) ? wbOutfits.entries.length : 0,
         jobs: Array.isArray(jobs?.jobs) ? jobs.jobs.length : (Array.isArray(jobs) ? jobs.length : 0),
       },
-      data: { definitions: defs, worldbook: wbMain, worldbookOutfits: wbOutfits, config: cfg, jobsStore: jobs, plansStore: plans },
+      data: { definitions: defs, worldbook: wbMain, worldbookOutfits: wbOutfits, formatWorldbooks: formatBooks, config: cfg, jobsStore: jobs, plansStore: plans },
     }
     sendJson(response, 200, { ok: true, bundle })
     return
@@ -3813,14 +3721,16 @@ let worldbookCache = null
         await writeJsonSafe(DEFS_PATH, data.definitions, backupDir)
         written.push('角色库')
       } else skipped.push('角色库')
-      if (data.worldbook && typeof data.worldbook === 'object') {
-        await writeJsonSafe(join(ROOT, BOOK_KEYS.main), data.worldbook, backupDir)
-        written.push('生图规则世界书')
-      } else skipped.push('生图规则世界书')
-      if (data.worldbookOutfits && typeof data.worldbookOutfits === 'object') {
-        await writeJsonSafe(join(ROOT, BOOK_KEYS.outfits), data.worldbookOutfits, backupDir)
-        written.push('角色与服装库世界书')
-      } else skipped.push('角色与服装库世界书')
+      await queueWorldbookWrite(async () => {
+        for (const mode of ['tags', 'natural', 'mixed', 'structured']) {
+          const books = data.formatWorldbooks?.[mode] ?? (mode !== 'structured' ? { main: data.worldbook, outfits: data.worldbookOutfits } : {})
+          for (const key of ['main', 'outfits']) {
+            const doc = normalizeWorldbook(books[key])
+            if (doc) { await saveOneBook(key, doc, mode); written.push(mode + '/' + key + ' 世界书') }
+            else skipped.push(mode + '/' + key + ' 世界书')
+          }
+        }
+      })
       if (data.config && typeof data.config === 'object') {
         await writeJsonSafe(CONFIG_PATH, data.config, backupDir)
         written.push('渠道配置')
@@ -3833,7 +3743,7 @@ let worldbookCache = null
         await writeJsonSafe(join(ROOT, 'plans-store.json'), data.plansStore, backupDir)
         written.push('规划记录')
       } else skipped.push('规划记录')
-      worldbookCache = null
+
     } catch (error) {
       return sendJson(response, 500, { ok: false, error: '写入失败：' + String(error?.message ?? error) })
     }
@@ -4281,9 +4191,10 @@ let worldbookCache = null
           const provider = String(config.plannerProvider || fallback?.provider || '')
           const model = String(config.plannerModel || fallback?.model || '')
           if (!provider || !model) { sendJson(response, 400, { ok: false, error: '还没选规划用的模型，且 Tavern 设置里也没有「默认后台模型」（设置页 → 规划）' }); return }
+          const sectioned = resolvePromptMode(config, promptBackendContext(config, styleWorkflow())) === 'structured'
           const system = [
             '你是绘图提示词编辑。',
-            '只输出修改后的英文 Tag 串，一行，不要解释、不要加引号、不要换行。',
+            sectioned ? '保留中文分节结构、角色标识和参考图对应关系；只输出修改后的完整提示词，不要解释，不要添加画面任务节。' : '只输出修改后的英文 Tag 串，一行，不要解释、不要加引号、不要换行。',
             '保留原有的人物身份与画风 Tag，只按用户要求增删调整。',
           ].join('\n')
           const ask = [
@@ -4295,7 +4206,7 @@ let worldbookCache = null
             '只输出修改后的提示词。',
           ].join('\n')
           const out = await runPlanner(deps.llm, { provider, model, reasoningEffort: plannerEffortFor(fallback), system, text: ask, maxTokens: 1200, temperature: 0.7 })
-          let next = String(out?.text ?? '').split('\n').map(l => l.trim()).filter(Boolean)[0] ?? ''
+          let next = sectioned ? String(out?.text ?? '').trim() : String(out?.text ?? '').split('\n').map(l => l.trim()).filter(Boolean)[0] ?? ''
           if (!next) { sendJson(response, 400, { ok: false, error: '模型没返回内容' }); return }
           const structured = /<scene_composition|<character_\d/i.test(current)
           if (structured) next = preserveCharacterMetadata(current, next, src?.params?.characters)
@@ -4610,7 +4521,7 @@ async function loadConfig(overrides) {
   config.comfyMode = config.comfyMode === 'simple' ? 'simple' : 'workflow'
   config.comfySimple = normalizeComfySimpleConfig(config.comfySimple)
   config.promptPresets = normalizePromptPresets(config.promptPresets)
-  if (!['auto', 'tags', 'natural', 'mixed'].includes(config.promptMode)) config.promptMode = 'auto'
+  if (!['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode)) config.promptMode = 'auto'
   config.activePromptPreset = validPromptPresetId(config, String(config.activePromptPreset ?? '').slice(0, 80))
   config.promptManualPositive = String(config.promptManualPositive ?? '').slice(0, 4000)
   config.promptManualNegative = String(config.promptManualNegative ?? '').slice(0, 4000)
@@ -5344,9 +5255,9 @@ function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBacke
     const raw = String(item?.prompt ?? '')
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
     const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
-    const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style })
+    const prompt = normalizePrompts(style === 'structured' ? injected.text : applyWeights(injected.text, weightMode), scoped, { backend, style })
     const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
-    const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style })
+    const normalizedUc = normalizePrompts(style === 'structured' ? uc : applyWeights(uc, weightMode), scoped, { backend, style })
     if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
     const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
     return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }
@@ -5397,7 +5308,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const nsfw = NSFW_HINT.test(source)
   const back = BACK_VIEW.test(source)
   const full = FULL_FRAME.test(source)
-  const natural = options?.style === 'natural'
+  const natural = options?.style === 'natural' || options?.style === 'structured'
   // 规划原文（options.raw，带宏）去掉宏后判断是不是裸露画面。没有原文时只看 nsfw：
   // 这里的文字已经展开了人物外貌，外貌里的 medium breasts 之类会让每张图都被当成裸露画面。
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
@@ -5558,6 +5469,21 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
   const backend = promptBackendContext(config, workflow)
   const mode = resolvePromptMode(config, backend)
 
+  if (mode === 'structured') {
+    const injected = injectDefinitions(tag, definitions, config, { style: 'structured', raw: params.rawTag })
+    const prepared = composeStructuredPrompt({ text: injected.text, config, artist, artistPosition: params.artistPosition ?? config.artistPosition,
+      negative: [activeArtistText(config).negative, params.negative, ...(injected.negatives ?? [])].filter(Boolean).join('\n') })
+    if (workflow) {
+      const binding = workflow.bindings.negative?.[0]
+      const workflowNegative = binding ? String(workflow.prompt[binding.node]?.inputs?.[binding.input] ?? '') : ''
+      if (config.negativeMode === 'workflow') prepared.negative = [workflowNegative, ...(injected.negatives ?? [])].filter(Boolean).join('\n')
+      else if (config.negativeMode === 'merge') prepared.negative = [workflowNegative, prepared.negative].filter(Boolean).join('\n')
+    }
+    stage('compile-positive', { mode, final: prepared.positive, hits: injected.hits })
+    stage('compile-negative', { negativeMode: config.negativeMode, final: prepared.negative })
+    return { positive: prepared.positive, negative: prepared.negative, hits: injected.hits }
+  }
+
   const rawBase = (params.artistPosition ?? config.artistPosition) === 'suffix'
     ? [tag, artist].filter(Boolean).join(', ')
     : [artist, tag].filter(Boolean).join(', ')
@@ -5595,29 +5521,34 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 
 export function compileChannelJob({ params, config, definitions, channel = null, onStage = null }) {
   const prepared = prepareImagePrompt({ params, config, definitions, channel, onStage })
+  const promptMode = resolvePromptMode(config, channel?.provider ?? config.imageBackend)
+  const separator = promptMode === 'structured' ? '\n\n' : ', '
   const nativeNovelai = channel?.provider === 'novelai' && channel?.options?.protocol !== 'chat'
   const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend, { characterNegativePriority: nativeNovelai })
   if (!nativeNovelai && characters.length) {
-    prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
-    prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(', ')
+    prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(separator)
+    prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(separator)
   }
   const dimensions = config.sizes?.[params.size]
   const pixels = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i.exec(String(params.size ?? ''))
   const size = pixels ? { width: Number(pixels[1]), height: Number(pixels[2]) } : dimensions || { width: 832, height: 1216 }
   if (![size.width, size.height].every(value => Number.isInteger(value) && value >= 64 && value <= 8192)) throw new Error('图片尺寸需在 64–8192 像素之间')
-  return { ...prepared, characters: nativeNovelai ? characters : [], seed: randomInt(0, 2 ** 32), size, loras: [] }
+  return { ...prepared, promptMode, characters: nativeNovelai ? characters : [], seed: randomInt(0, 2 ** 32), size, loras: [] }
 }
 
 export function compileJob({ workflow, params, config, definitions, onStage = null }) {
   const prompt = structuredClone(workflow.prompt)
   const prepared = prepareImagePrompt({ workflow, params, config, definitions, onStage })
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, 'comfyui'), 'comfyui')
-  const positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
-  const negative = [...new Set([prepared.negative, ...characters.map(item => item.uc)].flatMap(value => String(value || '').split(',').map(part => part.trim())).filter(Boolean))].join(', ')
+  const promptMode = resolvePromptMode(config, promptBackendContext(config, workflow))
+  const characters = compileCharacterList(params.characters, definitions, config, promptMode, 'comfyui')
+  const positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(promptMode === 'structured' ? '\n\n' : ', ')
+  const negative = promptMode === 'structured'
+    ? [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join('\n\n')
+    : [...new Set([prepared.negative, ...characters.map(item => item.uc)].flatMap(value => String(value || '').split(',').map(part => part.trim())).filter(Boolean))].join(', ')
   const { hits } = prepared
 
   setBinding(prompt, workflow.bindings.positive, positive)
-  if (workflow.bindings.negative?.length) setBinding(prompt, workflow.bindings.negative, applyWeights(negative, config.weightMode))
+  if (workflow.bindings.negative?.length) setBinding(prompt, workflow.bindings.negative, promptMode === 'structured' ? negative : applyWeights(negative, config.weightMode))
 
   const seed = Number.isSafeInteger(workflow.fixedSeed) && workflow.fixedSeed >= 0
     ? workflow.fixedSeed
@@ -5660,7 +5591,7 @@ export function compileJob({ workflow, params, config, definitions, onStage = nu
   }
 
   const size = applySize(prompt, params.size, workflow.sizes ?? config.sizes ?? null, workflow.bindings?.size)
-  return { prompt, seed, positive, negative, size, hits, workflowId: workflow.id, loras: loraApplied }
+  return { prompt, seed, positive, negative, promptMode, size, hits, workflowId: workflow.id, loras: loraApplied }
 }
 
 /** 挑工作流：先看锁定 / 默认，再按外部传来的 model 匹配 id / label / match。 */

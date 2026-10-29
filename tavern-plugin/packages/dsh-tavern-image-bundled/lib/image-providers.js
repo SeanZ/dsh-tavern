@@ -1,5 +1,6 @@
 import { inflateRawSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
+import { combineStructuredPrompt } from './prompt-presets.js'
 
 const DEFAULT_MAX = 32 * 1024 * 1024
 const DEFAULT_TIMEOUT = 300_000
@@ -134,6 +135,7 @@ async function fetchJson(fetchImpl, url, init, limit, signal, channel) {
 function combinedPrompt(request) {
   const prompt = String(request.positive ?? '').trim()
   const negative = String(request.negative ?? '').trim()
+  if (request.promptMode === 'structured') return combineStructuredPrompt(prompt, negative)
   return negative ? `${prompt}\n\nAvoid: ${negative}` : prompt
 }
 function dims(request) {
