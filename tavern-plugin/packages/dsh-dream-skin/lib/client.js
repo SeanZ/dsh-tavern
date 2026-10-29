@@ -5889,14 +5889,8 @@ window.__ModuleLoader__.load({
 					surprise: refreshSurprise
 				};
 			};
-			ctx.slots.inject("settings.dreamSkin.item", () => ctx.slots.register({
-				name: "settings.dreamSkin.item",
-				id: "dream-skin-packs",
-				order: 40,
-				store: packStore,
-				locale: SETTINGS_NS,
-				inject: packInjected
-			}, PacksRow));
+			// Tavern: no ä¸»é¢å row. Packs only held colors (the ç®è¤ row covers that) and
+			// Tavern's çé¢ç®è¤ row takes custom looks; packs imported earlier still load.
 
 			// Wire the shared "import a file" handler exposed to PacksRow via a
 			// small module-level hook (the file input lives in the row component).

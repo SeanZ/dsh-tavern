@@ -514,5 +514,5 @@
         const { TavernSettingsSection, TavernPluginsSettingsSection } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             TavernDefaultModelSetting, TavernConversationWritingSkills, HeaderItemsSettings,
-            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, InterfaceSkinSettings
+            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings
         });

@@ -24687,29 +24687,28 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
                 const active = index && index.active || "";
                 const disabled = !index || busy;
                 const activeSkin = skins.find(function (item) { return item.id === active; });
-                return h("section", { className: "dsh-tavern-settings-group" },
-                    h("div", { className: "dsh-tavern-settings-row" },
-                        h("span", { className: "dsh-tavern-settings-copy" },
-                            h("strong", null, "界面皮肤"),
-                            h("p", { className: "dsh-tavern-settings-desc" }, "导入 .css 皮肤文件更换酒馆的外观，可导入多套、在这里切换；选「默认」恢复原样。皮肤叠在「Theme / 外观」的配色之上，只改样式，不影响正文和存档。")),
-                        h("select", { "aria-label": "界面皮肤", disabled, value: active, onChange: function (event) { void run("selectInterfaceSkin", { id: event.target.value || null }, "已切换"); } },
+                // Same look as the other rows of 「Theme / 外观」 (dream-skin's group/title/button styles).
+                const control = { height: "32px", padding: "0 14px", borderRadius: "8px", border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-button-elevated-fill)", color: "var(--dsw-alias-label-primary)", cursor: "pointer", font: "inherit" };
+                return h("div", { style: { borderBottom: "1px solid var(--dsw-alias-border-l2)", display: "flex", flexDirection: "column", gap: "10px", padding: "16px 0" } },
+                    h("div", { style: { color: "var(--dsw-alias-label-primary)", fontSize: "14px", lineHeight: "22px" } }, "界面皮肤"),
+                    h("div", { style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" } },
+                        h("select", { "aria-label": "界面皮肤", disabled, value: active, style: Object.assign({}, control, { padding: "0 10px", minWidth: "160px" }), onChange: function (event) { void run("selectInterfaceSkin", { id: event.target.value || null }, "已切换"); } },
                             h("option", { value: "" }, "默认"),
-                            skins.map(function (skin) { return h("option", { key: skin.id, value: skin.id }, skin.name); }))),
-                    h("div", { className: "dsh-tavern-settings-row" },
-                        h("span", { className: "dsh-tavern-settings-desc" }, message),
-                        h("span", null,
-                            activeSkin && !activeSkin.builtin ? h("button", { type: "button", className: "dsh-tavern-btn", disabled, onClick: function () {
-                                if (window.confirm("删除皮肤「" + activeSkin.name + "」？")) void run("deleteInterfaceSkin", { id: active }, "已删除，恢复默认外观");
-                            } }, "删除当前皮肤") : null,
-                            h("button", { type: "button", className: "dsh-tavern-btn", disabled, onClick: function () { fileInput.current && fileInput.current.click(); } }, "导入皮肤…"),
-                            h("input", { ref: fileInput, type: "file", accept: ".css,text/css", hidden: true, onChange: function (event) { const file = event.target.files && event.target.files[0]; event.target.value = ""; void importFile(file); } }))));
+                            skins.map(function (skin) { return h("option", { key: skin.id, value: skin.id }, skin.name); })),
+                        h("button", { type: "button", style: control, disabled, onClick: function () { fileInput.current && fileInput.current.click(); } }, "导入皮肤…"),
+                        activeSkin && !activeSkin.builtin ? h("button", { type: "button", style: control, disabled, onClick: function () {
+                            if (window.confirm("删除皮肤「" + activeSkin.name + "」？")) void run("deleteInterfaceSkin", { id: active }, "已删除，恢复默认外观");
+                        } }, "删除") : null,
+                        h("input", { ref: fileInput, type: "file", accept: ".css,text/css", hidden: true, onChange: function (event) { const file = event.target.files && event.target.files[0]; event.target.value = ""; void importFile(file); } })),
+                    h("div", { role: "status", style: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "18px" } },
+                        message || "导入 .css 文件改变酒馆的排版、字体和形状，可导入多套在这里切换；选「默认」恢复原样。叠在上面的「皮肤」配色之上，不影响正文和存档。"));
             }
 
             return { applyActiveInterfaceSkin, InterfaceSkinSettings };
         }
         const { applyActiveInterfaceSkin, InterfaceSkinSettings } = createInterfaceSkinModule({ React, rpc });
         // Settings owns its initial snapshot; each editor saves only its own resource.
-        function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernDefaultModelSetting, TavernConversationWritingSkills, HeaderItemsSettings, CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, InterfaceSkinSettings }) {
+        function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernDefaultModelSetting, TavernConversationWritingSkills, HeaderItemsSettings, CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings }) {
             function GlobalPlayDefaults({ settings }) {
                 const h = React.createElement;
                 const [data, setData] = React.useState(null), [busy, setBusy] = React.useState(false), [message, setMessage] = React.useState("");
@@ -24825,7 +24824,6 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
                     group("显示与交互", "对所有游戏生效，只改界面，不影响正文和存档。",
                         state.settings ? h(SettingSwitch, { settings: state.settings, name: "autoOpenStatusPanel", title: "进入游戏时打开酒馆状态",
                             description: "进入或切换到一局游戏时，右侧面板自动展开并显示本局设置和酒馆状态。关闭后右侧面板保持你上次的样子。" }) : null,
-                        h(InterfaceSkinSettings),
                         h(CandidatePreferencesSettings),
                         // Most players never need this; it sits last, folded.
                         h(HeaderItemsSettings)),
@@ -24857,7 +24855,7 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
         const { TavernSettingsSection, TavernPluginsSettingsSection } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             TavernDefaultModelSetting, TavernConversationWritingSkills, HeaderItemsSettings,
-            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, InterfaceSkinSettings
+            CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings
         });
 
 // 自动排版（外观 → 正文排版）：模型经常把一整轮正文写成一整块——句子之间只有软换行，
@@ -33322,6 +33320,15 @@ function createTurnRailFilter(root, options) {
 					label: function () { return "DSH Tavern"; }
 				}, TavernSettingsSection); });
 			}, "dsh-tavern: settings section");
+			// 界面皮肤 sits in 「Theme / 外观」 (the bundled dream-skin's item list), next to its
+			// 皮肤 and 强调色 rows, where players look for the app's look.
+			ctx.effect(function () {
+				return slots.inject("settings.dreamSkin.item", function () { return slots.register({
+					name: "settings.dreamSkin.item",
+					id: "dsh-tavern-interface-skin",
+					order: 26
+				}, InterfaceSkinSettings); });
+			}, "dsh-tavern: interface skin settings");
 			ctx.effect(function () {
 				return slots.inject("settings.section", function () { return slots.register({
 					name: "settings.section",

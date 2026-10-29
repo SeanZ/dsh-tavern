@@ -37,8 +37,7 @@ test('状态栏位置是全局显示偏好，保存后通知现有对局刷新',
 
 test('界面皮肤：导入后立即生效，选「默认」恢复原样', async t => {
   let index = { active: null, skins: [] }, css = ''
-  const { page, calls } = await openTavernSettings(t, { respond(method, args) {
-    if (method === 'getTavernSettings') return { settings: { defaultPlaySettings: { playerName: '你', backgroundTasks: {} } }, modelCatalog: [] }
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: interface skin settings', respond(method, args) {
     if (method === 'listInterfaceSkins') return index
     if (method === 'getActiveInterfaceSkin') return { id: index.active, css: index.active ? css : '' }
     if (method === 'importInterfaceSkin') { css = args.css; index = { active: 'aaaaaaaaaaaa', skins: [{ id: 'aaaaaaaaaaaa', name: args.name.replace(/\.css$/, '') }] }; return index }
