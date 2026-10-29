@@ -137,7 +137,7 @@ export function createSessionViewProjection({
       cardUpdate,
       // The automatic card reload, shown until the next turn.
       cardAutoReload: chat.cardAutoReload && Number(chat.cardAutoReload.turn) === latestStoryTurn ? { at: chat.cardAutoReload.at } : null,
-      statusBarPlacement: chat.statusBarPlacement === 'body' ? 'body' : 'sidebar',
+      statusBarPlacement: runtimeSettings.defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar',
       posture: chat.posture || '',
       postureEnabled: chat.backgroundTasks?.posture !== false,
       styleReference: latestStyleReference(chat),
@@ -355,9 +355,9 @@ export function createSessionViewProjection({
       regeneration: { replacing, inProgress: chat.regenInProgress === true }, keepInput })
     return { transcriptTurns: plan.turns, transcriptFrom: plan.from }
   }
-  function volatileSessionViewFields(chat, activity, changes) {
+  async function volatileSessionViewFields(chat, activity, changes) {
     const fields = sessionStateView.volatile(chat, activity, changes)
-    return { ...fields, forkTurnsByMessageId: forkTurnsForChat(chat), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat),
+    return { ...fields, statusBarPlacement: (await readTavernSettings()).defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar', forkTurnsByMessageId: forkTurnsForChat(chat), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat),
       cardSave: cardSaveViewOf(chat),
       ...transcriptPlanFields(chat, sessionDebugEvidence(chat.sessionId), fields.replacingDshTurns, fields.keptInputTurns) }
   }
@@ -374,7 +374,7 @@ export function createSessionViewProjection({
 
   async function projectCachedSessionView(chat, previous, activity) {
     const mode = chat.mode || 'story'
-    const reused = Object.assign({}, previous, volatileSessionViewFields(chat, activity, {baseRevision:chat._storageRevision,indices:[],layoutChanged:false}))
+    const reused = Object.assign({}, previous, await volatileSessionViewFields(chat, activity, {baseRevision:chat._storageRevision,indices:[],layoutChanged:false}))
     if (mode === 'script') reused.scriptProgress = await scriptProgressOf(chat)
     return reused
   }
@@ -392,7 +392,7 @@ export function createSessionViewProjection({
     const mode = chat.mode || 'story'
     const previousMessages = previous.tavernHelper.messages
     const changes = {baseRevision:previous.tavernHelper.stateRevision,indices:[...dirtyMessageIndices],layoutChanged,changedHeaderFields}
-    const next = Object.assign({}, previous, volatileSessionViewFields(chat, activity, changes), {
+    const next = Object.assign({}, previous, await volatileSessionViewFields(chat, activity, changes), {
       posture: chat.posture || '',
       postureEnabled: chat.backgroundTasks?.posture !== false,
       styleReference: latestStyleReference(chat),

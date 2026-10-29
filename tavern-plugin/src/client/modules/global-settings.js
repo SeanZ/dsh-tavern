@@ -19,7 +19,8 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                     const profile = await rpc("getUserPreferenceProfile", { globalDefaults: true });
                     setData(current => ({ ...current, profile: profile.userProfile }));
                 } else setData(current => ({ ...current, ...result.settings.defaultPlaySettings }));
-                setMessage("已保存，新游戏继承此设置，已有游戏保持不变。");
+                if (patch && Object.hasOwn(patch, "statusBarPlacement")) { notifySettingsChanged(); setMessage("已保存，所有对局使用此状态栏位置。"); }
+                else setMessage("已保存，新游戏继承此设置，已有游戏保持不变。");
             } catch (err) { setMessage("保存失败：" + err.message); }
             finally { setBusy(false); }
         }
@@ -32,7 +33,7 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
         return h("div", { className: "dsh-tavern-settings-section dsh-local-settings dsh-tavern-global-defaults" },
             h("section", { className: "dsh-local-section" }, h("h3", null, "游玩"),
                 h("label", { className: "dsh-local-field" }, "默认玩家称呼", h("input", { key: data?.playerName, defaultValue: data?.playerName || "", disabled, maxLength: 80, onBlur: event => { if (event.target.value !== data.playerName) save({ playerName: event.target.value }); } })),
-                h("label", { className: "dsh-local-field" }, "默认状态栏位置", h("select", { disabled, value: data?.statusBarPlacement || "sidebar", onChange: event => save({ statusBarPlacement: event.target.value }) }, h("option", { value: "sidebar" }, "侧边栏"), h("option", { value: "body" }, "正文下方"))),
+                h("label", { className: "dsh-local-field" }, "状态栏位置（所有对局）", h("select", { "aria-label": "状态栏位置（所有对局）", disabled, value: data?.statusBarPlacement || "sidebar", onChange: event => save({ statusBarPlacement: event.target.value }) }, h("option", { value: "sidebar" }, "侧边栏"), h("option", { value: "body" }, "正文下方"))),
                 h("label", { className: "dsh-local-field" }, "默认预设", h("select", { disabled, value: data?.preset || "", onChange: event => save(null, "selectPreset", { path: event.target.value }) }, h("option", { value: "" }, "不使用酒馆预设"), (data?.presets || []).filter(item => item.valid && item.recognized).map(item => h("option", { key: item.path, value: item.path }, item.title)))),
                 h("label", { className: "dsh-local-field" }, "默认长期偏好", h("select", { disabled, value: data?.profile.defaultProfileId || "", onChange: event => save(null, "manageUserPreferenceProfile", { action: "default", profileId: event.target.value }) }, h("option", { value: "" }, "不启用"), (data?.profile.profiles || []).filter(item => item.hasConfirmed).map(item => h("option", { key: item.id, value: item.id }, item.name))))),
             // Same names and order as 功能 in 本局设置, where each game changes them later.
