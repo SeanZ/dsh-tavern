@@ -12,6 +12,7 @@ import { normalizeResourcePath } from './file-resources.js'
 import { diffJson } from './json-mutation.js'
 import { hasTavernCredit, withTavernCredit } from './card-credit.js'
 import { STORY_SUBMIT_TOOL_NAME, storyToolCallEnabled } from './story-tool-submission.js'
+import { normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { variableUpdateFor } from './variable-update.js'
 import { replyProse } from './reply-prose.js'
 
@@ -923,7 +924,8 @@ export function createTurnOrchestrator(options) {
       ? ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
       : ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]
     if (mode === 'story' && chat.backgroundTasks?.styleReference === true) names.push('style_reference_submit')
-    return names
+    const disabled = new Set(normalizeDisabledForegroundTools(chat.disabledForegroundTools))
+    return names.filter(name => !disabled.has(name))
   }
 
   // Asked by request hooks on every model call: the header answers it, not the history.

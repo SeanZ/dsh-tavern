@@ -18,6 +18,7 @@ export function createNetworkToolPolicy({ readHeader, backgroundContext, capabil
     const kind = capability(name)
     if (!kind || !state) return undefined
     if (!state.allowed || (state.chat.mode !== 'card' && state.chat.webSearchEnabled !== true)) return '本局联网搜索已关闭，请在本局设置中开启。'
+    if (!state.background && state.chat.mode !== 'card' && state.chat.disabledForegroundTools?.includes(name)) return '该工具已在本局的前台工具设置中关闭。'
     return undefined
   }
   return {
