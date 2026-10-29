@@ -20989,11 +20989,10 @@ function TavernBgmChat(props) {
 		// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
 		function renderTavernAssistantBlocks(input) {
 			const h = React.createElement;
-			// The answer step is drawn twice by DSH: its thinking in the process panel ("reasoning"),
-			// the reply below it ("response"). Each seat shows only its own blocks, as DSH's own view does.
-			const blocks = (Array.isArray(input.blocks) ? input.blocks : []).filter(function (block) {
-				return !block || input.groupPart !== "response" || block.kind !== "reasoning";
-			});
+			// The answer step is drawn twice by DSH: in the process panel ("reasoning") and as the reply
+			// ("response"). A player reads the thinking with the reply, so the reply seat keeps it, folded
+			// above the story; the process panel's copy shows nothing (TavernReasoningSeat).
+			const blocks = Array.isArray(input.blocks) ? input.blocks : [];
 			const translate = typeof input.t === "function" ? input.t : function (key, values) {
 				if (key === "copy") return "复制";
 				if (key === "copied") return "已复制";
@@ -21576,14 +21575,6 @@ function TavernBgmChat(props) {
 			}
 
 			// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
-			function TavernReasoningSeat(props) {
-				const blocks = (Array.isArray(props.blocks) ? props.blocks : []).filter(function (block) { return block && block.kind === "reasoning"; });
-				if (!blocks.length) return null;
-				return React.createElement("div", { className: "dsh-tavern-assistant" }, blocks.map(function (block, index) {
-					const live = props.streaming && index === blocks.length - 1;
-					return React.createElement("details", { key: index, className: "dsh-tavern-assistant-reasoning", open: live }, React.createElement("summary", null, live ? "思考中…" : "思考过程"), React.createElement("pre", null, String(block.text || "")));
-				}));
-			}
 			// Card-workbench replies a plugin asked to fold (tavernUi.registerReplyPresenter):
 			// the answer to a presented question is one line, and 展开 brings the original back.
 			// Decisions are cached per turn so a re-render does not call into plugins again;
@@ -21875,9 +21866,16 @@ function TavernBgmChat(props) {
 					}, function (props) {
 						// Hide only our model-facing seed; keep it in Session history and requests.
 						if (props.node.data.finalNode && /^tavern-seed-trajectory:v1:.+:2$/.test(String(props.node.data.finalNode.messageId || ""))) return null;
-						// The process panel's copy of the answer step holds only its thinking; the story,
-						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
-						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
+						// The process panel's copy of the answer step: the reply seat shows its thinking (folded
+						// above the story), pictures and receipts. Only while the model is still thinking, before
+						// any story text exists to anchor the reply seat, does this copy show the live thinking.
+						if (props.groupPart === "reasoning") {
+							const blocks = Array.isArray(props.node.data.blocks) ? props.node.data.blocks : [];
+							const thinking = blocks.filter(function (block) { return block && block.kind === "reasoning"; });
+							if (props.node.data.status !== "running" || !thinking.length || blocks.some(function (block) { return block && block.kind === "text" && String(block.text || "").trim(); })) return null;
+							return React.createElement("div", { className: "dsh-tavern-assistant" }, React.createElement("details", { className: "dsh-tavern-assistant-reasoning", open: true },
+								React.createElement("summary", null, "思考中…"), React.createElement("pre", null, thinking.map(function (block) { return String(block.text || ""); }).join("\n\n"))));
+						}
 						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
