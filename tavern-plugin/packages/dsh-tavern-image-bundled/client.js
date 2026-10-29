@@ -856,13 +856,15 @@ let openImageOverlay = null
     function openEditorFor(jobId, title, mediaContext) {
       try {
         if (!jobId || typeof openPromptEditor !== 'function') return
-        openPromptEditor({ open: true, jobId: String(jobId), prompt: '', negative: '', instruction: '', note: '正在读取提示词…', busy: '', submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '' })
+        const requestId = openEditorFor.requestId = (openEditorFor.requestId || 0) + 1
+        openPromptEditor({ open: true, openRequestId: requestId, jobId: String(jobId), prompt: '', negative: '', rawPrompt: '', finalPrompt: '', instruction: '', note: '正在读取提示词…', busy: '', loading: true, submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '', generationMode: 'text', refreshReferences: false, references: [], submittedPrompt: '', actualPositive: '', actualNegative: '', sourceBackend: '', providerError: '', inputsLoading: true, inputsError: '', inputsReload: 0, showInputs: false, channels: [], channelLoadFailed: false })
         jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(String(jobId)), { cache: 'no-store' })
           .then(r => {
-            if (!r?.ok || !r.job) { openPromptEditor({ note: '读不到提示词：' + (r?.error || '') }); return }
+            if (!r?.ok || !r.job) { openPromptEditor({ forJobId: String(jobId), forRequestId: requestId, loading: false, note: '读不到提示词：' + (r?.error || '') }); return }
             const sceneText = String(r.job.rawPrompt || r.job.tag || r.job.prompt || '')
             const blocksText = String(r.job.promptText || '')
             openPromptEditor({
+              forJobId: String(jobId), forRequestId: requestId, loading: false,
               prompt: blocksText || sceneText,
               negative: String(r.job.negative || ''),
               note: blocksText ? '场景与角色块一起显示；改完重画会按角色分区重新发送' : '',
@@ -870,7 +872,7 @@ let openImageOverlay = null
               finalPrompt: String(r.job.prompt || ''),
             })
           })
-          .catch(error => openPromptEditor({ note: '读取失败：' + (error?.message ?? error) }))
+          .catch(error => openPromptEditor({ forJobId: String(jobId), forRequestId: requestId, loading: false, note: '读取失败：' + (error?.message ?? error) }))
       } catch (error) {
         reportHost('editor-open-failed', { message: String(error?.message ?? error).slice(0, 200) })
       }
@@ -1163,14 +1165,37 @@ function versionsOf(jobId) {
      */
     function PromptEditor() {
       const [view, setView] = React.useState({ open: false, jobId: '', prompt: '', negative: '', instruction: '', note: '', busy: '', loading: false })
-      openPromptEditor = (next) => setView(cur => Object.assign({}, cur, next))
+      openPromptEditor = (next) => setView(cur => {
+        if (next.forJobId && (!cur.open || cur.jobId !== next.forJobId)) return cur
+        if (next.forRequestId && cur.openRequestId !== next.forRequestId) return cur
+        const { forJobId, forRequestId, ...patch } = next
+        return Object.assign({}, cur, patch)
+      })
+      useEffect(() => {
+        if (!view.open || !view.jobId) return undefined
+        let live = true
+        openPromptEditor({ inputsLoading: true, inputsError: '' })
+        jsonFetch(BASE + '/jobs?id=' + encodeURIComponent(view.jobId), { cache: 'no-store' }).then(result => {
+          if (!live) return
+          if (!result?.ok || !result.job) throw new Error(result?.error || '无法读取作业输入')
+          const job = result.job
+          openPromptEditor({ forJobId: view.jobId, inputsLoading: false, inputsError: '',
+            generationMode: job.generationMode === 'reference' ? 'reference' : 'text',
+            sourceBackend: String(job.backend || ''), sourceChannelId: String(job.channelId || ''),
+            references: Array.isArray(job.references) ? job.references : [],
+            submittedPrompt: typeof job.submittedPrompt === 'string' ? job.submittedPrompt : '',
+            actualPositive: String(job.positive || ''), actualNegative: String(job.negative || ''), providerError: String(job.error || ''),
+          })
+        }).catch(error => { if (live) openPromptEditor({ forJobId: view.jobId, inputsLoading: false, inputsError: '读取实际输入失败：' + (error?.message || error) }) })
+        return () => { live = false }
+      }, [view.open, view.jobId, view.openRequestId, view.inputsReload])
       useEffect(() => {
         if (!view.open || !view.mediaContext) return undefined
         let live = true
         jsonFetch(BASE + '/state', { cache: 'no-store' }).then(result => {
           if (!live) return
           const config = result?.config || {}
-          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || '') })).filter(channel => channel.id)
+          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || ''), provider: String(channel.provider || '') })).filter(channel => channel.id)
           openPromptEditor({ channels, comfyAvailable: Boolean(config.comfyUrl || config.comfyHost || config.comfyEnabled) })
         }).catch(() => { if (live) openPromptEditor({ channels: [], channelLoadFailed: true }) })
         return () => { live = false }
@@ -1178,7 +1203,10 @@ function versionsOf(jobId) {
       if (!view.open) return null
 
       const close = () => openPromptEditor({ open: false, busy: '', note: '', instruction: '' })
-      const say = (text) => openPromptEditor({ note: text })
+      const say = (text) => openPromptEditor({ forJobId: view.jobId, note: text })
+      const backend = view.channelId === 'comfyui' ? 'comfyui' : view.channelId ? (view.channels || []).find(channel => channel.id === view.channelId)?.provider : view.sourceBackend
+      const referenceUnavailable = view.generationMode === 'reference' && backend !== 'atlascloud'
+      const controlsDisabled = Boolean(view.loading || view.inputsLoading || view.busy || view.submitted || view.uncertain)
 
       async function improve() {
         openPromptEditor({ busy: 'improve', note: '后台正在改…' })
@@ -1197,6 +1225,8 @@ function versionsOf(jobId) {
       }
 
       async function redraw() {
+        if (controlsDisabled || view.inputsError) return
+        if (referenceUnavailable) { say('参考图模式仅支持 atlas cloud；请明确选择渠道或改为文生图，不会自动切换模型。'); return }
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
         if (view.mediaContext && (mediaPostLocks.has(lock) || mediaUncertainActions.has(lock) || !validMediaContext(view.mediaContext))) return
         if (view.mediaContext) mediaPostLocks.add(lock)
@@ -1204,7 +1234,8 @@ function versionsOf(jobId) {
         try {
           if (view.mediaContext) {
             if (!validMediaContext(view.mediaContext)) { say('当前图片上下文不完整，无法提交单图重画'); return }
-            const body = { operation: 'redraw', ...view.mediaContext, jobId: view.mediaContext.jobId, prompt: view.prompt, negative: view.negative }
+            const body = { operation: 'redraw', ...view.mediaContext, jobId: view.mediaContext.jobId, prompt: view.prompt, negative: view.negative,
+              generationMode: view.generationMode === 'reference' ? 'reference' : 'text', refreshReferences: view.generationMode === 'reference' && view.refreshReferences === true }
             if (view.channelId) body.channelId = view.channelId
             const result = await jsonFetch(BASE + '/media-action', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -1216,7 +1247,8 @@ function versionsOf(jobId) {
           }
           const r = await jsonFetch(BASE + '/redraw', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jobId: view.jobId, prompt: view.prompt, negative: view.negative }),
+            body: JSON.stringify({ jobId: view.jobId, prompt: view.prompt, negative: view.negative,
+              generationMode: view.generationMode === 'reference' ? 'reference' : 'text', refreshReferences: view.generationMode === 'reference' && view.refreshReferences === true }),
           })
           if (!r?.ok || !r.jobId) { say('重画失败：' + (r?.error || '没拿到新作业')); return }
           redrawnJobs.set(view.jobId, r.jobId)
@@ -1228,12 +1260,13 @@ function versionsOf(jobId) {
                   openImageOverlay({ open: true, jobIds: chain, versions: chain, versionAt: chain.length - 1, note: '重画完成（下方可对比历史版本）', working: false, index: chain.length - 1 })
                 })()
         } catch (error) {
-          if (view.mediaContext) mediaUncertainActions.add(lock)
-          openPromptEditor({ uncertain: Boolean(view.mediaContext) })
-          say(view.mediaContext ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。' : '失败：' + (error?.message ?? error))
+          const uncertain = Boolean(view.mediaContext) && error?.submissionNotStarted !== true
+          if (uncertain) mediaUncertainActions.add(lock)
+          openPromptEditor({ forJobId: view.jobId, uncertain })
+          say(uncertain ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。原因：' + (error?.message ?? error) : '失败：' + (error?.message ?? error))
         } finally {
           if (view.mediaContext) mediaPostLocks.delete(lock)
-          openPromptEditor({ busy: '' })
+          openPromptEditor({ forJobId: view.jobId, busy: '' })
         }
       }
 
@@ -1244,7 +1277,7 @@ function versionsOf(jobId) {
         fontFamily: 'inherit', resize: 'vertical',
       }
       const btn = (label, onClick, primary) => React.createElement('button', {
-        type: 'button', onClick, disabled: Boolean(view.busy || view.submitted || view.uncertain) || Boolean(view.mediaContext && mediaUncertainActions.has(String(view.mediaContext.mediaId || ''))),
+        type: 'button', onClick, disabled: controlsDisabled || Boolean(primary && (referenceUnavailable || view.inputsError)) || Boolean(view.mediaContext && mediaUncertainActions.has(String(view.mediaContext.mediaId || ''))),
         style: {
           padding: '6px 16px', fontSize: '13px', borderRadius: '9px', cursor: view.busy ? 'default' : 'pointer',
           border: '1px solid ' + (primary ? 'rgba(106,168,255,.6)' : 'rgba(120,140,170,.45)'),
@@ -1293,12 +1326,38 @@ function versionsOf(jobId) {
             React.createElement('option', { value: '' }, '沿用原渠道'),
             ...(view.channels || []).map(channel => React.createElement('option', { key: channel.id, value: channel.id }, channel.name)),
             view.comfyAvailable ? React.createElement('option', { value: 'comfyui' }, '当前 ComfyUI 设置') : null)) : null,
+        React.createElement('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', color: '#9aa3b2', marginTop: '12px' } },
+          '本次生图模式', React.createElement('select', { 'aria-label': '本次生图模式', value: view.generationMode || 'text', disabled: controlsDisabled || Boolean(view.inputsError),
+            onChange: event => openPromptEditor({ generationMode: event.target.value, refreshReferences: false }), style: { background: '#12151b', color: '#dbe3ee', padding: '5px', borderRadius: '7px' } },
+          React.createElement('option', { value: 'text' }, '文生图'),
+          React.createElement('option', { value: 'reference', disabled: backend !== 'atlascloud' }, '参考图生图（atlas cloud）'))),
+        referenceUnavailable ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '6px' } }, '参考图模式仅支持 atlas cloud；请明确选择渠道或改为文生图，不会自动切换模型或降级。') : null,
+        React.createElement('label', { style: { display: 'flex', gap: '8px', color: '#9aa3b2', fontSize: '12px', marginTop: '10px' } },
+          React.createElement('input', { type: 'checkbox', 'aria-label': '使用最新人物库参考图快照', checked: view.refreshReferences === true,
+            disabled: controlsDisabled || Boolean(view.inputsError) || view.generationMode !== 'reference', onChange: event => openPromptEditor({ refreshReferences: event.target.checked }) }),
+          '明确改用最新人物库的参考图与一致性文本（不勾选则保留原任务快照）'),
+        React.createElement('div', { style: { color: '#9aa3b2', fontSize: '11px', marginTop: '5px' } }, '切换模式不更换模型 ID。参考图在人物库中管理，本张不能临时换图；参考图仅本机保存，不随导出迁移。'),
+        React.createElement('details', { open: Boolean(view.showInputs), onToggle: event => { const open = event.currentTarget.open; if (open !== Boolean(view.showInputs)) openPromptEditor({ showInputs: open }) }, style: { marginTop: '14px', color: '#dbe3ee', borderTop: '1px solid #3a4150', paddingTop: '10px' } },
+          React.createElement('summary', { style: { cursor: 'pointer', fontSize: '13px' } }, '实际提交输入（原任务，只读）'),
+          view.inputsLoading ? React.createElement('div', { role: 'status' }, '正在读取实际输入…') : null,
+          view.inputsError ? React.createElement('div', { role: 'alert', style: { fontSize: '12px', color: '#f0bf76' } }, view.inputsError,
+            React.createElement('button', { type: 'button', disabled: Boolean(view.inputsLoading || view.busy), onClick: () => openPromptEditor({ inputsReload: (view.inputsReload || 0) + 1 }) }, '重新读取输入')) : null,
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '8px' } }, '下列为原任务记录，不会随上方编辑或模式切换而改写。'),
+          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.submittedPrompt ? '实际提交提示词' : '记录的最终正向提示词（旧任务可能没有完整提交文本）'),
+          React.createElement('pre', { 'aria-label': '实际提交提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '260px', overflowY: 'auto', fontSize: '12px' } }, view.submittedPrompt || view.actualPositive || view.finalPrompt || '暂无记录'),
+          view.actualNegative ? React.createElement('pre', { 'aria-label': '实际负向提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px' } }, '负向：' + view.actualNegative) : null,
+          (view.references || []).length ? React.createElement('div', { 'aria-label': '原任务参考图', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' } },
+            view.references.map((reference, position) => React.createElement('figure', { key: String(position), style: { margin: 0, padding: '8px', border: '1px solid #3a4150', borderRadius: '7px' } },
+              /^[a-f0-9]{64}$/i.test(String(reference.image?.id || '')) ? React.createElement('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(reference.image.id), alt: '参考图 ' + (reference.index ?? position + 1) + ' ' + String(reference.label || ''), style: { maxWidth: '100%', height: '120px', objectFit: 'contain' } }) : null,
+              React.createElement('figcaption', { style: { fontSize: '12px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
+                '参考图 ' + (reference.index ?? position + 1) + ' · ' + (reference.kind === 'character' ? '角色' : '服装') + ' · ' + String(reference.label || reference.characterId || reference.outfitId || ''),
+                reference.consistencyText ? '\n' + String(reference.consistencyText) : ''))))
+            : React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2' } }, '原任务未记录参考图。'),
+          view.providerError ? React.createElement('div', { role: 'alert', 'aria-label': '平台错误', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px', color: '#f0bf76', marginTop: '8px' } }, '平台／任务错误：' + view.providerError) : null),
+        view.inputsError && !view.showInputs ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '8px' } }, view.inputsError + '，请展开实际提交输入重试。') : null,
         React.createElement('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '16px', flexWrap: 'wrap' } },
           btn('🤖 让后台改', improve),
-          btn('👁 看展开结果', () => {
-            if (!view.finalPrompt) { say('这张图没有记录展开结果'); return }
-            openPromptEditor({ prompt: view.finalPrompt, rawPrompt: view.prompt, note: '这是展开后的最终提示词（点关闭后回到原始）' })
-          }),
+          btn('👁 看展开结果', () => openPromptEditor({ showInputs: true })),
           btn(view.busy === 'redraw' ? '🎨 提交中…' : '🎨 用这段重画', redraw, true),
           view.note ? React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, view.note) : null,
         ),
@@ -2236,6 +2295,63 @@ function versionsOf(jobId) {
       )
     }
 
+    /** One local reference per library object; binding is saved with the existing draft. */
+    function ReferenceImageEditor({ value = {}, label, onChange }) {
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState('')
+      const epoch = React.useRef(0)
+      React.useEffect(() => () => { epoch.current += 1 }, [])
+      const image = value.referenceImage
+      const imageId = /^[a-f0-9]{64}$/i.test(String(image?.id || '')) ? image.id : ''
+      const inputStyle = { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: '7px', background: 'var(--dsw-specific-input-major)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', fontFamily: 'inherit', fontSize: '12px' }
+      async function upload(event) {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        const request = ++epoch.current
+        const mediaType = file.type || ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' })[String(file.name).split('.').pop().toLowerCase()]
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(mediaType)) { setBusy(false); setNote('请选择 PNG、JPEG 或 WebP 图片'); return }
+        if (!file.size || file.size > 32 * 1024 * 1024) { setBusy(false); setNote('参考图不能为空，且每张不能超过 32 MiB'); return }
+        setBusy(true)
+        setNote('正在上传参考图…')
+        try {
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.onerror = () => reject(new Error('无法读取这张图片'))
+            reader.readAsDataURL(file)
+          })
+          if (request !== epoch.current) return
+          const result = await jsonFetch(BASE + '/reference-image', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ data, mediaType, name: file.name }),
+          })
+          if (request !== epoch.current) return
+          if (!result?.ok || !/^[a-f0-9]{64}$/i.test(String(result.referenceImage?.id || ''))) throw new Error(result?.error || '服务器没有返回有效的参考图')
+          onChange({ referenceImage: result.referenceImage })
+          setNote('参考图已加入草稿，请保存人物库／服装库')
+        } catch (error) {
+          if (request === epoch.current) setNote('上传失败：' + (error?.message || error))
+        } finally { if (request === epoch.current) setBusy(false) }
+      }
+      return h('section', { 'aria-label': label + '参考图设置', style: { padding: '10px', margin: '10px 0', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '9px' } },
+        h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '6px' } }, label + '参考图（每个对象一张）'),
+        imageId ? h('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(imageId), alt: label + '参考图', style: { display: 'block', maxWidth: '180px', maxHeight: '160px', objectFit: 'contain', borderRadius: '7px', marginBottom: '7px' } }) : null,
+        imageId ? h('div', { style: { fontSize: '11px', overflowWrap: 'anywhere', marginBottom: '6px' } }, image.name || '已上传参考图') : null,
+        h('label', { style: { display: 'inline-flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', fontSize: '12px' } }, busy ? '上传中…' : imageId ? '替换参考图' : '上传参考图',
+          h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', 'aria-label': label + '上传参考图', disabled: busy, onChange: upload, style: { maxWidth: '100%' } })),
+        imageId || busy ? h('button', { type: 'button', 'aria-label': label + '移除参考图', style: { marginLeft: '8px', fontSize: '12px' }, onClick: () => {
+          epoch.current += 1
+          setBusy(false)
+          onChange({ referenceImage: null })
+          setNote('已从草稿解绑，保存后生效；历史参考图不会删除')
+        } }, '移除') : null,
+        h('label', { style: { display: 'block', fontSize: '12px', marginTop: '8px' } }, '一致性补充（可选）',
+          h('textarea', { 'aria-label': label + '一致性补充', value: value.consistencyText || '', rows: 2, placeholder: '补充需要保持的特征；动作、背景及正文明确的变化仍以剧情为准', style: inputStyle, onChange: event => onChange({ consistencyText: event.target.value }) })),
+        h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '5px' } }, '参考图仅本机保存，不随导出迁移。上传和移除后请保存人物库／服装库。'),
+        note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '5px', overflowWrap: 'anywhere' } }, note) : null)
+    }
+
     function SettingsPanel() {
       const [data, setDataState] = React.useState(null)
       // 让定时器/异步回调读到"最新的" data，而不用把它写进 effect 依赖
@@ -2387,6 +2503,18 @@ function versionsOf(jobId) {
       const [wbPaste, setWbPaste] = React.useState('')
       const [wbNote, setWbNote] = React.useState('')
       const [wbDrafts, setWbDrafts] = React.useState({})
+      const [wbFormat, setWbFormat] = React.useState('')
+      const [wbView, setWbView] = React.useState(null)
+      const [wbLoading, setWbLoading] = React.useState(false)
+      const wbTransition = React.useRef(false)
+      const wbReadEpoch = React.useRef(0)
+      const wbScope = React.useRef('')
+      const wbFlushing = React.useRef(null)
+      const wbActions = React.useRef(new Set())
+      React.useEffect(() => {
+        const effective = data?.worldbookFormat || data?.config?.promptEffectiveFormat
+        if (tab === 'worldbook' && ['tags', 'natural', 'mixed', 'structured'].includes(effective)) setWbFormat(current => current || effective)
+      }, [tab, data?.worldbookFormat, data?.config?.promptEffectiveFormat])
       // 工作流：展开哪张 / 它的详情 / 导入面板 / ComfyUI 已装的 LoRA
       const [wfOpen, setWfOpen] = React.useState('')
       const [wfGraphFile, setWfGraphFile] = React.useState('')
@@ -3080,6 +3208,20 @@ function versionsOf(jobId) {
             '可填 ' + IMAGE_WIDTH_LIMIT.min + '–' + IMAGE_WIDTH_LIMIT.max + ' 像素；留空 = 默认。超出范围会自动收窄到区间内。',
             '保存后刷新或重启依然有效。拖完可以直接切回正文看效果，不满意点「取消预览」。'),
         )
+      }
+
+      function generationModeCard() {
+        const mode = config.generationMode === 'reference' ? 'reference' : 'text'
+        const available = imageBackend === 'atlascloud'
+        return h('div', { style: S.card },
+          h('label', { style: S.row }, h('span', { style: S.label }, '默认生图模式'),
+            h('select', { 'aria-label': '默认生图模式', value: mode, style: S.input, onChange: event => save({ generationMode: event.target.value }) },
+              h('option', { value: 'text' }, '文生图'),
+              h('option', { value: 'reference', disabled: !available }, '参考图生图（atlas cloud）'))),
+          !available ? h('div', { role: mode === 'reference' ? 'alert' : 'status', style: { fontSize: '12px', color: mode === 'reference' ? 'var(--dsw-alias-state-warning-primary)' : 'var(--dsw-alias-label-tertiary)' } },
+            mode === 'reference' ? '当前为参考图模式，但所选渠道不是 atlas cloud。请明确切换渠道或改为文生图，不会自动降级。' : '参考图模式仅支持 atlas cloud，请先在渠道中选择 atlas cloud。') : null,
+          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '6px' } }, '参考图模式使用人物库中的角色／服装参考图；有图用图、缺图用文字，整张无图时暂停提示。单张重绘可覆盖模式。'),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '切换模式不会更换模型 ID，也不会自动删减参考图；不支持的输入由平台返回错误。'))
       }
 
       function planTab() {
@@ -3798,6 +3940,7 @@ function versionsOf(jobId) {
               h('label', { style: S.row }, h('input', { type: 'checkbox', checked: c.enabled !== false, onChange: e => patch(i, { enabled: e.target.checked }) }), h('span', { style: { fontSize: '12px' } }, '启用')),
               h('button', { style: buttonStyle, onClick: () => { if (!confirm('删掉「' + (c.name || '未命名') + '」？')) return; setCharacters(current => current.filter(character => character.id !== c.id)) } }, '删除角色'),
             ),
+            h(ReferenceImageEditor, { key: 'character-reference-' + c.id, value: c, label: '角色「' + (c.name || '未命名') + '」', onChange: changes => patch(i, changes) }),
             // 常驻的改进行：直接写要求 → 点改进，不用先展开面板
             h('div', { style: S.row },
               h('span', { style: S.label }, '改这个角色'),
@@ -3901,6 +4044,7 @@ function versionsOf(jobId) {
                 ),
                 h('div', { style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
                   h('input', { type: 'text', placeholder: '服装名（常服 / 居家 / 内衣…）', value: o.name || '', style: Object.assign({}, S.input, { width: '220px' }), onChange: e => patchOutfit(i, j, { name: e.target.value }) }),
+                  h(ReferenceImageEditor, { key: 'outfit-reference-' + c.id + '-' + o.id, value: o, label: '服装「' + (o.name || '未命名') + '」', onChange: changes => patchOutfit(i, j, changes) }),
                   area('上衣', '', o.upper, v => patchOutfit(i, j, { upper: v }), 2),
                   area('下装', '', o.lower, v => patchOutfit(i, j, { lower: v }), 2),
                   h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' } },
@@ -4146,9 +4290,9 @@ function versionsOf(jobId) {
               const idx = list.findIndex((o, j) => String(o.id || j) === activeId)
               const o = list[idx] || list[0]
               const patchLib = (changes) => {
-                const next = list.slice()
-                next[idx] = Object.assign({}, o, changes)
-                setLibraryData(Object.assign({}, dataRef.current, { outfits: next }))
+                const current = dataRef.current
+                const next = (current.outfits || []).map(item => item.id === o.id ? Object.assign({}, item, changes) : item)
+                setLibraryData(Object.assign({}, current, { outfits: next }))
               }
               return h('div', null,
                 h('div', { style: Object.assign({}, S.row, { marginTop: '8px' }) },
@@ -4165,6 +4309,7 @@ function versionsOf(jobId) {
                 ),
                 h('div', { style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
                   h('input', { type: 'text', placeholder: '套装名（办公室职业装 / 居家睡衣…）', value: o.name || '', style: Object.assign({}, S.input, { width: '240px' }), onChange: e => patchLib({ name: e.target.value }) }),
+                  h(ReferenceImageEditor, { key: 'shared-reference-' + o.id, value: o, label: '通用服装「' + (o.name || '未命名') + '」', onChange: patchLib }),
                   h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '6px' } },
                     h('input', { type: 'text', placeholder: '上衣', value: o.upper || o.body || '', style: S.input, onChange: e => patchLib({ upper: e.target.value }) }),
                     h('input', { type: 'text', placeholder: '下装', value: o.lower || '', style: S.input, onChange: e => patchLib({ lower: e.target.value }) }),
@@ -4708,13 +4853,19 @@ function versionsOf(jobId) {
 
       // ---- 世界书 ----
       function worldbookTab() {
-        // 两本世界书：生图规则（main）与角色与服装库（outfits），各自独立编辑
-        const books = Array.isArray(data.worldbookBooks) && data.worldbookBooks.length
-          ? data.worldbookBooks
-          : [{ key: 'main', name: String(data.worldbookName || '生图世界书'), count: (data.worldbook || []).length, entries: data.worldbook || [] }]
+        // 每种提示词格式有独立的两本书；浏览其他格式不改全局 promptMode。
+        const formats = [['tags', '标签'], ['natural', '自然语言'], ['mixed', '混合'], ['structured', '结构化自然语言']]
+        const activeFormat = wbFormat || data.worldbookFormat || config.promptEffectiveFormat || 'tags'
+        const bookData = wbView?.worldbookFormat === activeFormat ? wbView
+          : !data.worldbookFormat || data.worldbookFormat === activeFormat ? data : { worldbook: [], worldbookBooks: [] }
+        const books = Array.isArray(bookData.worldbookBooks) && bookData.worldbookBooks.length
+          ? bookData.worldbookBooks
+          : [{ key: 'main', name: String(bookData.worldbookName || '生图世界书'), count: (bookData.worldbook || []).length, entries: bookData.worldbook || [] }]
         const activeBook = books.find(book => book.key === wbBook) || books[0]
         const activeKey = activeBook?.key || 'main'
-        const list = Array.isArray(activeBook?.entries) ? activeBook.entries : (data.worldbook || [])
+        const scope = activeFormat + '|' + activeKey
+        wbScope.current = scope
+        const list = Array.isArray(activeBook?.entries) ? activeBook.entries : (bookData.worldbook || [])
         const onCount = list.filter(e => e.enabled !== false).length
         const context = data.plannerContext || null
         const providers = [
@@ -4722,9 +4873,50 @@ function versionsOf(jobId) {
           ['gemini-chat', 'Gemini Chat'], ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['atlascloud', 'atlas cloud'], ['sdwebui', 'SD WebUI'],
         ]
 
+        async function readWorldbook(format) {
+          const r = await jsonFetch(BASE + '/worldbook?format=' + encodeURIComponent(format), { cache: 'no-store' })
+          if (!r || r.ok === false) throw new Error(r?.error || '无法读取世界书')
+          if (r.worldbookFormat && r.worldbookFormat !== format) throw new Error('服务器返回了其他格式的世界书，未覆盖当前编辑内容')
+          const doc = r.worldbook || {}
+          const entries = Array.isArray(doc) ? doc : Array.isArray(doc.entries) ? doc.entries : []
+          return { worldbookFormat: format, worldbook: entries, worldbookName: r.worldbookName || doc.name || '', worldbookBooks: Array.isArray(r.worldbookBooks) ? r.worldbookBooks : [] }
+        }
         async function refreshWb() {
-          const r = await jsonFetch(BASE + '/state', { cache: 'no-store' }).catch(() => null)
-          if (r) receiveState(r)
+          const request = ++wbReadEpoch.current
+          const next = await readWorldbook(activeFormat)
+          if (request === wbReadEpoch.current && wbScope.current === scope) setWbView(next)
+        }
+        async function changeWorldbook(format, book) {
+          if (wbTransition.current) return
+          wbTransition.current = true
+          setWbLoading(true)
+          try {
+            if (!await flushWbPending()) { setWbNote('有未保存的输入，切换已取消；请重试保存'); return }
+            await Promise.all([...wbActions.current])
+            await wbWriteQueue.current
+            if (Object.keys(wbPending.current).length) { setWbNote('有未保存的输入，切换已取消'); return }
+            const request = ++wbReadEpoch.current
+            const next = format !== activeFormat ? await readWorldbook(format) : null
+            if (request !== wbReadEpoch.current) return
+            wbScope.current = format + '|' + book
+            if (next) setWbView(next)
+            setWbFormat(format)
+            setWbBook(book)
+            setWbEditing(-1)
+            setWbOpen({})
+            setWbDrafts({})
+            wbDraftRevisions.current = {}
+            setWbImportOpen(false)
+            setWbPaste('')
+            setWbNote('')
+          } catch (error) { setWbNote('切换失败，已保留当前内容：' + (error?.message || error)) }
+          finally { wbTransition.current = false; setWbLoading(false) }
+        }
+        function trackWbAction(action) {
+          const task = action()
+          wbActions.current.add(task)
+          task.finally(() => wbActions.current.delete(task)).catch(() => {})
+          return task
         }
         function queueWbWrite(write) {
           const task = wbWriteQueue.current.then(write, write)
@@ -4733,7 +4925,7 @@ function versionsOf(jobId) {
         }
         async function sendEntryPatch(index, patch, remove, tip) {
           return queueWbWrite(async () => {
-            const r = await post('/worldbook-entry', remove ? { book: activeKey, index, remove: true } : { book: activeKey, index, patch })
+            const r = await post('/worldbook-entry', remove ? { format: activeFormat, book: activeKey, index, remove: true } : { format: activeFormat, book: activeKey, index, patch })
             if (!r?.ok) { setWbNote((tip || '改') + '失败：' + (r?.error || '')); return false }
             setWbNote(tip ? (tip + '已保存') : '')
             await refreshWb()
@@ -4748,6 +4940,7 @@ function versionsOf(jobId) {
           return Object.fromEntries(Object.keys(displayPatch).map(field => [field, revisions[field]]))
         }
         function clearSavedDrafts(index, fields, sentRevisions) {
+          if (wbScope.current !== scope) return
           setWbDrafts(current => {
             const next = { ...current }
             const entry = { ...(next[index] || {}) }
@@ -4765,46 +4958,58 @@ function versionsOf(jobId) {
           }
           wbPending.current = restored
         }
-        async function flushWbPending() {
+        function flushWbPending() {
           if (wbTimer.current) { clearTimeout(wbTimer.current); wbTimer.current = null }
-          const batch = wbPending.current
-          wbPending.current = {}
-          const entries = Object.entries(batch)
-          for (let i = 0; i < entries.length; i++) {
-            const [rawIndex, patch] = entries[i]
-            const index = Number(rawIndex)
-            const sentRevisions = Object.fromEntries(Object.keys(patch).map(field => [field, wbDraftRevisions.current[index]?.[field]]))
-            let saved
-            try { saved = await sendEntryPatch(index, patch, false, '条目') }
-            catch (error) {
-              restorePending(entries, i)
-              setWbNote('保存失败：' + (error?.message ?? error))
-              return false
+          if (wbFlushing.current) return wbFlushing.current
+          const flush = async () => {
+            while (Object.keys(wbPending.current).length) {
+              const batch = wbPending.current
+              wbPending.current = {}
+              const entries = Object.entries(batch)
+              for (let i = 0; i < entries.length; i++) {
+                const [rawIndex, patch] = entries[i]
+                const index = Number(rawIndex)
+                const sentRevisions = Object.fromEntries(Object.keys(patch).map(field => [field, wbDraftRevisions.current[index]?.[field]]))
+                let saved
+                try { saved = await sendEntryPatch(index, patch, false, '条目') }
+                catch (error) {
+                  restorePending(entries, i)
+                  setWbNote('保存失败：' + (error?.message ?? error))
+                  return false
+                }
+                if (!saved) { restorePending(entries, i); return false }
+                clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+              }
             }
-            if (!saved) {
-              restorePending(entries, i)
-              return false
-            }
-            clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+            return true
           }
-          return true
+          const task = flush().finally(() => { if (wbFlushing.current === task) wbFlushing.current = null })
+          wbFlushing.current = task
+          return task
         }
-        async function patchEntry(index, patch, remove, tip) {
-          try {
-            const sentRevisions = patch ? setWbDraft(index, patch) : {}
-            const flushed = await flushWbPending()
-            if (!flushed) {
+        function patchEntry(index, patch, remove, tip) {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
+            try {
+              const sentRevisions = patch ? setWbDraft(index, patch) : {}
+              const flushed = await flushWbPending()
+              if (!flushed) {
+                if (patch) restorePending([[String(index), patch]], 0)
+                setWbNote('有未保存的输入，请检查网络后重试')
+                return
+              }
+              const saved = await sendEntryPatch(index, patch, remove, tip)
+              if (saved && patch) clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+              else if (!saved && patch) restorePending([[String(index), patch]], 0)
+            } catch (e) {
               if (patch) restorePending([[String(index), patch]], 0)
-              setWbNote('有未保存的输入，请检查网络后重试')
-              return
+              setWbNote((tip || '改') + '失败：' + (e?.message ?? e))
             }
-            const saved = await sendEntryPatch(index, patch, remove, tip)
-            if (saved && patch) clearSavedDrafts(index, Object.keys(patch), sentRevisions)
-            else if (!saved && patch) restorePending([[String(index), patch]], 0)
-          } catch (e) { setWbNote((tip || '改') + '失败：' + (e?.message ?? e)) }
+          })
         }
         /** 打字时保留本地值；停 700ms 后合并提交，避免丢掉相邻字段的改动。 */
         function patchEntrySoon(index, patch, tip, displayPatch = patch) {
+          if (wbTransition.current || wbScope.current !== scope) return
           setWbDraft(index, displayPatch)
           wbPending.current[index] = { ...(wbPending.current[index] || {}), ...patch }
           setWbNote('输入中…')
@@ -4847,26 +5052,41 @@ function versionsOf(jobId) {
           }
           return String(value ?? '')
         }
-        async function addEntry() {
+        function addEntry() {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
           try {
-            const r = await post('/worldbook-add', { book: activeKey, comment: '新条目', content: '' })
-            if (!r?.ok) { setWbNote('加失败：' + (r?.error || '')); return }
-            await refreshWb()
-            setWbEditing(typeof r.index === 'number' ? r.index : -1)
+            if (!await flushWbPending()) return
+            await queueWbWrite(async () => {
+              const r = await post('/worldbook-add', { format: activeFormat, book: activeKey, comment: '新条目', content: '' })
+              if (!r?.ok) { setWbNote('加失败：' + (r?.error || '')); return }
+              await refreshWb()
+              if (wbScope.current === scope) setWbEditing(typeof r.index === 'number' ? r.index : -1)
+            })
           } catch (e) { setWbNote('加失败：' + (e?.message ?? e)) }
+          })
         }
-        async function importFrom(text, label) {
+        function importFrom(text, label) {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
           try {
+            if (!await flushWbPending()) return
             let payload = text
             try { payload = JSON.parse(text) } catch { /* 当纯文本 */ }
-            const r = await post('/worldbook-import', { book: activeKey, worldbook: payload })
-            if (!r?.ok) { setWbNote('导入失败：' + (r?.error || '没读出条目')); return }
-            setWbNote('✓ 已导入《' + r.name + '》' + r.count + ' 条')
-            setWbImportOpen(false)
-            setWbPaste('')
-            await refreshWb()
-            if (typeof showToast === 'function') showToast('已导入 ' + r.count + ' 条世界书条目')
+            await queueWbWrite(async () => {
+              const r = await post('/worldbook-import', { format: activeFormat, book: activeKey, worldbook: payload })
+              if (!r?.ok) { setWbNote('导入失败：' + (r?.error || '没读出条目')); return }
+              setWbNote('✓ 已导入《' + r.name + '》' + r.count + ' 条')
+              setWbImportOpen(false)
+              setWbPaste('')
+              setWbEditing(-1)
+              setWbDrafts({})
+              wbDraftRevisions.current = {}
+              await refreshWb()
+              if (typeof showToast === 'function') showToast('已导入 ' + r.count + ' 条世界书条目')
+            })
           } catch (e) { setWbNote('导入失败：' + (e?.message ?? e)) }
+          })
         }
         function pickWbFile(event) {
           const file = event?.target?.files && event.target.files[0]
@@ -4877,7 +5097,8 @@ function versionsOf(jobId) {
           reader.readAsText(file)
         }
         async function exportWb() {
-          const r = await jsonFetch(BASE + '/worldbook-export', { cache: 'no-store' }).catch(error => ({ ok: false, error: String(error?.message ?? error) }))
+          if (wbTransition.current || wbScope.current !== scope || !await flushWbPending()) return
+          const r = await jsonFetch(BASE + '/worldbook-export?format=' + encodeURIComponent(activeFormat) + '&book=' + encodeURIComponent(activeKey), { cache: 'no-store' }).catch(error => ({ ok: false, error: String(error?.message ?? error) }))
           if (!r?.ok) { setWbNote('导出失败：' + (r?.error || '无法从服务器读取世界书，请检查插件连接后重试')); return }
           const text = JSON.stringify(r.worldbook, null, 2)
           try {
@@ -4893,7 +5114,7 @@ function versionsOf(jobId) {
               const url = URL.createObjectURL(blob)
               const link = document.createElement('a')
               link.href = url
-              link.download = 'worldbook-export.json'
+              link.download = 'worldbook-' + activeFormat + '-' + activeKey + '.json'
               document.body.appendChild(link)
               link.click()
               link.remove()
@@ -4908,7 +5129,12 @@ function versionsOf(jobId) {
 
         const ta = Object.assign({}, S.input, { width: '100%', minHeight: '130px', fontFamily: 'inherit', lineHeight: '1.6', resize: 'vertical', boxSizing: 'border-box' })
 
-        return h('div', { style: S.card },
+        return h('fieldset', { disabled: wbLoading, 'aria-busy': wbLoading, style: Object.assign({}, S.card, { minWidth: 0 }) },
+          h('label', { style: S.row }, h('span', { style: S.label }, '世界书格式'),
+            h('select', { 'aria-label': '世界书格式', value: activeFormat, style: S.input, onChange: event => changeWorldbook(event.target.value, 'main') },
+              formats.map(([value, label]) => h('option', { key: value, value }, label)))),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '8px' } }, '只编辑所选格式的独立世界书，不改变当前生图格式。切换前会保存未完成的输入；失败时留在原格式。'),
+          wbLoading ? h('div', { role: 'status' }, '正在保存并切换世界书…') : null,
           h('div', { style: { fontSize: '13px', marginBottom: '8px' } },
             '世界书：' + (activeBook?.name ? '《' + activeBook.name + '》' : '') + '（' + onCount + ' / ' + list.length + ' 条启用）'),
           // 书选择器：两本并列，切换后下方列表与所有编辑动作都作用在选中的那一本
@@ -4925,12 +5151,7 @@ function versionsOf(jobId) {
                   background: on ? 'color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent)' : 'transparent',
                   color: on ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-tertiary)',
                 }),
-                onClick: () => {
-                  setWbBook(book.key)
-                  setWbEditing(-1)
-                  setWbOpen({})
-                  setWbNote('')
-                },
+                onClick: () => changeWorldbook(activeFormat, book.key),
               }, '📖 ' + (book.name || book.key) + '（' + (book.count ?? 0) + ' 条）')
             }),
           ),
@@ -4942,7 +5163,7 @@ function versionsOf(jobId) {
             h('button', { style: buttonStyle, onClick: () => setWbImportOpen(v => !v) }, wbImportOpen ? '✖ 收起导入' : '📥 导入世界书'),
             h('button', { style: buttonStyle, onClick: addEntry }, '➕ 新条目'),
             h('button', { style: buttonStyle, onClick: exportWb }, '📤 导出（复制 JSON）'),
-            h('button', { style: buttonStyle, onClick: refreshWb }, '🔄 刷新'),
+            h('button', { style: buttonStyle, onClick: async () => { try { if (await flushWbPending()) await refreshWb() } catch (error) { setWbNote('刷新失败：' + (error?.message || error)) } } }, '🔄 刷新'),
             wbNote ? h('span', { style: { fontSize: '12px', color: /失败/.test(wbNote) ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' } }, wbNote) : null,
           ),
 
@@ -5495,11 +5716,11 @@ function versionsOf(jobId) {
         const area = height => Object.assign({}, S.input, { width: '100%', minHeight: height, boxSizing: 'border-box', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '12px', lineHeight: '1.5', resize: 'vertical' })
         return h('div', { style: S.card },
           h('div', { style: { fontSize: '14px', fontWeight: 600, marginBottom: '5px' } }, '专业提示词预设'),
-          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '9px' } }, '按后端使用标签、自然语言或混合格式；预设包含构图、光线、材质与风格指导。脸部一致性需要参考图，预设本身不保证跨图一致。'),
+          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '9px' } }, '可选标签、自然语言、混合或结构化自然语言；各格式使用独立世界书。结构化格式默认中文分节，文生图与参考图模式均可用。预设本身不保证跨图一致。'),
           h('div', { style: S.row },
             h('label', { style: S.label }, '提示词格式'),
-            h('select', { value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
-              h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合')),
+            h('select', { 'aria-label': '提示词格式', value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
+              h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合'), h('option', { value: 'structured', style: optStyle }, '结构化自然语言')),
             h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, '当前：' + (config.promptEffectiveFormat || 'mixed')),
           ),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' } }, library.map(profile => h('button', { key: profile.id, style: Object.assign({}, buttonStyle, { borderColor: activeId === profile.id ? 'var(--dsw-alias-brand-primary)' : undefined }), onClick: () => save({ activePromptPreset: profile.id }) }, (activeId === profile.id ? '● ' : '○ ') + profile.name))),
@@ -5649,6 +5870,7 @@ function versionsOf(jobId) {
           ComfyBackendCard(),
           imageBackend === 'comfyui' ? workflowCard() : null,
           section('配图规则'),
+          generationModeCard(),
           planTab(),
           section('画风'),
           stylePresetCard(),

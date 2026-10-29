@@ -98,12 +98,14 @@ function harness({ providers = IMAGE_PROVIDERS, config = {}, worldbookBooks = []
     data: publicState(), note: '', channelSecretDrafts: {}, channelTestStatuses: {},
     comfySecretDrafts: { token: '', pass: '' }, comfyStatus: null,
     wbBook: 'main', wbEditing: -1, wbOpen: {}, wbImportOpen: false, wbPaste: '', wbNote: '', wbDrafts: {},
+    wbFormat: 'tags', wbView: null, wbLoading: false,
   }
   const refs = {
     configSaveQueue: { current: Promise.resolve() }, libraryRevision: { current: 0 },
     channelDraftRevisions: { current: {} }, channelTestsInFlight: { current: {} },
     wbTimer: { current: null }, wbPending: { current: {} },
     wbWriteQueue: { current: Promise.resolve() }, wbDraftRevisions: { current: {} },
+    wbTransition: { current: false }, wbReadEpoch: { current: 0 }, wbScope: { current: '' }, wbFlushing: { current: null }, wbActions: { current: new Set() },
   }
   const setters = Object.fromEntries(Object.keys(state).map(key => [
     `set${key[0].toUpperCase()}${key.slice(1)}`,
@@ -146,6 +148,7 @@ function harness({ providers = IMAGE_PROVIDERS, config = {}, worldbookBooks = []
         Object.assign(entry, body.patch)
         return { ok: true }
       }
+      if (pathname === '/worldbook?format=tags' && method === 'GET') return { ok: true, worldbookFormat: 'tags', worldbook: { name: '生图世界书', entries: server.worldbookBooks.flatMap(book => book.entries) }, worldbookBooks: clone(server.worldbookBooks) }
       if (pathname === '/state' && method === 'GET') return publicState()
       assert.fail(`unexpected request (generation is forbidden in these UI tests): ${method} ${pathname}`)
     },
@@ -378,13 +381,13 @@ test('worldbook atlas cloud checkbox persists provider applicability through the
   }
   assert.equal(atlasCheckbox().props.checked, false)
   await h.act(() => atlasCheckbox().props.onChange({ target: { checked: true } }))
-  assert.deepEqual(h.calls.map(call => [call.method, call.pathname]), [['POST', '/worldbook-entry'], ['GET', '/state']])
-  assert.deepEqual(h.calls[0].body, { book: 'main', index: 0, patch: { backends: ['openai', 'atlascloud'] } })
+  assert.deepEqual(h.calls.map(call => [call.method, call.pathname]), [['POST', '/worldbook-entry'], ['GET', '/worldbook?format=tags']])
+  assert.deepEqual(h.calls[0].body, { format: 'tags', book: 'main', index: 0, patch: { backends: ['openai', 'atlascloud'] } })
   assert.equal(atlasCheckbox().props.checked, true, 'server refresh keeps the selected provider')
 
   h.calls.length = 0
   await h.act(() => atlasCheckbox().props.onChange({ target: { checked: false } }))
-  assert.deepEqual(h.calls[0].body, { book: 'main', index: 0, patch: { backends: ['openai'] } })
-  assert.deepEqual(h.calls.map(call => call.pathname), ['/worldbook-entry', '/state'])
+  assert.deepEqual(h.calls[0].body, { format: 'tags', book: 'main', index: 0, patch: { backends: ['openai'] } })
+  assert.deepEqual(h.calls.map(call => call.pathname), ['/worldbook-entry', '/worldbook?format=tags'])
   assert.equal(atlasCheckbox().props.checked, false, 'unchecking removes only atlascloud')
 })
