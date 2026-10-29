@@ -55,7 +55,7 @@ export function createStoryEvents({ logger = console, now = Date.now } = {}) {
     // The timeline marks story moments; a finished task is already its own block there.
     if (gameId && event !== 'task-finished') {
       const kept = moments.get(gameId) || []
-      kept.push({ event, name: nameOf(event), at: now() })
+      kept.push({ event, name: nameOf(event), at: now(), ...(Number.isSafeInteger(payload?.turn) ? { turn: payload.turn } : {}) })
       moments.set(gameId, kept.slice(-KEPT_PER_GAME))
     }
     for (const { label, listener } of [...list]) {

@@ -125,3 +125,18 @@ test('a task a flow starts itself is declared only: listed under its moment, nev
   assert.equal(workflow.table()[0].flow, true)
   assert.throws(() => workflow.job({ id: 'x', flow: true, on: 'reply-committed', run() {} }), /不能有 run/)
 })
+
+test('each run of a declared task is kept per game: what started it, when, and how it ended', async () => {
+  let clock = 100
+  const events = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events, logger: { warn() {} }, now: () => clock })
+  workflow.job({ id: 'locate', name: '定位', task: 'plugin:map:locate', on: 'task-finished', if: ({ task }) => task === 'settlement', run: async () => { clock = 300; return 1 } })
+  workflow.job({ id: 'call', name: '来电', needs: ['locate'], run: () => { throw new Error('打不通') } })
+  events.emit('task-finished', { sessionId: 'game', task: 'candidate', turn: 2 })
+  events.emit('task-finished', { sessionId: 'game', task: 'settlement', turn: 2 })
+  for (let i = 0; i < 4; i++) await tick()
+  assert.deepEqual(workflow.runs('game'), [
+    { id: 'locate', name: '定位', task: 'plugin:map:locate', event: 'task-finished', cause: 'settlement', turn: 2, at: 100, endedAt: 300, status: 'completed' },
+    { id: 'call', name: '来电', task: '', event: 'needs', needs: ['locate'], turn: 2, at: 300, endedAt: 300, status: 'failed', error: '打不通' }])
+  assert.deepEqual(workflow.runs('other'), [])
+})

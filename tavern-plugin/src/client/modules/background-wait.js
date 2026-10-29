@@ -57,7 +57,7 @@ function backgroundRunsSummary(runs) {
 function useTavernBackgroundRuns(sessionId) {
     const [runs, setRuns] = React.useState(null);
     const [now, setNow] = React.useState(Date.now);
-    const [triggers, setTriggers] = React.useState([]);
+    const [turns, setTurns] = React.useState([]);
     const [moments, setMoments] = React.useState([]);
     const [catalog, setCatalog] = React.useState([]);
     const [locks, setLocks] = React.useState([]);
@@ -73,7 +73,7 @@ function useTavernBackgroundRuns(sessionId) {
                 const result = await rpc("getBackgroundRuns", {}, sessionId);
                 if (disposed) return;
                 setRuns(Array.isArray(result.runs) ? result.runs : []);
-                setTriggers(Array.isArray(result.triggers) ? result.triggers : []);
+                setTurns(Array.isArray(result.turns) ? result.turns : []);
                 setMoments(Array.isArray(result.moments) ? result.moments : []);
                 setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
                 setLocks(Array.isArray(result.locks) ? result.locks : []);
@@ -85,7 +85,7 @@ function useTavernBackgroundRuns(sessionId) {
         const timer = window.setInterval(refresh, 2000);
         return function () { disposed = true; window.clearInterval(timer); };
     }, [sessionId]);
-    return { runs, now, triggers, moments, catalog, locks, members };
+    return { runs, now, turns, moments, catalog, locks, members };
 }
 // A development view: one row per background Agent session, time running left to right,
 // so which task ran on which Agent, what waited for what and what ran side by side shows.
@@ -170,54 +170,91 @@ function TavernBackgroundTimeline(props) {
                 moments.map((item, index) => h("i", { key: index, className: "dsh-tavern-timeline-moment", style: { left: scale.x(item.at) } })),
                 scale.breaks.map((left, index) => h("i", { key: "b" + index, className: "dsh-tavern-timeline-break", style: { left } })))));
 }
-function TavernBackgroundRunRow(props) {
-    const h = React.createElement, run = props.run;
-    return h("li", { className: "dsh-tavern-background-run " + run.status },
-        h("span", { className: "dsh-tavern-background-run-name" }, backgroundRunName(run)),
-        h("span", null, BACKGROUND_RUN_STATUS[run.status] || run.status),
-        h("span", null, (run.turn ? "第 " + run.turn + " 轮 · " : "") + (run.lane === "resident" ? "常驻" : "临时") + (run.model ? " · " + run.model : "") + " · " + backgroundRunSeconds(run, props.now)),
-        run.error ? h("span", { className: "dsh-tavern-background-run-error" }, run.error) : null,
-        run.status === "discarded" ? h("span", { className: "dsh-tavern-background-run-note" }, "跑完时剧情已变化（回退、重写或编辑），结果没有保存。") : null);
+const BACKGROUND_STATUS_MARK = { queued: "…", running: "●", completed: "✓", discarded: "⊘", failed: "✕", cancelled: "⊘" };
+function backgroundClock(time) {
+    return new Date(time).toTimeString().slice(0, 8);
 }
-// The 后台任务 sidebar page: what runs and waits now, then what finished recently.
+function backgroundSpan(from, to, now) {
+    const seconds = Math.max(0, Math.round(((to || now) - from) / 1000));
+    return seconds < 1 ? "" : seconds + " 秒";
+}
+// One task of a turn: what it is, how it went, the Agent runs it made; click for what it does.
+// Under it, the tasks that ran because it finished (任务完成, needs).
+function TavernBackgroundTaskNode(props) {
+    const h = React.createElement, node = props.node, now = props.now;
+    const [open, setOpen] = React.useState(false);
+    const memberName = id => backgroundMemberLabel((props.members || []).find(member => member.id === id));
+    const info = (props.catalog || []).find(item => item.task === node.task);
+    const agent = node.agents[0];
+    const facts = [backgroundSpan((agent && (agent.startedAt || agent.queuedAt)) || node.at, (agent && agent.endedAt) || node.endedAt, now),
+        node.agents.map(run => memberName(run.member) || (run.lane === "resident" ? "常驻 Agent" : "临时 Agent")).join("、"),
+        agent && agent.model, agent && agent.startedAt && agent.startedAt - agent.queuedAt >= 1000 ? "排队 " + Math.round((agent.startedAt - agent.queuedAt) / 1000) + " 秒" : ""].filter(Boolean);
+    return h("li", { className: "dsh-tavern-run-node " + node.status },
+        h("button", { type: "button", className: "dsh-tavern-run-node-head", onClick: () => setOpen(!open), "aria-expanded": open,
+            title: BACKGROUND_RUN_STATUS[node.status] || node.status },
+            h("span", { className: "dsh-tavern-run-mark" }, BACKGROUND_STATUS_MARK[node.status] || "·"),
+            h("span", { className: "dsh-tavern-run-name" }, node.name),
+            h("span", { className: "dsh-tavern-run-facts" }, facts.join(" · "))),
+        node.error ? h("div", { className: "dsh-tavern-run-error" }, node.error) : null,
+        node.status === "discarded" ? h("div", { className: "dsh-tavern-run-note" }, "跑完时剧情已变化（回退、重写或编辑），结果没有保存。") : null,
+        open ? h("div", { className: "dsh-tavern-run-detail" },
+            info ? [["做什么", info.does], ["何时启动", info.trigger], ["读", info.reads], ["写", info.writes], ["等待", info.waits]].filter(([, text]) => text)
+                .map(([label, text]) => h("div", { key: label }, h("b", null, label + "："), text)) : h("div", null, "这一项没有登记在任务目录里（它不调用后台 Agent）。"),
+            node.agents.map(run => h("div", { key: run.id }, h("b", null, "Agent 运行："),
+                (BACKGROUND_RUN_STATUS[run.status] || run.status) + " · " + backgroundClock(run.queuedAt) + (run.error ? " · " + run.error : "")))) : null,
+        node.then.length ? h("ul", { className: "dsh-tavern-run-then" }, node.then.map(child => h(TavernBackgroundTaskNode, { ...props, key: child.key, node: child }))) : null);
+}
+// One turn, like one run of a GitHub Actions workflow: its story moments in order, each with
+// the tasks it started.
+function TavernBackgroundTurn(props) {
+    const h = React.createElement, turn = props.turn;
+    const count = list => list.reduce((sum, node) => sum + 1 + count(node.then), 0);
+    const flat = list => list.flatMap(node => [node, ...flat(node.then)]);
+    const nodes = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others));
+    const busy = nodes.filter(node => node.status === "running" || node.status === "queued").length;
+    const failed = nodes.filter(node => node.status === "failed").length;
+    const summary = [count(nodes.filter(node => !nodes.some(other => other.then.includes(node)))) + " 项任务", busy ? busy + " 项进行中" : "", failed ? failed + " 项失败" : ""].filter(Boolean).join(" · ");
+    const list = tasks => h("ul", { className: "dsh-tavern-run-tasks" }, tasks.map(node => h(TavernBackgroundTaskNode, { key: node.key, node, now: props.now, catalog: props.catalog, members: props.members })));
+    return h("details", { className: "dsh-tavern-run-turn", open: props.open },
+        h("summary", null, h("b", null, turn.turn ? "第 " + turn.turn + " 轮" : "更早"), " · " + backgroundClock(turn.at) + " · " + summary),
+        h("ol", { className: "dsh-tavern-run-moments" },
+            turn.moments.map((moment, index) => h("li", { key: moment.event + index },
+                h("div", { className: "dsh-tavern-run-moment" }, h("span", null, moment.name), h("time", null, backgroundClock(moment.at))),
+                moment.tasks.length ? list(moment.tasks) : null)),
+            turn.others.length ? h("li", null,
+                h("div", { className: "dsh-tavern-run-moment" }, h("span", null, "手动或插件启动")),
+                list(turn.others)) : null));
+}
+// The 后台任务 sidebar page, for development: per turn, which moment started which task and
+// what ran after what; the timeline and the full task list are folded below.
 function TavernBackgroundTasksTab(props) {
     const h = React.createElement;
-    const { runs, now, triggers, moments, catalog, locks, members } = useTavernBackgroundRuns(props.sessionId);
+    const { runs, now, turns, moments, catalog, locks, members } = useTavernBackgroundRuns(props.sessionId);
     const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
-    const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
-    const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
+    const memberName = id => backgroundMemberLabel(members.find(member => member.id === id));
     return h("aside", { className: "dsh-tavern-status dsh-tavern-status-dashboard dsh-tavern-background-tasks" },
         h("div", { className: "dsh-tavern-status-head" },
             h("div", { className: "dsh-tavern-status-title" }, "后台任务"),
             h("div", { className: "dsh-tavern-status-settle" }, runs === null ? "正在读取…" : backgroundRunsSummary(runs) || "空闲")),
         h("div", { className: "dsh-tavern-status-body" },
+            active.length ? h(TavernStopBackgroundAction, { sessionId: props.sessionId }) : null,
             h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "时序（每行一个后台 Agent，浅色为排队，⋯ 为折叠的空闲）"),
+                h("div", { className: "dsh-tavern-status-label" }, "每轮流程"),
+                runs === null ? null : turns.length
+                    ? turns.map((turn, index) => h(TavernBackgroundTurn, { key: turn.at, turn, open: index === 0, now, catalog, members }))
+                    : h("div", { className: "dsh-tavern-status-empty" }, "服务启动以来这局还没有玩过。"),
+                h("p", { className: "dsh-tavern-settings-desc" }, "✓ 完成　● 运行中　… 排队　✕ 失败　⊘ 取消或作废。缩进的任务在上一项做完后才开始；点任务名看它做什么、等什么。只保留重启服务以来的最近几轮。")),
+            h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold" },
+                h("summary", null, "时序图（查并发和锁时用）"),
+                h("p", { className: "dsh-tavern-settings-desc" }, "每行一个后台 Agent，时间从左到右；浅色是排队，⋯ 是折叠的空闲。「后台锁」行：同一成员的任务同一时间只能跑一个。"),
                 runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now, locks, catalog, members })),
-            h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "进行中"),
-                list(active, "没有正在运行或排队的后台任务。"),
-                active.length ? h(TavernStopBackgroundAction, { sessionId: props.sessionId }) : null),
-            h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "最近完成"),
-                list(done, "服务启动以来本局还没有结束的后台任务。")),
-            // Every kind of background task: what it does, which Agent runs it, what starts it.
-            catalog.length ? h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "任务目录"),
+            catalog.length ? h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold" },
+                h("summary", null, "全部任务（" + catalog.length + "）"),
                 h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
-                    h("dt", { key: item.task + ":name" }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name, h("span", null, backgroundMemberLabel(members.find(member => member.id === item.member)) || (item.lane === "resident" ? "常驻" : "临时"))),
-                    h("dd", { key: item.task + ":does" }, item.does,
-                        [["何时启动", item.trigger], ["读", item.reads], ["写", item.writes], ["等待", item.waits]].filter(([, text]) => text)
-                            .map(([label, text]) => h(React.Fragment, { key: label }, h("br"), h("span", null, label + "：" + text))),
-                        item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用" + (members.find(member => member.id === (item.plugin ? "background" : item.member || "background"))?.name || "") + "的后台锁：与同一成员的其他任务不能同时运行")) : null)]))) : null,
-            // The story event table: which moment starts or stops which task.
-            triggers.length ? h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "触发关系"),
-                h("dl", { className: "dsh-tavern-background-triggers" }, triggers.flatMap(row => [
-                    h("dt", { key: row.event + ":name" }, row.name),
-                    h("dd", { key: row.event + ":tasks" }, row.followers.length ? row.followers.join("、") : "—")])),
-                h("p", { className: "dsh-tavern-settings-desc" }, "标「流程启动」的任务由回复流程自己启动并等待结果，这里只列出它。")) : null,
-            h("p", { className: "dsh-tavern-settings-desc" }, "常驻：保留历史的后台 Agent，精修使用独立会话；临时：单独新开的 Agent，可同时运行。记录只保留最近 30 条，重启服务后清空。")));
+                    h("dt", { key: item.task + ":name", title: item.does }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name,
+                        h("span", null, memberName(item.member) || (item.lane === "resident" ? "常驻 Agent" : "临时 Agent"))),
+                    h("dd", { key: item.task + ":when" }, item.trigger, h("br"), h("span", null, "等待：" + item.waits))])),
+                h("p", { className: "dsh-tavern-settings-desc" }, "成员：书记、润色师等是每局常驻的后台 Agent，保留历史；临时 Agent 每次新开，可同时运行。")) : null));
 }
 // One line in 酒馆状态 that opens the page.
 function TavernBackgroundRunsLink(props) {

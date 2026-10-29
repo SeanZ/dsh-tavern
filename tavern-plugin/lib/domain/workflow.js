@@ -21,14 +21,29 @@ function gameOf(payload) {
 }
 
 const KEPT_TURNS = 8
+const KEPT_RUNS = 60
 
-export function createWorkflow({ events, tasks = [], logger = console }) {
+export function createWorkflow({ events, tasks = [], logger = console, now = Date.now }) {
   if (!events || typeof events.on !== 'function') throw new Error('任务表缺少剧情事件')
   const jobs = new Map()
   // Per game: turn → (task id → what its run returned).
   const outputs = new Map()
   // Per task id: run(payload) of each declared task that needs it.
   const dependents = new Map()
+  // Per game: each time a declared task ran (its `if` held), newest last, for the 后台任务 page.
+  const history = new Map()
+
+  function record(entry, payload, event) {
+    const item = { id: entry.id, name: entry.name, task: entry.task, event, at: now(), status: 'running' }
+    if (Number.isSafeInteger(payload.turn)) item.turn = payload.turn
+    // What finished, for a task started by 任务完成; what it needed, for one started by needs.
+    if (event === 'task-finished' && payload.task) item.cause = String(payload.task)
+    if (event === 'needs') item.needs = Object.keys(payload.needs || {})
+    const kept = history.get(payload.gameId) || []
+    kept.push(item)
+    history.set(payload.gameId, kept.slice(-KEPT_RUNS))
+    return (status, error) => { item.status = status; item.endedAt = now(); if (error) item.error = String(error?.message || error).slice(0, 200) }
+  }
   const catalog = new Map(tasks.map(item => [item.task, item]))
   const waiters = new Map()
 
@@ -101,9 +116,12 @@ export function createWorkflow({ events, tasks = [], logger = console }) {
     function attempt(payload, event) {
       const proceed = ok => {
         if (!ok) return
-        const value = run(payload, event)
-        if (typeof value?.then !== 'function') return finished(id, payload.gameId, payload.turn, value)
-        return value.then(result => finished(id, payload.gameId, payload.turn, result))
+        const end = record(entry, payload, event)
+        let value
+        try { value = run(payload, event) } catch (error) { end('failed', error); throw error }
+        const done = result => { end('completed'); finished(id, payload.gameId, payload.turn, result) }
+        if (typeof value?.then !== 'function') return done(value)
+        return value.then(done, error => { end('failed', error); throw error })
       }
       const ok = when ? when(payload, event) : true
       return typeof ok?.then === 'function' ? ok.then(proceed) : proceed(ok)
@@ -145,6 +163,11 @@ export function createWorkflow({ events, tasks = [], logger = console }) {
     for (const turn of [...turns.keys()]) if (turn >= payload.turn) turns.delete(turn)
   })
 
+  /** The runs of declared tasks in this game, oldest first. */
+  function runs(gameId) {
+    return (history.get(String(gameId || '')) || []).map(item => ({ ...item }))
+  }
+
   /** What a declared task's run returned for this game and turn, or undefined. */
   function output(gameId, turn, id) {
     const value = outputsOf(String(gameId), turn)?.get(String(id))
@@ -161,5 +184,5 @@ export function createWorkflow({ events, tasks = [], logger = console }) {
     await waitAll([...catalog.values()].filter(item => item.blocksNextTurn).map(item => item.task), chat)
   }
 
-  return Object.freeze({ job, table, waiter, needs, beforeNextTurn, output })
+  return Object.freeze({ job, table, waiter, needs, beforeNextTurn, output, runs })
 }

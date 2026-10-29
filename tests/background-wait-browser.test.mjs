@@ -27,7 +27,7 @@ test('long-wait notice shows a working stop button in Chromium',async()=>{
   assert.deepEqual(calls.find(call=>call.method==='stopBackground'),{method:'stopBackground',args:{operationId:'op-1'},sessionId:'game'})
  } finally {await browser.close()}
 })
-test('后台任务页在 Chromium 中分开显示进行中与最近完成',async()=>{
+test('后台任务页在 Chromium 中按轮显示流程：时刻、它启动的任务、做完后接着跑的任务；时序图和全部任务折叠在下面',async()=>{
  let script='const modules={};\n'
  for(const [name,file] of [['react','react.production.js'],['scheduler','scheduler.production.js'],['react-dom','react-dom.production.js'],['react-dom/client','react-dom-client.production.js']]) {
   script+=`modules[${JSON.stringify(name)}]=(()=>{const module={exports:{}};const exports=module.exports;const require=name=>modules[name];\n${await readFile(join(dirname(require.resolve(name)),'cjs',file),'utf8')}\nreturn module.exports;})();\n`
@@ -35,31 +35,42 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
  const wait=await readFile(new URL('../tavern-plugin/src/client/modules/background-wait.js',import.meta.url),'utf8')
  script+=`const React=modules.react;const t=Date.now();
  function TavernStopBackgroundAction(){return React.createElement('button',null,'停止后台')}
+ const settle={key:'run:run-1',name:'变量结算',task:'settlement',status:'running',at:t-8000,agents:[{id:'run-1',status:'running',member:'background',lane:'resident',queuedAt:t-8000,startedAt:t-8000,model:'m'}],then:[
+   {key:'job:locate',name:'插件「地图」定位',task:'plugin:地图:locate',status:'failed',at:t-4000,endedAt:t-3000,error:'信号读取失败',agents:[],then:[]}]}
  async function rpc(method){return {runs:[
-  {id:'run-4',task:'plugin',plugin:'npc',lane:'resident',member:'plugin:npc:luna',agentSessionId:'session-luna',turn:5,model:'m',status:'completed',queuedAt:t-7000,startedAt:t-7000,endedAt:t-6000},
-  {id:'run-3',task:'plugin',plugin:'地图',lane:'ephemeral',turn:5,model:'m',status:'failed',queuedAt:t-9000,startedAt:t-9000,endedAt:t-4000,error:'信号读取失败'},
   {id:'run-2',task:'candidate',name:'生成选项',lane:'resident',member:'background',turn:5,model:'m',status:'queued',queuedAt:t-2000},
   {id:'run-1',task:'settlement',name:'变量结算',lane:'resident',turn:5,model:'m',status:'running',queuedAt:t-8000,startedAt:t-8000,agentSessionId:'session-abcd',member:'background'},
   {id:'run-0',task:'ledger',name:'手动记账',lane:'resident',turn:4,model:'m',status:'discarded',queuedAt:t-20000,startedAt:t-20000,endedAt:t-15000,agentSessionId:'session-abcd',member:'background'}],
-  catalog:[{task:'plugin:npc:diary',name:'露娜日记',plugin:'npc',member:'plugin:npc:luna',lane:'resident',does:'写日记',trigger:'结算后',lock:false},{task:'settlement',name:'变量结算',lane:'resident',member:'background',does:'更新变量',trigger:'正文写完后',reads:'正文',writes:'变量',waits:'不等',lock:true}],
+  turns:[
+   {turn:5,at:t-9000,moments:[{event:'turn-started',name:'玩家发送',at:t-9000,tasks:[]},{event:'reply-committed',name:'正文写完',at:t-8500,tasks:[
+     {key:'job:polish',name:'自动精修',task:'polish',status:'completed',at:t-8400,endedAt:t-8300,agents:[],then:[]},settle]}],
+    others:[{key:'run:run-2',name:'生成选项',task:'candidate',status:'queued',at:t-2000,agents:[{id:'run-2',status:'queued',member:'background',lane:'resident',queuedAt:t-2000}],then:[]}]},
+   {turn:4,at:t-21000,moments:[{event:'turn-started',name:'玩家发送',at:t-21000,tasks:[]}],
+    others:[{key:'run:run-0',name:'手动记账',task:'ledger',status:'discarded',at:t-20000,endedAt:t-15000,agents:[],then:[]}]}],
+  catalog:[{task:'plugin:npc:diary',name:'露娜日记',plugin:'npc',member:'plugin:npc:luna',lane:'resident',does:'写日记',trigger:'结算后',waits:'不等其他任务',lock:false},{task:'settlement',name:'变量结算',lane:'resident',member:'background',does:'更新变量',trigger:'正文写完后',reads:'正文',writes:'变量',waits:'下一轮开始前要等它',lock:true}],
   members:[{id:'background',name:'书记'},{id:'plugin:npc:luna',name:'露娜',plugin:'npc'}],
   locks:[{kind:'held',slot:'background',role:'settlement',operationId:'op',from:t-8000},{kind:'refused',slot:'background',role:'candidate',holder:'settlement',at:t-2000}],
-  moments:[{event:'reply-committed',name:'正文写完',at:t-8500}],
-  triggers:[{event:'reply-committed',name:'正文写完',followers:['舞台导演','自动精修']},{event:'turn-discarded',name:'回合作废',followers:[]}]}}
+  moments:[{event:'reply-committed',name:'正文写完',at:t-8500}]}}
  ${wait}\nmodules['react-dom/client'].createRoot(document.querySelector('main')).render(React.createElement(TavernBackgroundTasksTab,{sessionId:'game'}));`
  const browser=await chromium.launch({headless:true})
  try {
   const page=await browser.newPage();page.on('pageerror', error => { throw error });await page.setContent('<main></main>');await page.addScriptTag({content:script})
-  await page.getByText('运行 1 · 排队 1 · 失败 1').waitFor()
-  const [timeline, active, done, catalog, triggers]=await page.locator('section').allInnerTexts()
-  assert.match(timeline, /书记 …abcd · 手动记账、变量结算[\s\S]*书记 · 生成选项[\s\S]*临时 · 插件「地图」/)
-  assert.match(timeline, /▼正文写完/)
-  assert.match(timeline, /插件「npc」·露娜 …luna · 插件「npc」/)
-  assert.match(catalog, /插件「npc」露娜日记[\s\S]*插件「npc」·露娜/)
+  await page.getByText('运行 1 · 排队 1').waitFor()
+  const flow=await page.locator('section').first().innerText()
+  // The newest turn is open: its moments in order, the tasks each started, and what ran after a task, indented under it.
+  assert.match(flow, /每轮流程[\s\S]*第 5 轮[\s\S]*4 项任务 · 2 项进行中 · 1 项失败[\s\S]*玩家发送[\s\S]*正文写完[\s\S]*✓\s*自动精修[\s\S]*●\s*变量结算[\s\S]*书记 · m[\s\S]*✕\s*插件「地图」定位[\s\S]*信号读取失败[\s\S]*手动或插件启动[\s\S]*…\s*生成选项/)
+  assert.match(flow, /第 4 轮/)
+  assert.equal(await page.locator('.dsh-tavern-run-then .dsh-tavern-run-name').innerText(), '插件「地图」定位')
+  // A task opens to what it does and waits for, from the catalog.
+  await page.getByRole('button', { name: /变量结算/ }).click()
+  assert.match(await page.locator('.dsh-tavern-run-detail').innerText(), /做什么：更新变量[\s\S]*等待：下一轮开始前要等它[\s\S]*Agent 运行：运行中/)
+  assert.match(await page.locator('body').innerText(), /停止后台/)
+  // The timeline and the full task list are folded below.
+  await page.getByText('时序图（查并发和锁时用）').click()
+  const timeline=await page.locator('.dsh-tavern-timeline').innerText()
+  assert.match(timeline, /书记 …abcd · 手动记账、变量结算[\s\S]*书记 · 生成选项/)
   assert.match(timeline, /书记的后台锁[\s\S]*变量结算[\s\S]*✕/)
-  assert.match(active, /进行中[\s\S]*生成选项[\s\S]*排队中[\s\S]*第 5 轮 · 常驻[\s\S]*变量结算[\s\S]*运行中[\s\S]*停止后台/)
-  assert.match(done, /最近完成[\s\S]*插件「地图」[\s\S]*失败[\s\S]*信号读取失败[\s\S]*手动记账[\s\S]*已作废[\s\S]*结果没有保存/)
-  assert.match(catalog, /任务目录[\s\S]*变量结算[\s\S]*书记[\s\S]*更新变量[\s\S]*何时启动：正文写完后[\s\S]*读：正文[\s\S]*写：变量[\s\S]*等待：不等[\s\S]*占用书记的后台锁/)
-  assert.match(triggers, /触发关系[\s\S]*正文写完[\s\S]*舞台导演、自动精修[\s\S]*回合作废[\s\S]*—/)
+  await page.getByText('全部任务（2）').click()
+  assert.match(await page.locator('.dsh-tavern-background-catalog').innerText(), /插件「npc」露娜日记[\s\S]*插件「npc」·露娜[\s\S]*变量结算[\s\S]*书记[\s\S]*正文写完后[\s\S]*等待：下一轮开始前要等它/)
  } finally {await browser.close()}
 })
