@@ -133,7 +133,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   t.after(() => { Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act }); dom.window.close() })
 
   const saved = []
-  let value = { hideContextAndReasoning: false, headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: TAB_ENTRIES.map(entry => entry.id) } }
+  let value = { headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: TAB_ENTRIES.map(entry => entry.id) } }
   const listeners = new Set()
   const displayPreferences = {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
