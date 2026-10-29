@@ -1,5 +1,5 @@
 // The 后台任务 page's main view, after a GitHub Actions run: per turn, the story moments in
-// order, each with the tasks it started, and under a task what ran because it finished
+// order, each with the background tasks it started, and under a task what ran because it finished
 // (任务完成, needs). Built from what the server keeps: story moments, runs of declared
 // tasks (workflow.runs) and background Agent runs (the runner's), all in memory.
 
@@ -45,9 +45,11 @@ export function buildRunTree({ moments = [], jobRuns = [], runs = [], catalog = 
   const momentAt = (segment, event, time) => segment.moments.filter(item => item.event === event && item.at <= time + 1000).at(-1)
   const used = new Set()
 
-  // Declared tasks' runs, in the order they started.
+  // Declared tasks' runs, in the order they started. Only background tasks: a declaration
+  // that starts no task of the catalog (对局标题, 存档整理: upkeep, no background Agent) is left out.
   const placed = []
   for (const jobRun of [...jobRuns].sort((a, b) => a.at - b.at)) {
+    if (!jobRun.task) continue
     const segment = segmentAt(jobRun.at)
     const node = { key: 'job:' + jobRun.id + ':' + jobRun.at, id: jobRun.id, name: jobRun.name, task: jobRun.task || '', status: jobRun.status, at: jobRun.at,
       agents: [], then: [], event: jobRun.event, cause: jobRun.cause, needs: jobRun.needs }

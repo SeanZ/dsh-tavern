@@ -4,7 +4,7 @@ import { buildRunTree } from '../tavern-plugin/lib/domain/background-run-tree.js
 
 const catalog = [{ task: 'settlement', name: '变量结算' }, { task: 'candidate', name: '生成选项' }, { task: 'polish', name: '正文精修' }]
 
-test('a turn lists its moments in order, each with the tasks it started, and what ran after a task under it', () => {
+test('a turn lists its moments in order, each with the background tasks it started, and what ran after a task under it', () => {
   const moments = [
     { event: 'turn-started', name: '玩家发送', at: 1000, turn: 7 },
     { event: 'reply-committed', name: '正文写完', at: 5000 },
@@ -22,7 +22,7 @@ test('a turn lists its moments in order, each with the tasks it started, and wha
   const [turn] = buildRunTree({ moments, jobRuns, runs, catalog, now: 10000 })
   assert.equal(turn.turn, 7)
   assert.deepEqual(turn.moments.map(item => [item.name, item.tasks.map(task => task.name)]),
-    [['玩家发送', []], ['正文写完', ['自动精修', '变量结算']], ['本轮结算完', ['对局标题']]])
+    [['玩家发送', []], ['正文写完', ['自动精修', '变量结算']], ['本轮结算完', []]], 'upkeep with no background task (对局标题) is left out')
   const [polish, settlement] = turn.moments[1].tasks
   assert.deepEqual(polish.agents.map(run => run.id), ['run-3'], 'the polish Agent run belongs to 自动精修')
   assert.deepEqual(settlement.agents.map(run => [run.id, run.model]), [['run-1', 'm']])
