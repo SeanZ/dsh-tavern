@@ -180,7 +180,8 @@ test('自由故事只保存完整的 4 action + 1 scene', async () => {
 
   const saved = await run.candidates.find({ sessionId: 'session-1', messageId: 'message-1' })
   assert.deepEqual(saved, result)
-  assert.equal(await run.candidates.find({ sessionId: 'session-1', messageId: 'old-message' }), null)
+  assert.equal(await run.candidates.find({ sessionId: 'session-1', messageId: 'old-message' }), null)  // Choices change no story: work fenced on the revision (this turn's stage director) stays valid.
+  assert.equal(run.chat().timeline.revision, started.basedOn.revision)
 })
 
 test('单次输出无效时不覆盖旧候选，也不改变剧本游标', async () => {
