@@ -689,7 +689,10 @@ export async function apply(ctx) {
     return (idx !== undefined && typeof idx === 'object') ? idx : { cards: [], chats: [] }
   }
   async function writeIndex(idx) { await writeJson('index.json', idx) }
-  async function updateIndex(updater) { return await profileData.updateJson('index.json', value => updater(value || { cards: [], chats: [] })) }
+  // index.json summarises chats/ and cards/ and is rebuilt from them on startup, so it
+  // does not pay the durable barriers of the data it points at: it is rewritten on every
+  // chat save (several times a turn) while a lost last write only costs a rescan.
+  async function updateIndex(updater) { return await profileData.updateJsonFast('index.json', value => updater(value || { cards: [], chats: [] })) }
   const fileResources = createFileResourceStore({ dataRoot })
   const resourceWorkspaceProjection = createResourceWorkspaceProjection({ root: dataRoot + '/resources' })
   const mobileCardImport = createMobileCardImport({ runtimeHost: process.env.DSH_TAVERN_RUNTIME_HOST })
@@ -1079,9 +1082,13 @@ export async function apply(ctx) {
   async function listCards() {
     const cardPaths = await fileResources.list('card')
     const scriptBindings = await fileResources.scriptBindingsForCards(cardPaths)
+    // One listing per originals directory for the whole library; asking per card made
+    // this N listings of N entries. A failure here (e.g. a duplicated original name)
+    // falls back to the per-card read so one broken card cannot hide the library.
+    const originals = await fileResources.originalCardNames(cardPaths).catch(() => null)
     const cards = await Promise.all(cardPaths.map(async function (cardPath) {
       try {
-        const [card, hasImage] = await Promise.all([cardSummaries.read(cardPath), fileResources.hasCardImage(cardPath)])
+        const [card, hasImage] = await Promise.all([cardSummaries.read(cardPath), fileResources.hasCardImage(cardPath, originals)])
         const scriptPath = scriptBindings[cardPath]
         return {
           path: cardPath,
@@ -3913,8 +3920,10 @@ export async function apply(ctx) {
     // Cards from before the asset library move their stage material once, in the background.
     setImmediate(async function () {
       for (const cardPath of await fileResources.list('card').catch(() => [])) {
-        const name = (await cardSummaries.read(cardPath).catch(() => null))?.name
-        await stageMaterial.ready(cardPath, name).catch(error => console.warn('dsh-tavern: 舞台素材迁移失败', cardPath, str(error?.message || error)))
+        // The name is only used if the card still holds pre-library stage material,
+        // so most cards no longer get their whole file read on every start.
+        const readName = () => cardSummaries.read(cardPath).catch(() => null).then(summary => summary?.name)
+        await stageMaterial.ready(cardPath, readName).catch(error => console.warn('dsh-tavern: 舞台素材迁移失败', cardPath, str(error?.message || error)))
       }
     })
     setImmediate(function () {

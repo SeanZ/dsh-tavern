@@ -173,3 +173,29 @@ test('没有存档的会话只扫描一次；新存档或新链接出现后再�
   await store.adapter.writeIndex({ chats: [{ id: 'chat-a' }, { id: 'chat-b' }, { id: 'chat-c' }] })
   assert.equal((await registry.resolve('background-1'))?.id, 'chat-c')
 })
+
+test('恢复扫描只为命中的存档读盘，不按存档数量放大', async function () {
+  const chats = {}, rows = []
+  for (let index = 0; index < 40; index++) {
+    const id = 'chat-bulk-' + index
+    chats[id] = { id, sessionId: 'session-bulk-' + index, cardPath: '', cardName: 'C' + index }
+    rows.push({ id, sessionId: 'session-bulk-' + index })
+  }
+  const store = memoryStore({ index: { chats: rows }, chats })
+  const registry = createTavernConversationRegistry({ store: store.adapter })
+  const resolved = await registry.resolve('session-bulk-7')
+  assert.equal(resolved.id, 'chat-bulk-7')
+  assert.equal(store.snapshot().chatReads, 1, '四十个存档只读命中的那一个')
+  assert.deepEqual(store.snapshot().links, { 'session-bulk-7': 'chat-bulk-7' })
+})
+
+test('新摘要带上绑定的 Session，索引行直接可比对', async function () {
+  const store = memoryStore({})
+  const registry = createTavernConversationRegistry({ store: store.adapter })
+  await registry.publish({ id: 'chat-s', sessionId: 'session-s', cardPath: '', cardName: 'S', updatedAt: 10 })
+  assert.equal(store.snapshot().index.chats[0].sessionId, 'session-s')
+  // 没有改动时重复同步不重写索引。
+  await registry.sync({ id: 'chat-s', sessionId: 'session-s', cardPath: '', cardName: 'S', updatedAt: 10, createdAt: 10 })
+  await registry.sync({ id: 'chat-s', sessionId: 'session-s', cardPath: '', cardName: 'S', updatedAt: 10, createdAt: 10 })
+  assert.equal(store.snapshot().index.chats.length, 1)
+})

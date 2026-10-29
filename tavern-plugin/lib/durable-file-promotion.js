@@ -54,7 +54,7 @@ export function createDurableFilePromotion(options = {}) {
     return Date.now() - createdAt > writeLockStaleMs
   }
 
-  async function withWriteLock(target, operation) {
+  async function withWriteLock(target, operation, { fsync = true } = {}) {
     await mkdir(path.dirname(target), { recursive: true })
     const lockPath = target + WRITE_LOCK_SUFFIX
     let handle
@@ -74,7 +74,7 @@ export function createDurableFilePromotion(options = {}) {
     if (!handle) throw new Error(`无法取得 Tavern 写入锁：${target}`)
     try {
       await handle.writeFile(JSON.stringify({ pid: process.pid, writerId, createdAt: Date.now() }) + '\n', 'utf8')
-      await handle.sync()
+      if (fsync) await handle.sync()
       return await operation()
     } finally {
       await handle.close().catch(function () {})
@@ -119,7 +119,18 @@ export function createDurableFilePromotion(options = {}) {
     return snapshots
   }
 
+  // Targets this process promoted itself. A successful promotion clears every pending
+  // snapshot it wrote, so a reader that already promoted a target has nothing to recover
+  // there and can skip the directory listing every read used to pay for. A snapshot left
+  // by another process that later crashed is still picked up on the next start.
+  const promoted = new Set()
   async function readTarget(target) {
+    if (promoted.has(target)) {
+      try { return await readFile(target) } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+        promoted.delete(target)
+      }
+    }
     const snapshots = await pendingSnapshots(target)
     if (snapshots.length > 0) return snapshots[snapshots.length - 1].value
     try { return await readFile(target) } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error }
@@ -152,7 +163,10 @@ export function createDurableFilePromotion(options = {}) {
     } finally { if (handle) await handle.close().catch(function () {}) }
   }
 
-  async function writeTarget(target, value) {
+  // `fsync: false` keeps the same lock, staging file and atomic rename but skips the
+  // three disk barriers. Rebuilt-from-source indexes (chat index, diagnostics) do not
+  // need crash durability: a lost last write is recovered by the next scan.
+  async function writeTarget(target, value, { fsync = true } = {}) {
     await mkdir(path.dirname(target), { recursive: true })
     const snapshots = await pendingSnapshots(target)
     const revision = snapshots.length === 0 ? 1 : snapshots[snapshots.length - 1].revision + 1
@@ -162,13 +176,14 @@ export function createDurableFilePromotion(options = {}) {
     try {
       handle = await open(staging, 'wx')
       await handle.writeFile(bytes(value))
-      await handle.sync()
+      if (fsync) await handle.sync()
       await handle.close(); handle = null
       await rename(staging, pending)
-      await syncDirectory(path.dirname(target))
+      if (fsync) await syncDirectory(path.dirname(target))
       await replaceTarget(pending, target)
-      await syncDirectory(path.dirname(target))
+      if (fsync) await syncDirectory(path.dirname(target))
       await cleanupPending(target)
+      promoted.add(target)
       return { status: 'promoted', revision }
     } catch (error) {
       if (handle) await handle.close().catch(function () {})
@@ -238,24 +253,25 @@ export function createDurableFilePromotion(options = {}) {
         return { status: 'appended', bytes: frame.length }
       }))
     },
-    async write(target, value) {
+    async write(target, value, settings) {
       const absolute = path.resolve(target)
-      return enqueue(absolute, () => withWriteLock(absolute, () => writeTarget(absolute, value)))
+      return enqueue(absolute, () => withWriteLock(absolute, () => writeTarget(absolute, value, settings), settings))
     },
-    async update(target, updater) {
+    async update(target, updater, settings) {
       if (typeof updater !== 'function') throw new Error('Durable File Promotion 缺少 updater')
       const absolute = path.resolve(target)
       return enqueue(absolute, () => withWriteLock(absolute, async function () {
         const current = await readTarget(absolute)
         const next = await updater(current)
         if (next === undefined) return current
-        await writeTarget(absolute, next)
+        await writeTarget(absolute, next, settings)
         return bytes(next)
-      }))
+      }, settings))
     },
     async remove(target) {
       const absolute = path.resolve(target)
       await enqueue(absolute, () => withWriteLock(absolute, async function () {
+        promoted.delete(absolute)
         await rm(absolute, { force: true })
         await cleanupPending(absolute)
         await syncDirectory(path.dirname(absolute))
