@@ -3170,22 +3170,21 @@ export async function apply(ctx) {
     stageDirectorStream.cancel(sessionId, turn)
     if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
   }
-  // 事件表: every background task a story moment starts. Settlement is not here: the
+  // 任务表: every background task a story moment starts. Settlement is not here: the
   // reply and regeneration flows queue it themselves, since they wait for its outcome.
-  storyEvents.on('reply-committed', '舞台导演', ({ sessionId }) => directRound(sessionId))
+  workflow.job({ id: 'stage-director', name: '舞台导演', on: 'reply-committed', run: ({ gameId }) => directRound(gameId),
+    cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => cancelDirector(gameId, turn) })
   // Its dialogue bubbles came with the text.
-  storyEvents.on('reply-committed', '台词气泡', ({ sessionId }) => castPresentation.announce(str(sessionId)))
-  // The 精修 pre-review reads the reply as written; settlement never waits for it.
-  storyEvents.on('reply-committed', '自动精修', ({ sessionId }) => polishPrereview.start(sessionId))
-  workflow.job({ id: 'game-title', name: '对局标题', on: 'turn-settled', if: ({ latest }) => Boolean(latest),
-    run: ({ latest }) => gameTitles.afterTurn(latest.sessionId, latest.cardName) })
-  workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled', if: ({ latest }) => Boolean(latest),
+  workflow.job({ id: 'cast-bubbles', name: '台词气泡', on: 'reply-committed', run: ({ gameId }) => castPresentation.announce(gameId) })
+  workflow.job({ id: 'game-title', name: '对局标题', on: 'turn-settled',
+    run: ({ gameId, latest }) => gameTitles.afterTurn(gameId, latest.cardName) })
+  workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled',
     run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
-  // A reply the pre-review has not read yet (it was busy, or the reply changed since).
-  storyEvents.on('turn-settled', '自动精修', ({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
-  storyEvents.on('turn-settled', '插件轮次通知', ({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
-  storyEvents.on('turn-discarded', '取消舞台导演', ({ sessionId, turn }) => cancelDirector(sessionId, turn))
-  storyEvents.on('turn-settled', '选项世界书预热', ({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })
+  // The 精修 pre-review reads the reply as written; settlement never waits for it. After
+  // settlement it picks up a reply it has not read yet (it was busy, or the reply changed).
+  workflow.job({ id: 'auto-polish', name: '自动精修', on: ['reply-committed', 'turn-settled'], run: ({ gameId }) => polishPrereview.start(gameId) })
+  workflow.job({ id: 'plugin-turn', name: '插件轮次通知', on: 'turn-settled', run: ({ gameId }) => pluginApi.turnSettled(gameId) })
+  workflow.job({ id: 'candidate-worldbook', name: '选项世界书预热', on: 'turn-settled', run: ({ gameId }) => candidateWorldbookPreparation.warm(gameId) })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },

@@ -7,15 +7,31 @@ const tick = () => new Promise(resolve => setImmediate(resolve))
 
 test('a declared task runs on its events when its condition holds, and is listed under them', async () => {
   const events = createStoryEvents(), workflow = createWorkflow({ events }), heard = []
-  workflow.job({ id: 'title', name: '对局标题', on: 'turn-settled', if: ({ latest }) => Boolean(latest), run: ({ chatId }, event) => { heard.push([chatId, event]) } })
-  workflow.job({ id: 'both', name: '两处', on: ['reply-committed', 'turn-settled'], run: (_, event) => { heard.push(['both', event]) } })
+  workflow.job({ id: 'title', name: '对局标题', on: 'turn-settled', if: ({ chatId }) => chatId !== 'skip', run: ({ chatId, gameId }, event) => { heard.push([chatId, gameId, event]) } })
+  workflow.job({ id: 'both', name: '两处', on: ['reply-committed', 'turn-settled'], run: ({ gameId }, event) => { heard.push(['both', gameId, event]) } })
   events.emit('turn-settled', { chatId: 'a', latest: { sessionId: 'game' } })
+  events.emit('turn-settled', { chatId: 'skip', latest: { sessionId: 'game' } })
+  // A settlement whose save could not be read names no game, so it starts no task.
   events.emit('turn-settled', { chatId: 'b', latest: null })
   events.emit('reply-committed', { sessionId: 'game' })
   await tick()
-  assert.deepEqual(heard, [['a', 'turn-settled'], ['both', 'turn-settled'], ['both', 'turn-settled'], ['both', 'reply-committed']])
+  assert.deepEqual(heard, [['a', 'game', 'turn-settled'], ['both', 'game', 'turn-settled'], ['both', 'game', 'turn-settled'], ['both', 'game', 'reply-committed']])
   assert.deepEqual(events.table().find(row => row.event === 'turn-settled').followers, ['对局标题', '两处'])
   assert.deepEqual(workflow.table().map(job => [job.id, job.name, [...job.on]]), [['title', '对局标题', ['turn-settled']], ['both', '两处', ['reply-committed', 'turn-settled']]])
+})
+
+test('cancelOn moments stop a task, listed as 取消 under them', async () => {
+  const events = createStoryEvents(), workflow = createWorkflow({ events }), cancelled = []
+  const stop = workflow.job({ id: 'director', name: '舞台导演', on: 'reply-committed', run: () => {},
+    cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => { cancelled.push([gameId, turn]) } })
+  events.emit('turn-discarded', { sessionId: 'game', turn: 3 })
+  await tick()
+  assert.deepEqual(cancelled, [['game', 3]])
+  assert.deepEqual(events.table().find(row => row.event === 'turn-discarded').followers, ['取消舞台导演'])
+  stop()
+  events.emit('turn-discarded', { sessionId: 'game', turn: 4 })
+  assert.deepEqual(cancelled, [['game', 3]])
+  assert.throws(() => workflow.job({ id: 'x', on: 'reply-committed', run: () => {}, cancelOn: 'turn-discarded' }), /缺少 cancel/)
 })
 
 test('a failing task is reported under its name; removing it stops it and frees the id', async () => {
@@ -23,7 +39,7 @@ test('a failing task is reported under its name; removing it stops it and frees 
   const events = createStoryEvents({ logger: { warn: (...args) => warnings.push(args.join(' ')) } })
   const workflow = createWorkflow({ events })
   const stop = workflow.job({ id: 'x', name: '存档整理', on: 'turn-settled', run: async () => { throw new Error('坏了') } })
-  events.emit('turn-settled', { chatId: 'a', latest: null })
+  events.emit('turn-settled', { chatId: 'a', latest: { sessionId: 'game' } })
   await tick()
   assert.ok(warnings.some(line => line.includes('本轮结算完后「存档整理」失败') && line.includes('坏了')))
   stop()
