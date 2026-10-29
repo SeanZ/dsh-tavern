@@ -2247,7 +2247,8 @@ export async function apply(ctx) {
   // written, beside settlement, and the review is written back into the reply in place.
   const polishPrereview = createPolishPrereview({
     enabled: async () => (await readTavernSettings()).polishPrereview === true,
-    readTexts: async sessionId => (await bodyEditor.read(sessionId)).parts.filter(part => part.kind === 'text').map(part => part.text),
+    // Read-only: the review runs beside settlement, which holds the editing lock.
+    readTexts: sessionId => bodyEditor.peek(sessionId),
     review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal),
     apply: autoPolish
   })
@@ -2273,8 +2274,10 @@ export async function apply(ctx) {
     if (JSON.stringify(current) !== JSON.stringify(texts)) return
     signal.throwIfAborted()
     const polished = applyPolishEdits(texts, edits)
-    await bodyEditor.polish(sessionId, { token: edit.token, texts: polished })
+    // Settled before the write: writing the reply announces 正文写完 again, and the polished
+    // text must not start a review of itself.
     polishPrereview.settle(sessionId, texts, polished)
+    await bodyEditor.polish(sessionId, { token: edit.token, texts: polished })
     notifyPluginTimeline(sessionId, 'edit', { settled: true })
     sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'auto-polish:' + Date.now() })
     await polishRecords.save(sessionId, edit.turn, { original: texts, edits, seconds: Math.round((Date.now() - started) / 1000), auto: true })
@@ -3194,9 +3197,9 @@ export async function apply(ctx) {
     run: ({ gameId, latest }) => gameTitles.afterTurn(gameId, latest.cardName) })
   workflow.job({ id: 'save-maintenance', name: '存档整理', on: 'turn-settled',
     run: ({ chatId, latest }) => { saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) } })
-  // The 精修 pre-review reads the reply as written; settlement never waits for it. After
-  // settlement it picks up a reply it has not read yet (it was busy, or the reply changed).
-  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: ['reply-committed', 'turn-settled'],
+  // The 精修 review reads the reply as written; settlement never waits for it. One start: a
+  // regenerated reply is 正文写完 again, and starting twice for the same text is a no-op.
+  workflow.job({ id: 'auto-polish', name: '自动精修', task: 'polish', condition: '开启自动精修时', on: 'reply-committed',
     enabled: async () => (await readTavernSettings()).polishPrereview === true, run: ({ gameId }) => polishPrereview.start(gameId) })
   workflow.job({ id: 'plugin-turn', name: '插件轮次通知', on: 'turn-settled', run: ({ gameId }) => pluginApi.turnSettled(gameId) })
   workflow.job({ id: 'candidate-worldbook', name: '选项世界书预热', on: 'turn-settled', run: ({ gameId }) => candidateWorldbookPreparation.warm(gameId) })

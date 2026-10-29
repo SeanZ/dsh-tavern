@@ -149,6 +149,13 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     const { chat, message, parts } = await context(sessionId)
     return { token: token(chat, message), turn: message.turn, parts: parts.map(part => part.kind === 'text' ? part : { kind: part.kind }) }
   }
+  // The last reply's text parts as saved, for reading only (the 精修 review): no editing lock,
+  // so it reads while the turn's settlement still runs. Writing goes through read/polish.
+  async function peek(sessionId) {
+    const chat = await chats.forSession(sessionId)
+    if (!chat) throw new Error('会话不存在')
+    return editableReplyParts(source(latest(chat))).filter(part => part.kind === 'text').map(part => part.text)
+  }
   // `kind`: body.edit, or body.polish for 自动精修 (same text checks, nothing else invalidated).
   async function saveText(sessionId, input, kind = 'body.edit') {
     if (pending.has(sessionId)) throw new Error('正在保存正文，请稍候')
@@ -376,5 +383,5 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (carry) await carry()
     return saved
   }
-  return Object.freeze({ read, save, polish, readUser, saveUser, replaceText })
+  return Object.freeze({ read, peek, save, polish, readUser, saveUser, replaceText })
 }
