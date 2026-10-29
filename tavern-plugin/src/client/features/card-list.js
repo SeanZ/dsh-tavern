@@ -38,20 +38,32 @@
 
 		// Stop Tavern work first, then archive the DSH session, then remove the record;
 		// a chat whose session cannot be archived is kept so it never becomes a hidden orphan.
+		// Archiving is one host round-trip per session, so a batch runs a few at a time —
+		// it used to wait for each one before starting the next.
+		const ARCHIVE_CONCURRENCY = 4;
 		async function deleteTavernChats(items, archiveSession, call = rpc) {
 			const failures = [];
-			const ready = [];
 			if (!items.length) return { removed: [], failures };
 			const prepared = await call("prepareDeleteChats", { chatIds: items.map(item => item.chatId) });
 			failures.push(...prepared.results.filter(result => !result.ok));
-			for (const item of items) {
-				if (!prepared.results.some(result => result.chatId === item.chatId && result.ok)) continue;
-				try {
-					try { await archiveSession(item.sessionId); }
-					catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) throw archiveError; }
-					ready.push(item.chatId);
-				} catch (error) { failures.push({ chatId: item.chatId, error: String(error && error.message || error) }); }
+			const eligible = items.filter(item => prepared.results.some(result => result.chatId === item.chatId && result.ok));
+			const archived = new Set();
+			let next = 0;
+			async function archiveSome() {
+				for (;;) {
+					const index = next++;
+					if (index >= eligible.length) return;
+					const item = eligible[index];
+					try {
+						try { await archiveSession(item.sessionId); }
+						catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) throw archiveError; }
+						archived.add(item.chatId);
+					} catch (error) { failures.push({ chatId: item.chatId, error: String(error && error.message || error) }); }
+				}
 			}
+			await Promise.all(Array.from({ length: Math.min(ARCHIVE_CONCURRENCY, eligible.length) }, archiveSome));
+			const ready = eligible.filter(item => archived.has(item.chatId)).map(item => item.chatId);
+			if (!ready.length) return { removed: [], failures };
 			const deleted = await call("deleteChats", { chatIds: ready });
 			failures.push(...deleted.results.filter(result => !result.ok));
 			return { removed: deleted.results.filter(result => result.ok).map(result => result.chatId), failures };

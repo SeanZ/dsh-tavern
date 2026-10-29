@@ -7,8 +7,42 @@ const scriptText = value => String(value || '').replace(/\r\n?/g, '\n').trim()
 /** Materialize a save's resources without replacing existing local resources. */
 export function createGameSaveResources({ resources, cardPreparation }) {
   let tail = Promise.resolve()
-  async function importCard(payload) {
+  // 同一个存档反复导入（换台机器、重试、连点）不该每次都多一张卡：内容和本机某张卡
+  // 完全一致时直接复用它。人物卡的 meta/id/时间戳每次都不同，只比读者看得见的内容字段。
+  const CARD_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example', 'creator_notes',
+    'system_prompt', 'post_history_instructions', 'alternate_greetings', 'tags', 'creator', 'character_version']
+  function cardFingerprint(workspace) {
+    const card = cardPreparation.project(workspace) || {}
+    const picked = {}
+    for (const field of CARD_FIELDS) {
+      const value = card[field]
+      if (value === undefined || value === null || value === '') continue
+      picked[field] = value
+    }
+    return JSON.stringify(picked)
+  }
+  async function identicalCard(workspace) {
+    let target
+    try { target = cardFingerprint(workspace) } catch { return '' }
+    for (const path of await resources.list('card').catch(() => [])) {
+      const text = await resources.readText(path).catch(() => undefined)
+      if (typeof text !== 'string') continue
+      try {
+        const value = JSON.parse(text)
+        const existing = cardPreparation.isWorkspace(value) ? value : cardPreparation.migrate({ working: value })
+        if (cardFingerprint(existing) === target) return path
+      } catch { /* 读不了就跳过这张 */ }
+    }
+    return ''
+  }
+  // 有剧本的存档必须拿自己那张卡（剧本绑定挂在卡上，共用会改到别人的局），
+  // 没剧本的存档只要内容一样就复用——同一个包里的多局就是这么叠出好几张同名卡的。
+  async function importCard(payload, reuse) {
     const workspace = cardPreparation.create({ kind: 'import', payload })
+    if (reuse) {
+      const existing = await identicalCard(workspace)
+      if (existing) return existing
+    }
     return resources.importCard(payload, workspace, { unique: true })
   }
 
@@ -26,7 +60,7 @@ export function createGameSaveResources({ resources, cardPreparation }) {
         let local = null
         try { local = await resources.originalCardPayload(cardPath) } catch {}
         if (!local || JSON.stringify(local) !== JSON.stringify(save.card.payload)) {
-          cardPath = importedCard = await importCard(save.card.payload)
+          cardPath = importedCard = await importCard(save.card.payload, !save.script)
         }
       }
       if (save.script && (save.chat.mode || 'story') === 'script') {

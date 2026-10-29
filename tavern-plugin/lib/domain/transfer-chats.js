@@ -118,7 +118,7 @@ export function createTransferChats(deps) {
     const given = args && args.content
     const content = Buffer.isBuffer(given) ? given : Buffer.from(given === undefined || given === null ? '' : given)
     let imported
-    try { imported = await importSave({ fileB64: content.toString('base64') }) }
+    try { imported = await importSave({ fileB64: content.toString('base64'), latestOnly: args && args.latestOnly === true }) }
     catch (error) { throw new Error('导入「' + title + '」失败：' + messageOf(error)) }
     if (updateChat && imported && imported.chatId && str(args && args.sha256)) {
       try {

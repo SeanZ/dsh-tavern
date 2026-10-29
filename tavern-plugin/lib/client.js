@@ -21947,20 +21947,32 @@ function TavernBgmChat(props) {
 
 		// Stop Tavern work first, then archive the DSH session, then remove the record;
 		// a chat whose session cannot be archived is kept so it never becomes a hidden orphan.
+		// Archiving is one host round-trip per session, so a batch runs a few at a time —
+		// it used to wait for each one before starting the next.
+		const ARCHIVE_CONCURRENCY = 4;
 		async function deleteTavernChats(items, archiveSession, call = rpc) {
 			const failures = [];
-			const ready = [];
 			if (!items.length) return { removed: [], failures };
 			const prepared = await call("prepareDeleteChats", { chatIds: items.map(item => item.chatId) });
 			failures.push(...prepared.results.filter(result => !result.ok));
-			for (const item of items) {
-				if (!prepared.results.some(result => result.chatId === item.chatId && result.ok)) continue;
-				try {
-					try { await archiveSession(item.sessionId); }
-					catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) throw archiveError; }
-					ready.push(item.chatId);
-				} catch (error) { failures.push({ chatId: item.chatId, error: String(error && error.message || error) }); }
+			const eligible = items.filter(item => prepared.results.some(result => result.chatId === item.chatId && result.ok));
+			const archived = new Set();
+			let next = 0;
+			async function archiveSome() {
+				for (;;) {
+					const index = next++;
+					if (index >= eligible.length) return;
+					const item = eligible[index];
+					try {
+						try { await archiveSession(item.sessionId); }
+						catch (archiveError) { if (!isMissingSessionArchiveError(archiveError)) throw archiveError; }
+						archived.add(item.chatId);
+					} catch (error) { failures.push({ chatId: item.chatId, error: String(error && error.message || error) }); }
+				}
 			}
+			await Promise.all(Array.from({ length: Math.min(ARCHIVE_CONCURRENCY, eligible.length) }, archiveSome));
+			const ready = eligible.filter(item => archived.has(item.chatId)).map(item => item.chatId);
+			if (!ready.length) return { removed: [], failures };
 			const deleted = await call("deleteChats", { chatIds: ready });
 			failures.push(...deleted.results.filter(result => !result.ok));
 			return { removed: deleted.results.filter(result => result.ok).map(result => result.chatId), failures };
@@ -22688,7 +22700,8 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 						if (next) await openSessionWhenReady(next.sessionId);
 						else { await openBlankConversation(); openPicker("cards"); }
 					}
-					await refresh();
+					// Deleting a chat never touches cards, so reload only the history list.
+					await refresh(["sessions"]);
 				} catch (error) { setError(String(error.message || error)); await refresh(); }
 				finally { setBusy(false); }
 			}
@@ -23343,7 +23356,8 @@ function createUpdateStatusController({ call, confirm, errors, browser, initial 
 						if (next) await openSessionWhenReady(next.sessionId);
 						else { await openBlankConversation(); openPicker("cards"); }
 					}
-					await refresh();
+					// Deleting a chat never touches cards, so reload only the history list.
+					await refresh(["sessions"]);
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}
@@ -27988,7 +28002,8 @@ function createTransferFeatureModule() {
 
 	function defaultPolicies(bundle) {
 		const policies = {}
-		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = "new" })
+		// 对话默认只带最新进度：一局存档点动辄七八份，导一份就等于整局写七八遍。
+		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = part.kind === "chats" ? "latest" : "new" })
 		return policies
 	}
 
@@ -28460,6 +28475,7 @@ function createTransferFeatureModule() {
 									"aria-label": part.label + " 的导入方式"
 								},
 									h("option", { value: "new" }, part.kind === "settings" ? "合并设置" : part.kind === "plugin-data" ? "覆盖数据" : "新建副本"),
+									part.kind === "chats" ? h("option", { value: "latest" }, "只导最新进度（快）") : null,
 									h("option", { value: "skip" }, "跳过")
 								),
 								items.length ? h("button", {
@@ -28514,6 +28530,7 @@ function createTransferFeatureModule() {
 						h("strong", null, "新增 " + totals.added + " 项"),
 						h("span", null, "跳过 " + totals.skipped + " 项"),
 						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null,
+						(state.policies && state.policies.chats === "latest") ? h("span", { className: "is-warn" }, "对话只带最新进度，可回退的存档点不导") : null,
 						state.stage === "applying" ? h("span", { className: "is-warn" }, applyProgressText()) : null
 					),
 					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport, title: state.stage === "applying" ? "导入还在进行，大包可能要几分钟" : "" }, busy ? "导入中…" : "确认导入")

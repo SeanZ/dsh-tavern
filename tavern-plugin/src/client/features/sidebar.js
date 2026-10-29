@@ -117,7 +117,8 @@
 						if (next) await openSessionWhenReady(next.sessionId);
 						else { await openBlankConversation(); openPicker("cards"); }
 					}
-					await refresh();
+					// Deleting a chat never touches cards, so reload only the history list.
+					await refresh(["sessions"]);
 				} catch (error) { setError(String(error.message || error)); await refresh(); }
 				finally { setBusy(false); }
 			}
@@ -772,7 +773,8 @@
 						if (next) await openSessionWhenReady(next.sessionId);
 						else { await openBlankConversation(); openPicker("cards"); }
 					}
-					await refresh();
+					// Deleting a chat never touches cards, so reload only the history list.
+					await refresh(["sessions"]);
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}

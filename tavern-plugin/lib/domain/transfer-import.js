@@ -490,13 +490,15 @@ export function createTransferImport(deps) {
           }
           if (part.kind === 'chats') {
             if (!chats) throw new Error('对话导入不可用')
+            // 「只导最新进度」：不写可回退的存档点，一局少写 7 份快照。
+            const latestOnly = policies[part.kind] === 'latest'
             const saveHash = createHash('sha256').update(content).digest('hex')
             if (contents.get('chats').has(saveHash)) {
               result.skipped += 1
               result.duplicates = (result.duplicates || []).concat(item.title)
               continue
             }
-            const imported = await chats.importOne({ title: item.title, content, sha256: saveHash })
+            const imported = await chats.importOne({ title: item.title, content, sha256: saveHash, latestOnly })
             contents.get('chats').add(saveHash)
             result.added += 1
             result.chatIds = (result.chatIds || []).concat(imported.chatId ? [imported.chatId] : [])

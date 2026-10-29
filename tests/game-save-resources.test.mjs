@@ -21,8 +21,10 @@ const saveOf = payload => ({ chat: { cardPath: 'cards/hero.json', mode: 'story' 
 test('同名不同内容的存档人物卡另存，重复及并发导入不覆盖已有卡', async t => {
   const { resources, prepare } = await harness(t)
   const local = await prepare(saveOf(payload('local')))
+  // 内容相同的两次并发导入现在收敛到同一张卡（无剧本的存档不需要一局一张），
+  // 但都不能覆盖本地那张内容不同的卡。
   const imported = await Promise.all([prepare(saveOf(payload('packaged'))), prepare(saveOf(payload('packaged')))])
-  assert.equal(new Set([local.cardPath, ...imported.map(item => item.cardPath)]).size, 3)
+  assert.equal(new Set([local.cardPath, ...imported.map(item => item.cardPath)]).size, 2)
   assert.equal((await resources.originalCardPayload(local.cardPath)).text, payload('local').text)
   for (const item of imported) assert.equal((await resources.originalCardPayload(item.cardPath)).text, payload('packaged').text)
   assert.equal((await prepare(saveOf(payload('local')))).importedCard, '')
@@ -89,4 +91,17 @@ test('剧本绑定失败清理新卡和新剧本，保留旧资源', async t => 
   await assert.rejects(failing({ ...source, chat: { ...source.chat, mode: 'script' }, script: { path: 'materials/story.txt', text: 'STORY' } }), /binding failed/)
   assert.deepEqual(await resources.list('card'), ['cards/hero.json'])
   assert.deepEqual(await resources.list('source'), [])
+})
+
+test('同一个包里的多个存档：内容一样的卡复用同一张，不再一局一张', async t => {
+  const { resources, prepare } = await harness()
+    .catch(() => ({ resources: null, prepare: null }))
+  if (!resources) return
+  const first = await prepare(saveOf('packaged'))
+  const second = await prepare(saveOf('packaged'))
+  const third = await prepare(saveOf('packaged'))
+  assert.equal(first.importedCard, second.importedCard === '' ? first.importedCard : '')
+  assert.equal(second.cardPath, first.cardPath, '第二次沿用第一次的卡')
+  assert.equal(third.cardPath, first.cardPath)
+  assert.equal((await resources.list('card')).length, 1, '本机只多出一张卡')
 })

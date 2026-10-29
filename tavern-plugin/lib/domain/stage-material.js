@@ -53,7 +53,10 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
     const existing = ids.length ? await snapshotOf(ids[0]) : null
     if (existing) return existing
     const taken = new Set((await library.listPacks()).map(pack => pack.manifest?.name))
-    const base = (String(cardName || '').trim() || '人物卡') + ' · 本卡素材包'
+    // The name is only needed when a pack has to be created, so a caller may pass a
+    // reader: cards with no stage material never get their whole card file parsed.
+    const resolvedName = typeof cardName === 'function' ? await cardName() : cardName
+    const base = (String(resolvedName || '').trim() || '人物卡') + ' · 本卡素材包'
     let name = base
     for (let n = 2; taken.has(name); n++) name = base + ' (' + n + ')'
     const { snapshot } = await library.createPack({ name, expectedRevision: null })

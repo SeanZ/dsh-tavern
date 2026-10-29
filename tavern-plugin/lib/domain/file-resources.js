@@ -167,14 +167,11 @@ export function createFileResourceStore(options = {}) {
     await durableFiles.write(target, data)
   }
 
-  async function originalCardName(normalized) {
+  // Pure judgement step shared by single and batch lookups: pick the original file for `normalized`
+  // out of one directory listing. `entries === null` means the original directory does not exist.
+  function pickOriginalCardName(normalized, entries) {
+    if (entries === null) return null
     const stem = path.posix.basename(normalized, path.posix.extname(normalized))
-    const originalDir = path.dirname(absolute(normalized, true))
-    let entries
-    try { entries = await readdir(originalDir, { withFileTypes: true }) } catch (error) {
-      if (error && error.code === 'ENOENT') return null
-      throw error
-    }
     const candidates = entries.filter(function (entry) {
       if (!entry.isFile() || path.basename(entry.name, path.extname(entry.name)) !== stem) return false
       const extension = path.extname(entry.name).toLowerCase()
@@ -183,6 +180,37 @@ export function createFileResourceStore(options = {}) {
     if (candidates.length === 0) return null
     if (candidates.length > 1) throw new Error('人物卡存在多个原版，无法确定来源: ' + candidates.map(function (entry) { return entry.name }).join('、'))
     return candidates[0].name
+  }
+
+  async function readOriginalEntries(originalDir) {
+    try { return await readdir(originalDir, { withFileTypes: true }) } catch (error) {
+      if (error && error.code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  async function originalCardName(normalized) {
+    return pickOriginalCardName(normalized, await readOriginalEntries(path.dirname(absolute(normalized, true))))
+  }
+
+  // Batch form of `originalCardName`: one readdir per distinct original directory, not per card.
+  // Returns Map<relativePath (as passed in), originalName|null>.
+  async function originalCardNames(relatives) {
+    const wanted = []
+    for (const relative of relatives || []) {
+      wanted.push([relative, normalizeResourcePath(relative, 'card')])
+    }
+    const dirs = new Set()
+    for (const [, normalized] of wanted) dirs.add(path.dirname(absolute(normalized, true)))
+    const entriesByDir = new Map()
+    await Promise.all(Array.from(dirs).map(async function (dir) {
+      entriesByDir.set(dir, await readOriginalEntries(dir))
+    }))
+    const result = new Map()
+    for (const [relative, normalized] of wanted) {
+      result.set(relative, pickOriginalCardName(normalized, entriesByDir.get(path.dirname(absolute(normalized, true)))))
+    }
+    return result
   }
 
   async function originalCardPayload(normalized) {
@@ -195,10 +223,13 @@ export function createFileResourceStore(options = {}) {
       : { kind: 'text', name: originalName, text: originalData.toString('utf8') }
   }
 
-  async function hasCardImage(relative) {
+  async function hasCardImage(relative, prefetched) {
     const normalized = normalizeResourcePath(relative, 'card')
-    const originalName = await originalCardName(normalized)
-    return originalName !== null && path.extname(originalName).toLowerCase() === '.png'
+    let originalName
+    if (prefetched instanceof Map && prefetched.has(relative)) originalName = prefetched.get(relative)
+    else if (prefetched instanceof Map && prefetched.has(normalized)) originalName = prefetched.get(normalized)
+    else originalName = await originalCardName(normalized)
+    return originalName !== null && originalName !== undefined && path.extname(originalName).toLowerCase() === '.png'
   }
 
   async function readCardImage(relative) {
@@ -793,7 +824,7 @@ export function createFileResourceStore(options = {}) {
     globalWorldBookSources, setGlobalWorldBook, absolute, copyCard, bindMaterial, bindWorldBook, bindWorldBooks,
     cardsForMaterial, cardImagePreview, ensure, ensureCardWorkspace,
     originalCardPayload: relative => originalCardPayload(normalizeResourcePath(relative, 'card')),
-    hasCardImage, importCard,
+    originalCardNames, hasCardImage, importCard,
     importText: (...args) => bindings.mutate(() => importText(...args)),
     importBoundScript: (...args) => bindings.mutate(edit => importBoundScript(edit, ...args)),
     importWorldBook, list, metadata,
