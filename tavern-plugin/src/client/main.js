@@ -1276,7 +1276,9 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		// @include modules/assistant-visibility.js
 		installTavernAssistantVisibilityPatch(require);
 		// @include modules/host-session-patch.js
-		installTavernSessionHistoryPatch(require, rpc);
+		// The page's session history only: the server's headless card runtime has none, and
+		// would report the missing patch for the whole profile.
+		if (!window.__dshTavernHeadless) installTavernSessionHistoryPatch(require, rpc);
 		return module.exports;
 	}
 });
