@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "339f54b6f1a9d295fac089d0fa8fe0cc2467a69d",
-  "releaseSequence": 971,
+  "revision": "644bb2e9e4d65d51294082cea6869858a39926f3",
+  "releaseSequence": 972,
   "version": "3.1.0",
   "files": [
     {
@@ -2926,8 +2926,8 @@
     },
     {
       "path": "tavern-plugin/lib/hooks/turn-lifecycle.js",
-      "sha256": "9c0a6e8e420b5b4e6465680dd984383ec488b91b3386ac767e0315886a999299",
-      "size": 7769
+      "sha256": "aa367d0e5152a3d38e73886997b4352b7adb6934883dc959bf6ed32b786b491c",
+      "size": 7859
     },
     {
       "path": "tavern-plugin/lib/http-file.js",
@@ -2941,8 +2941,8 @@
     },
     {
       "path": "tavern-plugin/lib/index.js",
-      "sha256": "12d5ee387c73f2f59dfcbc06eab514a39c67688b78480fcafac6fb7f3d26b3ae",
-      "size": 241393
+      "sha256": "6cc1a0f4209474a87d04aed554cefe64b167f459abafc7e3faf447568d313917",
+      "size": 241368
     },
     {
       "path": "tavern-plugin/lib/plugin-api.js",
@@ -5096,9 +5096,9 @@
     }
   ],
   "archive": {
-    "commit": "a50ccb63bc517dcea536476105b2e5b21db93d97",
+    "commit": "abbf2e80fe9c11f76a2f0d24f994bec89db0b4ff",
     "path": "runtime.zip",
-    "sha256": "e0c924dd4c8ca590e21399b0c9d545263c5bb90c2125af0ae33023cde8c6620c",
-    "size": 10525658
+    "sha256": "6c686dec18139ceca60a0a409491a1e9ad2e6b8a305979ab686109faffca03ac",
+    "size": 10525755
   }
 }
