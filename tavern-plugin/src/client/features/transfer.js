@@ -76,6 +76,9 @@ function createTransferFeatureModule() {
 		const [error, setError] = usePersistentError("导出与导入")
 		const fileInput = React.useRef(null)
 		const bodyRef = React.useRef(null)
+		// 最后生成的包，供「重新下载」复用。服务端在 token 有效期内允许多次下载，所以
+		// 第一次没弹出保存界面（内嵌 WebView 常见）时，用户可以直接再点一次。
+		const exportRef = React.useRef(null)
 
 		const refresh = React.useCallback(function () {
 			return rpc("getTransferCatalog", {}, sessionId).then(function (value) {
@@ -164,22 +167,36 @@ function createTransferFeatureModule() {
 			return { count, bytes, kinds }
 		}, [selected, parts])
 
+		// 触发一次保存。手机上的内嵌 WebView 往往没有下载器，点了会静默失败，
+		// 所以这里不把「保存成功」当既成事实：调用方仍然展示文件卡片和重试入口。
+		function saveExport(payload) {
+			if (!payload) { setError("这个包已经失效，请重新导出"); return }
+			if (payload.url) {
+				const link = document.createElement("a")
+				link.href = payload.url
+				link.download = payload.filename || "DSH酒馆备份.dshtransfer"
+				link.rel = "noopener"
+				document.body.appendChild(link)
+				link.click()
+				link.remove()
+				return
+			}
+			if (payload.base64) {
+				const bytes = Uint8Array.from(atob(payload.base64), function (value) { return value.charCodeAt(0) })
+				downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), payload.filename)
+			}
+		}
+
 		function submitExport() {
 			if (!stats.count) { setError("先选至少一个板块"); return }
 			setError("")
 			setBusy(true)
 			rpc("createTransferExport", { selection, includeImages }, sessionId).then(function (result) {
-				if (result.downloadUrl) {
-					const link = document.createElement("a")
-					link.href = result.downloadUrl
-					link.download = result.filename || "DSH酒馆备份.dshtransfer"
-					document.body.appendChild(link)
-					link.click()
-					link.remove()
-				} else {
-					const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0) })
-					downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename)
-				}
+				const payload = result.downloadUrl
+					? { url: result.downloadUrl, filename: result.filename }
+					: { base64: result.base64, filename: result.filename }
+				exportRef.current = payload
+				saveExport(payload)
 				setExported({ name: result.filename, bytes: result.bytes, totals: result.totals, parts: result.parts })
 				window.setTimeout(function () { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight }, 30)
 			}, function (err) { setError(String(err && err.message || err)) }).finally(function () { setBusy(false) })
@@ -311,8 +328,21 @@ function createTransferFeatureModule() {
 							h("div", { className: "dsh-tavern-transfer-file-sub" }, fmtBytes(exported.bytes) + " · " + (exported.totals ? exported.totals.items + " 项" : ""))
 						)
 					),
-					h("button", { type: "button", className: "dsh-tavern-btn", onClick: submitExport }, "再导出")
-				) : null
+					// 大包用真链接：内嵌窗口不支持下载时，长按还能「复制链接地址」丢给系统浏览器。
+					exportRef.current && exportRef.current.url
+						? h("a", {
+							className: "dsh-tavern-btn primary dsh-tavern-transfer-save",
+							href: exportRef.current.url,
+							download: exportRef.current.filename,
+							role: "button"
+						}, "保存到手机")
+						: h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy, onClick: function () { saveExport(exportRef.current) } }, "保存到手机"),
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: submitExport }, "再导出")
+				) : null,
+				exported ? h("p", { className: "dsh-tavern-transfer-hint" },
+					"点「保存到手机」后没有弹出保存位置，是当前窗口不支持下载：把酒馆地址复制到系统浏览器（Chrome 等）打开，在那里再导出一次，文件会进手机的「下载」。"
+					+ "包在服务端保留一小时，期间同一个「保存到手机」可以反复点。")
+					: null
 			)
 		}
 

@@ -315,9 +315,9 @@ export function registerTavernHttpRoutes({
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
             return
           }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/transfer-export') {
+          if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/dsh-tavern/transfer-export') {
             const token = new URL(req.url, 'http://x').searchParams.get('token') || ''
-            const found = transferExports ? transferExports.take(token) : null
+            const found = transferExports ? await transferExports.take(token) : null
             if (!found) {
               res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
               res.end('export expired')
@@ -331,8 +331,11 @@ export function registerTavernHttpRoutes({
               'X-Content-Type-Options': 'nosniff',
               'Content-Disposition': 'attachment; filename="backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
             })
+            if (req.method === 'HEAD' || found.bytes === 0) { res.end(); return }
             const stream = found.stream()
-            res.on('close', () => { void transferExports.remove(token); stream.destroy() })
+            // 下载完不删：内嵌 WebView 或浏览器可能中途放弃第一次请求，用户刷新后还会再点。
+            // 文件按 token 有效期由 sweep 收掉，这里只中断本次流。
+            res.on('close', () => { stream.destroy(); void transferExports.sweep() })
             stream.on('error', () => res.destroy()).pipe(res)
             return
           }
