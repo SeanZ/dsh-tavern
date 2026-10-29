@@ -3,6 +3,7 @@ import { rm } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { readGameSave, sessionTitleOf } from './game-save.js'
 import { assertImportableSave, createGameSaveImportContent } from './game-save-import-content.js'
+import { beginRelaxedSync, endRelaxedSync, relaxedSyncPending } from './conversation-page-store.js'
 const str = value => value == null ? '' : String(value)
 
 /** Own import admission, publication and compensating cleanup. A game is published only after all restores succeed. */
@@ -43,6 +44,15 @@ export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prep
       const { prepare, rename, renameJson } = content
       let written = false, created = false, saved
       const cwd = path.join(dataRoot, 'resources')
+      // 一局存档要盖上千个目录，逐目录 fsync 在手机上就是几十秒。导入期间攒着，
+      // 让这局可见之前一次性落盘；崩在中间只会留下用户看不见的半成品。
+      beginRelaxedSync()
+      let relaxed = true
+      const settleDurability = async function () {
+        if (!relaxed) return
+        relaxed = false
+        await endRelaxedSync()
+      }
       try {
         // A save that came without its preset snapshot re-freezes it from the preset it points
         // at: the bundle installed that preset just before these games.
@@ -91,9 +101,12 @@ export function createGameSaveImporter({ tavernVersion, dataRoot, readCard, prep
             attachment: ref => files.has(ref.attachmentId) ? { ...ref, ...files.get(ref.attachmentId) } : null })
         }
         markStage('plugins')
+        stageMs.directories = relaxedSyncPending()
+        await settleDurability()
         await conversationRegistry.publish(saved)
         markStage('publish')
       } catch (error) {
+        await settleDurability().catch(() => {})
         if (created) {
           try { await sessions.detach(sessionId, cwd) } catch {}
           try { await sessions.remove(sessionId, cwd) } catch {}

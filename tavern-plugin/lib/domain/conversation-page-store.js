@@ -3,6 +3,33 @@ import {mkdir, open, readFile, readdir, rename, rm, link, stat} from 'node:fs/pr
 import path from 'node:path'
 import {createDurableFilePromotion} from '../durable-file-promotion.js'
 
+// Syncing every touched directory on every commit costs tens of milliseconds each on a phone.
+// Inside a relaxed window the store only remembers them; the window's end syncs each once,
+// before whatever makes the imported conversation visible. Durability is unchanged: nothing
+// references a block whose directory entry has not been made durable.
+let relaxedDepth=0
+const relaxedDirectories=new Set()
+async function fsyncDirectoryRaw(dir){
+ if(process.platform==='win32')return
+ const handle=await open(dir,'r')
+ try{await handle.sync()}catch(error){if(!['EINVAL','ENOTSUP','EISDIR'].includes(error.code))throw error}finally{await handle.close()}
+}
+export function beginRelaxedSync(){relaxedDepth+=1}
+export function relaxedSyncPending(){return relaxedDirectories.size}
+export async function endRelaxedSync(){
+ if(relaxedDepth>0)relaxedDepth-=1
+ if(relaxedDepth>0)return
+ const dirs=[...relaxedDirectories].sort((left,right)=>right.length-left.length)
+ relaxedDirectories.clear()
+ if(!dirs.length)return
+ let index=0
+ const results=await Promise.allSettled(Array.from({length:Math.min(8,dirs.length)},async()=>{
+  while(index<dirs.length)await fsyncDirectoryRaw(dirs[index++])
+ }))
+ const failed=results.find(result=>result.status==='rejected')
+ if(failed)throw failed.reason
+}
+
 // New-format foundation, deliberately not an automatic legacy Chat migration.
 // Only the small head pointer is mutable. Readers pin immutable snapshots;
 // append/point edits copy a bounded page and its radix-tree path.
@@ -78,9 +105,8 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   return path.join(dir,'blocks',id.slice(0,2),id+'.json')
  }
  async function syncDirectory(dir){
-  if(process.platform==='win32')return
-  const handle=await open(dir,'r')
-  try{await handle.sync()}catch(error){if(!['EINVAL','ENOTSUP','EISDIR'].includes(error.code))throw error}finally{await handle.close()}
+  if(relaxedDepth>0){relaxedDirectories.add(dir);return}
+  await fsyncDirectoryRaw(dir)
  }
  async function writeBlock(dir,value,directories){
   const bytes=JSON.stringify(value),id=hash(bytes),target=blobPath(dir,id),parent=path.dirname(target)
