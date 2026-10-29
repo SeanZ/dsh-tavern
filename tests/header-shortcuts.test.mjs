@@ -49,9 +49,9 @@ test('传 null 恢复默认顶栏', () => {
 })
 
 test('getDisplayPreferences 一并返回顶栏设置与顶部标签', async () => {
-  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } }) })
+  const handlers = createSettingsHandlers({ readTavernSettings: async () => ({ headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } }) })
   const preferences = await handlers.getDisplayPreferences({})
-  assert.deepEqual(preferences, { hideContextAndReasoning: false, headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } })
+  assert.deepEqual(preferences, { headerItems: { display: 'icon', items: ['header:export'] }, viewTabs: { items: ['chat', 'dsh-tavern:polish'] } })
 })
 
 test('客户端顶栏默认值与服务端一致，设置在首次读取前就用默认值', async () => {
@@ -66,7 +66,7 @@ test('客户端顶栏默认值与服务端一致，设置在首次读取前就�
     document: dom.window.document,
     window: dom.window,
     tavernViewTabItems: value => value && Array.isArray(value.items) ? ['chat'].concat(value.items.filter(id => id !== 'chat')) : ['chat'],
-    rpc: async () => ({ hideContextAndReasoning: true, headerItems: { display: 'icon', items: ['dsh-tavern:cards'] }, viewTabs: { items: ['chat', 'dsh-tavern:gallery'] } })
+    rpc: async () => ({ headerItems: { display: 'icon', items: ['dsh-tavern:cards'] }, viewTabs: { items: ['chat', 'dsh-tavern:gallery'] } })
   })
   assert.equal(store.snapshot(), null, '第一次读取前没有快照，顶栏回落到默认值')
   const stop = store.start()
