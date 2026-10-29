@@ -333,7 +333,7 @@ test('漏写的一轮可以按它自己的请求号补记进存档（#196 自愈
   assert.equal(Number(run.chat().messages.at(-1).turn), 3)
 })
 
-test('旧前台工具黑名单不再生效，功能与模式决定可用工具', async () => {
+test('本局前台工具可逐项关闭，卡片模式不受影响', async () => {
   const all = harness('story', { storyToolCall: true, webSearchEnabled: true })
   const names = await all.orchestrator.visibleTools('session-1')
   assert.equal(names.includes('worldbook_search'), false)
@@ -351,15 +351,15 @@ test('旧前台工具黑名单不再生效，功能与模式决定可用工具',
   assert.equal((await off.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
   const submitOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['submit_story'] } })
-  assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), true)
+  assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
   const disabled = ['read', 'worldbook_list', 'worldbook_grep', 'tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
   const none = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: disabled } })
-  assert.deepEqual(await none.orchestrator.visibleTools('session-1'), names)
+  assert.deepEqual(await none.orchestrator.visibleTools('session-1'), [])
 
   const script = harness('script', { storyToolCall: true, chatFields: { disabledForegroundTools: ['tavern_read_script'] } })
   const scriptNames = await script.orchestrator.visibleTools('session-1')
-  assert.equal(scriptNames.includes('tavern_read_script'), true)
+  assert.equal(scriptNames.includes('tavern_read_script'), false)
   assert.equal(scriptNames.includes('submit_story'), true)
 
   const card = harness('card', { chatFields: { disabledForegroundTools: disabled } })

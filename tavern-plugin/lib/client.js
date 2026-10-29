@@ -29777,6 +29777,59 @@ function createConversationSettingsModule({
     // Per-game foreground tools: one switch per tool, stored as the disabled
     // names so a newly added tool starts enabled. Background settlement keeps
     // its own tools and is not part of this list.
+    function TavernConversationTools(props) {
+        const h = React.createElement;
+        const [catalog, setCatalog] = React.useState([]);
+        const [disabled, setDisabled] = React.useState([]);
+        const [loaded, setLoaded] = React.useState(false);
+        const [busy, setBusy] = React.useState(false);
+        const [error, setError] = React.useState("");
+        const [notice, setNotice] = React.useState("");
+        const mounted = React.useRef(true);
+        async function load() {
+            try {
+                const result = await rpc("getConversationBackgroundConfig", { sessionId: props.sessionId }, props.sessionId);
+                if (!mounted.current) return;
+                setCatalog(Array.isArray(result.foregroundTools) ? result.foregroundTools : []);
+                setDisabled(Array.isArray(result.disabledForegroundTools) ? result.disabledForegroundTools : []);
+                setLoaded(true); setError("");
+            } catch (err) { if (mounted.current) setError(String(err.message || err)); }
+        }
+        React.useEffect(() => {
+            mounted.current = true;
+            void load();
+            return () => { mounted.current = false; };
+        }, [props.sessionId]);
+        async function save(next) {
+            if (busy || !loaded) return;
+            const previous = disabled;
+            setDisabled(next); setBusy(true); setError(""); setNotice("");
+            try {
+                const result = await rpc("setConversationBackgroundConfig", { sessionId: props.sessionId, disabledForegroundTools: next }, props.sessionId);
+                setDisabled(Array.isArray(result.disabledForegroundTools) ? result.disabledForegroundTools : next);
+                setNotice("已保存，下一轮生效");
+                invalidateView(props.sessionId);
+                notifyTavernDataChanged(["sessions"], "play-controls");
+            } catch (err) { setDisabled(previous); setError(String(err.message || err)); }
+            finally { setBusy(false); }
+        }
+        function toggle(name, enabled) {
+            void save(enabled ? disabled.filter(value => value !== name) : [...new Set([...disabled, name])]);
+        }
+        const allNames = catalog.map(tool => tool.name);
+        return h("section", { className: "dsh-local-section", "aria-label": "前台工具" },
+            h("h3", null, "前台工具"),
+            h("p", { className: "dsh-local-help" }, "逐项控制本轮正文能看到的工具；关闭后下一轮生效。后台结算的工具不在此列表。"),
+            h("p", { className: "dsh-local-help" }, "插件/扩展工具来自宿主工具目录，本局生成一次后会按实际请求校正；列表里的「插件/扩展」就是这类工具。"),
+            h("div", { style: { display: "flex", gap: "8px", margin: "4px 0 8px" } },
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: !loaded || busy || disabled.length === 0, onClick: () => void save([]) }, "全部开启"),
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: !loaded || busy || disabled.length === allNames.length, onClick: () => void save(allNames) }, "全部关闭"),
+                h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: () => void load() }, "刷新")),
+            catalog.map(tool => h("label", { key: tool.name, className: "dsh-tavern-background-task" },
+                h("span", null, (tool.source === "plugin" ? "插件/扩展 · " : "") + tool.label, h("span", { className: "dsh-tavern-settings-desc" }, tool.description)),
+                h("input", { type: "checkbox", role: "switch", "aria-label": tool.label, checked: !disabled.includes(tool.name), disabled: !loaded || busy, onChange: event => toggle(tool.name, event.target.checked) }))),
+            error ? h("p", { role: "alert" }, "保存失败：" + error) : h("span", { role: "status", className: "dsh-local-feedback" }, busy ? "保存中…" : (loaded ? notice : "正在读取…")));
+    }
 
     function TavernConversationSettingsTab(props) {
         const h = React.createElement;
@@ -29794,6 +29847,7 @@ function createConversationSettingsModule({
                 h(TavernConversationBackgroundModel, { key: owner, sessionId: owner }),
                 h(TavernConversationPluginSettings, { key: owner + ":plugin-settings", sessionId: owner }),
                 h("details", { className: "dsh-local-advanced" }, h("summary", null, "高级"),
+                    h(TavernConversationTools, { key: owner + ":tools", sessionId: owner }),
                     h(TavernConversationWritingSkills, { key: owner + ":skills", sessionId: owner }))) : h("p", null, "请选择一个游玩对话。")));
     }
 
