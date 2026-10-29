@@ -16,7 +16,7 @@ export function projectedReplacingTurns(chat) {
 
 /**
  * Recover an uncommitted replacement from its durable pre-rollback revision.
- * The save is the truth (docs/design/native-session-repair.md): whatever the
+ * The save is the truth (Wiki「设计：native-session-repair」): whatever the
  * native session does, recovery always ends the marker. A native step that
  * fails leaves the save restored and the native tail stale for `repair`.
  */

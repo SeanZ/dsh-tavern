@@ -2,7 +2,7 @@ import * as zlib from 'node:zlib'
 import { CAST_EMOTIONS } from './cast-annotation.js'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
 
-// Character material carried by a card file (docs/design/tavern-to-galgame.md): Character Card V3
+// Character material carried by a card file (Wiki「设计：tavern-to-galgame」): Character Card V3
 // `data.assets` in CHARX (`embeded://`), RisuAI PNG chunks (`chara-ext-asset_:N` → `__asset:N`),
 // `data:` URIs in JSON, RisuAI's own `extensions.risuai.emotions`, and Tavern's `extensions.dsh_tavern.cast`.
 

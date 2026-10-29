@@ -3,7 +3,7 @@ import { CAST_EMOTIONS } from './cast-annotation.js'
 import { readZipEntries } from './zip-entries.js'
 import { emotionRank, emotionSlot as emotionSlotOf } from './card-assets.js'
 
-// Per-card character material (docs/design/cast-presentation.md): avatar and expression sprites
+// Per-card character material (Wiki「设计：cast-presentation」): avatar and expression sprites
 // per character, laid out like a SillyTavern sprite pack so such packs import as they are.
 const hash = value => createHash('sha256').update(value).digest('hex')
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -164,7 +164,7 @@ export function createCastAssets({ store }) {
     return read(cardPath)
   }
 
-  /** A character's voice for one speech provider (docs/design/cast-presentation.md); '' clears it. */
+  /** A character's voice for one speech provider (Wiki「设计：cast-presentation」); '' clears it. */
   async function setVoice({ cardPath, name, provider, voice }) {
     const character = castName(name)
     if (typeof provider !== 'string' || !PROVIDER.test(provider)) throw invalid('配音渠道无效')

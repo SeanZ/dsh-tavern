@@ -1104,7 +1104,7 @@
 			}, [props.sessionId, latestMessageId, running, backgroundRevision]);
 			// Background Agent sessions have no row plan: their rolled-back turns hide whole.
 			const backgroundTurnsRevision = backgroundTurns.join(",");
-			// The row plan decides which rows show (docs/design/transcript-row-plan.md).
+			// The row plan decides which rows show (Wiki「设计：transcript-row-plan」).
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
@@ -1148,7 +1148,7 @@
 			const slots = input.slots;
 			const uiConversation = ctx.get("uiConversation") || ctx.get("conversation");
 			const executeSlash = createTavernFrameSlashExecutor(ctx);
-            // The stage: another view of the same game, at the top of 酒馆状态 (docs/design/cast-presentation.md).
+            // The stage: another view of the same game, at the top of 酒馆状态 (Wiki「设计：cast-presentation」).
             const submitTavernStageInput = function (sessionId, text) {
                 const scope = ctx.sessions.scope(sessionId);
                 const conversation = ctx.get("conversation");

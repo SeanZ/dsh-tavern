@@ -7,7 +7,7 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
-// One turn's background work (docs/design/background-task-pipeline.md): plugin tasks before,
+// One turn's background work (Wiki「设计：background-task-pipeline」): plugin tasks before,
 // the main settlement with plugin tasks alongside, plugin tasks after, then "turn settled".
 // The main settlement reads its input, lets the MVU or the plain engine settle, and commits;
 // a stale commit runs again, a failure is recorded. Manual plugin tasks run here too.
@@ -114,7 +114,7 @@ export function createSettlementRun(deps) {
     const turnPending = () => Boolean(gameId) && activity?.role === 'settlement' && ['pending', 'running'].includes(activity.phase)
     // A new turn may have replaced versions plugins are still working on.
     if (gameId) await pluginApi.checkVersions(gameId).catch(() => {})
-    // The turn's pipeline (docs/design/background-task-pipeline.md): before-tasks, the main settlement
+    // The turn's pipeline (Wiki「设计：background-task-pipeline」): before-tasks, the main settlement
     // with the parallel tasks running alongside it, after-tasks.
     await runPipelineStages([
       { id: 'before', when: turnPending,

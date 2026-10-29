@@ -3137,7 +3137,7 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
 .dsh-tavern-plugin-overlay-error { display: flex; gap: 12px; align-items: center; justify-content: center; min-height: 100%; }
 .dsh-local-advanced > summary { cursor: pointer; margin-bottom: 16px; font-size: 15px; font-weight: 700; color: var(--dsw-alias-label-primary); }
 
-/* 对话头像（docs/design/cast-presentation.md）：含已标注台词的段落显示成说话人的一行。 */
+/* 对话头像（Wiki「设计：cast-presentation」）：含已标注台词的段落显示成说话人的一行。 */
 .dsh-tavern-cast-line { display: flex; align-items: flex-start; gap: 12px; margin: 14px 0; }
 .dsh-tavern-cast-avatar { flex: none; width: 44px; height: 44px; border-radius: 50%; object-fit: cover; object-position: top; background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
 .dsh-tavern-cast-avatar.is-zoomable { cursor: zoom-in; }
@@ -3149,7 +3149,7 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
 .dsh-tavern-cast-emotion { font-size: 12px; padding: 0 6px; border-radius: 6px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12)); }
 [data-ds-dark-theme] .dsh-tavern-cast-name { color: hsl(var(--dsh-cast-hue, 210) 60% 70%); }
 
-/* 舞台（docs/design/cast-presentation.md）：同一局故事的另一种看法，只在全屏显示，由顶栏「舞台」打开。 */
+/* 舞台（Wiki「设计：cast-presentation」）：同一局故事的另一种看法，只在全屏显示，由顶栏「舞台」打开。 */
 .dsh-tavern-stage-view-switch { box-sizing: border-box; height: 26px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background-color: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; line-height: 1; cursor: pointer; transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease; }
 .dsh-tavern-stage-view-switch { -webkit-appearance: none; appearance: none; min-width: 0; max-width: 11em; padding: 0 24px 0 10px; text-overflow: ellipsis; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
 .dsh-tavern-stage-view-switch:hover { border-color: var(--dsh-tavern-accent-border); color: var(--dsh-tavern-accent-active); background-color: var(--dsh-tavern-accent-soft); }

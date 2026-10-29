@@ -417,7 +417,7 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => { timelineHandlers.add(entry); return () => timelineHandlers.delete(entry) }, 'tavern.onTimelineChanged()')
     },
 
-    // Who says each quoted line and how they feel (docs/design/cast-presentation.md), annotated by settlement.
+    // Who says each quoted line and how they feel (Wiki「设计：cast-presentation」), annotated by settlement.
     onCastAnnotated(handler) {
       if (typeof handler !== 'function') throw new TypeError('onCastAnnotated 需要一个函数')
       const entry = { owner: ownerOf(this), handler }

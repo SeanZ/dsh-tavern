@@ -112,7 +112,7 @@ export function createCardFiles({ cardPreparation, fileResources, castAssets, st
     }
     return { path: cardPath, name: card.name, description: card.description, tags: card.tags, ...(assets ? { assets } : {}) }
   }
-  // The card as CHARX: Character Card V3 with its character material (docs/design/tavern-to-galgame.md).
+  // The card as CHARX: Character Card V3 with its character material (Wiki「设计：tavern-to-galgame」).
   async function exportCardCharx(input) {
     const cardPath = normalizeResourcePath(input, 'card')
     const workspace = await readCardWorkspace(cardPath)

@@ -343,7 +343,7 @@ export function createSessionViewProjection({
     }
     return [...turns].filter(turn => turn > 0).sort((left, right) => left - right)
   }
-  // The row plan (docs/design/transcript-row-plan.md) over what the view holds — the
+  // The row plan (Wiki「设计：transcript-row-plan」) over what the view holds — the
   // window of floors, or the whole short history — and the log since its first round, as
   // turn-keyed exceptions. The page shows exactly the rows it plans. The log grows every
   // turn without a save change, so every projection, cached or not, plans again; the cost

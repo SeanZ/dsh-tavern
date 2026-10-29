@@ -3,7 +3,7 @@ import { dialogueBubbleLines } from './dialogue-bubbles.js'
 import { parseBubbles } from '../../src/client/bubble-line.cjs'
 
 /**
- * Who speaks each line of a turn (docs/design/cast-presentation.md). The story model writes its spoken lines as
+ * Who speaks each line of a turn (Wiki「设计：cast-presentation」). The story model writes its spoken lines as
  * dialogue bubbles, so a turn's lines are read from the text version shown; nothing is stored for them. A turn
  * written before that keeps the annotation settlement saved for it, bound to its text version; an edit of the reply
  * (the player's, 精修, a plugin's) carries that annotation over to the edited version.

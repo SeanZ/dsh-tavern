@@ -1,4 +1,4 @@
-// The stage's backlog (履历, docs/design/cast-presentation.md「舞台 core（24/N）：履历」): a sheet over the dimmed stage
+// The stage's backlog (履历, Wiki「设计：cast-presentation」「舞台 core（24/N）：履历」): a sheet over the dimmed stage
 // listing what the reader has already seen - every earlier turn the stage holds (read-only) and the latest turn up to and
 // including the current page (modules/stage-backlog.js stageBacklogEntries). A row of the latest turn jumps the stage back to
 // its page; a spoken line has its speaker's avatar, name and the chat's 朗读 control. It reads the stage's own data and never

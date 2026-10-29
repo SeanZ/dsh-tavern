@@ -1,4 +1,4 @@
-// The story model's dialogue format (docs/design/cast-presentation.md): with 对话气泡 on, the story model writes each
+// The story model's dialogue format (Wiki「设计：cast-presentation」): with 对话气泡 on, the story model writes each
 // spoken line as a dialogue bubble naming its speaker, so no background call has to find out who spoke. The format and
 // the speaker roster reach the game's model context as one update, sent again only when they change: every other turn
 // keeps the cached prefix.

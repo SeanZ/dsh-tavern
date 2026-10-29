@@ -54,7 +54,7 @@ dsh-tavern 面向的是想玩文字游戏的人，而不是愿意先学习酒馆
 
 保存原文不等于每轮把全部历史塞回模型。长对话超出上下文容量时，优先使用叙事摘要、事件记忆和相关剧情召回保留世界，而不是把整个世界退化成变量表。某项确定性机制确实产生剧情效果时，应把已经发生的效果作为剧情事件进入上下文，而不是持续注入内部账本。
 
-兼容模式可以按外部资源的显式变量宏保持原有可观察语义；普通游玩的完整决定、代价和推翻条件见[《MVU 只结算、不注入前台备忘》](design/mvu-settlement-only-memo.md)。
+兼容模式可以按外部资源的显式变量宏保持原有可观察语义；普通游玩的完整决定、代价和推翻条件见[《MVU 只结算、不注入前台备忘》](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Amvu-settlement-only-memo)。
 
 ## DSH 原生，酒馆生态兼容
 
@@ -83,7 +83,7 @@ dsh-tavern 面向的是想玩文字游戏的人，而不是愿意先学习酒馆
 
 借鉴范围包括格式解析、中间表示、纯语义执行器、生命周期划分和差异测试；不直接采用其酒馆生成循环与 DSH AgentLoop 并存的双运行时结构，也不把它作为正式运行依赖。参考结果最终仍需翻译为 DSH 原生能力，并通过真实酒馆资源和可观察效果独立验证。
 
-[Liyuan](https://github.com/weidu12123/Liyuan) v1.5 则是 Agent 原生兼容路线的重要参考，尤其验证了酒馆预设可以保留原文，并按历史前、Agent 原生历史、历史后三段接入，而动态世界书继续由独立召回流程负责。预设方面主要参考其文档层、结构化装配、宏求值和兼容诊断，见[酒馆预设与 DSH 预设](design/native-preset.md#参考实践liyuan-v15)；上下文投影、长局记忆、分支状态、多 Agent 和工具层方面的借鉴范围，见[梨园架构研究](research/liyuan-architecture-reference.md)。
+[Liyuan](https://github.com/weidu12123/Liyuan) v1.5 则是 Agent 原生兼容路线的重要参考，尤其验证了酒馆预设可以保留原文，并按历史前、Agent 原生历史、历史后三段接入，而动态世界书继续由独立召回流程负责。预设方面主要参考其文档层、结构化装配、宏求值和兼容诊断，见[酒馆预设与 DSH 预设](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Anative-preset#参考实践liyuan-v15)；上下文投影、长局记忆、分支状态、多 Agent 和工具层方面的借鉴范围，见[梨园架构研究](research/liyuan-architecture-reference.md)。
 
 ## 不可放弃的核心体验
 
@@ -204,7 +204,7 @@ SillyTavern 的内部架构不是本项目要复制的技术路线，但它拥�
 
 人物卡等生态资源采用 **raw 无损保留、内部按需投影** 的原则：完整原始数据是兼容与再导出的事实来源；运行时只把当前功能需要的字段投影为稳定的内部模型。编辑已支持字段时，应回写或合并到完整数据中，未知字段和扩展命名空间不得因为导入、编辑或导出而丢失。业务代码不直接依赖一团 raw JSON，新能力也不靠不断扩大字段白名单实现。
 
-世界书、预设、显示正则和候选项等具体概念的对应关系，统一记录在[SillyTavern → dsh-tavern 翻译设计](design/sillytavern-translation.md)中。
+世界书、预设、显示正则和候选项等具体概念的对应关系，统一记录在[SillyTavern → dsh-tavern 翻译设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Asillytavern-translation)中。
 
 dsh-tavern 应当保留：
 
@@ -267,7 +267,7 @@ dsh-tavern 在本地执行世界书激活，不为召回创建 Agent 或知识 S
 - 沿用十轮冷却及正文变更解除规则，回退继续恢复 checkpoint 中的记录；
 - 动态激活结果用于前台正文；后台各任务沿用各自的世界书读取范围。
 
-尚未执行作者时间效果、概率和精确消息锚点等语义。详细边界见[世界书激活设计](design/worldbook-recall.md)。
+尚未执行作者时间效果、概率和精确消息锚点等语义。详细边界见[世界书激活设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Aworldbook-recall)。
 
 #### 翻译器
 

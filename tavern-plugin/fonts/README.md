@@ -1,6 +1,6 @@
 # 字体库
 
-舞台皮肤用 id 选这里的字体（`font.body` / `name` / `ui`，字面的 `fallback`）。目录格式与接口见 `docs/design/cast-presentation.md`「字体库（舞台 core 36/N 的前置）」。
+舞台皮肤用 id 选这里的字体（`font.body` / `name` / `ui`，字面的 `fallback`）。目录格式与接口见 `Wiki「设计：cast-presentation」`「字体库（舞台 core 36/N 的前置）」。
 
 | id | 字体 | 许可证 | 来源 |
 | --- | --- | --- | --- |

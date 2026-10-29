@@ -1,4 +1,4 @@
-// The stage's audio layers in CONFIG › 声音 (docs/design/cast-presentation.md「舞台 core（23/N）：CONFIG」): one row per layer
+// The stage's audio layers in CONFIG › 声音 (Wiki「设计：cast-presentation」「舞台 core（23/N）：CONFIG」): one row per layer
 // (TavernStageMixerRows); the control bar's 「声音」 entry opens it. State: tavernStageAudio (features/stage-audio.js). Drawn
 // only in the stage's UI tokens (--gal-ui-*).
 const STAGE_MIX_LAYERS = Object.freeze([["master", "总音量"], ["voice", "配音"], ["music", "背景音乐"], ["sfx", "音效"], ["ambience", "环境音"]]);

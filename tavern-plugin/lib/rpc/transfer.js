@@ -33,7 +33,7 @@ function stamp() {
     pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds())
 }
 
-/** Export / import of `.dshtransfer` bundles (docs/design/data-transfer.md). */
+/** Export / import of `.dshtransfer` bundles (Wiki「设计：data-transfer」). */
 export function createTransferHandlers(deps) {
   const { dataRoot, uploads, fileResources, worldBooks, presetLibrary, promptDocuments, userPreferenceProfile,
     regexManager, readTavernSettings, updateTavernSettings, importCard, importPreset, readCardWorkspace,

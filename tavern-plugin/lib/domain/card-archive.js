@@ -2,7 +2,7 @@ import path from 'node:path'
 import { validPackId } from './asset-packs.js'
 import { pluginManifestProblem } from './plugin-manifest.js'
 
-// Card archives read from disk (zip-file.js): a DSH card (.dshcard, docs/design/dsh-card-format.md),
+// Card archives read from disk (zip-file.js): a DSH card (.dshcard, Wiki「设计：dsh-card-format」),
 // the Galgame fork's card bundle (dsh-tavern-card-bundle.json), or a plain CHARX.
 
 const RESERVED = new Set(['icon', 'emotion', 'background', 'user_icon', 'other'])

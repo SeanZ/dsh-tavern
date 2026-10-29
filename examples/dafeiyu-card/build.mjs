@@ -1,4 +1,4 @@
-// Build 大肥鱼.source.dshcard (the raw source for compress.mjs) from the Galgame fork's card bundle (docs/design/dsh-card-format.md):
+// Build 大肥鱼.source.dshcard (the raw source for compress.mjs) from the Galgame fork's card bundle (Wiki「设计：dsh-card-format」):
 // the card, its four asset packs as they are, and the galgame card plugin in ./plugin.
 //
 //   node examples/dafeiyu-card/build.mjs dafeiyu.card-bundle.zip 大肥鱼.source.dshcard

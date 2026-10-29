@@ -29,7 +29,7 @@ function waitForWritable(res) {
   })
 }
 
-// Asset library media by lease (docs/design/asset-library.md). The page's origin passes Tavern's
+// Asset library media by lease (Wiki「设计：asset-library」). The page's origin passes Tavern's
 // own check here; the service then checks resource, expiry and authorization on every request
 // and yields the body in bounded chunks.
 export async function respondAssetLease(assetLibrary, req, res) {

@@ -1031,12 +1031,12 @@ export async function apply(ctx) {
     return result
   }
   const castAssets = createCastAssets({ store: profileData })
-  // The asset library (docs/design/asset-library.md): one owner of the profile's packs, beside the tavern data root.
+  // The asset library (Wiki「设计：asset-library」): one owner of the profile's packs, beside the tavern data root.
   const assetLibrary = createAssetPackService({ assetRoot: path.join(path.dirname(dataRoot), 'asset-packs'), leaseTtlMs: STAGE_LEASE_TTL_MS,
     authorizeLease: async ({ scope }) => scope === STAGE_MEDIA_SCOPE || scope === STAGE_READ_SCOPE })
   const stageMaterial = createStageMaterial({ library: assetLibrary, castAssets, globalPackIds: async () => (await readTavernSettings()).globalEnabledPackIds, warn: error => console.warn('dsh-tavern: 舞台素材不可用', str(error?.message || error)) })
   ctx.effect(() => () => { stageMaterial.dispose(); return assetLibrary.dispose() })
-  // DSH cards (docs/design/dsh-card-format.md): asset packs stored once by content; big files uploaded to disk.
+  // DSH cards (Wiki「设计：dsh-card-format」): asset packs stored once by content; big files uploaded to disk.
   const assetPacks = createAssetPacks({ root: dataRoot, store: profileData })
   const uploads = createUploads({ root: dataRoot })
   const pluginDataStore = createPluginDataStore({ dataRoot })
@@ -1283,7 +1283,7 @@ export async function apply(ctx) {
       backupPath: restored.backupPath
     }
   }
-  // Turn a card's own plugins on or off (docs/design/dsh-card-format.md): they then load like user plugins, confined to this card.
+  // Turn a card's own plugins on or off (Wiki「设计：dsh-card-format」): they then load like user plugins, confined to this card.
   async function setCardPlugins(input, enabled) {
     const cardPath = normalizeResourcePath(input, 'card')
     const plugins = (await castAssets.read(cardPath)).plugins || []
@@ -2337,7 +2337,7 @@ export async function apply(ctx) {
     await polishRecords.save(sessionId, edit.turn, { original: texts, edits, seconds: Math.round((Date.now() - started) / 1000), auto: true })
       .catch(error => console.warn('dsh-tavern: 自动精修记录保存失败', error))
   }
-  // Who speaks each line and how they feel: the story model's dialogue bubbles (docs/design/cast-presentation.md).
+  // Who speaks each line and how they feel: the story model's dialogue bubbles (Wiki「设计：cast-presentation」).
   const castPresentation = createCastPresentation({
     // On for every game with 对话气泡; 舞台模式 needs it too, so the stage always has its speakers.
     enabled: async () => (await readTavernSettings()).castPresentation === true,

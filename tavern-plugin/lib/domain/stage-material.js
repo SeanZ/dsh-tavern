@@ -5,7 +5,7 @@ import { audioKind, imageKind } from '../asset-library/pack-v2/media.js'
 import { validateStageSkin, stageSkinFiles } from '../../packages/dsh-presentation-protocol/src/stage-skin.cjs'
 import { validateStageEntrance } from './stage-entrance.js'
 
-// A card's stage material (backgrounds, music, sound effects, ambience, items) lives in the asset library (docs/design/asset-library.md):
+// A card's stage material (backgrounds, music, sound effects, ambience, items) lives in the asset library (Wiki「设计：asset-library」):
 // entries of the card's own pack, which the card's cast manifest binds by id (boundPackIds).
 // Leases are the only way bytes leave the library: the page gets a lease URL, export reads through one.
 export const STAGE_MEDIA_SCOPE = 'dsh-tavern-stage'

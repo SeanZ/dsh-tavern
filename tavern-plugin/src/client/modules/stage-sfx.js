@@ -1,4 +1,4 @@
-// 音效 (docs/design/cast-presentation.md「舞台 core（19/N）：音效」): the stage's one-shot sound player. A cue plays its
+// 音效 (Wiki「设计：cast-presentation」「舞台 core（19/N）：音效」): the stage's one-shot sound player. A cue plays its
 // entry's audio once through the page's AudioContext at the entry's 音量 (0..1). A sound rings out across page turns, but
 // at most 10 s, then fades out over 0.5 s; at most six sound at once (a further cue is dropped). Decoded sounds are kept by
 // URL (the newest 16), so a page's cues decode before its visit plays them. stop() ends every sound, including one still

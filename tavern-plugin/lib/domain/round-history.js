@@ -174,7 +174,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
   const pendingRegenerations = new Set()
   const pendingReplays = new Set()
   const regenerationRecovery = createRegenerationRecovery({ chats, sessions, timeline, isActive: id => pendingRegenerations.has(id), repair: (sessionId, session) => repairSurface(sessionId, session) })
-  // The save is the truth (docs/design/native-session-repair.md): when the native
+  // The save is the truth (Wiki「设计：native-session-repair」): when the native
   // surface no longer shows the round the save has, rewrite its tail from the save
   // instead of refusing. Repair reports its own failure and leaves a retry marker.
   async function repairSurface(sessionId, session) {

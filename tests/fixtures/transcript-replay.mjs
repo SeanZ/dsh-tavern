@@ -1,7 +1,7 @@
 // Replay a session log against what the player's conversation page shows.
 //
 // The host draws every append-origin message forever; Tavern then hides rows by native
-// turn (docs/design/transcript-row-plan.md). This replays both halves outside the app:
+// turn (Wiki「设计：transcript-row-plan」). This replays both halves outside the app:
 // the host's rows are modelled from the log, the server view comes from the real
 // createSessionStateView, and the hiding runs the real client bundle in a browser page.
 // The check is the invariant the page must keep: every story round in the save shows one

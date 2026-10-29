@@ -1,6 +1,6 @@
 # 大肥鱼 · DSH 人物卡样板
 
-[DSH Tavern Galgame](https://github.com/jerryzmtz/dsh-tavern-galgame) 分支的示例卡「大肥鱼」做成的 DSH 人物卡（`.dshcard`，见[格式设计](../../docs/design/dsh-card-format.md)）。它是 DSH 人物卡格式的样板：一个文件里有人物卡、4 个素材包、卡内插件、推荐预设和开局设置，导入后不用装别的插件就能玩到 Galgame 式的舞台。已取得原作者同意，作为演示卡分发。
+[DSH Tavern Galgame](https://github.com/jerryzmtz/dsh-tavern-galgame) 分支的示例卡「大肥鱼」做成的 DSH 人物卡（`.dshcard`，见[格式设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Adsh-card-format)）。它是 DSH 人物卡格式的样板：一个文件里有人物卡、4 个素材包、卡内插件、推荐预设和开局设置，导入后不用装别的插件就能玩到 Galgame 式的舞台。已取得原作者同意，作为演示卡分发。
 
 - `plugin/`：卡内插件的源码，只用公开的[插件接口](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)。宿主侧（`index.mjs`）在每轮后台结算里顺带"导演"，按正文选场景、时段、服装和背景音乐，并在本局设置里加「舞台导演」「导演换服装」两个开关；浏览器侧（`client.js`）用 `registerStageView` 画舞台：背景图、当前服装的情绪全身立绘（素材包里分层的立绘按配方拼好）、场景下方的对白框，背景音乐交给 Tavern 播放；并用 `castAssetSource` 把各表情头像交给 Tavern，正文头像随台词情绪变化。
 - `presets/`：推荐预设，开新局时默认使用。

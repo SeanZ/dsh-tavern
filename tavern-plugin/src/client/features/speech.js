@@ -1,4 +1,4 @@
-		// Voiced dialogue (docs/design/cast-presentation.md): the voicing settings, a player that
+		// Voiced dialogue (Wiki「设计：cast-presentation」): the voicing settings, a player that
 		// says one line at a time, and the voice field of the character material.
 		const tavernSpeechSettings = (function () {
 			let data = null, loading = null;

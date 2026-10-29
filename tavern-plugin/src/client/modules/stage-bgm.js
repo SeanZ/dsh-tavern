@@ -1,4 +1,4 @@
-// The BGM player (docs/design/cast-presentation.md「背景音乐」). One page-wide owner decides what the music transport
+// The BGM player (Wiki「设计：cast-presentation」「背景音乐」). One page-wide owner decides what the music transport
 // plays for the selected game, in the stage and in chat alike, so opening or leaving the fullscreen stage never
 // restarts or doubles a track. 导演选曲 on: the director's accepted track; off: the player's pick (the director's
 // choices are still recorded). The mode, the pick and pause last for that game only (localStorage by session id,

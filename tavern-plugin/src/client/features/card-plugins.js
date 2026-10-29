@@ -1,4 +1,4 @@
-		// Plugins a DSH card carries (docs/design/dsh-card-format.md): listed with the card, turned on
+		// Plugins a DSH card carries (Wiki「设计：dsh-card-format」): listed with the card, turned on
 		// by the player, and confined to that card's games, here in the page as on the host.
 		const tavernCardPluginScopes = (function () {
 			let scopes = {}, loaded = false, loading = null;

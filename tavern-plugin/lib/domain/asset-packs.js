@@ -5,7 +5,7 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable, Transform } from 'node:stream'
 
-// Asset packs (docs/design/dsh-card-format.md): what a DSH card carries besides its text, kept as
+// Asset packs (Wiki「设计：dsh-card-format」): what a DSH card carries besides its text, kept as
 // opaque data. Every file is stored once by its SHA-256; a pack is an index of path → file, named
 // by its id and content hash. Tavern never interprets a pack's contents; the plugin that reads its
 // `format` does. Files are served by a type allowlist so nothing in a pack runs in Tavern's page.
