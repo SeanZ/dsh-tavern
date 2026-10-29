@@ -3,7 +3,9 @@
 // it does (`run`) and which moments stop it (`cancelOn`, `cancel`). The scheduler follows
 // the story events for it, so the declaration is the only place a task's trigger is
 // written, and the 后台任务 page reads it from here.
-// More of a task (needs, concurrency, outputs) moves into its declaration step by step.
+// A task's `needs` (background-task-catalog.js) are kept here too: the task that owns a
+// piece of work says how to wait for it in a game (`waiter`), and a task that needs it
+// waits through `needs`, so no task reaches into another's queues.
 
 function list(value) {
   return (Array.isArray(value) ? value : [value]).filter(item => item !== undefined && item !== null).map(String).filter(Boolean)
@@ -15,9 +17,35 @@ function gameOf(payload) {
   return String(payload?.sessionId || payload?.latest?.sessionId || '')
 }
 
-export function createWorkflow({ events }) {
+export function createWorkflow({ events, tasks = [] }) {
   if (!events || typeof events.on !== 'function') throw new Error('任务表缺少剧情事件')
   const jobs = new Map()
+  const catalog = new Map(tasks.map(item => [item.task, item]))
+  const waiters = new Map()
+
+  /** How to wait for a task's work in a game: `wait(chat)` settles when it is done. */
+  function waiter(task, wait) {
+    if (!catalog.has(task)) throw new Error('任务目录里没有 ' + task)
+    if (typeof wait !== 'function') throw new Error('任务 ' + task + ' 的等待方式必须是函数')
+    if (waiters.has(task)) throw new Error('任务 ' + task + ' 的等待方式已登记')
+    waiters.set(task, wait)
+    return () => { if (waiters.get(task) === wait) waiters.delete(task) }
+  }
+
+  async function waitAll(list, chat) {
+    for (const task of list) {
+      const wait = waiters.get(task)
+      if (!wait) throw new Error('任务 ' + task + ' 没有登记等待方式')
+      await wait(chat)
+    }
+  }
+
+  /** Wait for the work of this game that `task` needs, in the order its declaration names. */
+  async function needs(task, chat) {
+    const item = catalog.get(task)
+    if (!item) throw new Error('任务目录里没有 ' + task)
+    await waitAll(item.needs || [], chat)
+  }
 
   /** Declare a task; returns the function that removes it. */
   function job(declaration) {
@@ -63,5 +91,5 @@ export function createWorkflow({ events }) {
     return [...jobs.values()]
   }
 
-  return Object.freeze({ job, table })
+  return Object.freeze({ job, table, waiter, needs })
 }

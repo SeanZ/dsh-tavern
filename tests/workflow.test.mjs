@@ -59,3 +59,22 @@ test('declarations are checked', () => {
   workflow.job({ id: 'a', on: 'turn-settled', run })
   assert.throws(() => workflow.job({ id: 'a', on: 'turn-settled', run }), /已声明/)
 })
+
+test('needs waits for the work each needed task registered a waiter for, in order', async () => {
+  const tasks = [{ task: 'settlement' }, { task: 'polish' }, { task: 'candidate', needs: ['settlement', 'polish'] }, { task: 'phone' }]
+  const workflow = createWorkflow({ events: createStoryEvents(), tasks }), order = []
+  let release
+  workflow.waiter('settlement', async chat => { order.push('settlement ' + chat.id); await new Promise(resolve => { release = resolve }) })
+  workflow.waiter('polish', chat => { order.push('polish ' + chat.id) })
+  const waiting = workflow.needs('candidate', { id: 'c' })
+  await tick()
+  assert.deepEqual(order, ['settlement c'])
+  release()
+  await waiting
+  assert.deepEqual(order, ['settlement c', 'polish c'])
+  await workflow.needs('phone', { id: 'c' })
+  assert.throws(() => workflow.waiter('nope', () => {}), /任务目录里没有/)
+  assert.throws(() => workflow.waiter('polish', () => {}), /已登记/)
+  const bare = createWorkflow({ events: createStoryEvents(), tasks })
+  await assert.rejects(bare.needs('candidate', { id: 'c' }), /没有登记等待方式/)
+})

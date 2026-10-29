@@ -75,6 +75,7 @@ import { createSessionViewReader, createSessionChatReader } from './domain/sessi
 import { createSettlementJobs } from './domain/settlement-jobs.js'
 import { createStoryEvents } from './domain/story-events.js'
 import { createWorkflow } from './domain/workflow.js'
+import { BACKGROUND_TASK_CATALOG } from './domain/background-task-catalog.js'
 import { TIMELINE_MEMBERS, participantOf } from './domain/background-members.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
@@ -669,7 +670,7 @@ export async function apply(ctx) {
   }
 
   const storyEvents = createStoryEvents()
-  const workflow = createWorkflow({ events: storyEvents })
+  const workflow = createWorkflow({ events: storyEvents, tasks: BACKGROUND_TASK_CATALOG })
   const settlementJobs = createSettlementJobs({ run: (...args) => wholeReads.scope('结算', () => settlementRun.runCycle(...args)), onSettled: (...args) => settlementRun.onSettled(...args) })
   const scriptContinuity = createScriptContinuity()
   const storyTimeline = createStoryTimeline({ id: uid, now: Date.now })
@@ -2937,9 +2938,8 @@ export async function apply(ctx) {
         await writeChat(current, { source: 'settlement.opening-prepare' })
         shouldRun = true
       }
-      const activity = backgroundTasks.activity(current)
-      if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) shouldRun = true
       if (shouldRun) await queueSettlement(current.id)
+      else await workflow.needs('candidate', current)
     },
     sleep: sleep,
     now: Date.now,
@@ -3037,6 +3037,13 @@ export async function apply(ctx) {
   })
   const { startPluginTask } = settlementRun
   function queueSettlement(chatId) { return settlementJobs.start(chatId) }
+  // Waiting for this game's settlement: the one its timeline says is due runs now (or is
+  // joined), then whatever settlement job is still running ends.
+  workflow.waiter('settlement', async chat => {
+    const activity = backgroundTasks.activity(chat)
+    if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) await queueSettlement(chat.id)
+    await settlementJobs.pending(chat.id)
+  })
   function cancelSettlement(chatId, options) { return settlementJobs.cancel(chatId, options) }
   const mvuSettlementReconciler = createMvuSettlementResume({
     conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, storyEvents,
