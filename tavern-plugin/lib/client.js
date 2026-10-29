@@ -32254,7 +32254,7 @@ function createTurnRailFilter(root, options) {
                         h("dl", { className: "dsh-tavern-background-triggers" }, triggers.flatMap(row => [
                             h("dt", { key: row.event + ":name" }, row.name),
                             h("dd", { key: row.event + ":tasks" }, row.followers.length ? row.followers.join("、") : "—")])),
-                        h("p", { className: "dsh-tavern-settings-desc" }, "变量结算不在表中：正文写完和重新生成时由流程直接启动，并等待它的结果。")) : null,
+                        h("p", { className: "dsh-tavern-settings-desc" }, "标「流程启动」的任务由回复流程自己启动并等待结果，这里只列出它。")) : null,
                     h("p", { className: "dsh-tavern-settings-desc" }, "常驻：保留历史的后台 Agent，精修使用独立会话；临时：单独新开的 Agent，可同时运行。记录只保留最近 30 条，重启服务后清空。")));
         }
         // One line in 酒馆状态 that opens the page.

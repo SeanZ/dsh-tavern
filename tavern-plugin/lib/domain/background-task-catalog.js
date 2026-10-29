@@ -13,7 +13,7 @@ import { memberOf } from './background-members.js'
 const TASKS = [
   { task: 'settlement', name: '变量结算', lane: 'resident',
     does: '按本轮正文更新变量（MVU 状态栏）和人物姿势；开启后台人物设计时，顺带为新出场的人物写档案。',
-    manual: '正文写完、重新生成后，由流程直接启动；失败可在酒馆状态里重试。',
+    manual: '重新生成后也由流程启动；失败可在酒馆状态里重试。',
     reads: '本轮正文、上一轮变量', writes: '本轮回复上的变量（MVU）、人物姿势、结算状态', blocksNextTurn: true, lock: true },
   { task: 'candidate', name: '生成选项', lane: 'resident',
     does: '为下一轮生成几条可选的行动或对白。',
@@ -58,7 +58,7 @@ export function describeTasks(catalog, jobs = [], momentName = event => event) {
   return catalog.map(item => {
     const starts = jobs.filter(job => job.task === item.task)
     const trigger = item.trigger || [
-      ...starts.map(job => [moments(job.on), (job.needs || []).length ? job.needs.map(nameOf).join('、') + '完成后' : '']
+      ...starts.map(job => [moments(job.on) + (job.flow ? '，由流程直接启动并等它的结果' : ''), (job.needs || []).length ? job.needs.map(nameOf).join('、') + '完成后' : '']
         .filter(Boolean).join('，') + (job.condition ? '（' + job.condition + '）' : '')),
       item.manual || ''
     ].filter(Boolean).join('；')

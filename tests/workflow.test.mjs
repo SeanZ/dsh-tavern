@@ -116,3 +116,12 @@ test('a task that needs others starts once they all finished the turn, hears the
   await tick(); await tick()
   assert.equal(heard.length, 2)
 })
+
+test('a task a flow starts itself is declared only: listed under its moment, never run from it', () => {
+  const events = createStoryEvents(), workflow = createWorkflow({ events })
+  workflow.job({ id: 'settlement', name: '变量结算', task: 'settlement', flow: true, on: 'reply-committed' })
+  events.emit('reply-committed', { sessionId: 'game' })
+  assert.deepEqual(events.table().find(row => row.event === 'reply-committed').followers, ['变量结算（流程启动）'])
+  assert.equal(workflow.table()[0].flow, true)
+  assert.throws(() => workflow.job({ id: 'x', flow: true, on: 'reply-committed', run() {} }), /不能有 run/)
+})

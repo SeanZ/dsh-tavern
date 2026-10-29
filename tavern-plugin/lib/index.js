@@ -3180,8 +3180,10 @@ export async function apply(ctx) {
     stageDirectorStream.cancel(sessionId, turn)
     if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
   }
-  // 任务表: every background task a story moment starts. Settlement is not here: the
-  // reply and regeneration flows queue it themselves, since they wait for its outcome.
+  // 任务表: every background task a story moment starts. Settlement is declared but not
+  // run from here: the reply and regeneration flows queue it themselves, since they wait
+  // for its outcome (and skip it while a regeneration's temporary turn is open).
+  workflow.job({ id: 'settlement', name: '变量结算', task: 'settlement', flow: true, on: 'reply-committed', condition: '有待结算的回复时' })
   workflow.job({ id: 'stage-director', name: '舞台导演', task: 'stage-director', condition: '开启对话气泡与舞台模式时', on: 'reply-committed', run: ({ gameId }) => directRound(gameId),
     cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => cancelDirector(gameId, turn) })
   // Its dialogue bubbles came with the text.

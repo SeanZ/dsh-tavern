@@ -85,14 +85,18 @@ export function createWorkflow({ events, tasks = [], logger = console }) {
     // `condition`: its `if` in words; both only describe it on the 后台任务 page.
     const task = String(declaration?.task || '')
     const condition = String(declaration?.condition || '')
+    // `flow`: a flow starts it at these moments itself and waits for it (变量结算), so it is
+    // only declared here, to be listed with the rest; it has no run.
+    const flow = declaration?.flow === true
     if (!id) throw new Error('任务缺少 id')
     if (jobs.has(id)) throw new Error('任务 ' + id + ' 已声明')
     if (on.length === 0 && after.length === 0) throw new Error('任务 ' + name + ' 缺少触发事件')
     if (after.includes(id)) throw new Error('任务 ' + name + ' 不能等它自己')
-    if (typeof run !== 'function') throw new Error('任务 ' + name + ' 缺少 run')
+    if (!flow && typeof run !== 'function') throw new Error('任务 ' + name + ' 缺少 run')
+    if (flow && (run !== undefined || after.length > 0)) throw new Error('流程启动的任务 ' + name + ' 不能有 run 或 needs')
     if (when !== undefined && typeof when !== 'function') throw new Error('任务 ' + name + ' 的 if 必须是函数')
     if (cancelOn.length > 0 && typeof cancel !== 'function') throw new Error('任务 ' + name + ' 有 cancelOn 但缺少 cancel')
-    const entry = Object.freeze({ id, name, task, condition, on: Object.freeze(on), needs: Object.freeze(after), cancelOn: Object.freeze(cancelOn) })
+    const entry = Object.freeze({ id, name, task, condition, flow, on: Object.freeze(on), needs: Object.freeze(after), cancelOn: Object.freeze(cancelOn) })
     // Synchronous where the task is, so tasks on one moment start in declaration order.
     function attempt(payload, event) {
       const proceed = ok => {
@@ -111,7 +115,7 @@ export function createWorkflow({ events, tasks = [], logger = console }) {
       return work({ ...payload, gameId }, event)
     })
     const stops = [
-      ...on.map(event => follow(event, name, attempt)),
+      ...on.map(event => flow ? events.on(event, name + '（流程启动）', () => {}) : follow(event, name, attempt)),
       ...cancelOn.map(event => follow(event, '取消' + name, cancel))
     ]
     // Started by what it needs: once every one of them finished this turn.
