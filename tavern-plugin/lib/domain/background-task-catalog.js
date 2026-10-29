@@ -1,9 +1,11 @@
+import { memberOf } from './background-members.js'
+
 // Every kind of background Agent run, by the `task` name it passes to the background
 // runner: what it does, which Agent it runs on and what starts it. The 后台任务 page
 // lists it and names runs from it. A new kind of task is added here.
-// `lock`: it takes the coordinator's one background slot per game, so it never runs
-// beside another task that takes it (BACKGROUND_BUSY).
-export const BACKGROUND_TASK_CATALOG = Object.freeze([
+// `lock`: it takes its member's slot in the coordinator, so it never runs beside another
+// task on that slot (BACKGROUND_BUSY).
+const TASKS = [
   { task: 'settlement', name: '变量结算', lane: 'resident',
     does: '按本轮正文更新变量（MVU 状态栏）和人物姿势；开启后台人物设计时，顺带为新出场的人物写档案。',
     trigger: '正文写完、重新生成后，由流程直接启动；失败可在酒馆状态里重试。',
@@ -36,4 +38,7 @@ export const BACKGROUND_TASK_CATALOG = Object.freeze([
     does: '插件发起的一次性后台任务，提示词和工具由插件提供。',
     trigger: '插件调用；下一轮开始前会等它结束。',
     reads: '插件给的提示词与工具', writes: '插件数据（按回合）、插件变量', waits: '前台不在生成时才能开始；下一轮开始前要等它', lock: true }
-])
+]
+
+// `member`: the resident member it runs on (background-members.js); empty for a fresh Agent.
+export const BACKGROUND_TASK_CATALOG = Object.freeze(TASKS.map(item => Object.freeze({ ...item, member: memberOf(item.task) })))

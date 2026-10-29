@@ -3,6 +3,7 @@ import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
 import { createBackgroundRunLedger } from './background-run-ledger.js'
+import { memberOf } from './domain/background-members.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -140,12 +141,19 @@ export function createBackgroundAgentSessions(options, task) {
     return reaping
   }
 
+  // The resident member a persistent task runs on (background-members.js); 书记 by default.
+  function memberFor(input) {
+    return memberOf(input.task) || 'background'
+  }
+
+  // One queue per member: its tasks share one Session, so they run one at a time.
   function queueKey(input) {
-    return input.task === 'polish' ? JSON.stringify([str(input.sessionId), 'polish']) : str(input.sessionId)
+    const member = memberFor(input)
+    return member === 'background' ? str(input.sessionId) : JSON.stringify([str(input.sessionId), member])
   }
 
   function residentKey(input) {
-    return JSON.stringify([str(input.sessionId), input.task === 'polish' ? 'polish' : 'background'])
+    return JSON.stringify([str(input.sessionId), memberFor(input)])
   }
 
   async function releaseSuperseded(key) {
@@ -348,7 +356,7 @@ export function createBackgroundAgentSessions(options, task) {
 
   function run(input) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
-    const record = runs.begin(input)
+    const record = runs.begin({ ...input, member: input.persistent === true ? memberFor(input) : '' })
     input = { ...input, runRecord: record }
     const work = input.persistent !== true ? execute(input) : enqueue(queueKey(input), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')

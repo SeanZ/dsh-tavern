@@ -32,6 +32,7 @@ export function createBackgroundRunLedger(options = {}) {
       task: str(input.task) || 'background',
       plugin: str(input.pluginName),
       lane: input.persistent === true ? 'resident' : 'ephemeral',
+      member: str(input.member),
       turn: Math.max(0, Number(input.turn) || 0),
       model: str(input.selection?.model),
       status: 'queued',
@@ -74,11 +75,11 @@ export function createBackgroundRunLedger(options = {}) {
     const gameId = str(event?.sessionId)
     if (!gameId) return
     const list = locks.get(gameId) || []
-    if (event.kind === 'held') list.push({ kind: 'held', role: str(event.role), operationId: str(event.operationId), from: now() })
+    if (event.kind === 'held') list.push({ kind: 'held', slot: str(event.slot), role: str(event.role), operationId: str(event.operationId), from: now() })
     else if (event.kind === 'released') {
       const held = list.findLast(item => item.kind === 'held' && item.operationId === str(event.operationId) && item.to === undefined)
       if (held) Object.assign(held, { to: now(), status: str(event.status) })
-    } else if (event.kind === 'refused') list.push({ kind: 'refused', role: str(event.role), holder: str(event.holder), at: now() })
+    } else if (event.kind === 'refused') list.push({ kind: 'refused', slot: str(event.slot), role: str(event.role), holder: str(event.holder), at: now() })
     locks.set(gameId, list.slice(-KEPT_PER_GAME * 2))
   }
 

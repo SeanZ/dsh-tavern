@@ -1,4 +1,5 @@
 import { createScopedMessages } from './scoped-messages.js'
+import { participantOf } from './background-members.js'
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
@@ -19,8 +20,9 @@ function sameBasedOn(left, right) {
   return str(left && left.branchId) === str(right && right.branchId) && Number(left && left.revision) === Number(right && right.revision)
 }
 
+// The participant (resident Session) a role binds: its background member (background-members.js).
 function participantRole(role) {
-  return role === 'candidate' || role === 'settlement' || role === 'character-design' || role === 'ledger' || role === 'worldbook-filter' || role === 'style-reference' ? 'background' : role
+  return participantOf(role)
 }
 
 function participantLifetime(value) {

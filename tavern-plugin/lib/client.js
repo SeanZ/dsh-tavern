@@ -32096,6 +32096,7 @@ function createTurnRailFilter(root, options) {
             const [moments, setMoments] = React.useState([]);
             const [catalog, setCatalog] = React.useState([]);
             const [locks, setLocks] = React.useState([]);
+            const [members, setMembers] = React.useState([]);
             React.useEffect(function () {
                 let disposed = false, loading = false;
                 setRuns(null);
@@ -32111,6 +32112,7 @@ function createTurnRailFilter(root, options) {
                         setMoments(Array.isArray(result.moments) ? result.moments : []);
                         setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
                         setLocks(Array.isArray(result.locks) ? result.locks : []);
+                        setMembers(Array.isArray(result.members) ? result.members : []);
                     } catch (_) { /* Diagnostic only; the next poll retries. */ }
                     finally { loading = false; }
                 }
@@ -32118,25 +32120,26 @@ function createTurnRailFilter(root, options) {
                 const timer = window.setInterval(refresh, 2000);
                 return function () { disposed = true; window.clearInterval(timer); };
             }, [sessionId]);
-            return { runs, now, triggers, moments, catalog, locks };
+            return { runs, now, triggers, moments, catalog, locks, members };
         }
         // A development view: one row per background Agent session, time running left to right,
         // so which task ran on which Agent, what waited for what and what ran side by side shows.
         const TIMELINE_SCALE = 12; // px per second while something runs
         const TIMELINE_GAP = 8000; // idle longer than this folds into one break
         const TIMELINE_BREAK = 18;
-        function backgroundTimelineLanes(runs) {
+        function backgroundTimelineLanes(runs, members) {
+            const memberName = id => (members || []).find(member => member.id === id)?.name || "";
             const lanes = new Map();
             for (const run of runs.slice().sort((a, b) => a.queuedAt - b.queuedAt)) {
-                // A resident run still queued has no session yet: it waits on the resident lane.
-                const key = run.agentSessionId || (run.lane === "resident" ? "resident-waiting" : run.id);
-                if (!lanes.has(key)) lanes.set(key, { key, resident: run.lane === "resident", runs: [] });
+                // A resident run still queued has no session yet: it waits on its member's lane.
+                const key = run.agentSessionId || (run.lane === "resident" ? "waiting:" + (run.member || "") : run.id);
+                if (!lanes.has(key)) lanes.set(key, { key, resident: run.lane === "resident", member: run.member || "", runs: [] });
                 lanes.get(key).runs.push(run);
             }
             return [...lanes.values()].map(lane => {
                 const names = [...new Set(lane.runs.map(backgroundRunName))];
-                const tail = lane.key.startsWith("run-") || lane.key === "resident-waiting" ? "" : " …" + lane.key.slice(-4);
-                return { ...lane, label: (lane.resident ? "常驻" : "临时") + tail + " · " + names.join("、") };
+                const tail = lane.key.startsWith("run-") || lane.key.startsWith("waiting:") ? "" : " …" + lane.key.slice(-4);
+                return { ...lane, label: (memberName(lane.member) || (lane.resident ? "常驻" : "临时")) + tail + " · " + names.join("、") };
             }).sort((a, b) => (b.resident - a.resident) || (a.runs[0].queuedAt - b.runs[0].queuedAt));
         }
         // Busy spans keep their length; idle gaps longer than TIMELINE_GAP fold into a fixed break.
@@ -32164,7 +32167,7 @@ function createTurnRailFilter(root, options) {
             const moments = (props.moments || []).filter(item => item.at >= since);
             const locks = (props.locks || []).filter(item => (item.from || item.at) >= since);
             if (!runs.length) return h("div", { className: "dsh-tavern-status-empty" }, "还没有后台运行。");
-            const lanes = backgroundTimelineLanes(runs), scale = backgroundTimelineScale(runs, moments, now, locks);
+            const lanes = backgroundTimelineLanes(runs, props.members), scale = backgroundTimelineScale(runs, moments, now, locks);
             const roleName = role => role === "plugin-task" ? "插件任务" : (props.catalog || []).find(item => item.task === role)?.name || role;
             const clock = time => new Date(time).toTimeString().slice(0, 8);
             const block = run => {
@@ -32183,14 +32186,14 @@ function createTurnRailFilter(root, options) {
                         h("div", { className: "dsh-tavern-timeline-track" },
                             scale.starts.map(span => h("span", { key: span.from, style: { left: span.x } }, clock(span.from))),
                             moments.map((item, index) => h("span", { key: "m" + index, className: "dsh-tavern-timeline-moment-label", style: { left: scale.x(item.at) } }, "▼" + item.name)))),
-                    // The coordinator's one background slot: who held it, and who was turned away.
-                    h("div", { className: "dsh-tavern-timeline-row dsh-tavern-timeline-lock" },
-                        h("div", { className: "dsh-tavern-timeline-label", title: "变量结算、生成选项、记账、人物设计、插件任务共用；同一时间只有一个能拿到" }, "后台锁"),
-                        h("div", { className: "dsh-tavern-timeline-track" }, locks.map((item, index) => item.kind === "held"
+                    // Each member's slot in the coordinator: who held it, and who was turned away.
+                    [...new Set(locks.map(item => item.slot || "background"))].map(slot => h("div", { key: "lock:" + slot, className: "dsh-tavern-timeline-row dsh-tavern-timeline-lock" },
+                        h("div", { className: "dsh-tavern-timeline-label", title: "这个成员的任务同一时间只能跑一个" }, ((props.members || []).find(member => member.id === slot)?.name || slot) + "的后台锁"),
+                        h("div", { className: "dsh-tavern-timeline-track" }, locks.filter(item => (item.slot || "background") === slot).map((item, index) => item.kind === "held"
                             ? h("div", { key: index, className: "dsh-tavern-timeline-run held", style: { left: scale.x(item.from), width: Math.max(4, scale.x(item.to || now) - scale.x(item.from)) },
                                 title: roleName(item.role) + " 占用 " + Math.round(((item.to || now) - item.from) / 1000) + " 秒" + (item.status ? "（" + item.status + "）" : "") }, roleName(item.role))
                             : h("i", { key: index, className: "dsh-tavern-timeline-refused", style: { left: scale.x(item.at) },
-                                title: roleName(item.role) + " 被挡回：" + roleName(item.holder) + " 正占用" }, "✕")))),
+                                title: roleName(item.role) + " 被挡回：" + roleName(item.holder) + " 正占用" }, "✕"))))),
                     lanes.map(lane => h("div", { key: lane.key, className: "dsh-tavern-timeline-row" },
                         h("div", { className: "dsh-tavern-timeline-label", title: lane.key }, lane.label),
                         h("div", { className: "dsh-tavern-timeline-track" }, lane.runs.flatMap(block)))),
@@ -32210,7 +32213,7 @@ function createTurnRailFilter(root, options) {
         // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
         function TavernBackgroundTasksTab(props) {
             const h = React.createElement;
-            const { runs, now, triggers, moments, catalog, locks } = useTavernBackgroundRuns(props.sessionId);
+            const { runs, now, triggers, moments, catalog, locks, members } = useTavernBackgroundRuns(props.sessionId);
             const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
             const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
             const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
@@ -32221,7 +32224,7 @@ function createTurnRailFilter(root, options) {
                 h("div", { className: "dsh-tavern-status-body" },
                     h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "时序（每行一个后台 Agent，浅色为排队，⋯ 为折叠的空闲）"),
-                        runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now, locks, catalog })),
+                        runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now, locks, catalog, members })),
                     h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "进行中"),
                         list(active, "没有正在运行或排队的后台任务。"),
@@ -32233,11 +32236,11 @@ function createTurnRailFilter(root, options) {
                     catalog.length ? h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "任务目录"),
                         h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
-                            h("dt", { key: item.task + ":name" }, item.name, h("span", null, item.lane === "resident" ? "常驻" : "临时")),
+                            h("dt", { key: item.task + ":name" }, item.name, h("span", null, members.find(member => member.id === item.member)?.name || (item.lane === "resident" ? "常驻" : "临时"))),
                             h("dd", { key: item.task + ":does" }, item.does,
                                 [["何时启动", item.trigger], ["读", item.reads], ["写", item.writes], ["等待", item.waits]].filter(([, text]) => text)
                                     .map(([label, text]) => h(React.Fragment, { key: label }, h("br"), h("span", null, label + "：" + text))),
-                                item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用后台锁：与其他占锁任务不能同时运行")) : null)]))) : null,
+                                item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用" + (members.find(member => member.id === (item.member || "background"))?.name || "") + "的后台锁：与同一成员的其他任务不能同时运行")) : null)]))) : null,
                     // The story event table: which moment starts or stops which task.
                     triggers.length ? h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "触发关系"),

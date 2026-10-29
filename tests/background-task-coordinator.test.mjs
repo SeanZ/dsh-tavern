@@ -255,3 +255,17 @@ test('后台锁事件：开始占用、被挡回、提交后释放', async () =>
     [['held', 'ledger', ''], ['refused', 'character-design', 'ledger'], ['released', 'ledger', 'committed']])
   assert.ok(events.every(event => event.sessionId === 'game'))
 })
+
+test('后台锁按成员分：同一成员的任务互相挡，不同成员的任务可以同时开始', async () => {
+  const { coordinator, current } = coordinatorHarness()
+  current().sessionId = 'game'
+  const ledger = await coordinator.begin(current(), 'ledger')
+  // 书记 holds the slot: its other tasks, and plugin tasks writing beside settlement, wait.
+  for (const role of ['candidate', 'character-design', 'plugin-task']) {
+    await assert.rejects(coordinator.begin(current(), role), error => error.code === 'BACKGROUND_BUSY', role)
+  }
+  // 润色师 is another member with its own slot.
+  const polish = await coordinator.begin(current(), 'polish')
+  await polish.commit({ stateChanged: false })
+  await ledger.commit({ stateChanged: false })
+})
