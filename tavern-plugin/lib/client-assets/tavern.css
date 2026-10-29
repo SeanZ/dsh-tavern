@@ -4937,6 +4937,11 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-background-triggers { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
 .dsh-tavern-background-triggers dt { color: var(--dsh-tavern-accent-muted); }
 .dsh-tavern-background-triggers dd { margin: 0; }
+.dsh-tavern-background-catalog { margin: 0; font-size: 13px; }
+.dsh-tavern-background-catalog dt { font-weight: 600; margin-top: 8px; }
+.dsh-tavern-background-catalog dt span { font-weight: 400; margin-left: 6px; color: var(--dsh-tavern-accent-muted); }
+.dsh-tavern-background-catalog dd { margin: 2px 0 0; }
+.dsh-tavern-background-catalog dd span { color: var(--dsh-tavern-accent-muted); }
 .dsh-tavern-timeline { overflow-x: auto; font-size: 12px; }
 .dsh-tavern-timeline-inner { position: relative; }
 .dsh-tavern-timeline-row { display: flex; height: 24px; align-items: center; border-bottom: 1px dashed color-mix(in srgb, currentColor 12%, transparent); }

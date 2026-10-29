@@ -41,10 +41,9 @@ function TavernBackgroundWait(props) {
         React.createElement("p", null, message),
         React.createElement(TavernStopBackgroundAction, {sessionId:props.sessionId}));
 }
-const BACKGROUND_RUN_TASKS = { polish: "正文精修", settlement: "变量结算", ledger: "手动记账", candidate: "生成选项", "worldbook-filter": "世界书预筛", "style-reference": "文风联想", "stage-director": "舞台导演", phone: "手机", "character-design": "人物设计", subagent: "子任务", edit: "编辑" };
 const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消" };
 function backgroundRunName(run) {
-    return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : BACKGROUND_RUN_TASKS[run.task] || run.task;
+    return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : run.name || run.task;
 }
 function backgroundRunSeconds(run, now) {
     const from = run.startedAt || run.queuedAt, to = run.endedAt || now;
@@ -60,6 +59,7 @@ function useTavernBackgroundRuns(sessionId) {
     const [now, setNow] = React.useState(Date.now);
     const [triggers, setTriggers] = React.useState([]);
     const [moments, setMoments] = React.useState([]);
+    const [catalog, setCatalog] = React.useState([]);
     React.useEffect(function () {
         let disposed = false, loading = false;
         setRuns(null);
@@ -73,6 +73,7 @@ function useTavernBackgroundRuns(sessionId) {
                 setRuns(Array.isArray(result.runs) ? result.runs : []);
                 setTriggers(Array.isArray(result.triggers) ? result.triggers : []);
                 setMoments(Array.isArray(result.moments) ? result.moments : []);
+                setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
             } catch (_) { /* Diagnostic only; the next poll retries. */ }
             finally { loading = false; }
         }
@@ -80,7 +81,7 @@ function useTavernBackgroundRuns(sessionId) {
         const timer = window.setInterval(refresh, 2000);
         return function () { disposed = true; window.clearInterval(timer); };
     }, [sessionId]);
-    return { runs, now, triggers, moments };
+    return { runs, now, triggers, moments, catalog };
 }
 // A development view: one row per background Agent session, time running left to right,
 // so which task ran on which Agent, what waited for what and what ran side by side shows.
@@ -160,7 +161,7 @@ function TavernBackgroundRunRow(props) {
 // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
 function TavernBackgroundTasksTab(props) {
     const h = React.createElement;
-    const { runs, now, triggers, moments } = useTavernBackgroundRuns(props.sessionId);
+    const { runs, now, triggers, moments, catalog } = useTavernBackgroundRuns(props.sessionId);
     const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
     const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
     const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
@@ -179,6 +180,12 @@ function TavernBackgroundTasksTab(props) {
             h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "最近完成"),
                 list(done, "服务启动以来本局还没有结束的后台任务。")),
+            // Every kind of background task: what it does, which Agent runs it, what starts it.
+            catalog.length ? h("section", { className: "dsh-tavern-status-section" },
+                h("div", { className: "dsh-tavern-status-label" }, "任务目录"),
+                h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
+                    h("dt", { key: item.task + ":name" }, item.name, h("span", null, item.lane === "resident" ? "常驻" : "临时")),
+                    h("dd", { key: item.task + ":does" }, item.does, h("br"), h("span", null, "何时启动：" + item.trigger))]))) : null,
             // The story event table: which moment starts or stops which task.
             triggers.length ? h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "触发关系"),

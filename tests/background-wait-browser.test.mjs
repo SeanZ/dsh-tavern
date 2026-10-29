@@ -37,9 +37,10 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
  function TavernStopBackgroundAction(){return React.createElement('button',null,'停止后台')}
  async function rpc(method){return {runs:[
   {id:'run-3',task:'plugin',plugin:'地图',lane:'ephemeral',turn:5,model:'m',status:'failed',queuedAt:t-9000,startedAt:t-9000,endedAt:t-4000,error:'信号读取失败'},
-  {id:'run-2',task:'candidate',lane:'resident',turn:5,model:'m',status:'queued',queuedAt:t-2000},
-  {id:'run-1',task:'settlement',lane:'resident',turn:5,model:'m',status:'running',queuedAt:t-8000,startedAt:t-8000,agentSessionId:'session-abcd'},
-  {id:'run-0',task:'ledger',lane:'resident',turn:4,model:'m',status:'discarded',queuedAt:t-20000,startedAt:t-20000,endedAt:t-15000,agentSessionId:'session-abcd'}],
+  {id:'run-2',task:'candidate',name:'生成选项',lane:'resident',turn:5,model:'m',status:'queued',queuedAt:t-2000},
+  {id:'run-1',task:'settlement',name:'变量结算',lane:'resident',turn:5,model:'m',status:'running',queuedAt:t-8000,startedAt:t-8000,agentSessionId:'session-abcd'},
+  {id:'run-0',task:'ledger',name:'手动记账',lane:'resident',turn:4,model:'m',status:'discarded',queuedAt:t-20000,startedAt:t-20000,endedAt:t-15000,agentSessionId:'session-abcd'}],
+  catalog:[{task:'settlement',name:'变量结算',lane:'resident',does:'更新变量',trigger:'正文写完后'}],
   moments:[{event:'reply-committed',name:'正文写完',at:t-8500}],
   triggers:[{event:'reply-committed',name:'正文写完',followers:['舞台导演','精修预审']},{event:'turn-discarded',name:'回合作废',followers:[]}]}}
  ${wait}\nmodules['react-dom/client'].createRoot(document.querySelector('main')).render(React.createElement(TavernBackgroundTasksTab,{sessionId:'game'}));`
@@ -47,11 +48,12 @@ test('后台任务页在 Chromium 中分开显示进行中与最近完成',async
  try {
   const page=await browser.newPage();page.on('pageerror', error => { throw error });await page.setContent('<main></main>');await page.addScriptTag({content:script})
   await page.getByText('运行 1 · 排队 1 · 失败 1').waitFor()
-  const [timeline, active, done, triggers]=await page.locator('section').allInnerTexts()
+  const [timeline, active, done, catalog, triggers]=await page.locator('section').allInnerTexts()
   assert.match(timeline, /常驻 …abcd · 手动记账、变量结算[\s\S]*常驻 · 生成选项[\s\S]*临时 · 插件「地图」/)
   assert.match(timeline, /▼正文写完/)
   assert.match(active, /进行中[\s\S]*生成选项[\s\S]*排队中[\s\S]*第 5 轮 · 常驻[\s\S]*变量结算[\s\S]*运行中[\s\S]*停止后台/)
   assert.match(done, /最近完成[\s\S]*插件「地图」[\s\S]*失败[\s\S]*信号读取失败[\s\S]*手动记账[\s\S]*已作废[\s\S]*结果没有保存/)
+  assert.match(catalog, /任务目录[\s\S]*变量结算[\s\S]*常驻[\s\S]*更新变量[\s\S]*何时启动：正文写完后/)
   assert.match(triggers, /触发关系[\s\S]*正文写完[\s\S]*舞台导演、精修预审[\s\S]*回合作废[\s\S]*—/)
  } finally {await browser.close()}
 })
