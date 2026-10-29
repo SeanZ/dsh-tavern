@@ -646,7 +646,7 @@ window.__ModuleLoader__.load({
 
 		/** Simplified Chinese dictionary (the key-set source of truth). */
 		const zh = {
-			"skin.title": "皮肤",
+			"skin.title": "配色",
 			"skin.default": "默认",
 			"skin.abyss": "沉静蓝",
 			"skin.aurora": "极光青",

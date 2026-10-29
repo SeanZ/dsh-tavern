@@ -44,8 +44,8 @@ test('界面皮肤：导入后立即生效，选「默认」恢复原样', async
     if (method === 'selectInterfaceSkin') { index = { ...index, active: args.id }; return index }
   } })
   const skinStyle = () => page.evaluate(() => document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]')?.textContent ?? null)
-  const select = page.getByLabel('界面皮肤', { exact: true })
-  await page.waitForFunction(() => document.querySelector('select[aria-label="界面皮肤"]')?.disabled === false)
+  const select = page.getByLabel('皮肤', { exact: true })
+  await page.waitForFunction(() => document.querySelector('select[aria-label="皮肤"]')?.disabled === false)
   await page.locator('input[type=file][accept^=".css"]').setInputFiles({ name: '纸感.css', mimeType: 'text/css', buffer: Buffer.from('body { color: rgb(1, 2, 3) }') })
   await page.getByText('已导入并启用', { exact: true }).waitFor()
   assert.deepEqual(calls.find(call => call.method === 'importInterfaceSkin').args, { name: '纸感.css', css: 'body { color: rgb(1, 2, 3) }' })
