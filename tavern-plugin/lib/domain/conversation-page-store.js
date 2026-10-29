@@ -342,13 +342,15 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   for(const entry of entries.values()){
    let existing
    try{existing=await readFile(blobPath(dir,entry.ref),'utf8')}catch(error){if(error.code!=='ENOENT')throw error}
-   const parent=path.dirname(blobPath(dir,entry.ref))
-   directories.add(parent);directories.add(path.join(dir,'blocks'));directories.add(dir)
    if(existing!==undefined){
     if(JSON.stringify(decodeBlock(dir,entry.ref,existing))!==entry.bytes)throw Error('Immutable block corruption')
     onIO({kind:'read',type:entry.block.kind,bytes:Buffer.byteLength(existing),reason:'deduplication'})
     continue
    }
+   // Blocks are addressed by content, so a revision that changed one page still offers every
+   // page again. Only the blocks that actually land create directory entries: syncing the
+   // untouched directories too turned one game import into a thousand fsyncs on a phone.
+   directories.add(path.dirname(blobPath(dir,entry.ref)))
    const size=Buffer.byteLength(entry.bytes)+70
    if(group.length&&(groupBytes+size>PACK_BYTES||group.length>=PACK_ENTRIES)){groups.push(group);group=[];groupBytes=64}
    group.push(entry);groupBytes+=size
