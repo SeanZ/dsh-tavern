@@ -5,8 +5,9 @@ import {isDeepStrictEqual} from 'node:util'
 const fail=message=>Object.assign(new Error(message),{code:'STATE_DELTA_INVALID'})
 // 一个子树整体小于这个字节数就不拆块了：直接内联在父节点的条目里。以前每个对象都要
 // 一个 object 块 + 一个 bucket 块 + 每个键一条目，一局对话的状态就被拆成两千多块；
-// 小对象内联之后块数掉一个量级，代价是改到内联区域时重写那一小块（≤ INLINE_BYTES）。
-const INLINE_BYTES=1024
+// 内联之后块数掉到 1/7，代价是改到内联区域时重写那一小块（≤ INLINE_BYTES）。
+// 4 KB 是实测拐点：2 KB→4 KB 还降 17%，4 KB→8 KB 只降 5%，但每轮改写的放大反而更贵。
+const INLINE_BYTES=4096
 const fits=(value)=>{try{return JSON.stringify(value).length<=INLINE_BYTES}catch{return false}}
 const digest=key=>createHash('sha256').update(key).digest('hex')
 const own=(value,key)=>Object.hasOwn(value,key)

@@ -148,3 +148,24 @@ test('floors sharing a large subtree decode it once per operation and still retu
  assert.deepEqual(await cached.tree.get(roots[2]),floors[2])
  assert.deepEqual(await cached.tree.get(roots[3]),floors[3])
 })
+
+test('小对象整体内联：块数不随键数膨胀，改写、删除、快照都还正常', async () => {
+ const blocks = new Map()
+ const write = async node => { const ref = JSON.stringify(node); blocks.set(ref, node); return ref }
+ const read = async ref => JSON.parse(ref)
+ const small = { a: 1, b: ['x', 'y'], c: { d: 'z' } }
+ const root = await createIncrementalJsonState({ write, read }).create({ variables: small, notes: 'live' })
+ assert.ok(blocks.size <= 6, `expected a few blocks, got ${blocks.size}`)
+ const tree = createIncrementalJsonState({ write, read })
+ assert.deepEqual(await tree.get(root, '/variables'), small)
+ assert.equal(await tree.type(root, '/variables'), 'object')
+ assert.equal(await tree.size(root, '/variables'), 3)
+ assert.deepEqual((await tree.keys(root, '/variables')).sort(), ['a', 'b', 'c'])
+ const applied = await tree.apply(root, [{ op: 'set', path: '/variables/a', value: 9 }, { op: 'remove', path: '/variables/b' }])
+ assert.equal(await tree.get(applied.nextRoot, '/variables/a'), 9)
+ assert.deepEqual(await tree.keys(applied.nextRoot, '/variables'), ['a', 'c'])
+ const calculated = await tree.calculate(applied.nextRoot, async calc => { await calc.delta('/variables/a', 1) })
+ assert.equal(await tree.get(calculated.nextRoot, '/variables/a'), 10)
+ const snapshot = await tree.exportSnapshot(calculated.nextRoot)
+ assert.equal(await tree.importSnapshot(snapshot), calculated.nextRoot)
+})
