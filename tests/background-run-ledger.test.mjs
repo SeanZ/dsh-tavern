@@ -69,3 +69,19 @@ test('结果因剧情变化作废：只改该后台会话里最近完成的同�
   ledger.discard({ sessionId: 'game', role: 'phone', agentSessionId: 'agent-1' })
   assert.equal(ledger.list('game')[2].status, 'completed')
 })
+
+test('后台锁：记下谁占用、何时释放，以及谁被挡回', () => {
+  let clock = 0
+  const ledger = createBackgroundRunLedger({ now: () => clock })
+  ledger.lock({ kind: 'held', sessionId: 'game', role: 'settlement', operationId: 'op-1' })
+  clock = 5
+  ledger.lock({ kind: 'refused', sessionId: 'game', role: 'candidate', holder: 'settlement' })
+  clock = 9
+  ledger.lock({ kind: 'released', sessionId: 'game', role: 'settlement', operationId: 'op-1', status: 'committed' })
+  ledger.lock({ kind: 'held', sessionId: '', role: 'ledger', operationId: 'op-2' })
+  assert.deepEqual(ledger.locks('game'), [
+    { kind: 'held', role: 'settlement', operationId: 'op-1', from: 0, to: 9, status: 'committed' },
+    { kind: 'refused', role: 'candidate', holder: 'settlement', at: 5 }])
+  ledger.forget('game')
+  assert.deepEqual(ledger.locks('game'), [])
+})

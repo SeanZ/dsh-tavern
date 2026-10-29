@@ -158,6 +158,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
         const expectedPending = currentActivity.phase === 'pending' && currentActivity.role === requestedRole
         const conflictingPending = currentActivity.phase === 'pending' && currentActivity.role !== requestedRole
         if ((currentActivity.busy || conflictingPending) && !expectedPending) {
+          options.lockEvent?.({ kind: 'refused', sessionId: str(chat?.sessionId || source?.sessionId), role: requestedRole, holder: str(currentActivity.role) })
           const error = new Error('后台 Agent 正在执行 ' + currentActivity.role + '，请等待完成')
           error.code = 'BACKGROUND_BUSY'
           error.activity = currentActivity
@@ -196,6 +197,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
         return next
       }
     })
+    // One agent operation at a time holds a game's background slot, from here to its commit.
+    const gameId = str(chat?.sessionId || begun.chat?.sessionId)
+    if (begun.value.created !== false) options.lockEvent?.({ kind: 'held', sessionId: gameId, role: str(role), operationId: begun.value.operationId })
     const task = {
       chat: begun.chat,
       operationId: begun.value.operationId,
@@ -345,8 +349,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
           }, metadata)
           return saved === undefined ? { chat: null, status: 'missing' } : { chat: saved, status }
         })
+        options.lockEvent?.({ kind: 'released', sessionId: gameId, role: str(role), operationId: begun.value.operationId, status: str(outcome.status) })
         // The story moved on while the agent ran: its result was dropped, not saved.
-        if (outcome.status === 'stale') options.discarded?.({ sessionId: str(chat.sessionId), role: str(role), agentSessionId: str(input.participant?.sessionId) })
+        if (outcome.status === 'stale') options.discarded?.({ sessionId: gameId, role: str(role), agentSessionId: str(input.participant?.sessionId) })
         return outcome
       },
       async fail(trace) {

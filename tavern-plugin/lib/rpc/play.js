@@ -261,7 +261,7 @@ export function createPlayHandlers(deps) {
     },
     async getBackgroundRuns(args) {
       const names = Object.fromEntries(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.name]))
-      return { runs: backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task })), catalog: BACKGROUND_TASK_CATALOG, triggers: storyEvents?.table() || [], moments: storyEvents?.history(args && args.sessionId) || [] }
+      return { runs: backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task })), catalog: BACKGROUND_TASK_CATALOG, triggers: storyEvents?.table() || [], moments: storyEvents?.history(args && args.sessionId) || [], locks: backgroundAgentRunner.locks(args && args.sessionId) }
     },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }

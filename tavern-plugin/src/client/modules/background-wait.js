@@ -60,6 +60,7 @@ function useTavernBackgroundRuns(sessionId) {
     const [triggers, setTriggers] = React.useState([]);
     const [moments, setMoments] = React.useState([]);
     const [catalog, setCatalog] = React.useState([]);
+    const [locks, setLocks] = React.useState([]);
     React.useEffect(function () {
         let disposed = false, loading = false;
         setRuns(null);
@@ -74,6 +75,7 @@ function useTavernBackgroundRuns(sessionId) {
                 setTriggers(Array.isArray(result.triggers) ? result.triggers : []);
                 setMoments(Array.isArray(result.moments) ? result.moments : []);
                 setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
+                setLocks(Array.isArray(result.locks) ? result.locks : []);
             } catch (_) { /* Diagnostic only; the next poll retries. */ }
             finally { loading = false; }
         }
@@ -81,7 +83,7 @@ function useTavernBackgroundRuns(sessionId) {
         const timer = window.setInterval(refresh, 2000);
         return function () { disposed = true; window.clearInterval(timer); };
     }, [sessionId]);
-    return { runs, now, triggers, moments, catalog };
+    return { runs, now, triggers, moments, catalog, locks };
 }
 // A development view: one row per background Agent session, time running left to right,
 // so which task ran on which Agent, what waited for what and what ran side by side shows.
@@ -103,8 +105,9 @@ function backgroundTimelineLanes(runs) {
     }).sort((a, b) => (b.resident - a.resident) || (a.runs[0].queuedAt - b.runs[0].queuedAt));
 }
 // Busy spans keep their length; idle gaps longer than TIMELINE_GAP fold into a fixed break.
-function backgroundTimelineScale(runs, moments, now) {
+function backgroundTimelineScale(runs, moments, now, locks) {
     const spans = runs.map(run => [run.queuedAt, run.endedAt || now]).concat(moments.map(item => [item.at - 500, item.at + 500]))
+        .concat((locks || []).map(item => item.kind === "held" ? [item.from, item.to || now] : [item.at - 500, item.at + 500]))
         .sort((a, b) => a[0] - b[0]);
     const merged = [];
     for (const [from, to] of spans) {
@@ -122,9 +125,12 @@ function backgroundTimelineScale(runs, moments, now) {
 }
 function TavernBackgroundTimeline(props) {
     const h = React.createElement, now = props.now;
-    const runs = props.runs || [], moments = (props.moments || []).filter(item => runs.length && item.at >= Math.min(...runs.map(run => run.queuedAt)) - TIMELINE_GAP);
+    const runs = props.runs || [], since = runs.length ? Math.min(...runs.map(run => run.queuedAt)) - TIMELINE_GAP : 0;
+    const moments = (props.moments || []).filter(item => item.at >= since);
+    const locks = (props.locks || []).filter(item => (item.from || item.at) >= since);
     if (!runs.length) return h("div", { className: "dsh-tavern-status-empty" }, "还没有后台运行。");
-    const lanes = backgroundTimelineLanes(runs), scale = backgroundTimelineScale(runs, moments, now);
+    const lanes = backgroundTimelineLanes(runs), scale = backgroundTimelineScale(runs, moments, now, locks);
+    const roleName = role => role === "plugin-task" ? "插件任务" : (props.catalog || []).find(item => item.task === role)?.name || role;
     const clock = time => new Date(time).toTimeString().slice(0, 8);
     const block = run => {
         const start = run.startedAt || now, end = run.endedAt || now;
@@ -142,6 +148,14 @@ function TavernBackgroundTimeline(props) {
                 h("div", { className: "dsh-tavern-timeline-track" },
                     scale.starts.map(span => h("span", { key: span.from, style: { left: span.x } }, clock(span.from))),
                     moments.map((item, index) => h("span", { key: "m" + index, className: "dsh-tavern-timeline-moment-label", style: { left: scale.x(item.at) } }, "▼" + item.name)))),
+            // The coordinator's one background slot: who held it, and who was turned away.
+            h("div", { className: "dsh-tavern-timeline-row dsh-tavern-timeline-lock" },
+                h("div", { className: "dsh-tavern-timeline-label", title: "变量结算、生成选项、记账、人物设计、插件任务共用；同一时间只有一个能拿到" }, "后台锁"),
+                h("div", { className: "dsh-tavern-timeline-track" }, locks.map((item, index) => item.kind === "held"
+                    ? h("div", { key: index, className: "dsh-tavern-timeline-run held", style: { left: scale.x(item.from), width: Math.max(4, scale.x(item.to || now) - scale.x(item.from)) },
+                        title: roleName(item.role) + " 占用 " + Math.round(((item.to || now) - item.from) / 1000) + " 秒" + (item.status ? "（" + item.status + "）" : "") }, roleName(item.role))
+                    : h("i", { key: index, className: "dsh-tavern-timeline-refused", style: { left: scale.x(item.at) },
+                        title: roleName(item.role) + " 被挡回：" + roleName(item.holder) + " 正占用" }, "✕")))),
             lanes.map(lane => h("div", { key: lane.key, className: "dsh-tavern-timeline-row" },
                 h("div", { className: "dsh-tavern-timeline-label", title: lane.key }, lane.label),
                 h("div", { className: "dsh-tavern-timeline-track" }, lane.runs.flatMap(block)))),
@@ -161,7 +175,7 @@ function TavernBackgroundRunRow(props) {
 // The 后台任务 sidebar page: what runs and waits now, then what finished recently.
 function TavernBackgroundTasksTab(props) {
     const h = React.createElement;
-    const { runs, now, triggers, moments, catalog } = useTavernBackgroundRuns(props.sessionId);
+    const { runs, now, triggers, moments, catalog, locks } = useTavernBackgroundRuns(props.sessionId);
     const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
     const done = (runs || []).filter(run => run.status !== "queued" && run.status !== "running");
     const list = (items, empty) => items.length ? h("ol", { className: "dsh-tavern-background-runs" }, items.map(run => h(TavernBackgroundRunRow, { key: run.id, run, now }))) : h("div", { className: "dsh-tavern-status-empty" }, empty);
@@ -172,7 +186,7 @@ function TavernBackgroundTasksTab(props) {
         h("div", { className: "dsh-tavern-status-body" },
             h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "时序（每行一个后台 Agent，浅色为排队，⋯ 为折叠的空闲）"),
-                runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now })),
+                runs === null ? null : h(TavernBackgroundTimeline, { runs, moments, now, locks, catalog })),
             h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "进行中"),
                 list(active, "没有正在运行或排队的后台任务。"),
@@ -185,7 +199,10 @@ function TavernBackgroundTasksTab(props) {
                 h("div", { className: "dsh-tavern-status-label" }, "任务目录"),
                 h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
                     h("dt", { key: item.task + ":name" }, item.name, h("span", null, item.lane === "resident" ? "常驻" : "临时")),
-                    h("dd", { key: item.task + ":does" }, item.does, h("br"), h("span", null, "何时启动：" + item.trigger))]))) : null,
+                    h("dd", { key: item.task + ":does" }, item.does,
+                        [["何时启动", item.trigger], ["读", item.reads], ["写", item.writes], ["等待", item.waits]].filter(([, text]) => text)
+                            .map(([label, text]) => h(React.Fragment, { key: label }, h("br"), h("span", null, label + "：" + text))),
+                        item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用后台锁：与其他占锁任务不能同时运行")) : null)]))) : null,
             // The story event table: which moment starts or stops which task.
             triggers.length ? h("section", { className: "dsh-tavern-status-section" },
                 h("div", { className: "dsh-tavern-status-label" }, "触发关系"),

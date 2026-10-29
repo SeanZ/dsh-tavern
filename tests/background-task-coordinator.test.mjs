@@ -21,6 +21,7 @@ function coordinatorHarness(options = {}) {
     timeline,
     blocked: options.blocked,
     discarded: options.discarded,
+    lockEvent: options.lockEvent,
     store: {
       async readChat() { return current },
       async writeChat(chat) { current = chat; writes.push(chat) },
@@ -241,4 +242,16 @@ test('剧情在后台任务运行期间变化：提交作废，并通知运行�
   const outcome = await task.commit({ participant: task.participant({ traceSessionId: 'agent-1' }), stateChanged: true })
   assert.equal(outcome.status, 'stale')
   assert.deepEqual(discarded, [{ sessionId: 'game', role: 'ledger', agentSessionId: 'agent-1' }])
+})
+
+test('后台锁事件：开始占用、被挡回、提交后释放', async () => {
+  const events = []
+  const { coordinator, current } = coordinatorHarness({ lockEvent: event => events.push(event) })
+  current().sessionId = 'game'
+  const task = await coordinator.begin(current(), 'ledger')
+  await assert.rejects(coordinator.begin(current(), 'character-design'), error => error.code === 'BACKGROUND_BUSY')
+  await task.commit({ stateChanged: false })
+  assert.deepEqual(events.map(event => [event.kind, event.role, event.holder || event.status || '']),
+    [['held', 'ledger', ''], ['refused', 'character-design', 'ledger'], ['released', 'ledger', 'committed']])
+  assert.ok(events.every(event => event.sessionId === 'game'))
 })

@@ -2650,7 +2650,8 @@ export async function apply(ctx) {
     store: { readChat, writeChat, updateChat, patchChat, readState: chatPersistence.readSessionState, readRecoveryState: taskStateReader.read, readSlice: chatPersistence.readSlice, readSettlementCheckpoint: chatPersistence.readSettlementCheckpoint },
     timeline: storyTimeline,
     blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) },
-    discarded: target => backgroundAgentRunner.discardRun(target)
+    discarded: target => backgroundAgentRunner.discardRun(target),
+    lockEvent: event => backgroundAgentRunner.noteLock(event)
   })
   const configuredCompactionEngines = new WeakSet()
   const overflowingCompactions = new Set()

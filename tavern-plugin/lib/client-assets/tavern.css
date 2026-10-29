@@ -4956,6 +4956,8 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-timeline-run.failed { background: #c45f5f; }
 .dsh-tavern-timeline-run.cancelled { background: #9a9a9a; }
 .dsh-tavern-timeline-run.discarded { background: #b9b9b9; text-decoration: line-through; }
+.dsh-tavern-timeline-run.held { background: #c9a35b; }
+.dsh-tavern-timeline-refused { position: absolute; top: 3px; color: #c45f5f; font-style: normal; font-weight: 700; transform: translateX(-50%); }
 .dsh-tavern-timeline-overlay { position: absolute; top: 0; bottom: 0; left: 150px; pointer-events: none; }
 .dsh-tavern-timeline-moment { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--dsh-tavern-accent); }
 .dsh-tavern-timeline-break { position: absolute; top: 0; bottom: 0; border-left: 2px dotted color-mix(in srgb, currentColor 30%, transparent); }

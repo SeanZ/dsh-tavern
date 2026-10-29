@@ -68,9 +68,28 @@ export function createBackgroundRunLedger(options = {}) {
     return (games.get(str(gameId)) || []).slice().reverse().map(record => ({ ...record }))
   }
 
-  function forget(gameId) {
-    games.delete(str(gameId))
+  // The coordinator's background slot: who held it when, and who was turned away.
+  const locks = new Map()
+  function lock(event) {
+    const gameId = str(event?.sessionId)
+    if (!gameId) return
+    const list = locks.get(gameId) || []
+    if (event.kind === 'held') list.push({ kind: 'held', role: str(event.role), operationId: str(event.operationId), from: now() })
+    else if (event.kind === 'released') {
+      const held = list.findLast(item => item.kind === 'held' && item.operationId === str(event.operationId) && item.to === undefined)
+      if (held) Object.assign(held, { to: now(), status: str(event.status) })
+    } else if (event.kind === 'refused') list.push({ kind: 'refused', role: str(event.role), holder: str(event.holder), at: now() })
+    locks.set(gameId, list.slice(-KEPT_PER_GAME * 2))
   }
 
-  return Object.freeze({ begin, discard, list, forget })
+  function locksOf(gameId) {
+    return (locks.get(str(gameId)) || []).map(item => ({ ...item }))
+  }
+
+  function forget(gameId) {
+    games.delete(str(gameId))
+    locks.delete(str(gameId))
+  }
+
+  return Object.freeze({ begin, discard, list, forget, lock, locks: locksOf })
 }

@@ -453,5 +453,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), run, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }
