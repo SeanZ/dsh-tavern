@@ -222,18 +222,7 @@ function auditMvuSettlement(before, after, operations) {
 function assertPointer(value, label) {
   const pointer = str(value)
   if (pointer === '' || pointer[0] !== '/') throw new Error(label + ' 必须是 JSON Pointer')
-  return pointer.split('/').map(plainSegment).join('/')
-}
-
-// Models often write a pointer in its URI-fragment form, percent-encoded (/%E5%9C%BA%E6%99%AF
-// for /场景), at times twice over; the MVU runtime takes segments literally and skips such paths.
-// A segment that decodes cleanly is decoded; one that does not (100%) stays as written.
-function plainSegment(segment) {
-  let current = segment
-  for (let round = 0; round < 3 && /%[0-9A-Fa-f]{2}/.test(current); round++) {
-    try { current = decodeURIComponent(current) } catch { break }
-  }
-  return current
+  return pointer
 }
 
 function stripTaggedBlock(value, name) {
