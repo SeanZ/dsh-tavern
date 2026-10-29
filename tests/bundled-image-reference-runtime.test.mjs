@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { imagePluginFixture, IMAGE_PNG, imageJson } from './fixtures/image-plugin-runtime.mjs'
+import { createMediaActions } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/media-actions.js'
 
 const character = { id: 'lin', name: '林月', match: 'Lin Yue', traits: { face: 'red hair, violet eyes' }, outfits: [{ id: 'shirt', name: '白衬衫', upper: 'white shirt' }] }
 function atlasMock(calls, { failUpload = false, uploadWait } = {}) {
@@ -28,6 +29,23 @@ async function prepare(t, options = {}) {
   return { fixture, runtime, referenceImage, defs }
 }
 const raw = '【人物】\n林月\n\n【动作】\n站在窗边。'
+
+test('正文重试默认使用上一次失败作业快照，不再复用更早原图或再次自动刷新', async t => {
+  const item = { id: 'm', kind: 'dsh-tavern-image/image', turn: 2, textVersion: 'v', status: 'ready', attachment: {},
+    data: { jobId: 'original', replacement: { jobId: 'failed-attempt', state: 'failed', prompt: raw, generationMode: 'reference', refreshReferences: true } } }
+  const started = []
+  const actions = createMediaActions({
+    tavern: { getTurn: async () => ({ textVersion: 'v' }), list: async () => [item], update: async (_id, changes) => Object.assign(item, changes) },
+    attachments: { saveImage: async () => ({}) }, readFileAsBytes: async () => new Uint8Array(),
+    getJob: async id => ({ id, state: id === 'original' ? 'done' : id === 'failed-attempt' ? 'failed' : 'running', params: {} }),
+    startReplacement: async input => { started.push(input); return { jobId: 'retried' } }, cancelJob: async () => {}, pollMs: 1,
+  })
+  t.after(() => actions.dispose())
+  await actions.handle({ gameId: 'g', turn: 2, textVersion: 'v', mediaId: 'm', jobId: 'failed-attempt', operation: 'retry' })
+  assert.equal(started[0].sourceJobId, 'failed-attempt')
+  assert.equal(started[0].generationMode, 'reference')
+  assert.equal(started[0].refreshReferences, false)
+})
 
 test('本地上传预览、保存定义、只传本张参考图；实际输入包含编号和补充而非旧外貌', async t => {
   const calls = []; globalThis.fetch = atlasMock(calls)
@@ -66,6 +84,12 @@ test('参考模式全无图或非Atlas时明确拒绝，单图明确文生图可
   assert.equal(calls.filter(c => c.url.endsWith('/uploadMedia')).length, 0)
   const bad = await runtime.request('jobs', { tag: raw, generationMode: 'unknown' })
   assert.equal(bad.status, 400)
+  await runtime.request('config', { imageBackend: 'comfyui' })
+  const count = calls.length
+  const wrongBackend = await runtime.request('jobs', { tag: raw, generationMode: 'reference' })
+  assert.equal(wrongBackend.status, 400)
+  assert.match(wrongBackend.body.error, /仅支持 atlas cloud/)
+  assert.equal(calls.length, count)
 })
 
 test('快照独立于人物库与全局模式，旧图重绘默认原版，明确更新才取新一致性文字', async t => {
@@ -133,6 +157,41 @@ test('规划只收文字及清单，结构化subjects到实际图片编号绑定
   const invalid = await runtime.request('plan', { text: '林月站在窗边。', messageId: 'turn-2', count: 1, manual: true })
   assert.ok(invalid.status === 400 || invalid.body.error, JSON.stringify(invalid.body))
   assert.equal(calls.length, count)
+})
+
+test('多人含无图人物与未知人物时保留文字，明确更新快照可按新提示词重新选人', async t => {
+  const calls = []; globalThis.fetch = atlasMock(calls)
+  const { runtime, referenceImage, defs } = await prepare(t)
+  defs.characters.push({ id: 'chen', name: '陈安', match: 'Chen An', traits: { face: '短黑发，蓝色眼睛' }, outfits: [] })
+  await runtime.request('definitions', { definitions: defs })
+  const first = await runtime.request('jobs', { tag: '【人物】\n林月、陈安和一名旅人\n\n【动作】\n坐在桌旁。', subjects: [{ characterId: 'lin' }, { characterId: 'chen' }, { name: '旅人' }] })
+  assert.equal(first.status, 200, JSON.stringify(first.body))
+  const job = await runtime.terminal(first.body.id)
+  assert.equal(job.state, 'done', job.error)
+  assert.equal(job.references.length, 1)
+  assert.match(job.submittedPrompt, /短黑发，蓝色眼睛/)
+  assert.match(job.submittedPrompt, /旅人/)
+  defs.characters[1].referenceImage = referenceImage
+  await runtime.request('definitions', { definitions: defs })
+  const changed = await runtime.request('redraw', { jobId: first.body.id, prompt: '【人物】\n陈安\n\n【动作】\n在门口等待。', refreshReferences: true })
+  assert.equal(changed.status, 200, JSON.stringify(changed.body))
+  const updated = await runtime.terminal(changed.body.jobId)
+  assert.deepEqual(updated.references.map(r => r.characterId), ['chen'])
+  assert.doesNotMatch(updated.submittedPrompt, /短黑发，蓝色眼睛|林月/)
+})
+
+test('纯服装参考图的历史快照允许明确更新，不把legacy空subjects误判为用户排空', async t => {
+  const calls = []; globalThis.fetch = atlasMock(calls)
+  const { runtime, referenceImage, defs } = await prepare(t)
+  defs.outfits.push({ id: 'robe', name: '礼服', body: 'red dress', referenceImage })
+  await runtime.request('definitions', { definitions: defs })
+  const first = await runtime.request('jobs', { tag: '【服装】\n${"name":"礼服"}$\n\n【环境】\n陈列柜。' })
+  assert.equal(first.status, 200, JSON.stringify(first.body))
+  assert.equal((await runtime.terminal(first.body.id)).references.length, 1)
+  const refreshed = await runtime.request('redraw', { jobId: first.body.id, refreshReferences: true })
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body))
+  const updated = await runtime.terminal(refreshed.body.jobId)
+  assert.deepEqual(updated.references.map(r => r.outfitId), ['robe'])
 })
 
 test('新Atlas上传中断记录在重启时是未提交失败而非不确定；旧版running保持保守语义', async t => {
