@@ -170,7 +170,7 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
       characterAutoUpdate: config.characterAutoUpdate !== false && Number(tavern.apiVersion) >= 2,
       plannerSignature: JSON.stringify([
         config.plannerCount, config.plannerProvider, config.plannerModel, config.plannerTemperature, config.plannerEffort,
-        config.plannerExtra, config.plannerEntries,
+        config.plannerExtra, config.plannerEntries, config.promptMode, config.generationMode,
       ]),
     }
     const key = versionKey({ gameId, turn, textVersion, manual, count, settings })

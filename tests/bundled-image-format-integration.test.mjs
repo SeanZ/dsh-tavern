@@ -1,9 +1,26 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { compileChannelJob, compileJob } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js'
+import { compileChannelJob, compileJob, expandRosterCalls, injectDefinitions } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js'
 import { imagePluginFixture, imageJson, IMAGE_PNG } from './fixtures/image-plugin-runtime.mjs'
 
 const original = { name: '我的规则', entries: [{ comment: '旧条目', content: 'old unique rule', enabled: true }] }
+
+test('结构化格式保留中文自由衣着与未知人物宏，中文名字不因英文别名而漏掉文字资料', () => {
+  const defs = { characters: [{ id: 'lin', name: '林月', match: 'Lin Yue', traits: { face: '银发，深绿色眼睛' }, outfits: [] }],
+    settings: [{ id: 'room', name: '房间', match: 'room', layout: '[保留窗格]\n第二行, 第三段' }] }
+  const macro = '${"name":"林月","outfit":"红色长裙","angle":"侧面"}$'
+  const expanded = expandRosterCalls(macro, defs, 'sfw', { style: 'structured' })
+  assert.match(expanded, /人物“林月”：.*红色长裙.*侧面/)
+  assert.doesNotMatch(expanded, /is a character|is wearing/)
+  const unknown = expandRosterCalls('${"name":"旅人","outfit":"蓝色外套","angle":"背面"}$', defs, 'sfw', { style: 'structured' })
+  assert.match(unknown, /旅人.*蓝色外套.*背面/)
+  const out = injectDefinitions('【人物】\n林月\n\n【环境】\n房间', defs, { injectWeight: 1.5 }, { style: 'structured' })
+  assert.match(out.text, /银发，深绿色眼睛/)
+  assert.match(out.text, /\[保留窗格\]\n第二行, 第三段/)
+  assert.doesNotMatch(out.text, /:1\.5\)/)
+  const twice = injectDefinitions(expanded, defs, {}, { style: 'structured', raw: macro })
+  assert.equal((twice.text.match(/银发/g) || []).length, 1)
+})
 
 test('四种格式世界书独立读写；当前自动格式按工作流判定，旧文件不覆盖', async t => {
   const fixture = await imagePluginFixture(t, { files: { 'worldbook.json': original, 'worldbook-outfits.json': { name: '衣服', entries: [] } } })

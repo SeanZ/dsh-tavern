@@ -47,6 +47,7 @@ import { createDiagnostics } from './diagnostics.js'
 import { deleteWorkflow } from './workflow-delete.js'
 import { createFormatWorldbooks } from './format-worldbooks.js'
 import { composeStructuredPrompt, combineStructuredPrompt } from './prompt-presets.js'
+import { normalizeReferenceImage, normalizeConsistencyText, createReferenceImageStore, resolveImageReferences, buildReferenceText, referencePlannerGuidance, referenceScopedDefinitions } from './reference-images.js'
 
 export const name = 'dsh-tavern-image'
 export const inject = ['webServer']
@@ -69,6 +70,7 @@ const credentialStore = createCredentialStore({ save: config => saveConfig(confi
 
 const DEFAULTS = {
   imageBackend: 'comfyui',
+  generationMode: 'text',
   imageChannels: [],
   activeImageChannel: '',
   imageConcurrency: 2,
@@ -236,8 +238,16 @@ const NOTHING_WORN = /^(?:nude|naked|nothing|no clothes|completely (?:nude|naked
 /** 通用服装库的字段（跨角色复用的一套衣服）。 */
 const OUTFIT_FIELDS = ['body', 'full', 'bodyBack', 'fullBack', 'negative']
 
+function referenceFields(raw) {
+  const fields = {}
+  if (raw && Object.hasOwn(raw, 'referenceImage')) fields.referenceImage = normalizeReferenceImage(raw.referenceImage)
+  if (raw && Object.hasOwn(raw, 'consistencyText')) fields.consistencyText = normalizeConsistencyText(raw.consistencyText)
+  return fields
+}
+
 export function normalizeOutfit(raw, index) {
   const item = {
+    ...referenceFields(raw),
     id: String(raw?.id ?? `outfit-${index + 1}`),
     name: String(raw?.name ?? `通用服装 ${index + 1}`),
     enabled: raw?.enabled !== false,
@@ -266,7 +276,8 @@ const VISION_SYSTEM = [
 export function expandRosterCalls(text, scoped, mode, options = {}) {
       // options.onMacro(entry)：诊断用，报告每个宏解析成了谁、哪套衣服、丢掉了哪些负面词。
       const note = (entry) => { if (typeof options?.onMacro === 'function') { try { options.onMacro(entry) } catch {} } }
-      const natural = options?.style === 'natural' || options?.style === 'structured'
+      const style = options?.style
+      const natural = style === 'natural' || style === 'structured'
       let lastPerson = null
       const nameKey = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
       const standaloneNames = new Set([...String(text ?? '').matchAll(/\$\{([\s\S]*?)\}\$/g)].flatMap((m) => {
@@ -331,7 +342,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const hiddenBody = /hidden/i.test(upper) && /hidden/i.test(lower)
           const ownsStandalone = (person.outfits ?? []).some((o) => o && o.enabled !== false && standaloneNames.has(nameKey(o.name)))
           const libraryHit = outfitName && (person.outfits ?? []).some((o) => o && o.enabled !== false && o.name === outfitName)
-          const macroText = outfitName && /^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName) && !PLACEHOLDER_VALUE.test(outfitName)
+          const macroText = outfitName && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName))) && !PLACEHOLDER_VALUE.test(outfitName)
           // 插件自动补的衣服（「当前穿着」记录、常穿）只在穿着衣服的画面里补：
           // 标了 nsfw、全身 hidden、画面写着洗澡/裸体/内衣，或者记录本身就是「没穿」时都不补。
           // 宏里明确写的衣服（例如半脱的内衣）不受影响，总是保留。
@@ -362,8 +373,8 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
             noOutfit: Boolean(wear) || ownsStandalone || (!libraryHit && autoOff),
             tags: !natural,
           })
-          const angleTag = angle && /front|back|side|behind|left|right|from/i.test(angle) ? angle : ''
-          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear))
+          const angleTag = angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle)) ? angle : ''
+          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style))
           else {
             if (picked.tags.length) bits.push(...picked.tags)
             if (wear) bits.push(wear)
@@ -397,14 +408,14 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           bits.push(asked)
           if (!person && !matches.length) {
             const outfitText = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
-            const freeText = outfitText && /^[\x20-\x7e]+$/.test(outfitText) && /[a-z]/i.test(outfitText) && !PLACEHOLDER_VALUE.test(outfitText)
+            const freeText = outfitText && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitText) && /[a-z]/i.test(outfitText))) && !PLACEHOLDER_VALUE.test(outfitText)
             const wear = freeText ? (barefoot ? dropFootwear(outfitText) : outfitText) : ''
             if (wear) bits.push(wear)
             const angle = String(parsed.angle ?? '').trim()
-            if (angle && /front|back|side|behind|left|right|from/i.test(angle)) bits.push(angle)
+            if (angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle))) bits.push(angle)
           }
         }
-        return bits.join(', ')
+        return bits.join(style === 'structured' ? '；' : ', ')
       })
     }
 
@@ -424,11 +435,15 @@ function sameCharacterFamily(a, b) {
  *   "<英文名> is the woman in this scene: <外貌>; she is wearing <衣服>"
  * 逗号堆在一起的特征没有主语，多人画面里模型会把一个人的发色、耳朵套到另一个人身上。
  */
-function boundCharacterPhrase(person, picked, extras = [], wear = '') {
+function boundCharacterPhrase(person, picked, extras = [], wear = '', style = 'natural') {
   const label = splitTags(person?.match)[0] || String(person?.name ?? '')
   const origins = (picked?.origins ?? []).filter(o => o.channel !== 'negative')
   const traits = origins.filter(o => !o.outfitId).map(o => o.text)
   const outfit = origins.filter(o => o.outfitId).map(o => o.text)
+  if (style === 'structured') {
+    const identity = String(person?.name || label || person?.id || '')
+    return `人物“${identity}”：` + [traits.join('；'), outfit.length ? '穿着：' + outfit.join('；') : (wear ? '穿着：' + wear : ''), ...extras].filter(Boolean).join('；')
+  }
   const look = [person?.traits?.face, person?.traits?.faceBack, person?.traits?.feature].map(v => String(v ?? '')).join(' ')
   const who = /\b(woman|girl|female|lady)\b/i.test(look) ? ['the woman', 'she']
     : /\b(man|boy|male|gentleman)\b/i.test(look) ? ['the man', 'he'] : ['a character', 'they']
@@ -651,6 +666,7 @@ export function apply(ctx, config = {}) {
   route(`${BASE}/config`, (request, response, url, engine) => engine.handleConsole('config', request, response, url))
   route(`${BASE}/workflow`, (request, response, url, engine) => engine.handleConsole('workflow', request, response, url))
   route(`${BASE}/reload`, (request, response, url, engine) => engine.handleConsole('reload', request, response, url))
+  route(`${BASE}/reference-image`, (request, response, url, engine) => engine.handleConsole('reference-image', request, response, url))
   route(`${BASE}/definitions`, (request, response, url, engine) => engine.handleConsole('definitions', request, response, url))
   route(`${BASE}/export-all`, (request, response, url, engine) => engine.handleConsole('export-all', request, response, url))
   route(`${BASE}/import-all`, (request, response, url, engine) => engine.handleConsole('import-all', request, response, url))
@@ -728,8 +744,12 @@ async function handleAttachTurn(request, response, _url, engine) {
 
 async function handleJobs(request, response, url, engine) {
   if (request.method === 'POST') {
-    const body = await engine.readBody(request)
-    sendJson(response, 200, await engine.startJob(body, { label: String(body?.origin ?? '') }))
+    try {
+      const body = await engine.readBody(request)
+      sendJson(response, 200, await engine.startJob(body, { label: String(body?.origin ?? '') }))
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: String(error?.message ?? error), code: error?.code, submissionNotStarted: error?.submissionNotStarted === true })
+    }
     return
   }
   if (request.method !== 'GET') { sendJson(response, 405, { ok: false, error: 'method-not-allowed' }); return }
@@ -781,6 +801,7 @@ function createRuntime(ctx, overrides, logger, deps) {
     const diag = createDiagnostics({ root: ROOT, logger, secrets: () => collectSecretValues(config) })
     config.workflows = await scanWorkflows(config)
     let definitions = await loadDefinitions()
+    const referenceStore = createReferenceImageStore(join(ROOT, 'reference-images'), { maxBytes: 32 * 1024 * 1024 })
     let workflows = []
     const jobs = new Map()
     // 出全黑图时用来换种子重画：jobId → { prompt, seedBindings }（只在内存里，重启后不重画）。
@@ -838,7 +859,7 @@ function createRuntime(ctx, overrides, logger, deps) {
                 catch { job.mediaType = 'image/png' }
               }
               if (job.backend && job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) {
-                job.requestMayHaveSucceeded = job.requestStarted === true || job.state === 'running'
+                job.requestMayHaveSucceeded = job.requestStarted === true || (job.state === 'running' && !(job.backend === 'atlascloud' && job.submissionTracked === true))
                 job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
                 job.error = job.requestMayHaveSucceeded ? '插件重启后无法确认平台是否已接单；请先在平台检查任务，未自动重试' : '插件重启中断了尚未提交的排队任务，可以手动重试'
               }
@@ -884,19 +905,21 @@ function createRuntime(ctx, overrides, logger, deps) {
     }
     let jobsDirty = false
     let jobsWritePromise = Promise.resolve()
-    function persistJobs() {
+    function persistJobs({ required = false } = {}) {
       jobsDirty = true
-      jobsWritePromise = jobsWritePromise.then(async () => {
-        if (!jobsDirty) return
+      jobsWritePromise = jobsWritePromise.catch(() => {}).then(async () => {
+        if (!jobsDirty && !required) return
         jobsDirty = false
         try {
           // 只落盘真实作业，按时间保留最近 150 条。cache 兜底补回的占位记录每次启动都会从 cache 重建，
           // 不能占名额：按插入顺序截取时它们排在最后，会把带 key / 提示词的真实记录挤掉，
           // 重启后同一段正文就查不到已有的图。
-          const entries = [...jobs.entries()]
+          const ordered = [...jobs.entries()]
             .filter(([, job]) => !job.fromCache)
             .sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0))
-            .slice(-150)
+          const needsTracking = job => ['pending', 'running', 'uncertain'].includes(job.state) || job.requestMayHaveSucceeded === true || job.cancelMayHaveContinued === true || (job.state === 'cancelled' && job.requestStarted === true)
+          // Never evict a live/uncertain paid request in favor of newer history.
+          const entries = [...ordered.filter(([, job]) => needsTracking(job)), ...ordered.filter(([, job]) => !needsTracking(job)).slice(-150)]
           const plain = {}
           for (const [id, job] of entries) {
             plain[id] = {
@@ -918,12 +941,18 @@ function createRuntime(ctx, overrides, logger, deps) {
               channelEndpoint: job.channelEndpoint ?? '', comfyEndpoint: job.comfyEndpoint ?? '',
               providerTaskProvider: job.providerTaskProvider ?? '',
               characterSnapshot: job.characterSnapshot ?? null, comfySimple: job.comfySimple ?? null,
+              generationMode: job.generationMode ?? 'text', promptMode: job.promptMode,
+              referenceSnapshot: job.referenceSnapshot ?? null, submittedPrompt: job.submittedPrompt ?? '',
+              submissionTracked: job.submissionTracked === true,
               gameId: job.gameId ?? '', turn: job.turn ?? null, textVersion: job.textVersion ?? '',
               imageOutputWarning: job.imageOutputWarning ?? '',
             }
           }
           await writeJsonAtomic(JOBS_STORE, plain)
-        } catch { /* 落盘失败不影响生成 */ }
+        } catch (error) {
+          if (required) throw Object.assign(new Error('保存生图任务失败，请检查本地存储空间和权限'), { submissionNotStarted: true })
+          logger.warn?.('dsh-tavern-image: 保存生图任务失败：' + String(error?.message ?? error))
+        }
       })
       return jobsWritePromise
     }
@@ -1303,24 +1332,38 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (job.controller.signal.aborted || !jobs.has(job.id)) continue
         imageRunning++
         job.state = 'running'
-        job.requestStarted = true
+        job.requestStarted = job.backend !== 'atlascloud'
         ;(async () => {
+          let providerCompleted = false
           try {
             // Persist the submission marker before POST, not only after its ID
             // arrives: a lost response must never look like an unsubmitted job.
-            await persistJobs()
+            await persistJobs({ required: true })
             job.controller.signal.throwIfAborted()
             if (!jobs.has(job.id)) return
+            const references = []
+            for (const ref of job.referenceSnapshot?.references ?? []) {
+              references.push(await referenceStore.read(ref.image))
+              job.controller.signal.throwIfAborted()
+            }
             const result = await generateImage(channel, {
-              positive: compiled.positive, negative: compiled.negative, promptMode: compiled.promptMode, seed: compiled.seed, characters: compiled.characters,
+              positive: compiled.positive, negative: compiled.negative, promptMode: compiled.promptMode, seed: compiled.seed, characters: compiled.characters, references,
               width: compiled.size.width, height: compiled.size.height, steps: job.params.steps, cfg: job.params.cfg,
-            }, { signal: job.controller.signal, maxImageBytes, onTask: info => {
+            }, { signal: job.controller.signal, maxImageBytes, onGenerationSubmit: async () => {
+              job.controller.signal.throwIfAborted()
+              if (!jobs.has(job.id)) throw new Error('生图任务已删除')
+              job.requestStarted = true
+              try { await persistJobs({ required: true }) }
+              catch (error) { job.requestStarted = false; throw error }
+              job.controller.signal.throwIfAborted()
+            }, onTask: info => {
               if (info?.provider && info?.taskId) {
                 job.providerTaskId = String(info.taskId)
                 job.providerTaskProvider = String(info.provider)
-                return persistJobs()
+                return persistJobs({ required: true })
               }
             } })
+            providerCompleted = true
             job.controller.signal.throwIfAborted()
             if (!jobs.has(job.id)) return
             const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: maxImageBytes, signal: job.controller.signal })
@@ -1331,7 +1374,8 @@ function createRuntime(ctx, overrides, logger, deps) {
             Object.assign(job, { file, mediaType: output.mediaType, byteLength: output.bytes.length, imageOutputWarning: output.warning || '', percent: 100, state: 'done', completedAt: Date.now() })
             if (output.warning) logger.warn?.(`dsh-tavern-image: 作业 ${job.id.slice(0, 8)} ${output.warning}`)
           } catch (error) {
-            job.requestMayHaveSucceeded = error.requestMayHaveSucceeded === true
+            if (error.submissionNotStarted === true && !providerCompleted) job.requestStarted = false
+            job.requestMayHaveSucceeded = providerCompleted || error.requestMayHaveSucceeded === true
             if (job.controller.signal.aborted) {
               if (imageDisposed && job.state !== 'cancelled') {
                 // Host reload is not a user cancellation. Keep accepted tasks
@@ -1369,7 +1413,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       return pending
     }
 
-    async function createJob(rawParams, { label = '', forceWorkflow = null, jobConfig = config, diagTrace = null } = {}) {
+    async function createJob(rawParams, { label = '', forceWorkflow = null, jobConfig = config, diagTrace = null, referenceSnapshot = null } = {}) {
       // 浏览器半边只传 tag 和 key，其余（画师串、画幅）由控制台配置兜底。
       const params = {
         tag: String(rawParams?.tag ?? ''),
@@ -1389,12 +1433,16 @@ function createRuntime(ctx, overrides, logger, deps) {
       const key = typeof rawParams?.key === 'string' ? rawParams.key.slice(0, 4000) : ''
       if (key) {
         const existing = findJob(key)
-        if (existing?.state === 'uncertain' || (existing?.state === 'cancelled' && existing.requestMayHaveSucceeded)) {
+        if (existing?.state === 'uncertain' || (existing?.state === 'cancelled' && (existing.requestStarted || existing.cancelMayHaveContinued || existing.requestMayHaveSucceeded))) {
           throw new Error('同一请求的作业状态仍不确定；请先检查生图平台，未自动重试')
         }
         if (existing && (existing.state === 'pending' || existing.state === 'running' || existing.state === 'done')) return publicJob(existing)
       }
       const channel = forceWorkflow ? null : channelWithPresetParams(jobConfig)
+      const generationMode = rawParams?.generationMode ?? jobConfig.generationMode ?? 'text'
+      if (!['text', 'reference'].includes(generationMode)) throw Object.assign(new Error('生图模式无效'), { submissionNotStarted: true })
+      if (generationMode === 'reference' && channel?.provider !== 'atlascloud') throw Object.assign(new Error('参考图模式仅支持 atlas cloud；请切换渠道或明确改用文生图'), { submissionNotStarted: true })
+      params.generationMode = generationMode
       let workflow = forceWorkflow || (!channel && jobConfig.comfyMode === 'simple' ? null : (!channel ? pickWorkflow(usable(), jobConfig, params.model) : null))
       let simpleBuild = null
       if (!channel && !forceWorkflow && jobConfig.comfyMode === 'simple') {
@@ -1406,10 +1454,25 @@ function createRuntime(ctx, overrides, logger, deps) {
       if (!channel && !workflow) throw new Error('没有可用的工作流（到 设置 → 配图 的「渠道」里选择工作流或简单模式）')
       const defsForTurn = applyCharacterSnapshot(definitions, rawParams?.characterSnapshot)
       const card = await currentCard(rawParams?.sessionId || lastSessionId, rawParams?.turn)
-      const scopedDefs = card
+      let scopedDefs = card
         ? { ...defsForTurn, characters: (defsForTurn.characters ?? []).filter(character => usableOnCard(character, card)) }
         : defsForTurn
-        // 这里可以打日志（runtime 里能拿到 logger）
+      let referenceState = null
+      if (generationMode === 'reference') {
+        if (referenceSnapshot) {
+          referenceState = structuredClone(referenceSnapshot)
+          scopedDefs = referenceState.definitions
+        } else {
+          const selected = resolveImageReferences({ text: params.rawTag, characters: params.characters, subjects: rawParams?.subjects, definitions: scopedDefs })
+          scopedDefs = referenceScopedDefinitions(scopedDefs, selected.references, { subjects: selected.subjects })
+          referenceState = { version: 1, ...selected, definitions: structuredClone(scopedDefs) }
+        }
+        if (!referenceState.references?.length) throw Object.assign(new Error('本张图片没有可用的角色或服装参考图；请添加参考图，或明确切换为文生图'), { submissionNotStarted: true, code: 'REFERENCE_IMAGES_REQUIRED' })
+        params.subjects = structuredClone(referenceState.subjects)
+        const style = rosterStyle(jobConfig, workflow)
+        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: 'atlascloud', style })
+      }
+      // 这里可以打日志（runtime 里能拿到 logger）
       const compileConfig = forceWorkflow
         ? { ...jobConfig, imageBackend: 'comfyui', comfyMode: 'workflow' }
         : (simpleBuild ? { ...jobConfig, overrideSteps: false } : jobConfig)
@@ -1417,6 +1480,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const onStage = traceStages ? (name, data) => traceStages.push({ name, data }) : null
       const compiled = workflow ? compileJob({ workflow, params, config: compileConfig, definitions: scopedDefs, onStage })
         : compileChannelJob({ params, config: jobConfig, definitions: scopedDefs, channel, onStage })
+      if (referenceState) compiled.positive = [compiled.positive, buildReferenceText(referenceState.references)].filter(Boolean).join('\n\n')
       if (traceStages) {
         const T = diag.text
         const at = { imageIndex: diagTrace.imageIndex }
@@ -1441,6 +1505,10 @@ function createRuntime(ctx, overrides, logger, deps) {
         channelEndpoint: channel ? channelEndpointOf(channel) : '', comfyEndpoint: endpointOf(jobConfig.comfyUrl),
         state: 'pending', percent: 0, seed: compiled.seed, createdAt: Date.now(), queryAt: 0, requestStarted: false,
         params: { ...params }, key, size: compiled.size, hits: compiled.hits,
+        generationMode, promptMode: compiled.promptMode,
+        referenceSnapshot: referenceState,
+        submissionTracked: channel?.provider === 'atlascloud',
+        submittedPrompt: channel?.provider === 'atlascloud' ? (compiled.promptMode === 'structured' ? combineStructuredPrompt(compiled.positive, compiled.negative) : [compiled.positive, compiled.negative ? 'Avoid: ' + compiled.negative : ''].filter(Boolean).join('\n\n')) : compiled.positive,
         characterSnapshot: rawParams?.characterSnapshot ? boundCharacterSnapshot(rawParams.characterSnapshot) : null,
         comfySimple: channel ? null : structuredClone(jobConfig.comfySimple ?? null),
         gameId: String(rawParams?.sessionId ?? ''), turn: Number(rawParams?.turn) || null, textVersion: String(rawParams?.textVersion ?? ''),
@@ -1570,7 +1638,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       return revised.slice(0, 12000)
     }
 
-    async function startReplacement({ sourceJobId, prompt, characters = [], negative, channelId, sessionId, turn, textVersion, acceptUncertain = false } = {}) {
+    async function startReplacement({ sourceJobId, prompt, characters = [], negative, channelId, sessionId, turn, textVersion, generationMode, refreshReferences = false, acceptUncertain = false } = {}) {
       const source = getJob(String(sourceJobId || ''))
       if (!source) throw Object.assign(new Error('找不到这张图片的源作业'), { submissionNotStarted: true })
       if (!acceptUncertain && (source.state === 'uncertain' || source.cancelMayHaveContinued
@@ -1578,6 +1646,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         throw Object.assign(new Error('原作业结果未知；请先检查生图平台，不能安全地重绘'), { code: 'UNCERTAIN', submissionNotStarted: true })
       }
       const jobConfig = replacementConfigFor(source, channelId)
+      const mode = generationMode ?? source.generationMode ?? source.params?.generationMode ?? 'text'
+      if (!['text', 'reference'].includes(mode)) throw Object.assign(new Error('生图模式无效'), { submissionNotStarted: true })
+      jobConfig.generationMode = mode
+      if (source.promptMode) jobConfig.promptMode = source.promptMode
+      const frozenReferences = mode === 'reference' && !refreshReferences ? source.referenceSnapshot : null
       const session = String(sessionId || '')
       const submitted = String(prompt ?? source.params?.rawTag ?? source.params?.tag ?? '')
       const hasStructuredPrompt = /<scene_composition|<character_\d/i.test(submitted)
@@ -1616,8 +1689,9 @@ function createRuntime(ctx, overrides, logger, deps) {
       let fresh
       try {
         fresh = await startJob({
-          tag: normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }),
-          rawTag,
+          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }),
+          rawTag, generationMode: mode,
+          subjects: refreshReferences && submitted !== (source.params?.rawTag ?? source.params?.tag) ? undefined : (source.params?.subjects?.length ? source.params.subjects : undefined),
           characters: characterSource,
           artist: source.params?.artist,
           artistPosition: source.params?.artistPosition,
@@ -1630,7 +1704,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           textVersion,
           sessionId: session, turn,
           key: 'media-replacement:' + randomUUID(),
-        }, { label: '单图重绘', jobConfig, forceWorkflow: workflow || null })
+        }, { label: '单图重绘', jobConfig, forceWorkflow: workflow || null, referenceSnapshot: frozenReferences })
       } catch (error) {
         if (error.requestMayHaveSucceeded !== true) error.submissionNotStarted = true
         throw error
@@ -1655,6 +1729,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       job.controller?.abort(new Error('用户停止此图片的本地等待'))
       job.state = 'cancelled'
       job.cancelMayHaveContinued = requestStarted || job.backend === 'comfyui'
+      job.requestMayHaveSucceeded = job.cancelMayHaveContinued
       job.error = job.cancelMayHaveContinued
         ? (job.backend === 'comfyui' ? '本地已停止追踪；ComfyUI 中已提交的任务仍可能继续生成' : '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用')
         : '已取消'
@@ -1925,6 +2000,8 @@ function createRuntime(ctx, overrides, logger, deps) {
       if (!provider || !model) throw new Error('规划用的模型没定：Tavern 设置里的「默认后台模型」是空的，或者在本插件设置里单独指定一个')
       const body = String(text ?? '').trim()
       if (!body) throw new Error('正文是空的')
+      const planningGenerationMode = config.generationMode === 'reference' ? 'reference' : 'text'
+      if (imageGeneration && planningGenerationMode === 'reference' && config.imageBackend !== 'atlascloud') throw new Error('参考图模式仅支持 atlas cloud；请切换渠道或明确改用文生图')
 
       const entries = await worldbook()
       const card = await currentCard(sessionId, turn)
@@ -1983,7 +2060,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const system = buildPlannerSystem({
         rules: plannerContext.staticRules, dynamicRules: plannerContext.dynamicRules,
         roster, rosterIndex: plannerContext.rosterIndex, count: want,
-        extra: [config.plannerExtra, guidance].filter(Boolean).join('\n\n'),
+        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped) : ''].filter(Boolean).join('\n\n'),
         smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode,
       })
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
@@ -2074,7 +2151,8 @@ function createRuntime(ctx, overrides, logger, deps) {
           submitChain = submitChain.then(async () => {
             task.controller.signal.throwIfAborted()
             if (submissionStopped || !imageGeneration || (smart && (!decisionFrozen || streamDecision !== 'draw' || streamConflict))) return
-            const key = ('plan|' + (manualBatch ? 'manual:' + manualBatch + '|' : '') + (messageId ?? '') + '|' + image.mount + '|' + promptIdentity).slice(0, 3800)
+            if (image.subjectsError) throw new Error(image.subjectsError)
+            const key = ('plan|' + planningGenerationMode + '|' + (manualBatch ? 'manual:' + manualBatch + '|' : '') + (messageId ?? '') + '|' + image.mount + '|' + promptIdentity).slice(0, 3800)
             const imageIndex = ++traceImageIndex
             const macros = traceId ? [] : null
             // 诊断里记录的「展开后、清理前」的场景提示词（以前引用了不存在的 expanded，开着诊断时每张图都提交失败）。
@@ -2084,8 +2162,10 @@ function createRuntime(ctx, overrides, logger, deps) {
               if (keep) expandedScene = expanded
               return normalizePrompts(expanded, scoped, { backend: config.imageBackend, style: rosterStyle(config, plannerWorkflow) })
             }
-            const normalizedTag = expandOne(sceneText, true)
-            const characters = planCharacters.map(item => ({ prompt: expandOne(item.prompt), centers: String(item.centers ?? '').trim(), uc: String(item.uc ?? '').trim() })).filter(item => item.prompt)
+            // Reference jobs must expand against the per-picture reference scope,
+            // not the full library here (which would reintroduce conflicting traits).
+            const normalizedTag = planningGenerationMode === 'reference' ? sceneText : expandOne(sceneText, true)
+            const characters = planCharacters.map(item => ({ prompt: planningGenerationMode === 'reference' ? item.prompt : expandOne(item.prompt), centers: String(item.centers ?? '').trim(), uc: String(item.uc ?? '').trim() })).filter(item => item.prompt)
             if (traceId) {
               const T = diag.text
               diag.record(traceId, 'image-adopted', { mount: T(image.mount), size: image.size ?? null, prompts: T(image.prompts), adoptedAtStreamChars: streamed.length }, { imageIndex })
@@ -2093,7 +2173,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             }
             const job = await startJob({
               tag: normalizedTag,
-              rawTag: sceneText, characters, size: image.size, key, sessionId, turn, textVersion, characterSnapshot: visualSnapshot,
+              rawTag: sceneText, characters, subjects: image.subjects, generationMode: planningGenerationMode, size: image.size, key, sessionId, turn, textVersion, characterSnapshot: visualSnapshot,
             }, { label: 'agent 规划', diagTrace: traceId ? { traceId, imageIndex } : null })
             if (traceId) diag.record(traceId, 'image-job', { jobId: job.id, status: job.status }, { imageIndex })
             // startJob 返回的是 publicJob，size 已经是 "896x1152" 这样的文字。
@@ -2108,7 +2188,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let failure = null
       try {
         const cached = reusePlan && !smart && !characterUpdates && messageId ? plansByMessage.get(String(messageId)) : null
-        if (cached?.plans?.length && !cached.error) {
+        if (cached?.plans?.length && !cached.error && (cached.generationMode ?? 'text') === planningGenerationMode && (!cached.promptMode || cached.promptMode === plannerMode)) {
           submitImages(cached.plans)
         } else result = await runPlanner(deps.llm, {
           provider,
@@ -2216,7 +2296,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         + (result.usage ? '（token ' + result.usage.inputTokens + '+' + result.usage.outputTokens + '）' : ''))
 
       const characterSnapshot = characterUpdates ? visualSnapshot : null
-      const plan = { messageId: String(messageId ?? ''), turn, at: Date.now(), plans, skipped, reason: parsed.reason, characterSnapshot, historyWarning, raw: plans.length ? '' : String(result.text || streamed).slice(0, 4000), card: card?.name ?? null }
+      const plan = { messageId: String(messageId ?? ''), turn, generationMode: planningGenerationMode, promptMode: plannerMode, at: Date.now(), plans, skipped, reason: parsed.reason, characterSnapshot, historyWarning, raw: plans.length ? '' : String(result.text || streamed).slice(0, 4000), card: card?.name ?? null }
       const warnings = characterWarnings()
       if (warnings.length) plan.characterWarnings = warnings
       if (failure) plan.error = String(failure?.message ?? failure)
@@ -2435,7 +2515,7 @@ function createRuntime(ctx, overrides, logger, deps) {
 
     function sweep() {
       if (jobs.size <= 200) return
-      const ordered = [...jobs.values()].filter(job => !['pending', 'running'].includes(job.state)).sort((a, b) => a.createdAt - b.createdAt)
+      const ordered = [...jobs.values()].filter(job => !['pending', 'running', 'uncertain'].includes(job.state) && !job.requestMayHaveSucceeded && !job.cancelMayHaveContinued && !(job.state === 'cancelled' && job.requestStarted === true)).sort((a, b) => a.createdAt - b.createdAt)
       for (const job of ordered.slice(0, jobs.size - 200)) {
         jobs.delete(job.id)
         if (job.key) byKey.delete(job.key)
@@ -2448,7 +2528,10 @@ function createRuntime(ctx, overrides, logger, deps) {
         comfyId: job.comfyId || '',
         queuePosition: job.queuePosition ?? 0, queuedCount: job.queuedCount ?? 0,
         seed: job.seed, workflow: job.workflowId, error: job.error ?? undefined, createdAt: job.createdAt,
-        backend: job.backend ?? 'comfyui', channelName: job.channelName ?? '',
+        backend: job.backend ?? 'comfyui', channelId: job.channelId ?? '', channelName: job.channelName ?? '',
+        generationMode: job.generationMode ?? 'text', promptMode: job.promptMode ?? '',
+        references: structuredClone(job.referenceSnapshot?.references ?? []),
+        positive: job.positive ?? '', negative: job.negative ?? '', submittedPrompt: job.submittedPrompt ?? job.positive ?? '',
         mediaType: job.mediaType ?? '', imageOutputWarning: job.imageOutputWarning ?? '',
         requestStarted: job.requestStarted === true,
         requestMayHaveSucceeded: job.requestMayHaveSucceeded === true,
@@ -2640,6 +2723,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         pluginDownloads: { ...PLUGIN_DOWNLOADS, local: `${BASE}/plugin-download` },
         config: {
           imageBackend: config.imageBackend,
+          generationMode: config.generationMode === 'reference' ? 'reference' : 'text',
           activeImageChannel: config.activeImageChannel,
           imageChannels: publicChannels(config.imageChannels),
           imageConcurrency: config.imageConcurrency,
@@ -2836,6 +2920,24 @@ function createRuntime(ctx, overrides, logger, deps) {
           else if (action === 'plugin-update-check') { await readBody(request, 4096); sendJson(response, 200, await updater.check()) }
           else { const body = await readBody(request, 4096); sendJson(response, 200, await updater.apply(body?.target)) }
         } catch (error) { sendJson(response, 400, { ok: false, error: error.message }) }
+        return
+      }
+      if (action === 'reference-image') {
+        try {
+          if (request.method === 'GET') {
+            const image = await referenceStore.readById(String(_url?.searchParams?.get('id') ?? ''))
+            response.writeHead(200, { 'content-type': image.mediaType, 'content-length': image.data.length, 'cache-control': 'private, max-age=1800', 'x-content-type-options': 'nosniff' })
+            response.end(image.data)
+          } else if (request.method === 'POST') {
+            const origin = request.headers.origin
+            if ((origin && origin !== _url.origin) || !String(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
+              sendJson(response, 403, { ok: false, error: '请从配图设置上传参考图' }); return
+            }
+            const input = await readBody(request, 44 * 1024 * 1024)
+            const referenceImage = await referenceStore.put({ data: input.data, mediaType: input.mediaType, name: input.name })
+            sendJson(response, 200, { ok: true, referenceImage })
+          } else sendJson(response, 405, { ok: false, error: 'method-not-allowed' })
+        } catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
         return
       }
       if (request.method === 'GET') {
@@ -3328,6 +3430,10 @@ function createRuntime(ctx, overrides, logger, deps) {
         const patch = body?.config ?? body ?? {}
         try { Object.assign(config, channelConfigPatch(config, patch)) }
         catch (error) { sendJson(response, 400, { ok: false, error: error.message }); return }
+        if (patch.generationMode !== undefined) {
+          if (!['text', 'reference'].includes(patch.generationMode)) { sendJson(response, 400, { ok: false, error: '生图模式无效' }); return }
+          config.generationMode = patch.generationMode
+        }
         if (patch.imageConcurrency !== undefined) config.imageConcurrency = Math.max(1, Math.min(4, Math.trunc(Number(patch.imageConcurrency)) || 2))
         for (const key of ['comfyUrl', 'defaultWorkflow', 'artistPosition', 'weightMode', 'negativeMode', 'styleArtists', 'imageSize', 'plannerProvider', 'plannerModel', 'plannerExtra', 'traitMode', 'visionProvider', 'visionModel', 'plannerEffort', 'visionEffort', 'comfyAuthMode', 'comfyAuthUser', 'promptManualPositive', 'promptManualNegative']) {
           if (typeof patch[key] === 'string') config[key] = key === 'comfyUrl' ? patch[key].replace(/\/+$/, '') : patch[key]
@@ -4149,30 +4255,13 @@ function createRuntime(ctx, overrides, logger, deps) {
           // 按原图所属的那局判断人物可用性，并沿用原图那一轮的人物状态（当前穿着、永久外貌变化）；
           // 尺寸、步数、CFG、画师串位置也跟原图一致。以前只带提示词和工作流：横图重画成竖图，
           // 宏里没写衣服的图按人物库默认穿着重画。
-          const session = String(src.gameId || body?.sessionId || lastSessionId || '')
-          const card = await currentCard(session)
-          const timeline = applyCharacterSnapshot(definitions, src.characterSnapshot)
-          const defs = { ...timeline, characters: (timeline.characters ?? []).filter(character => usableOnCard(character, card)) }
-          const askedRaw = String(body?.prompt ?? src.params?.rawTag ?? src.params?.tag ?? '')
-          const submitted = /<scene_composition|<character_\d/i.test(askedRaw) ? parsePromptsBlock(askedRaw) : null
-          const sceneRaw = submitted ? submitted.scene : askedRaw
-          const characterSource = submitted ? submitted.characters : src.params?.characters
-          const fresh = await startJob({
-            tag: normalizePrompts(expandRosterCalls(sceneRaw, defs, config.traitMode, { style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }), defs, { backend: config.imageBackend, style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }),
-            rawTag: sceneRaw,
-            characters: characterSource,
-            artist: src.params?.artist,
-            artistPosition: src.params?.artistPosition,
-            negative: String(body?.negative ?? src.params?.negative ?? ''),
-            size: src.params?.size,
-            steps: src.params?.steps,
-            cfg: src.params?.cfg,
-            model: src.workflowId,
-            ...(src.characterSnapshot ? { characterSnapshot: src.characterSnapshot } : {}),
-            ...(src.textVersion ? { textVersion: src.textVersion } : {}),
-            ...(session ? { sessionId: session } : {}),
-            ...(src.turn != null ? { turn: src.turn } : {}),
-          }, { label: '重画' })
+          const replacement = await startReplacement({
+            sourceJobId: src.id, prompt: body?.prompt, negative: body?.negative, channelId: body?.channelId,
+            generationMode: body?.generationMode, refreshReferences: body?.refreshReferences === true,
+            sessionId: String(src.gameId || body?.sessionId || lastSessionId || ''), turn: src.turn, textVersion: src.textVersion,
+            acceptUncertain: body?.confirmUncertain === true,
+          })
+          const fresh = getJob(replacement.jobId)
           logger.info?.('dsh-tavern-image: 重画 ' + src.id.slice(0, 8) + ' → ' + fresh.id.slice(0, 8))
           sendJson(response, 200, { ok: true, jobId: fresh.id, job: consoleJob(fresh) })
         } catch (error) {
@@ -4191,7 +4280,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           const provider = String(config.plannerProvider || fallback?.provider || '')
           const model = String(config.plannerModel || fallback?.model || '')
           if (!provider || !model) { sendJson(response, 400, { ok: false, error: '还没选规划用的模型，且 Tavern 设置里也没有「默认后台模型」（设置页 → 规划）' }); return }
-          const sectioned = resolvePromptMode(config, promptBackendContext(config, styleWorkflow())) === 'structured'
+          const sectioned = (src?.promptMode || resolvePromptMode(config, promptBackendContext(config, styleWorkflow()))) === 'structured'
           const system = [
             '你是绘图提示词编辑。',
             sectioned ? '保留中文分节结构、角色标识和参考图对应关系；只输出修改后的完整提示词，不要解释，不要添加画面任务节。' : '只输出修改后的英文 Tag 串，一行，不要解释、不要加引号、不要换行。',
@@ -4520,6 +4609,7 @@ async function loadConfig(overrides) {
   config.comfyUrl = String(config.comfyUrl || DEFAULTS.comfyUrl).replace(/\/+$/, '')
   config.comfyMode = config.comfyMode === 'simple' ? 'simple' : 'workflow'
   config.comfySimple = normalizeComfySimpleConfig(config.comfySimple)
+  config.generationMode = config.generationMode === 'reference' ? 'reference' : 'text'
   config.promptPresets = normalizePromptPresets(config.promptPresets)
   if (!['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode)) config.promptMode = 'auto'
   config.activePromptPreset = validPromptPresetId(config, String(config.activePromptPreset ?? '').slice(0, 80))
@@ -4558,6 +4648,7 @@ async function saveConfig(config) {
 
 function normalizeCharacter(raw, index) {
   const item = {
+    ...referenceFields(raw),
     id: String(raw?.id ?? `characters-${index + 1}`),
     enabled: raw?.enabled !== false,
     name: String(raw?.name ?? ''),
@@ -4584,6 +4675,7 @@ function normalizeCharacter(raw, index) {
   const outfits = Array.isArray(raw?.outfits) ? raw.outfits.slice() : []
   if (!outfits.length && raw?.outfit) outfits.push({ id: 'o1', name: '常服', body: String(raw.outfit), default: true })
   item.outfits = outfits.map((outfit, j) => ({
+    ...referenceFields(outfit),
     id: String(outfit?.id ?? `outfit-${index + 1}-${j + 1}`),
     name: String(outfit?.name ?? `服装 ${j + 1}`),
     upper: String(outfit?.upper ?? outfit?.body ?? ''),
@@ -5256,10 +5348,10 @@ function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBacke
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
     const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
     const prompt = normalizePrompts(style === 'structured' ? injected.text : applyWeights(injected.text, weightMode), scoped, { backend, style })
-    const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
+    const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(style === 'structured' ? '\n' : ', ')
     const normalizedUc = normalizePrompts(style === 'structured' ? uc : applyWeights(uc, weightMode), scoped, { backend, style })
     if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
-    const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
+    const cleaned = style === 'structured' ? { prompt, uc: normalizedUc } : dedupeCharacterNegativePriority(prompt, normalizedUc)
     return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }
   }).filter(item => item.prompt)
 }
@@ -5308,7 +5400,8 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const nsfw = NSFW_HINT.test(source)
   const back = BACK_VIEW.test(source)
   const full = FULL_FRAME.test(source)
-  const natural = options?.style === 'natural' || options?.style === 'structured'
+  const structured = options?.style === 'structured'
+  const natural = options?.style === 'natural' || structured
   // 规划原文（options.raw，带宏）去掉宏后判断是不是裸露画面。没有原文时只看 nsfw：
   // 这里的文字已经展开了人物外貌，外貌里的 medium breasts 之类会让每张图都被当成裸露画面。
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
@@ -5320,6 +5413,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const fingerprint = c => [c?.traits?.face, c?.traits?.faceBack].map(v => String(v ?? '').trim()).filter(v => v.length >= 12)
   const expanded = (definitions.characters ?? []).filter(c => c && c.enabled !== false && (
     ['the woman', 'the man', 'a character'].some(who => source.includes(label(c) + who + ' in this scene')) ||
+    (structured && source.includes(`人物“${c.name || splitTags(c.match)[0] || c.id}”：`)) ||
     fingerprint(c).some(f => source.includes(f))))
   // 人物的负面词作用于整张图：多人画面里 A 的「不要短发」会压掉 B 的短发。
   // 所以先按人收集，最后只在画面里只有一个库中人物时才用上。
@@ -5344,7 +5438,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
       continue
     }
     if (expanded.some(other => sameCharacterFamily(character, other))) continue
-    const keys = splitTags(character.match).length ? splitTags(character.match) : [character.name].filter(Boolean)
+    const keys = structured ? [character.name, character.id, ...splitTags(character.match)].filter(Boolean) : (splitTags(character.match).length ? splitTags(character.match) : [character.name].filter(Boolean))
     if (!keys.some(key => containsNameToken(source, key))) continue
     hits.push(character.name || character.id)
     // 露的画面（nsfw 或写着洗澡/裸体/内衣）不自动补衣服：既不补「当前穿着」，也不补常穿。
@@ -5358,7 +5452,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     // options.provenance：诊断用，记录每段注入文字来自哪个人物的哪个字段、作用于正向还是整图负向。
     if (Array.isArray(options?.provenance)) for (const origin of picked.origins ?? []) options.provenance.push({ stage: 'definition-injection', characterId: String(character.id ?? ''), characterName: String(character.name ?? ''), matchedBy: keys.find(key => key && source.includes(key)) ?? '', appliedScope: origin.channel === 'negative' ? 'whole-image-negative' : 'whole-image-positive', ...origin })
     if (natural) {
-      const phrase = boundCharacterPhrase(character, picked, [], recorded)
+      const phrase = boundCharacterPhrase(character, picked, [], recorded, options?.style)
       if (phrase && !source.includes(phrase)) added.push(phrase)
     } else {
       // tag 写法：这个人的外貌紧跟在她的名字后面插入，而不是堆到整段末尾。
@@ -5388,6 +5482,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const shown = tag => { const words = tag.toLowerCase().split(/\s+/).filter(Boolean); return words.length > 0 && chunks.some(chunk => words.every(w => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(chunk))) }
   if (personNegatives.length === 1 && families.length <= 1) {
     for (const raw of personNegatives[0]) {
+      if (structured) { negatives.push(raw); continue }
       for (const tag of splitTags(raw)) {
         const key = tag.toLowerCase()
         if (!key || negatives.includes(tag) || (!keepNegative && shown(tag))) continue
@@ -5398,7 +5493,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   for (const kind of ['settings', 'props']) {
     for (const def of definitions[kind] ?? []) {
       if (!def || def.enabled === false) continue
-      const keys = splitTags(def.match).length ? splitTags(def.match) : [def.name].filter(Boolean)
+      const keys = structured ? [def.name, def.id, ...splitTags(def.match)].filter(Boolean) : (splitTags(def.match).length ? splitTags(def.match) : [def.name].filter(Boolean))
       if (!keys.some(key => containsNameToken(source, key))) continue
       hits.push(def.name || def.id)
       for (const field of DEFINITION_KINDS[kind].fields) {
@@ -5408,6 +5503,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
         if (DEFAULT_OFF_FIELDS.has(field) && enabled !== true) continue
         const value = String(def[field] ?? '').trim()
         if (!value) continue
+        if (structured) { added.push(value); continue }
         for (const tag of splitTags(value)) {
           const key = tag.toLowerCase()
           if (!key || have.has(key)) continue
@@ -5427,6 +5523,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     else segments.splice(at + 1, 0, ' ' + tags.join(', '))
   }
   const placedText = segments.join(',')
+  if (structured) return { text: [source, ...added].filter(Boolean).join('\n\n'), hits, negatives }
   return { text: added.length ? `${placedText}, ${added.join(', ')}` : placedText, hits, negatives }
 }
 

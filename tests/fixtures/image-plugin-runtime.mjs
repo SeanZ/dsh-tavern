@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { Readable } from 'node:stream'
 
 export const IMAGE_PLUGIN_SOURCE = new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/', import.meta.url)
-export const IMAGE_PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c40000000049454e44ae426082', 'hex')
+export const IMAGE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg==', 'base64')
 export const imageJson = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
 
 /** Real plugin routes and on-disk state, only the external services are mocked. */
