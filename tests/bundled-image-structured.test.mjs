@@ -6,7 +6,7 @@ import {
   appendStructuredSection, composeStructuredPrompt, combineStructuredPrompt,
 } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/prompt-presets.js'
 import {
-  normalizePrompts, parseImagePlan, parsePromptsBlock, buildPlannerSystem, characterRoster,
+  normalizePrompts, parseImagePlan, parsePromptsBlock, preserveCharacterMetadata, buildPlannerSystem, characterRoster,
 } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/planner.js'
 import { selectPlannerContext } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/planner-context.js'
 
@@ -107,6 +107,39 @@ test('subjects is optional metadata: omitted and empty lists remain distinct wit
   const nested = parseImagePlan('<image><prompts>' + prose + '<subjects>[{"name":"旅人"}]</subjects></prompts></image>')[0]
   assert.equal(nested.prompts, prose)
   assert.deepEqual(nested.subjects, [{ name: '旅人' }])
+})
+
+test('subjects-only prompts do not turn metadata into an image scene, while opaque model tokens survive', () => {
+  const subjects = '<subjects>[{"characterId":"lin"}]</subjects>'
+  for (const prompt of [subjects, '<scene_composition>' + subjects + '</scene_composition>']) {
+    assert.deepEqual(parsePromptsBlock(prompt), { scene: '', characters: [] })
+    assert.deepEqual(parseImagePlan('<image><regex>林月回头。</regex><prompts>' + prompt + '</prompts></image>'), [])
+  }
+  const token = '<lora:visual-detail:0.8>'
+  assert.equal(parsePromptsBlock(token + subjects).scene, token, 'legacy standalone model tokens still use the cleaned fallback')
+  const character = '<character_1><prompt>【人物】\n林月回头。</prompt></character_1>'
+  const image = parseImagePlan('<image><prompts>' + subjects + character + '</prompts></image>')[0]
+  assert.equal(image.prompts, '')
+  assert.equal(image.characters[0].prompt, '【人物】\n林月回头。', 'a real per-character prompt remains sufficient without a scene block')
+})
+
+test('nested subjects are stripped from explicit scenes and character/revision paths without flattening prose', () => {
+  const subjects = '<subjects>[{"characterId":"lin"}]</subjects>'
+  const scene = '<scene_composition>' + prose + subjects + '</scene_composition>'
+  const parsed = parseImagePlan('<image><prompts>' + scene + '</prompts></image>')[0]
+  assert.equal(parsed.prompts, prose)
+  assert.deepEqual(parsed.subjects, [{ characterId: 'lin' }])
+  assert.equal(parsePromptsBlock(scene).scene, prose)
+  const caption = '【身份】\n林月\n\n【动作】\n回头。'
+  const characters = '<character_1><prompt>' + caption + subjects + '</prompt><centers>0.5,0.5</centers></character_1>'
+  assert.equal(parsePromptsBlock(characters).characters[0].prompt, caption)
+  const original = '<scene_composition>' + prose + '</scene_composition>' + characters
+  const revised = preserveCharacterMetadata(original, '<scene_composition>【动作】\n举伞。</scene_composition>' + characters)
+  assert.doesNotMatch(revised, /subjects|characterId/)
+  assert.equal(parsePromptsBlock(revised).characters[0].prompt, caption)
+  assert.equal(parsePromptsBlock(revised).characters[0].centers, '0.5,0.5')
+  const plainRevision = preserveCharacterMetadata(original, '【动作】\n举伞。' + subjects)
+  assert.doesNotMatch(plainRevision, /subjects|characterId/)
 })
 
 test('malformed, duplicate or incomplete subjects return explicit errors rather than a silent macro fallback', () => {

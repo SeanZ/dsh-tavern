@@ -190,6 +190,64 @@ test('explicit subjects support mixed missing character/outfit images in request
   assert.deepEqual(resolveImageReferences({ definitions: defs, subjects: [{ characterId: 'bob', outfitId: 'plain' }] }).references, [])
 })
 
+test('all public store operations redact native filesystem errors while preserving domain failures', async t => {
+  const { root } = await tempStore(t)
+  const blocked = join(root, 'private-reference-root-is-a-file')
+  await writeFile(blocked, 'not a directory')
+  const store = createReferenceImageStore(blocked)
+  for (const operation of [() => store.put(upload()), () => store.read(image()), () => store.readById(image().id)]) {
+    await assert.rejects(operation, error => {
+      assert.equal(error.code, 'REFERENCE_STORAGE_UNAVAILABLE')
+      assert.equal(error.submissionNotStarted, true)
+      assert.match(error.message, /^本地参考图存储不可用（E[A-Z0-9_]+）$/)
+      assert.ok(!error.message.includes(root))
+      assert.ok(!error.message.includes('private-reference-root-is-a-file'))
+      assert.equal(error.path, undefined)
+      assert.equal(error.cause, undefined)
+      return true
+    })
+  }
+  await assert.rejects(() => store.put({ data: 'invalid' }), code('REFERENCE_UPLOAD_INVALID'))
+  await assert.rejects(() => store.read({ path: blocked }), code('REFERENCE_DESCRIPTOR_INVALID'))
+  await assert.rejects(() => store.readById(blocked), code('REFERENCE_DESCRIPTOR_INVALID'))
+})
+
+test('explicit name-only subjects stay textual alongside pictured people and survive snapshot scoping', async () => {
+  const { parseImagePlan } = await import('../tavern-plugin/packages/dsh-tavern-image-bundled/lib/planner.js')
+  const { compileChannelJob } = await import('../tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js')
+  const defs = definitions()
+  const raw = '【人物】\nAlice 与陌生旅人。旅人戴着紫色帽子。\n\n【动作】\n在窗边交谈。'
+  const parsed = parseImagePlan('<image><prompts>' + raw + '</prompts><subjects>[{"characterId":"alice"},{"name":"陌生旅人"}]</subjects></image>')[0]
+  assert.equal(parsed.subjectsError, undefined)
+  const result = resolveImageReferences({ definitions: defs, subjects: parsed.subjects, text: parsed.prompts })
+  assert.deepEqual(result.subjects, [{ characterId: 'alice', outfitId: '' }, { name: '陌生旅人' }])
+  assert.deepEqual(result.references.map(ref => ref.characterId), ['alice'])
+  const scoped = referenceScopedDefinitions(defs, result.references, { subjects: result.subjects })
+  assert.deepEqual(scoped.characters.map(person => person.id), ['alice'], 'never invent a library entry or default outfit for an unknown person')
+  const compiled = compileChannelJob({ params: { tag: raw, rawTag: raw }, config: { imageBackend: 'atlascloud', promptMode: 'structured' }, definitions: scoped, channel: { provider: 'atlascloud' } })
+  assert.match(compiled.positive, /陌生旅人。旅人戴着紫色帽子/)
+  assert.equal(resolveImageReferences({ definitions: defs, subjects: [{ name: 'Alice' }] }).references.length, 0, 'name-only does not implicitly bind a similarly named library person')
+  assert.throws(() => resolveImageReferences({ definitions: defs, subjects: [{ characterId: 'missing', name: '陌生旅人' }] }), code('REFERENCE_ID_UNKNOWN'))
+  for (const subject of [{ name: '' }, { name: 42 }, { characterId: null, name: '旅人' }]) {
+    assert.throws(() => resolveImageReferences({ definitions: defs, subjects: [subject] }), code('REFERENCE_SUBJECT_INVALID'))
+  }
+})
+
+test('an unknown named person can wear a shared referenced costume without borrowing a library identity', () => {
+  const defs = definitions()
+  const result = resolveImageReferences({ definitions: defs, subjects: [{ name: '旅人', outfitId: 'shared-robe' }] })
+  assert.deepEqual(result.subjects, [{ name: '旅人', outfitId: 'shared-robe' }])
+  assert.equal(result.references.length, 1)
+  assert.equal(result.references[0].kind, 'outfit')
+  assert.equal(result.references[0].characterId, undefined)
+  assert.match(result.references[0].label, /旅人（未建库人物）/)
+  const scoped = referenceScopedDefinitions(defs, result.references, { subjects: result.subjects })
+  assert.deepEqual(scoped.characters, [])
+  assert.equal(scoped.outfits[0].id, 'shared-robe')
+  assert.match(buildReferenceText(result.references), /旅人/)
+  assert.throws(() => resolveImageReferences({ definitions: defs, subjects: [{ name: '旅人', outfitId: 'coat' }] }), code('REFERENCE_ID_UNKNOWN'), 'owned costumes do not become shared')
+})
+
 test('explicit empty subjects and empty or omitted outfit IDs never trigger fallback outfits', () => {
   const defs = definitions()
   assert.deepEqual(resolveImageReferences({ definitions: defs, text: macro({ name: 'Alice', outfit: 'Blue Coat' }), subjects: [] }), { references: [], subjects: [] })
@@ -360,6 +418,33 @@ test('scoped shared clothing is available to selected person without copying mod
   assert.match(scoped.characters[0].outfits[0].upper, /外观参照图1/)
   assert.equal(scoped.characters[0].outfits[0].full, undefined)
   assert.equal(scoped.outfits[0].body, scoped.characters[0].outfits[0].upper)
+})
+
+test('text-only shared costumes expose descriptions to planning and map body/back fields into actual compilation', async () => {
+  const { compileChannelJob, expandRosterCalls } = await import('../tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js')
+  const defs = definitions()
+  defs.outfits[0].referenceImage = null
+  defs.outfits[0].full = ''
+  defs.outfits[0].bodyBack = 'silver back clasp'
+  defs.outfits[0].fullBack = 'embroidered back hem'
+  const original = structuredClone(defs)
+  const guidance = referencePlannerGuidance(defs)
+  assert.match(guidance, /"shared":true.*"description":.*silver silk robe/)
+  assert.match(guidance, /silver back clasp/)
+  const result = resolveImageReferences({ definitions: defs, subjects: [{ characterId: 'alice', outfitId: 'shared-robe' }] })
+  assert.equal(result.references.length, 1, 'the missing costume image does not prevent use of the person image')
+  const scoped = referenceScopedDefinitions(defs, result.references, { subjects: result.subjects })
+  assert.equal(scoped.characters[0].outfits[0].upper, 'silver silk robe')
+  assert.equal(scoped.characters[0].outfits[0].back, 'silver back clasp\nembroidered back hem')
+  assert.equal(scoped.outfits[0].upper, 'silver silk robe', 'standalone shared macros need the same schema bridge')
+  const raw = '【人物】\nAlice。\n\n【动作】\n站在窗前。'
+  const compiled = compileChannelJob({ params: { tag: raw, rawTag: raw }, config: { imageBackend: 'atlascloud', promptMode: 'structured' }, definitions: scoped, channel: { provider: 'atlascloud' } })
+  assert.match(compiled.positive, /silver silk robe/)
+  assert.doesNotMatch(compiled.positive, /dark blue wool coat|Old Dress/)
+  assert.match(expandRosterCalls(macro({ name: 'Moon Robe' }), scoped, 'default', { style: 'structured' }), /silver silk robe/)
+  assert.deepEqual(defs, original)
+  defs.outfits[0].referenceImage = image()
+  assert.doesNotMatch(referencePlannerGuidance(defs), /silver silk robe|silver back clasp|embroidered back hem/, 'pictured shared clothes use the image and consistency text, not a duplicate fixed-description dump')
 })
 
 test('reference text binds each numbered object, explains role boundaries and preserves user supplements', () => {

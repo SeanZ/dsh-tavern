@@ -92,10 +92,15 @@ function collectCharacterBlocks(chunk) {
 
 // Keep paragraph breaks and indentation: prompts can be structured Chinese prose,
 // not only a comma-delimited tag list. Subjects metadata is never image prompt text.
-const promptBody = text => String(text).replace(/<subjects\b[^>]*>[\s\S]*?<\/subjects>/gi, '')
-  .replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').trim()
+const stripSubjectBlocks = text => String(text).replace(/<subjects\b[^>]*>[\s\S]*?<\/subjects\s*>/gi, '')
+const promptBody = text => stripSubjectBlocks(text).replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').trim()
 
 function splitPromptsBlock(rawPrompts, wholeBlock = rawPrompts) {
+  // Remove routing metadata before every path, including explicit scene and
+  // character captions. The fallback may preserve opaque LoRA tokens, never
+  // resurrect subjects JSON that was just stripped from the visible scene.
+  rawPrompts = stripSubjectBlocks(rawPrompts)
+  wholeBlock = stripSubjectBlocks(wholeBlock)
   const inPrompts = collectCharacterBlocks(rawPrompts)
   const inWhole = collectCharacterBlocks(wholeBlock)
   // Inner blocks are a subset of the outer set; dedupe by order and content.
@@ -107,7 +112,7 @@ function splitPromptsBlock(rawPrompts, wholeBlock = rawPrompts) {
       ? promptBody(String(rawPrompts).replace(CHARACTER_BLOCK_RE, ' '))
       : promptBody(rawPrompts)
   } else if (!scene) {
-    scene = promptBody(rawPrompts) || String(rawPrompts)
+    scene = promptBody(rawPrompts) || String(rawPrompts).replace(/<\/?scene_composition\b[^>]*>/gi, '').trim()
   }
   return { scene, characters }
 }
@@ -136,11 +141,11 @@ export function formatPromptsBlock(scene, characters) {
 /** Merge a model's edited structure with original per-character metadata. */
 export function preserveCharacterMetadata(originalText, revisedText, fallbackCharacters = []) {
   const before = parsePromptsBlock(originalText)
-  const revised = String(revisedText ?? '')
+  const revised = stripSubjectBlocks(revisedText ?? '')
   const after = /<scene_composition|<character_\d/i.test(revised)
     ? parsePromptsBlock(revised)
     : { scene: revised.replace(/<[^>]+>/g, '').trim(), characters: [] }
-  const numberedBlocks = text => [...String(text ?? '').matchAll(CHARACTER_BLOCK_RE)]
+  const numberedBlocks = text => [...stripSubjectBlocks(text ?? '').matchAll(CHARACTER_BLOCK_RE)]
     .filter(hit => tagInner(hit[2], 'prompt'))
     .map(hit => ({ number: Number(hit[1]), prompt: tagInner(hit[2], 'prompt'), centers: tagInner(hit[2], 'centers') || tagInner(hit[2], 'center'), uc: tagInner(hit[2], 'uc') || tagInner(hit[2], 'negative') }))
   const originalByNumber = new Map(numberedBlocks(originalText).map(item => [item.number, item]))
@@ -208,6 +213,7 @@ export function parseImagePlan(text) {
     const rawPrompts = pick('prompts', 'prompt') || pick('scene_composition')
     if (!rawPrompts) continue
     const { scene, characters } = splitPromptsBlock(rawPrompts, body)
+    if (!scene.trim() && !characters.length) continue
     images.push({
       mount: pick('regex', '挂载文本', 'regex_mount'),
       title: pick('title_styled', 'title'),

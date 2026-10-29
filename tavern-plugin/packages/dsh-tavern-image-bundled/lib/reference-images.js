@@ -267,7 +267,17 @@ export function createReferenceImageStore(root, { maxBytes = DEFAULT_MAX_BYTES }
     await pending
     return { ...descriptor }
   }
-  return { put, read, readById }
+  // Native filesystem errors include absolute paths in their messages. Public
+  // store operations must expose only stable domain errors or a safe errno.
+  const ioGuard = operation => async (...args) => {
+    try { return await operation(...args) }
+    catch (error) {
+      if (typeof error?.code === 'string' && /^REFERENCE_[A-Z0-9_]+$/.test(error.code)) throw error
+      const errno = typeof error?.code === 'string' && /^E[A-Z0-9_]{1,47}$/.test(error.code) ? error.code : 'IO_ERROR'
+      throw fail('REFERENCE_STORAGE_UNAVAILABLE', '本地参考图存储不可用（' + errno + '）')
+    }
+  }
+  return { put: ioGuard(put), read: ioGuard(read), readById: ioGuard(readById) }
 }
 
 const arr = value => Array.isArray(value) ? value : []
@@ -329,16 +339,25 @@ function normalizeSubjects(input, lib) {
   const result = [], seen = new Map()
   for (const entry of input) {
     if (!record(entry)) throw fail('REFERENCE_SUBJECT_INVALID', 'subjects 中每项必须是角色对象')
-    const person = personById(lib, entry.characterId)
     if (entry.outfitId !== undefined && typeof entry.outfitId !== 'string') throw fail('REFERENCE_SUBJECT_INVALID', 'outfitId 必须是精确 ID 或空字符串')
     const outfitId = entry.outfitId?.trim() || ''
+    // An explicit name-only subject is an unregistered, text-described person,
+    // not a malformed library ID. Never guess a matching character from its name.
+    const unnamedId = !own(entry, 'characterId') || entry.characterId === ''
+    const name = cleanText(entry.name)
+    if (unnamedId && !name) throw fail('REFERENCE_SUBJECT_INVALID', '未建库主体需要有效 name，已知人物需要 characterId')
+    const person = unnamedId ? null : personById(lib, entry.characterId)
+    // Name-only subjects may select a shared costume, never another person's
+    // owned costume. Their description stays in the prompt and in the snapshot.
     const outfit = outfitId ? outfitById(lib, person, outfitId) : null
-    const subject = { characterId: idOf(person), outfitId }
-    if (seen.has(subject.characterId)) {
-      if (seen.get(subject.characterId).outfitId !== outfitId) throw fail('REFERENCE_SUBJECT_CONFLICT', '同一画面给角色指定了不同服装：' + subject.characterId)
+    const subject = person ? { characterId: idOf(person), outfitId }
+      : { name, ...(own(entry, 'outfitId') ? { outfitId } : {}) }
+    const identity = JSON.stringify(person ? ['character', subject.characterId] : ['text', name])
+    if (seen.has(identity)) {
+      if ((seen.get(identity).outfitId || '') !== outfitId) throw fail('REFERENCE_SUBJECT_CONFLICT', '同一画面给角色指定了不同服装：' + (subject.characterId || name))
       continue
     }
-    seen.set(subject.characterId, subject)
+    seen.set(identity, subject)
     result.push({ person, outfit, subject, position: result.length * 2, outfitPosition: result.length * 2 + 1 })
   }
   return result
@@ -472,8 +491,9 @@ export function resolveImageReferences({ text = '', characters = [], subjects, d
   const { rows, extra } = subjects === undefined ? legacySubjects(source, lib) : { rows: normalizeSubjects(subjects, lib), extra: [] }
   const candidates = []
   for (const row of rows) {
-    candidates.push({ kind: 'character', item: row.person, person: row.person, position: row.position })
-    if (row.outfit) candidates.push({ kind: 'outfit', item: row.outfit.item, person: row.outfit.owner, wearer: row.person, position: row.outfitPosition })
+    if (row.person) candidates.push({ kind: 'character', item: row.person, person: row.person, position: row.position })
+    if (row.outfit) candidates.push({ kind: 'outfit', item: row.outfit.item, person: row.outfit.owner,
+      wearer: row.person || (row.subject?.name ? { name: row.subject.name } : null), position: row.outfitPosition })
   }
   for (const row of extra) candidates.push({ kind: 'outfit', item: row.outfit.item, person: row.outfit.owner, position: row.position })
   candidates.sort((a, b) => a.position - b.position)
@@ -494,7 +514,7 @@ export function resolveImageReferences({ text = '', characters = [], subjects, d
       references.push(reference); saved = { reference, label, wearers: new Set() }; seen.set(key, saved)
     }
     if (entry.kind === 'outfit' && !entry.person && entry.wearer) {
-      saved.wearers.add(displayName(entry.wearer) + ' [characterId=' + idOf(entry.wearer) + ']')
+      saved.wearers.add(displayName(entry.wearer) + (idOf(entry.wearer) ? ' [characterId=' + idOf(entry.wearer) + ']' : '（未建库人物）'))
       saved.reference.label = saved.label + '（本图穿着者：' + [...saved.wearers].join('、') + '）'
     }
   }
@@ -534,7 +554,7 @@ export function referencePlannerGuidance(definitions = {}) {
   const lines = ['【参考图模式规划规则】',
     '只为当前这张 image 中实际出现的人物选择参考图，不得把整个图库或仅在正文被提及但不出镜的人物传入。',
     '每个 <image> 内必须输出一次 <subjects>JSON数组</subjects>，例如 <subjects>[{"characterId":"精确角色ID","outfitId":"当刻精确服装ID或空字符串"}]</subjects>。ID 必须从下列清单原样复制，不使用姓名代替 ID，不猜测 ID。无人时输出 []。',
-    '同一角色仅列一次。outfitId 必须对应该角色在这一张画面、这一时刻实际穿的服装；未指定图库服装、裸露、衣物不可见或用纯文字描述衣物时填 ""，不要因此补常穿。未知或未建库人物直接写在画面描述中，不编造 characterId。',
+    '同一角色仅列一次。outfitId 必须对应该角色在这一张画面、这一时刻实际穿的服装；未指定图库服装、裸露、衣物不可见或用纯文字描述衣物时填 ""，不要因此补常穿。未知或未建库人物保留在画面描述中，可在 subjects 中写 {"name":"该人物名称"}，不要编造 characterId；若穿通用服装，可另外填写该通用服装的 outfitId。',
     '服装可以只用文字描述，不必从图库挑一套；当前剧情明确的衣着、状态变化优先，脱下、拿在手中或放在一旁的衣服不作为正在穿着的服装。',
     '有图对象以图片及其一致性补充约束固定外观，不再完整堆叠它的固定 traits 或服装标签；缺图对象继续使用完整文字描述。角色图不继承服装、姿势或背景，服装图不继承模特身份；动作和场景依据当前剧情。',
     '后台插件会按实际上传顺序绑定参考图编号，不要自行猜测编号。若整张图没有任何可用参考图，后端会暂停并提示，不自动退回纯文生图。',
@@ -551,7 +571,13 @@ export function referencePlannerGuidance(definitions = {}) {
   for (const entry of lib.outfits.filter(entry => !entry.owner)) {
     const id = requireId(idOf(entry.item), 'outfitId')
     unique(lib.outfits.filter(item => !item.owner && idOf(item.item) === id), '通用服装=' + id, true)
-    lines.push(JSON.stringify({ shared: true, outfitId: id, name: displayName(entry.item), referenceImage: referenceOf(entry.item) ? '有图' : '无图', consistencyText: normalizeConsistencyText(entry.item.consistencyText) }))
+    const image = referenceOf(entry.item)
+    // Shared costumes are not part of characterRoster. With no image, the
+    // planner needs their actual description, not just an ID and a short name.
+    const description = Object.fromEntries(['body', 'full', 'bodyBack', 'fullBack', 'upper', 'lower', 'shoes', 'accessory', 'back', 'negative']
+      .map(key => [key, cleanText(entry.item[key])]).filter(([, value]) => value))
+    lines.push(JSON.stringify({ shared: true, outfitId: id, name: displayName(entry.item), referenceImage: image ? '有图' : '无图',
+      consistencyText: normalizeConsistencyText(entry.item.consistencyText), ...(!image && Object.keys(description).length ? { description } : {}) }))
   }
   return lines.join('\n')
 }
@@ -565,6 +591,17 @@ export function referencePlannerGuidance(definitions = {}) {
 export function referenceScopedDefinitions(definitions = {}, references = [], { subjects } = {}) {
   const result = structuredClone(definitions)
   const checked = checkedReferences(references)
+  // Shared clothes use the legacy body/full/bodyBack/fullBack schema. They
+  // also enter per-character expansion below, whose schema is upper/full/back.
+  // Map on the clone (including standalone shared macros), keeping author data
+  // untouched. Pictured costumes will subsequently have all these fields erased.
+  for (const outfit of arr(result.outfits).filter(enabled)) {
+    if (!cleanText(outfit.upper) && cleanText(outfit.body)) outfit.upper = outfit.body
+    if (!cleanText(outfit.back)) {
+      const back = [outfit.bodyBack, outfit.fullBack].map(cleanText).filter(Boolean).join('\n')
+      if (back) outfit.back = back
+    }
+  }
   const original = catalog(result)
   const characterRefs = new Map(checked.filter(ref => ref.kind === 'character').map(ref => [ref.characterId, ref]))
   const outfitRefs = new Map(checked.filter(ref => ref.kind === 'outfit').map(ref => [JSON.stringify([ref.characterId || '', ref.outfitId]), ref]))
@@ -593,7 +630,7 @@ export function referenceScopedDefinitions(definitions = {}, references = [], { 
   }
   if (subjects !== undefined) {
     const selected = normalizeSubjects(subjects, original)
-    result.characters = selected.map(({ person, outfit }) => {
+    result.characters = selected.filter(row => row.person).map(({ person, outfit }) => {
       // No unselected default/previous costume may be pulled back in by old macros.
       delete person.current
       person.outfits = outfit ? [{ ...structuredClone(outfit.item), default: true }] : []
