@@ -1285,3 +1285,32 @@ test('插件成员：注册后任务可以挂上去，在它的常驻会话里�
   await tick()
   assert.ok(!listMembers().some(member => member.id === 'plugin:npc-plugin:luna'))
 })
+
+test('tavern.on：插件挂到事件表上，出现在触发关系里；别的卡自带的插件不触发；出错只记错误', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  let cards = ['cards/other.json']
+  const h = await harness(t, { storyEvents, data: { readSettings: async () => ({ disabled: [] }), updateSettings: async () => {} },
+    cardScope: async () => new Map([['npc-plugin', { cards }]]), cardPathOf: async () => 'cards/this.json' })
+  const heard = []
+  let tavern
+  cards = ['cards/this.json']
+  await h.root.plugin({ name: 'npc-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.on('reply-committed', payload => { heard.push(payload) })
+    ctx.tavern.on('turn-discarded', () => { throw new Error('坏了') })
+  } })
+  await tick()
+  assert.throws(() => tavern.on('whenever', () => {}), /event 只能是/)
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'reply-committed').followers, ['插件「npc-plugin」'])
+  storyEvents.emit('reply-committed', { sessionId: 'game-1' })
+  storyEvents.emit('turn-discarded', { sessionId: 'game-1', turn: 4 })
+  await tick()
+  assert.deepEqual(heard, [{ event: 'reply-committed', gameId: 'game-1' }])
+  assert.match(h.errors()[0].message, /坏了/)
+  // A card plugin of another card stays out of this game.
+  cards = ['cards/other.json']
+  storyEvents.emit('reply-committed', { sessionId: 'game-1' })
+  await tick()
+  assert.equal(heard.length, 1, 'another card\'s plugin: not heard')
+})

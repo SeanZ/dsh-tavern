@@ -45,6 +45,9 @@ const MAX_PACK_FILES = 5000
 const NATIVE_CARD_EXTENSIONS = new Set(['.png', '.json', '.charx', '.dshcard'])
 const CARD_EXTENSION = /^\.[a-z0-9][a-z0-9._-]{0,19}$/
 
+// Story moments plugins may follow (domain/story-events.js).
+const PLUGIN_STORY_EVENTS = Object.freeze({ 'reply-committed': '正文写完', 'turn-settled': '本轮结算完', 'turn-discarded': '回合作废' })
+
 function ownerOf(service) {
   const ctx = service && service.ctx
   const fiber = ctx && (ctx[Symbol.for('cordis.shadow')] ? Object.getPrototypeOf(ctx) : ctx).fiber
@@ -290,6 +293,21 @@ export function createTavernPluginApi(deps) {
       if (typeof handler !== 'function') throw new TypeError('onTurnSettled 需要一个函数')
       const entry = { owner: ownerOf(this), handler }
       return owned(this, () => { settledHandlers.add(entry); return () => settledHandlers.delete(entry) }, 'tavern.onTurnSettled()')
+    },
+
+    // A story moment of the event table (正文写完 / 本轮结算完 / 回合作废): the handler is listed
+    // there as this plugin's, and hears { event, gameId, turn? } in the games that have it on.
+    on(event, handler) {
+      const owner = ownerOf(this)
+      if (!Object.hasOwn(PLUGIN_STORY_EVENTS, event)) throw new Error('event 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、'))
+      if (typeof handler !== 'function') throw new TypeError('tavern.on() 需要一个函数')
+      if (!deps.storyEvents) throw new Error('当前酒馆不支持剧情事件')
+      return owned(this, () => deps.storyEvents.on(event, '插件「' + owner + '」', async payload => {
+        const gameId = String(payload?.sessionId || payload?.latest?.sessionId || '')
+        if (!gameId || (await choicesFor(gameId)).disabled.has(owner)) return
+        try { await bounded(handler({ event, gameId, ...(Number.isSafeInteger(payload?.turn) ? { turn: payload.turn } : {}) }), 'tavern.on(' + event + ')') }
+        catch (error) { recordError(gameId, owner, '剧情事件 ' + PLUGIN_STORY_EVENTS[event], error) }
+      }), 'tavern.on()')
     },
 
     onGameRemoved(handler) {
