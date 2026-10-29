@@ -19,7 +19,8 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                     const profile = await rpc("getUserPreferenceProfile", { globalDefaults: true });
                     setData(current => ({ ...current, profile: profile.userProfile }));
                 } else setData(current => ({ ...current, ...result.settings.defaultPlaySettings }));
-                setMessage("已保存，新游戏继承此设置，已有游戏保持不变。");
+                if (patch && Object.hasOwn(patch, "statusBarPlacement")) { notifySettingsChanged(); setMessage("已保存，所有对局使用此状态栏位置。"); }
+                else setMessage("已保存，新游戏继承此设置，已有游戏保持不变。");
             } catch (err) { setMessage("保存失败：" + err.message); }
             finally { setBusy(false); }
         }
@@ -32,12 +33,12 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
         return h("div", { className: "dsh-tavern-settings-section dsh-local-settings dsh-tavern-global-defaults" },
             h("section", { className: "dsh-local-section" }, h("h3", null, "游玩"),
                 h("label", { className: "dsh-local-field" }, "默认玩家称呼", h("input", { key: data?.playerName, defaultValue: data?.playerName || "", disabled, maxLength: 80, onBlur: event => { if (event.target.value !== data.playerName) save({ playerName: event.target.value }); } })),
-                h("label", { className: "dsh-local-field" }, "默认状态栏位置", h("select", { disabled, value: data?.statusBarPlacement || "sidebar", onChange: event => save({ statusBarPlacement: event.target.value }) }, h("option", { value: "sidebar" }, "侧边栏"), h("option", { value: "body" }, "正文下方"))),
+                h("label", { className: "dsh-local-field" }, "状态栏位置（所有对局）", h("select", { "aria-label": "状态栏位置（所有对局）", disabled, value: data?.statusBarPlacement || "sidebar", onChange: event => save({ statusBarPlacement: event.target.value }) }, h("option", { value: "sidebar" }, "侧边栏"), h("option", { value: "body" }, "正文下方"))),
                 h("label", { className: "dsh-local-field" }, "默认预设", h("select", { disabled, value: data?.preset || "", onChange: event => save(null, "selectPreset", { path: event.target.value }) }, h("option", { value: "" }, "不使用酒馆预设"), (data?.presets || []).filter(item => item.valid && item.recognized).map(item => h("option", { key: item.path, value: item.path }, item.title)))),
                 h("label", { className: "dsh-local-field" }, "默认长期偏好", h("select", { disabled, value: data?.profile.defaultProfileId || "", onChange: event => save(null, "manageUserPreferenceProfile", { action: "default", profileId: event.target.value }) }, h("option", { value: "" }, "不启用"), (data?.profile.profiles || []).filter(item => item.hasConfirmed).map(item => h("option", { key: item.id, value: item.id }, item.name))))),
             // Same names and order as 功能 in 本局设置, where each game changes them later.
             h("section", { className: "dsh-local-section" }, h("h3", null, "功能"),
-                toggle("variables", "变量结算", "MVU 卡建议开启；普通卡不执行此任务。", true), toggle("posture", "人物姿势", "总结本轮结束时人物的位置、动作和姿势。", true),
+                toggle("posture", "人物姿势", "总结本轮结束时人物的位置、动作和姿势。", true),
                 toggle("styleReference", "文风联想", "仅自由模式。前台写正文前，结合本轮场景联想一段笔调参考；与写作共享上下文，不另开后台任务。", true),
                 toggle("webSearchEnabled", "联网搜索", "允许新游戏的前台和后台按需搜索。")),
             message ? h("p", { role: "status" }, message) : null);
@@ -108,7 +109,6 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                 h(TavernConversationWritingSkills, { globalDefaults: true })),
             // 对话气泡 (castPresentation) lives in 舞台设置 › 基础设置 with the other stage switches.
             group("剧情", "所有游戏都按这些设置，下一轮生效。",
-                h(ContextCompactionSettings),
                 // Off by default: it adds a background model request after every reply.
                 state.settings ? h(SettingSwitch, { settings: state.settings, name: "candidateAutoGenerate", title: "自动生成候选项",
                     description: "打开后每轮会多一次后台请求：正文写完，酒馆在后台自动生成这一轮的候选项，不用再点「生成候选项」。只对打开后的新回复生效，失败时可手动重试。" }) : null),
@@ -124,7 +124,9 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                     description: "把发给模型的历史（此前的玩家消息和正文）以 submit_story 工具参数的形式回放，而不是普通对话文字；可降低续写被拒答。只影响请求，本轮输入、存档和界面保持不变。需要模型支持工具调用。" }) : null,
                 state.settings ? h(SettingSwitch, { settings: state.settings, name: "storyOutputToolCall", title: "输出走工具调用",
                     description: "让模型通过 submit_story 提交本轮正文，可缓解 Gemini 等模型在正文中途截断或拒答。需要模型支持工具调用；正文生成完成后一次性显示。" }) : null,
-                h(PromptTemplateSettingsEntry)),
+                h(PromptTemplateSettingsEntry),
+                h("details", { className: "dsh-local-advanced" },
+                    h("summary", null, "上下文压缩设置"), h(ContextCompactionSettings))),
             state.error ? React.createElement("div", { className: "dsh-tavern-settings-error", role: "alert" }, "保存失败：" + state.error) : null
         );
     }

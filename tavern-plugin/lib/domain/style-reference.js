@@ -179,7 +179,7 @@ export function createForegroundStyleReferenceTool({ chatForSession, save, isBac
       const session = exec.agent?.session, sessionId = session?.id
       if (!sessionId || isBackground(sessionId)) throw Error('文风联想由前台写作回合执行')
       const turn = activeStoryTurn(session), chat = await chatForSession(sessionId)
-      if (!turn || !chat || chat.sessionId !== sessionId || chat.disabledForegroundTools?.includes('style_reference_submit') || (chat.mode || 'story') !== 'story' || chat.backgroundTasks?.styleReference !== true) throw Error('本局未开启前台文风联想，或当前没有写作回合')
+      if (!turn || !chat || chat.sessionId !== sessionId || (chat.mode || 'story') !== 'story' || chat.backgroundTasks?.styleReference !== true) throw Error('本局未开启前台文风联想，或当前没有写作回合')
       const reference = readStyleReference(args)
       exec.signal?.throwIfAborted()
       await save(chat, reference, turn)

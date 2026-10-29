@@ -93,13 +93,6 @@ export function createPlayHandlers(deps) {
     async getBackgroundOperation(args) {
       return { operation: await sessionOperation(args && args.sessionId, args && args.operationId) }
     },
-    async setStatusBarPlacement(args) {
-      if (!['sidebar', 'body'].includes(args?.placement)) throw new Error('无效的状态栏位置')
-      const chat = await chatForSession(args.sessionId)
-      if (!chat || !['story', 'script'].includes(chat.mode || 'story')) throw new Error('请先打开游玩会话')
-      await updateChat(chat.id, current => ({ ...current, statusBarPlacement: args.placement }), { source: 'ui.status-bar-placement' })
-      return { statusBarPlacement: args.placement }
-    },
     async setPlayerName(args) {
       return { playerName: await setPlayerName(args && args.sessionId, args && args.userName) }
     },
