@@ -4670,6 +4670,7 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 }
 .dsh-tavern-transfer-head { display: flex; flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .dsh-tavern-transfer-head .dsh-tavern-status-title { font-size: 16px; }
+.dsh-tavern-transfer-head > button { flex: 0 0 auto; white-space: nowrap; align-self: flex-start; }
 .dsh-tavern-transfer-modes {
   display: inline-flex;
   align-self: flex-start;
@@ -4719,6 +4720,9 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
   flex-direction: column;
   gap: 8px;
 }
+/* 板块卡片自带 overflow: hidden，自动最小尺寸为 0，手机窄屏下会被 flex 压成不足一行高、
+   再把标题和选择器裁掉一半；锁死不收缩，溢出交给 body 自己滚动。 */
+.dsh-tavern-transfer-body > * { flex: 0 0 auto; }
 .dsh-tavern-transfer-quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .dsh-tavern-transfer-quick-label { font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dsh-tavern-transfer-chip {
