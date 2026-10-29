@@ -1,5 +1,5 @@
 import { BACKGROUND_TASK_CATALOG } from '../domain/background-task-catalog.js'
-import { BACKGROUND_MEMBERS } from '../domain/background-members.js'
+import { listMembers } from '../domain/background-members.js'
 import { setAllFailedErrorVisibility, setFailedErrorVisibility } from '../domain/failed-error-visibility.js'
 import { sessionEvents } from '../domain/session-events.js'
 import { applyPolishEdits, composePolishEdits } from '../domain/polish-review.js'
@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
+  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, pluginApi, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
@@ -262,7 +262,7 @@ export function createPlayHandlers(deps) {
     },
     async getBackgroundRuns(args) {
       const names = Object.fromEntries(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.name]))
-      return { runs: backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task })), catalog: BACKGROUND_TASK_CATALOG, members: BACKGROUND_MEMBERS, triggers: storyEvents?.table() || [], moments: storyEvents?.history(args && args.sessionId) || [], locks: backgroundAgentRunner.locks(args && args.sessionId) }
+      return { runs: backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task })), catalog: [...BACKGROUND_TASK_CATALOG, ...(pluginApi?.taskCatalog?.() || [])], members: listMembers(), triggers: storyEvents?.table() || [], moments: storyEvents?.history(args && args.sessionId) || [], locks: backgroundAgentRunner.locks(args && args.sessionId) }
     },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }

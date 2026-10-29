@@ -32130,8 +32130,12 @@ function createTurnRailFilter(root, options) {
         const TIMELINE_SCALE = 12; // px per second while something runs
         const TIMELINE_GAP = 8000; // idle longer than this folds into one break
         const TIMELINE_BREAK = 18;
+        // A plugin's member is shown with its plugin: 插件「npc」·露娜.
+        function backgroundMemberLabel(member) {
+            return member ? (member.plugin ? "插件「" + member.plugin + "」·" : "") + member.name : "";
+        }
         function backgroundTimelineLanes(runs, members) {
-            const memberName = id => (members || []).find(member => member.id === id)?.name || "";
+            const memberName = id => backgroundMemberLabel((members || []).find(member => member.id === id));
             const lanes = new Map();
             for (const run of runs.slice().sort((a, b) => a.queuedAt - b.queuedAt)) {
                 // A resident run still queued has no session yet: it waits on its member's lane.
@@ -32239,11 +32243,11 @@ function createTurnRailFilter(root, options) {
                     catalog.length ? h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "任务目录"),
                         h("dl", { className: "dsh-tavern-background-catalog" }, catalog.flatMap(item => [
-                            h("dt", { key: item.task + ":name" }, item.name, h("span", null, members.find(member => member.id === item.member)?.name || (item.lane === "resident" ? "常驻" : "临时"))),
+                            h("dt", { key: item.task + ":name" }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name, h("span", null, backgroundMemberLabel(members.find(member => member.id === item.member)) || (item.lane === "resident" ? "常驻" : "临时"))),
                             h("dd", { key: item.task + ":does" }, item.does,
                                 [["何时启动", item.trigger], ["读", item.reads], ["写", item.writes], ["等待", item.waits]].filter(([, text]) => text)
                                     .map(([label, text]) => h(React.Fragment, { key: label }, h("br"), h("span", null, label + "：" + text))),
-                                item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用" + (members.find(member => member.id === (item.member || "background"))?.name || "") + "的后台锁：与同一成员的其他任务不能同时运行")) : null)]))) : null,
+                                item.lock ? h(React.Fragment, null, h("br"), h("span", null, "占用" + (members.find(member => member.id === (item.plugin ? "background" : item.member || "background"))?.name || "") + "的后台锁：与同一成员的其他任务不能同时运行")) : null)]))) : null,
                     // The story event table: which moment starts or stops which task.
                     triggers.length ? h("section", { className: "dsh-tavern-status-section" },
                         h("div", { className: "dsh-tavern-status-label" }, "触发关系"),

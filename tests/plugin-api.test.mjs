@@ -1273,6 +1273,8 @@ test('插件成员：注册后任务可以挂上去，在它的常驻会话里�
   } })
   await tick()
   assert.ok(listMembers().some(member => member.id === 'plugin:npc-plugin:luna' && member.name === '露娜' && member.plugin === 'npc-plugin'))
+  assert.deepEqual(h.api.taskCatalog().map(item => [item.task, item.name, item.plugin, item.member, item.lane]),
+    [['plugin:npc-plugin:diary', '露娜日记', 'npc-plugin', 'plugin:npc-plugin:luna', 'resident']])
   await tavern.runTask({ gameId: 'game-1', prompt: '回忆', member: 'luna' })
   assert.equal(requests.at(-1).member, 'plugin:npc-plugin:luna')
   await tavern.runTask({ gameId: 'game-1', prompt: '一次性' })

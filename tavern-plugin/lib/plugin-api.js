@@ -1432,7 +1432,20 @@ export function createTavernPluginApi(deps) {
     return typeof owner === 'string' && Array.from(mvuSettlementProviders.values()).some(entry => entry.owner === owner)
   }
 
-  return Object.freeze({ service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
+  /** Plugins' settlement and manual tasks, for the 后台任务 page's 任务目录. */
+  function taskCatalog() {
+    const item = (entry, kind) => ({
+      task: 'plugin:' + entry.owner + ':' + entry.name, name: entry.title, plugin: entry.owner,
+      member: entry.member ? pluginMemberId(entry.owner, entry.member) : '', lane: entry.member ? 'resident' : 'ephemeral',
+      does: kind === 'manual' ? (entry.description || '插件的手动任务。') : '插件的结算任务，每轮' + TASK_PHASES[entry.phase] + '运行。',
+      trigger: kind === 'manual' ? '玩家点插件的按钮，或插件自己启动。' : '每轮变量结算' + (entry.phase === 'parallel' ? '时' : entry.phase === 'before' ? '前' : '后') + '。',
+      lock: kind === 'manual'
+    })
+    return [...Array.from(settlementTasks.values(), entry => item(entry, 'settlement')), ...Array.from(manualTasks.values(), entry => item(entry, 'manual'))]
+      .sort((a, b) => a.plugin.localeCompare(b.plugin) || a.task.localeCompare(b.task))
+  }
+
+  return Object.freeze({ taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
     speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,
     runSettlementTasks, manualTaskFor, runManualTask, stopTasks: stopAllTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }
