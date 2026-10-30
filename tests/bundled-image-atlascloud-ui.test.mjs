@@ -198,11 +198,11 @@ function providerOptions(h) {
 }
 
 function assertSelected(h, id) {
-  assert.equal(h.state.data.config.imageBackend, 'atlascloud')
+  assert.equal(h.state.data.config.imageBackend, 'custom')
   assert.equal(h.state.data.config.activeImageChannel, id)
-  assert.equal(h.savedConfig.imageBackend, 'atlascloud')
+  assert.equal(h.savedConfig.imageBackend, 'custom')
   assert.equal(h.savedConfig.activeImageChannel, id)
-  assert.equal(h.control('select', '生图提供商').props.value, 'atlascloud')
+  assert.equal(h.control('select', '生图提供商').props.value, 'custom')
   assert.equal(h.control('select', '生图渠道').props.value, id)
 }
 
@@ -211,68 +211,70 @@ function assertNoSecret(h, secret) {
   assert.equal(JSON.stringify(h.state.data).includes(secret), false, '/state exposes presence flags, never secrets')
 }
 
-test('atlas cloud is registered once with its exact lowercase label; defaults come from IMAGE_PROVIDERS', () => {
-  const entry = preset()
-  assert.equal(entry.label, 'atlas cloud')
-  assert.equal(typeof entry.baseUrl, 'string')
-  assert.ok(entry.baseUrl, 'the registry supplies the default API root')
-  assert.equal(typeof entry.model, 'string', 'do not pin an unconfirmed default model in the UI test')
+test('AtlasCloud is an explicit custom API protocol and is not a standalone provider', () => {
+  assert.equal(IMAGE_PROVIDERS.some(item => item.id === 'atlascloud'), false)
+  const custom = preset('custom')
+  assert.equal(custom.label, '自定义兼容渠道')
 })
 
 for (const [name, providers] of [['server registry', IMAGE_PROVIDERS], ['client fallback', []]]) {
-  test(`atlas cloud is offered only in 在线服务, not 本地部署 (${name})`, async () => {
+  test(`AtlasCloud protocol is offered through custom online API (${name})`, async () => {
     const h = harness({ providers })
     assert.equal(h.button('本地部署').props['aria-pressed'], true)
     assert.deepEqual(providerOptions(h).map(item => item.id).sort(), ['comfyui', 'sdwebui'])
     await h.click('在线服务')
     assert.equal(h.button('在线服务').props['aria-pressed'], true)
-    assert.deepEqual(providerOptions(h).filter(item => item.id === 'atlascloud'), [{ id: 'atlascloud', label: 'atlas cloud' }])
-    assert.ok(providerOptions(h).every(item => !['comfyui', 'sdwebui'].includes(item.id)))
-    await h.click('本地部署')
     assert.equal(providerOptions(h).some(item => item.id === 'atlascloud'), false)
-    assert.equal(h.calls.every(call => call.pathname === '/config'), true, 'switching kind never tests or generates')
+    assert.ok(providerOptions(h).some(item => item.id === 'custom'))
+    assert.ok(providerOptions(h).every(item => !['comfyui', 'sdwebui'].includes(item.id)))
+    await h.chooseProvider('custom')
+    assert.equal(h.control('select', 'API 协议').props.value, 'openai')
+    await h.change('select', 'API 协议', 'atlascloud')
+    assert.equal(h.control('select', '尺寸参数格式').props.value, 'size')
+    assert.equal(h.calls.every(call => call.pathname === '/config'), true, 'protocol selection saves configuration only')
   })
 }
 
-test('choosing atlascloud creates, persists and activates a channel with registry defaults, then reuses it', async () => {
-  const defaults = preset()
+test('choosing custom creates one channel; AtlasCloud is selected as its API protocol', async () => {
   const other = channel('openai', { id: 'unrelated-channel', model: 'ui-test/keep-model' })
   const h = harness({ config: { imageChannels: [other] } })
   await h.click('在线服务')
   h.calls.length = 0
-  await h.chooseProvider('atlascloud')
+  await h.chooseProvider('custom')
 
   assert.deepEqual(h.calls.map(call => call.pathname), ['/config'])
   const patch = h.calls[0].body.config
-  const created = patch.imageChannels.find(item => item.provider === 'atlascloud')
+  const created = patch.imageChannels.find(item => item.provider === 'custom')
   assert.ok(created?.id, 'selection creates a real channel id')
-  assert.equal(created.baseUrl, defaults.baseUrl)
-  assert.equal(created.model, defaults.model)
+  assert.equal(created.baseUrl, '')
+  assert.equal(created.model, '')
   assert.equal(created.authMode, 'bearer')
-  assert.equal(created.name, 'atlas cloud 渠道')
+  assert.equal(created.name, '自定义兼容渠道 渠道')
   assert.equal(created.hasApiKey, false)
-  assert.equal(created.hasPassword, false)
+  assert.deepEqual(created.options, { apiProtocol: 'openai' })
   assert.deepEqual(patch.imageChannels.find(item => item.id === other.id), { ...other, hasApiKey: false, hasPassword: false }, 'unrelated channels keep their parameters')
   assertSelected(h, created.id)
-  assert.equal(h.control('input', 'API 根地址').props.value, defaults.baseUrl)
-  assert.equal(h.control('input', '模型').props.value, defaults.model)
+  assert.equal(h.control('input', 'API 根地址').props.value, '')
+  assert.equal(h.control('input', '模型').props.value, '')
+  await h.change('select', 'API 协议', 'atlascloud')
+  assert.equal(h.control('select', '尺寸参数格式').props.value, 'size')
 
   await h.chooseProvider('openai')
-  await h.chooseProvider('atlascloud')
+  await h.chooseProvider('custom')
   assertSelected(h, created.id)
   assert.equal(h.savedConfig.imageChannels.length, 2, 'switching away and back must not add duplicates')
-  assert.equal(h.savedConfig.imageChannels.filter(item => item.provider === 'atlascloud').length, 1)
+  assert.equal(h.savedConfig.imageChannels.filter(item => item.provider === 'custom').length, 1)
   assert.ok(h.calls.every(call => call.pathname === '/config'))
 })
 
 test('an existing atlascloud channel is reused without resetting its custom parameters or saved Key', async () => {
   const oldKey = 'ui-test-server-only-existing-key'
-  const existing = channel('atlascloud', { id: 'atlas-personal', name: '我的渠道',
+  const existing = channel('custom', { id: 'atlas-personal', name: '我的渠道',
     baseUrl: 'https://atlas-proxy.example.invalid/api/v1', model: 'ui-test/existing-custom-model', apiKey: oldKey,
-    options: { size: '1024*1024' } })
+    options: { apiProtocol: 'atlascloud', size: '1024*1024' } })
   const other = channel('openai')
   const h = harness({ config: { imageBackend: 'openai', activeImageChannel: other.id, imageChannels: [other, existing] } })
-  await h.chooseProvider('atlascloud')
+  await h.chooseProvider('custom')
   assertSelected(h, existing.id)
   assert.equal(h.savedConfig.imageChannels.length, 2)
   assert.deepEqual(h.savedConfig.imageChannels.find(item => item.id === existing.id), {
@@ -288,12 +290,12 @@ test('an existing atlascloud channel is reused without resetting its custom para
 
 // The identical driver runs an existing provider as a positive harness control.
 // Atlas must use these same generic inputs/actions, not an Atlas-only mock UI.
-for (const provider of ['openai', 'atlascloud']) {
+for (const provider of ['openai', 'custom']) {
   test(`${provider}: generic API Key/custom-model editing saves before /image-channel-test, never generates or echoes secrets`, async () => {
     const initialKey = `ui-test-server-only-${provider}`
     const typedKey = `ui-test-new-key-${provider}`
     const customModel = `ui-test/custom-model-${provider}`
-    const existing = channel(provider, { apiKey: initialKey })
+    const existing = channel(provider, { apiKey: initialKey, ...(provider === 'custom' ? { options: { apiProtocol: 'atlascloud' } } : {}) })
     const h = harness({ config: { imageBackend: provider, activeImageChannel: existing.id, imageChannels: [existing] } })
     for (const label of ['新增渠道', '复制渠道', '删除渠道', '保存并测试连接']) assert.ok(h.button(label))
     assert.equal(h.control('input', '模型').props.type, 'text', 'custom IDs use the shared model input')
@@ -339,10 +341,10 @@ for (const provider of ['openai', 'atlascloud']) {
   })
 }
 
-test('atlascloud preserves drafts and does not probe or generate when the configuration save fails', async () => {
-  const existing = channel('atlascloud')
+test('custom Atlas protocol preserves drafts and does not probe or generate when the configuration save fails', async () => {
+  const existing = channel('custom', { options: { apiProtocol: 'atlascloud' } })
   const h = harness({ saveError: new Error('fixture config save failed'),
-    config: { imageBackend: 'atlascloud', activeImageChannel: existing.id, imageChannels: [existing] } })
+    config: { imageBackend: 'custom', activeImageChannel: existing.id, imageChannels: [existing] } })
   await h.change('input', '渠道 API Key', 'ui-test-retry-key')
   await h.change('input', '模型', 'ui-test/retry-model')
   await h.click('保存并测试连接')
@@ -353,16 +355,16 @@ test('atlascloud preserves drafts and does not probe or generate when the config
   assert.match(h.state.note, /保存失败/)
 })
 
-test('atlascloud dimension modes expose only the appropriate override and persist model-specific options', async () => {
-  const existing = channel('atlascloud')
-  const h = harness({ config: { imageBackend: 'atlascloud', activeImageChannel: existing.id, imageChannels: [existing] } })
+test('custom Atlas protocol dimension modes expose only the appropriate override and persist model-specific options', async () => {
+  const existing = channel('custom', { options: { apiProtocol: 'atlascloud' } })
+  const h = harness({ config: { imageBackend: 'custom', activeImageChannel: existing.id, imageChannels: [existing] } })
   assert.equal(h.control('select', '尺寸参数格式').props.value, 'size')
   await h.change('input', '尺寸覆盖（可选）', '2048x2048')
   await h.change('select', '尺寸参数格式', 'aspect_ratio')
   assert.equal(walk(h.tree, node => node.props['aria-label'] === '尺寸覆盖（可选）').length, 0)
   await h.change('input', '画面比例覆盖（可选）', '16:9')
   await h.click('保存并测试连接')
-  assert.deepEqual(h.savedConfig.imageChannels[0].options, { size: '2048x2048', sizeMode: 'aspect_ratio', aspectRatio: '16:9' })
+  assert.deepEqual(h.savedConfig.imageChannels[0].options, { apiProtocol: 'atlascloud', size: '2048x2048', sizeMode: 'aspect_ratio', aspectRatio: '16:9' })
   await h.change('select', '尺寸参数格式', 'none')
   assert.equal(walk(h.tree, node => ['尺寸覆盖（可选）', '画面比例覆盖（可选）'].includes(node.props['aria-label'])).length, 0)
   await h.click('保存并测试连接')

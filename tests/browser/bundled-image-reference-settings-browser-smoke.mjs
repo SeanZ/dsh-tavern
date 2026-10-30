@@ -3,23 +3,41 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { chromium } from 'playwright'
 import { browserReactScript } from '../fixtures/browser-react.mjs'
 
-const executablePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path))
+const executablePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path)) || chromium.executablePath()
+const screenshotPath = join(tmpdir(), 'dsh-tavern-pr421-image-settings.png')
 const clientSource = await readFile(new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/client.js', import.meta.url), 'utf8')
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jdbsAAAAASUVORK5CYII=', 'base64')
 const clone = value => JSON.parse(JSON.stringify(value))
 const calls = [], errors = []
 let uploads = 0
+const savedApiKeys = new Map()
+const workflowDetail = { file: 'workflow-a.json', prompt: {
+  '2': { class_type: 'LoadImage', inputs: { image: 'pose.png' }, _meta: { title: 'Pose input (not a character ref)' } },
+  '15': { class_type: 'LoadImage', inputs: { image: 'character.png' }, _meta: { title: 'Character reference input' } },
+  '18': { class_type: 'LoadImage', inputs: { image: 'outfit.png' }, _meta: { title: 'Outfit reference input' } },
+}, bindings: { positive: [], negative: [], loras: [] } }
 const books = format => [{ key: 'main', name: format + '规则', count: 1, entries: [{ index: 0, comment: format + '条目', content: format + ' content', enabled: true, activation: 'always' }] }, { key: 'outfits', name: format + '服装规则', count: 0, entries: [] }]
 const worldbooks = Object.fromEntries(['tags', 'natural', 'mixed', 'structured'].map(format => [format, books(format)]))
 const state = {
-  config: { imageEnabled: true, imageBackend: 'atlascloud', generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'atlas',
-    imageChannels: [{ id: 'atlas', provider: 'atlascloud', name: 'atlas cloud', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [] },
+  referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
+    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [] },
   definitions: { characters: [{ id: 'person-a', name: '林月', match: 'Lin Yue', cards: [], traits: { face: 'keep original traits' }, outfits: [{ id: 'outfit-a', name: '白衬衫', upper: 'white shirt', enabled: true }] }], scenes: [], props: [] },
   outfits: [{ id: 'shared-a', name: '通用外套', upper: 'coat', enabled: true }],
-  worldbookFormat: 'tags', worldbookBooks: clone(worldbooks.tags), tasks: [], workflows: [], imageProviders: [{ id: 'atlascloud', label: 'atlas cloud' }],
+  worldbookFormat: 'tags', worldbookBooks: clone(worldbooks.tags), tasks: [], workflows: [{ id: 'workflow-a', label: 'Reference workflow', file: 'workflow-a.json', enabled: true, current: true, summary: { nodeCount: 5 } }], imageProviders: [{ id: 'openai', label: 'OpenAI 兼容' }, { id: 'custom', label: '自定义 API' }],
+}
+function publicState() {
+  const next = clone(state)
+  for (const channel of next.config.imageChannels || []) {
+    channel.hasApiKey = savedApiKeys.has(channel.id)
+    delete channel.apiKey
+    delete channel.password
+  }
+  return next
 }
 const browser = await chromium.launch({ headless: true, executablePath })
 try {
@@ -33,12 +51,33 @@ try {
     const body = method === 'POST' ? route.request().postDataJSON() : null
     calls.push({ path, method, query: Object.fromEntries(url.searchParams), body })
     let response = { ok: true }
-    if (path === '/state') response = clone(state)
-    else if (path === '/config') { Object.assign(state.config, body.config); response = { ok: true, state: clone(state) } }
+    if (path === '/state') response = publicState()
+    else if (path === '/config') {
+      if (Array.isArray(body.config.imageChannels)) {
+        for (const channel of body.config.imageChannels) {
+          if (channel.apiKey) savedApiKeys.set(channel.id, channel.apiKey)
+          delete channel.apiKey
+          channel.hasApiKey = savedApiKeys.has(channel.id)
+        }
+      }
+      Object.assign(state.config, body.config)
+      state.referenceSupported = state.config.imageBackend === 'custom' ? ['openai', 'gemini', 'gemini-chat', 'atlascloud', 'seedream', 'grok', 'qwen', 'sdwebui'].includes(state.config.imageChannels.find(channel => channel.id === state.config.activeImageChannel)?.options?.apiProtocol || 'openai') : ['openai', 'atlascloud', 'comfyui'].includes(state.config.imageBackend)
+      state.imageProvider = state.config.imageBackend
+      if (body.config.comfyMode === 'workflow') state.configurationWarning = ''
+      response = { ok: true, state: publicState() }
+    }
+    else if (path === '/image-channel-test') response = { ok: true, status: 'reachable', message: 'mock connection' }
+    else if (path === '/comfy-test') response = { ok: true, version: 'mock' }
     else if (path === '/reference-image') { uploads++; response.referenceImage = { id: uploads.toString(16).repeat(64), name: body.name, mediaType: body.mediaType, byteLength: png.length } }
     else if (path === '/definitions') { state.definitions = clone(body.definitions); state.outfits = clone(body.definitions.outfits || []); response = { ok: true, state: clone(state) } }
     else if (path === '/worldbook') { const format = url.searchParams.get('format'); assert.ok(worldbooks[format]); response = { ok: true, worldbookFormat: format, worldbook: { name: format, entries: clone(worldbooks[format].flatMap(book => book.entries)) }, worldbookBooks: clone(worldbooks[format]) } }
     else if (path === '/worldbook-entry') { const book = worldbooks[body.format]?.find(book => book.key === body.book); assert.ok(book); Object.assign(book.entries[body.index], body.patch) }
+    else if (path === '/workflow-bindings') {
+      if (body.patch?.bindings?.referenceImages) Object.assign(workflowDetail.bindings, clone(body.patch.bindings))
+      response = { ok: true, workflow: clone(workflowDetail) }
+    }
+    else if (path === '/workflow-values') response = { ok: true, values: { positive: '', negative: '' } }
+    else if (path === '/loras-available') response = { ok: true, loras: [] }
     else if (path === '/history') response = { ok: true, jobs: [] }
     else if (path === '/tasks') response = { tasks: [] }
     else if (path === '/cards') response = { ok: true, cards: [] }
@@ -100,6 +139,51 @@ try {
   assert.equal(state.definitions.characters[0].consistencyText, '保持脸型，动作由正文决定')
   assert.equal(calls.some(call => call.method === 'DELETE'), false)
 
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByLabel('生图提供商').selectOption('custom')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('novelai')
+  await page.waitForFunction(() => document.querySelector('[aria-label="API 协议"]')?.value === 'novelai' && document.querySelector('[aria-label="默认生图模式"] option[value="reference"]')?.disabled === true)
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), true, 'NovelAI protocol cannot select reference mode')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('openai')
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), false, 'OpenAI protocol exposes reference mode')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('atlascloud')
+  await page.getByLabel('尺寸参数格式', { exact: true }).waitFor()
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), false, 'AtlasCloud compatibility protocol exposes reference mode')
+  await page.getByLabel('渠道名称', { exact: true }).fill('mock custom channel')
+  await page.getByLabel('API 根地址', { exact: true }).fill('https://images.mock.invalid/v1')
+  await page.getByLabel('模型', { exact: true }).fill('mock-image-model')
+  await page.getByLabel('渠道 API Key', { exact: true }).fill('fake-browser-test-key')
+  await Promise.all([page.waitForResponse(response => response.url().endsWith('/image-channel-test')), page.getByRole('button', { name: '保存并测试连接' }).click()])
+  const customChannel = state.config.imageChannels.find(channel => channel.provider === 'custom')
+  assert.ok(customChannel)
+  assert.equal(customChannel.baseUrl, 'https://images.mock.invalid/v1')
+  assert.equal(customChannel.model, 'mock-image-model')
+  assert.equal(customChannel.options.apiProtocol, 'atlascloud')
+  assert.equal(customChannel.hasApiKey, true)
+  assert.equal(savedApiKeys.get(customChannel.id), 'fake-browser-test-key')
+  assert.equal(Object.hasOwn(customChannel, 'apiKey'), false, 'saved state exposes only the key presence flag')
+  assert.equal(await page.getByLabel('渠道 API Key', { exact: true }).inputValue(), '', 'saved key is never rendered back into the UI')
+  await page.screenshot({ path: screenshotPath, fullPage: true })
+
+  await page.getByRole('button', { name: '本地部署', exact: true }).click()
+  await page.getByRole('button', { name: '启用选定的完整工作流' }).waitFor()
+  assert.match(await page.getByRole('status').filter({ hasText: '旧版 ComfyUI 简易模式' }).textContent(), /原配置和数据已保留/)
+  await page.getByRole('button', { name: /编辑 \/ LoRA/ }).click()
+  await page.getByLabel('参考图 1 接入节点').count().then(count => assert.equal(count, 0, 'multiple LoadImage nodes are never auto-selected'))
+  assert.match(await page.getByText(/尚未保存明确映射/).textContent(), /多个接图节点时不会猜测/)
+  await page.getByRole('button', { name: '＋ 添加接入节点' }).click()
+  assert.equal(await page.getByLabel('参考图 1 接入节点').inputValue(), '', 'new mappings require an explicit node choice')
+  await page.getByLabel('参考图 1 接入节点').selectOption('15')
+  await page.getByRole('button', { name: '＋ 添加接入节点' }).click()
+  await page.getByLabel('参考图 2 接入节点').selectOption('18')
+  assert.deepEqual(workflowDetail.bindings.referenceImages, [{ node: '15', input: 'image' }, { node: '18', input: 'image' }])
+  await page.getByRole('button', { name: '启用选定的完整工作流' }).click()
+  await page.waitForFunction(() => window.__plugin && document.querySelector('[aria-label="生图提供商"]')?.value === 'comfyui')
+  assert.equal(state.config.comfyMode, 'workflow')
+  assert.equal(state.config.defaultWorkflow, 'workflow-a')
+  assert.deepEqual(state.config.comfySimple, { checkpoint: 'keep-legacy-checkpoint' }, 'migration preserves the old settings as recovery data')
+  assert.equal(state.configurationWarning, '')
+
   await page.getByRole('button', { name: '世界书', exact: true }).click()
   await page.getByRole('button', { name: '编辑', exact: true }).click()
   await page.getByPlaceholder('条目内容（作为画图规则发给模型）').fill('tags pending draft')
@@ -115,5 +199,6 @@ try {
   assert.equal(worldbooks.natural[0].entries[0].content, 'natural content')
   assert.equal(state.config.promptMode, 'structured', 'browsing worldbooks does not switch the active prompt format')
   assert.deepEqual(errors, [])
-  console.log('PASS Chromium full settings: generation modes, structured format, character/nested/shared reference drafts and saving, local-only unlink, worldbook format isolation')
+  console.log('PASS Chromium full settings: custom URL/model/key save and masking, protocol reference capability, character/nested/shared reference drafts and saving, ordered Comfy LoadImage mapping, recoverable simple-mode migration, local-only unlink, worldbook format isolation')
+  console.log('SCREENSHOT ' + screenshotPath)
 } finally { await browser.close() }

@@ -39,6 +39,14 @@ const absoluteBase = (() => {
   return (origin || '') + '/plugins/dsh-tavern-image'
 })()
 const BASE = absoluteBase
+const IMAGE_REFERENCE_PROTOCOLS = new Set(['openai', 'gemini', 'gemini-chat', 'atlascloud', 'seedream', 'grok', 'qwen', 'sdwebui'])
+function uiSupportsImageReferences(channel, state) {
+  if (!channel) return state?.referenceSupported === true
+  const provider = String(channel.provider || '')
+  if (provider === 'comfyui') return state?.referenceSupported === true && state?.config?.imageBackend === 'comfyui'
+  const protocol = provider === 'custom' ? String(channel.options?.apiProtocol || 'openai') : provider
+  return IMAGE_REFERENCE_PROTOCOLS.has(protocol)
+}
 
 function createHistoryRequestEpoch() {
   let activeGameId = ''
@@ -1194,13 +1202,14 @@ function versionsOf(jobId) {
         return () => { live = false }
       }, [view.open, view.jobId, view.openRequestId, view.inputsReload])
       useEffect(() => {
-        if (!view.open || !view.mediaContext) return undefined
+        if (!view.open) return undefined
         let live = true
         jsonFetch(BASE + '/state', { cache: 'no-store' }).then(result => {
           if (!live) return
           const config = result?.config || {}
-          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || ''), provider: String(channel.provider || '') })).filter(channel => channel.id)
-          openPromptEditor({ channels, comfyAvailable: Boolean(config.comfyUrl || config.comfyHost || config.comfyEnabled) })
+          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || ''), provider: String(channel.provider || ''), options: channel.options || {}, referenceSupported: uiSupportsImageReferences(channel, result) })).filter(channel => channel.id)
+          const sourceChannel = channels.find(channel => channel.id === view.sourceChannelId)
+          openPromptEditor({ channels, referenceSupported: sourceChannel?.referenceSupported ?? (result?.referenceSupported === true), comfyAvailable: Boolean(config.comfyUrl || config.comfyHost || config.comfyEnabled) })
         }).catch(() => { if (live) openPromptEditor({ channels: [], channelLoadFailed: true }) })
         return () => { live = false }
       }, [view.open, view.mediaContext])
@@ -1209,7 +1218,9 @@ function versionsOf(jobId) {
       const close = () => openPromptEditor({ open: false, busy: '', note: '', instruction: '' })
       const say = (text) => openPromptEditor({ forJobId: view.jobId, note: text })
       const backend = view.channelId === 'comfyui' ? 'comfyui' : view.channelId ? (view.channels || []).find(channel => channel.id === view.channelId)?.provider : view.sourceBackend
-      const referenceUnavailable = view.generationMode === 'reference' && backend !== 'atlascloud'
+      const selectedReferenceChannel = (view.channels || []).find(channel => channel.id === (view.channelId || view.sourceChannelId))
+      const referenceAvailable = selectedReferenceChannel ? selectedReferenceChannel.referenceSupported === true : (backend === 'comfyui' ? view.referenceSupported === true : IMAGE_REFERENCE_PROTOCOLS.has(backend))
+      const referenceUnavailable = view.generationMode === 'reference' && !referenceAvailable
       const controlsDisabled = Boolean(view.loading || view.inputsLoading || view.busy || view.submitted || view.uncertain)
       // Strip only known legacy metadata decorations from captions, never alter recorded prompts.
       const referenceLabel = reference => String(reference.label || '').replace(/\s*\[(?:characterId|outfitId)=[^\]]*\]/g, '').trim() || '未记录名称（详见调试信息）'
@@ -1239,7 +1250,7 @@ function versionsOf(jobId) {
 
       async function redraw() {
         if (controlsDisabled || view.inputsError) return
-        if (referenceUnavailable) { say('参考图模式仅支持 atlas cloud；请明确选择渠道或改为文生图，不会自动切换模型。'); return }
+        if (referenceUnavailable) { say('当前渠道不支持参考图输入；请明确选择支持参考图的渠道或改为文生图，不会自动降级。'); return }
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
         if (view.mediaContext && (mediaPostLocks.has(lock) || mediaUncertainActions.has(lock) || !validMediaContext(view.mediaContext))) return
         if (view.mediaContext) mediaPostLocks.add(lock)
@@ -1343,8 +1354,8 @@ function versionsOf(jobId) {
           '本次生图模式', React.createElement('select', { 'aria-label': '本次生图模式', value: view.generationMode || 'text', disabled: controlsDisabled || Boolean(view.inputsError),
             onChange: event => openPromptEditor({ generationMode: event.target.value, refreshReferences: false }), style: { background: '#12151b', color: '#dbe3ee', padding: '5px', borderRadius: '7px' } },
           React.createElement('option', { value: 'text' }, '文生图'),
-          React.createElement('option', { value: 'reference', disabled: backend !== 'atlascloud' }, '参考图生图（atlas cloud）'))),
-        referenceUnavailable ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '6px' } }, '参考图模式仅支持 atlas cloud；请明确选择渠道或改为文生图，不会自动切换模型或降级。') : null,
+          React.createElement('option', { value: 'reference', disabled: !referenceAvailable }, '参考图生图'))),
+        referenceUnavailable ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '6px' } }, '当前渠道不支持参考图输入；请明确选择支持参考图的渠道或改为文生图，不会自动降级。') : null,
         React.createElement('label', { style: { display: 'flex', gap: '8px', color: '#9aa3b2', fontSize: '12px', marginTop: '10px' } },
           React.createElement('input', { type: 'checkbox', 'aria-label': '使用最新人物库参考图快照', checked: view.refreshReferences === true,
             disabled: controlsDisabled || Boolean(view.inputsError) || view.generationMode !== 'reference', onChange: event => openPromptEditor({ refreshReferences: event.target.checked }) }),
@@ -2592,10 +2603,6 @@ function versionsOf(jobId) {
       const [wfPaste, setWfPaste] = React.useState('')
       const [wfNote, setWfNote] = React.useState('')
       const [loraList, setLoraList] = React.useState([])
-      const [simpleInfo, setSimpleInfo] = React.useState(null)
-      const [simpleLoading, setSimpleLoading] = React.useState(false)
-      const [simpleNote, setSimpleNote] = React.useState('')
-      const [simpleConfigDraft, setSimpleConfigDraft] = React.useState(null)
       // 可选的 provider / model（从 DSH 的 llm 服务拉）
       const [llmProviders, setLlmProviders] = React.useState([])
       const [llmModels, setLlmModels] = React.useState({})     // provider → [{id,name,vision}]
@@ -2879,10 +2886,10 @@ function versionsOf(jobId) {
       /** 生图后端（ComfyUI 地址与鉴权）—— 标签在上、控件全宽。 */
       function ComfyBackendCard() {
         const optStyle = {}
-        const providerOptions = providers.length ? providers : [
+        const providerOptions = (providers.length ? providers : [
           ['novelai', 'NovelAI'], ['openai', 'OpenAI 兼容'], ['gemini', 'Gemini'], ['gemini-chat', 'Gemini Chat'],
-          ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['atlascloud', 'atlas cloud'], ['sdwebui', 'Stable Diffusion WebUI'],
-        ].map(([id, label]) => ({ id, label }))
+          ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['custom', '自定义 API'], ['sdwebui', 'Stable Diffusion WebUI'],
+        ].map(([id, label]) => ({ id, label }))).filter(item => item.id !== 'atlascloud')
         const backend = imageBackend
         const channels = Array.isArray(config.imageChannels) ? config.imageChannels : []
         const channel = selectedChannel
@@ -2895,7 +2902,7 @@ function versionsOf(jobId) {
         const nextId = (provider) => provider + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
         const defaultChannel = provider => {
           const preset = providerOptions.find(item => item.id === provider) || {}
-          return { id: nextId(provider), name: (preset.label || provider) + ' 渠道', provider, baseUrl: preset.baseUrl || '', model: preset.model || '', authMode: 'bearer', username: '', options: {}, hasApiKey: false, hasPassword: false }
+          return { id: nextId(provider), name: (preset.label || provider) + ' 渠道', provider, baseUrl: preset.baseUrl || '', model: preset.model || '', authMode: 'bearer', username: '', options: provider === 'custom' ? { apiProtocol: 'openai' } : {}, hasApiKey: false, hasPassword: false }
         }
         const persistChannelSelection = (nextChannels, provider, activeId) => {
           setCfg({ imageChannels: nextChannels, imageBackend: provider, activeImageChannel: activeId })
@@ -3002,8 +3009,10 @@ function versionsOf(jobId) {
               h('option', { key: '__custom__', value: '__custom__', style: optStyle }, '自定义 / 未列出的模型 ID…')),
             known ? null : h('input', { 'aria-label': '自定义模型 ID', type: 'text', value: current, placeholder: '填 NovelAI 模型 ID，例如 nai-diffusion-4-5-full；留空 = 用默认 V4.5 Full', style: Object.assign({}, full(), { marginTop: '6px' }), onChange: e => editChannel({ model: e.target.value }) }))
         })() : null
-        const naiChat = backend === 'novelai' && storedOption('protocol') === 'chat'
-        const generatePathPlaceholder = ({ novelai: naiChat ? '/v1/chat/completions' : '/ai/generate-image', openai: '/images/generations', 'gemini-chat': '/chat/completions', grok: '/images/generations', seedream: '/images/generations', qwen: '/services/aigc/multimodal-generation/generation', atlascloud: '/model/generateImage', sdwebui: '/sdapi/v1/txt2img' })[backend]
+        const apiProtocol = String((localFields.options || {}).apiProtocol || 'openai').toLowerCase()
+        const protocolBackend = backend === 'custom' ? (apiProtocol === 'nai' ? 'novelai' : apiProtocol) : backend
+        const naiChat = protocolBackend === 'novelai' && storedOption('protocol') === 'chat'
+        const generatePathPlaceholder = ({ novelai: naiChat ? '/v1/chat/completions' : '/ai/generate-image', openai: '/images/generations', 'gemini-chat': '/chat/completions', grok: '/images/generations', seedream: '/images/generations', qwen: '/services/aigc/multimodal-generation/generation', atlascloud: '/model/generateImage', sdwebui: '/sdapi/v1/txt2img' })[protocolBackend]
         const authMode = String(config.comfyAuthMode ?? 'none')
         const saveComfy = async () => {
           const patch = {
@@ -3097,8 +3106,9 @@ function versionsOf(jobId) {
             ),
             field('name', '渠道名称', '例如：个人 API / 公司中转'),
             field('baseUrl', 'API 根地址', 'https://api.example.com/v1'),
-            backend === 'novelai' ? selectOptionField('protocol', '接口格式', [['native', '官方格式（NovelAI 官方或同协议中转）'], ['chat', '对话格式（chat/completions 中转站）']], 'native') : null,
-            backend === 'novelai' ? naiModelField : modelInput,
+            backend === 'custom' ? selectOptionField('apiProtocol', 'API 协议', [['openai', 'OpenAI 图片 API'], ['atlascloud', 'AtlasCloud'], ['gemini', 'Gemini'], ['gemini-chat', 'Gemini Chat'], ['sdwebui', 'Stable Diffusion WebUI'], ['seedream', 'Seedream'], ['grok', 'Grok'], ['qwen', 'Qwen'], ['novelai', 'NovelAI（NAI）']], 'openai') : null,
+            protocolBackend === 'novelai' ? selectOptionField('protocol', '接口格式', [['native', '官方格式（NovelAI 官方或同协议中转）'], ['chat', '对话格式（chat/completions 中转站）']], 'native') : null,
+            protocolBackend === 'novelai' ? naiModelField : modelInput,
             h('div', { style: { marginBottom: '10px' } }, label('鉴权方式'), h('select', { 'aria-label': '鉴权方式', value: localFields.authMode || 'bearer', style: full(), onChange: e => editChannel({ authMode: e.target.value }) },
               h('option', { value: 'bearer', style: optStyle }, 'Bearer API Key'), h('option', { value: 'none', style: optStyle }, '无需鉴权'), h('option', { value: 'basic', style: optStyle }, 'Basic 用户名 / 密码'))),
             localFields.authMode === 'basic' ? h('div', null,
@@ -3110,18 +3120,18 @@ function versionsOf(jobId) {
               label('API Key', channel.hasApiKey ? '已保存；留空保留原 Key' : ''),
               h('input', { 'aria-label': '渠道 API Key', type: 'password', value: channelDraft.apiKey || '', placeholder: channel.hasApiKey ? '已保存，留空可保留' : '粘贴 API Key', style: full(), onChange: e => { setChannelSecretDrafts(current => Object.assign({}, current, { [channel.id]: Object.assign({}, current[channel.id], { apiKey: e.target.value, clearApiKey: false }) })); markSecretEdited(channel.id) } }),
               channel.hasApiKey ? h('button', { style: buttonStyle, onClick: () => { setChannelSecretDrafts(current => Object.assign({}, current, { [channel.id]: Object.assign({}, current[channel.id], { clearApiKey: true, apiKey: '' }) })); markSecretEdited(channel.id) } }, '清除已保存 Key') : null) : null,
-            backend === 'sdwebui' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
+            protocolBackend === 'sdwebui' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
               optionField('steps', '步数', '20', 'number'), optionField('cfg', 'CFG', '7', 'number'), optionField('sampler', '采样器', 'Euler a')) : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px 12px' } },
               selectOptionField('sampler', '采样器', NAI_SAMPLER_OPTIONS, 'k_euler_ancestral'),
               selectOptionField('noiseSchedule', '噪点表（Noise Schedule）', NAI_NOISE_OPTIONS, 'karras')) : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(128px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(128px,1fr))', gap: '10px 12px' } },
               naiChat ? null : optionField('steps', '步数', '28', 'number'),
               optionField('cfg', 'CFG', '5', 'number'),
               h('div', { style: { marginBottom: '10px' } }, label('CFG Rescale'), h('input', { 'aria-label': 'CFG Rescale', type: 'number', step: '0.01', min: '0', max: '1', value: String((localFields.options || {}).cfgRescale ?? 0), placeholder: '0 ~ 1，0 = 关', style: full(), onChange: e => updateOption('cfgRescale', Number(e.target.value)) })),
               naiChat ? null : h('div', { style: { marginBottom: '10px' } }, label('Uncond Scale'), h('input', { 'aria-label': 'Uncond Scale', type: 'number', step: '0.1', min: '0', value: String((localFields.options || {}).uncondScale ?? 0), placeholder: '0 = 不改动', style: full(), onChange: e => updateOption('uncondScale', Number(e.target.value)) })),
               naiChat ? null : h('div', { style: { marginBottom: '10px' } }, label('Skip CFG Sigma'), h('input', { 'aria-label': 'Skip CFG Above Sigma', type: 'number', step: '0.1', min: '0', value: String((localFields.options || {}).skipCfgAboveSigma ?? 0), placeholder: '0 = 不改动，常用 19', style: full(), onChange: e => updateOption('skipCfgAboveSigma', Number(e.target.value)) }))) : null,
-            backend === 'novelai' && !naiChat ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' && !naiChat ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px 12px' } },
               h('div', { style: { marginBottom: '10px' } }, label('官方负面预设（ucPreset）'),
                 h('select', { 'aria-label': '官方负面预设', value: String((localFields.options || {}).ucPreset ?? 3), style: full(), onChange: e => updateOption('ucPreset', Number(e.target.value)) },
                   h('option', { value: '0', style: optStyle }, '0 · 强（Heavy）'),
@@ -3137,20 +3147,20 @@ function versionsOf(jobId) {
                 h('select', { 'aria-label': '多样性', value: String((localFields.options || {}).varietyBoost ?? false), style: full(), onChange: e => updateOption('varietyBoost', e.target.value === 'true') },
                   h('option', { value: 'false', style: optStyle }, '关（默认）'),
                   h('option', { value: 'true', style: optStyle }, '开（Variety Boost）')))) : null,
-            backend === 'openai' ? optionField('quality', '质量', 'auto') : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'openai' ? optionField('quality', '质量', 'auto') : null,
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: '10px 12px' } },
               sizeField('sizeWidth', '宽（像素）', '如 832', legacySize.width),
               sizeField('sizeHeight', '高（像素）', '如 1216', legacySize.height),
               (sizeValue('sizeWidth', legacySize.width) && sizeValue('sizeHeight', legacySize.height)) ? null
                 : h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px', alignSelf: 'end', paddingBottom: '8px' } }, '宽高都填才覆盖；留空跟随规划给的分辨率')) : null,
-            backend === 'atlascloud' ? h('div', null,
+            protocolBackend === 'atlascloud' ? h('div', null,
               selectOptionField('sizeMode', '尺寸参数格式', [['size', 'size（宽×高，Flux / Seedream）'], ['aspect_ratio', 'aspect_ratio（比例，Nano Banana）'], ['none', '不发送尺寸参数（使用模型默认值）']], 'size'),
               !storedOption('sizeMode') || storedOption('sizeMode') === 'size' ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536；留空跟随规划') : null,
               storedOption('sizeMode') === 'aspect_ratio' ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3；留空跟随规划') : null) : null,
-            ['openai', 'sdwebui', 'qwen'].includes(backend) ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536') : null,
-            backend === 'seedream' ? optionField('size', '输出尺寸（可选）', '1K、1.5K、2K 或 2048x2048') : null,
-            backend === 'gemini' ? optionField('imageSize', '输出分辨率（可选）', '1K、2K 或 4K') : null,
-            ['gemini', 'novelai', 'sdwebui', 'qwen'].includes(backend) ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3') : null,
+            ['openai', 'sdwebui', 'qwen'].includes(protocolBackend) ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536') : null,
+            protocolBackend === 'seedream' ? optionField('size', '输出尺寸（可选）', '1K、1.5K、2K 或 2048x2048') : null,
+            protocolBackend === 'gemini' ? optionField('imageSize', '输出分辨率（可选）', '1K、2K 或 4K') : null,
+            ['gemini', 'novelai', 'sdwebui', 'qwen'].includes(protocolBackend) ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3') : null,
             generatePathPlaceholder ? optionField('generatePath', '生成接口路径（高级）', generatePathPlaceholder) : null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '12px' } },
               h('button', { style: Object.assign({}, buttonStyle, { fontWeight: 600 }), disabled: Boolean(channelTestsInFlight.current[channel.id]), onClick: async () => {
@@ -3184,7 +3194,7 @@ function versionsOf(jobId) {
                 channelTestStatuses[channel.id]?.checking ? '正在探测渠道…' : channelTestStatuses[channel.id]?.status === 'reachable' && channelTestStatuses[channel.id]?.ok ? ('连接可用' + (channelTestStatuses[channel.id].message ? '：' + channelTestStatuses[channel.id].message : '')) : channelTestStatuses[channel.id]?.status === 'configured' ? ('已配置，尚未验证：' + (channelTestStatuses[channel.id].message || '此服务没有可安全探测的接口。')) : channelTestStatuses[channel.id] ? ('无法连接：' + (channelTestStatuses[channel.id].message || channelTestStatuses[channel.id].error || '检查地址与鉴权')) : (channel.hasApiKey || channel.hasPassword ? '已配置，尚未验证' : '填写地址和鉴权后保存并测试')),
             ),
             h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '8px', lineHeight: 1.55 } },
-              backend === 'novelai' ? (naiChat ? '对话格式用于把 NovelAI 包成 chat/completions 的中转站：地址填中转站根地址，模型选 NovelAI 模型，采样器会自动拼进模型名。' : 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。') : backend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : backend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : backend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : backend === 'atlascloud' ? 'atlas cloud 使用原生异步接口，不需要安装 MCP。默认 Flux Schnell；更换文生图模型时请按模型文档选择尺寸参数格式和有效尺寸，或使用模型默认值。负面词以 Avoid 描述合入提示词，不发送原生 negative_prompt。测试只读取任务历史和模型目录，不会生成图片。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
+              protocolBackend === 'novelai' ? (naiChat ? '对话格式用于把 NovelAI 包成 chat/completions 的中转站：地址填中转站根地址，模型选 NovelAI 模型，采样器会自动拼进模型名。' : 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。') : protocolBackend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : protocolBackend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : protocolBackend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : protocolBackend === 'atlascloud' ? 'atlas cloud 使用原生异步接口，不需要安装 MCP。默认 Flux Schnell；更换文生图模型时请按模型文档选择尺寸参数格式和有效尺寸，或使用模型默认值。负面词以 Avoid 描述合入提示词，不发送原生 negative_prompt。测试只读取任务历史和模型目录，不会生成图片。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' } },
               h('label', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, '同时生成', h('input', { 'aria-label': '同时生成', type: 'number', min: 1, max: 4, value: Number(config.imageConcurrency || 2), style: Object.assign({}, S.input, { width: '70px', marginLeft: '8px' }), onChange: e => setCfg({ imageConcurrency: Math.max(1, Math.min(4, Number(e.target.value) || 1)) }) })),
               h('button', { style: buttonStyle, onClick: () => save({ imageConcurrency: Math.max(1, Math.min(4, Number(config.imageConcurrency || 2))) }) }, '保存并发设置'),
@@ -3281,16 +3291,19 @@ function versionsOf(jobId) {
 
       function generationModeCard() {
         const mode = config.generationMode === 'reference' ? 'reference' : 'text'
-        const available = imageBackend === 'atlascloud'
+        const activeChannel = (Array.isArray(config.imageChannels) ? config.imageChannels : []).find(channel => channel.id === config.activeImageChannel)
+        const activeDraft = activeChannel ? channelSecretDrafts[activeChannel.id]?.fields : null
+        const effectiveChannel = activeChannel ? Object.assign({}, activeChannel, activeDraft || {}, { options: activeDraft?.options || activeChannel.options || {} }) : null
+        const available = uiSupportsImageReferences(effectiveChannel || (imageBackend === 'comfyui' ? { provider: 'comfyui' } : { provider: imageBackend }), data)
         return h('div', { style: S.card },
           h('label', { style: S.row }, h('span', { style: S.label }, '默认生图模式'),
             h('select', { 'aria-label': '默认生图模式', value: mode, style: S.input, onChange: event => save({ generationMode: event.target.value }) },
               h('option', { value: 'text' }, '文生图'),
-              h('option', { value: 'reference', disabled: !available }, '参考图生图（atlas cloud）'))),
+              h('option', { value: 'reference', disabled: !available }, '参考图生图'))),
           !available ? h('div', { role: mode === 'reference' ? 'alert' : 'status', style: { fontSize: '12px', color: mode === 'reference' ? 'var(--dsw-alias-state-warning-primary)' : 'var(--dsw-alias-label-tertiary)' } },
-            mode === 'reference' ? '当前为参考图模式，但所选渠道不是 atlas cloud。请明确切换渠道或改为文生图，不会自动降级。' : '参考图模式仅支持 atlas cloud，请先在渠道中选择 atlas cloud。') : null,
-          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '6px' } }, '参考图模式使用人物库中的角色／服装参考图；有图用图、缺图用文字，整张无图时暂停提示。单张重绘可覆盖模式。'),
-          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '切换模式不会更换模型 ID，也不会自动删减参考图；不支持的输入由平台返回错误。'))
+            mode === 'reference' ? '当前渠道不支持参考图输入；请明确切换到支持参考图的渠道或改为文生图，不会自动降级。' : '当前渠道不支持参考图输入；可在支持参考图的渠道中启用此模式。') : null,
+          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '6px' } }, '参考图模式使用人物库中的角色／服装参考图；有图用图、缺图用文字，整张无图时暂停提示。单张重绘可覆盖模式。', imageBackend === 'comfyui' ? ' ComfyUI 工作流需要接入 LoadImage 节点；图片按本张参考图上传顺序对应节点。' : ''),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '切换模式不会更换模型 ID，也不会自动删减参考图；不支持的协议会在提交前明确阻止，不会静默降级。'))
       }
 
       function planTab() {
@@ -4489,52 +4502,6 @@ function versionsOf(jobId) {
       /** 工作流：导入、查看、LoRA 管理。 */
       function workflowCard() {
         const list = data.workflows || []
-        const simple = Object.assign({ template: 'checkpoint', checkpoint: '', unet: '', clip1: '', clip2: '', vae: '', loras: [], steps: 24, cfg: 7, sampler: 'euler', scheduler: 'normal', width: 832, height: 1216, seed: '' }, config.comfySimple || {})
-        function updateSimple(patch) {
-          const next = Object.assign({}, simpleDraft || simple, patch)
-          if (patch.template === 'flux' && simpleInfo) {
-            if (!simpleInfo.fluxUnets?.includes(next.unet)) next.unet = simpleInfo.fluxUnets?.[0] || ''
-            next.clip1 = next.clip1 || simpleInfo.dualClips1?.find(name => /t5/i.test(name)) || ''
-            next.clip2 = next.clip2 || simpleInfo.dualClips2?.find(name => /clip[_ -]?l/i.test(name)) || ''
-            if (!next.vae) next.vae = simpleInfo.vaes?.find(name => /(?:^|[\\/])ae(?:[._-]|$)/i.test(name)) || ''
-          }
-          if (patch.template === 'anima' && simpleInfo) {
-            if (!simpleInfo.animaUnets?.includes(next.unet)) next.unet = simpleInfo.animaUnets?.[0] || ''
-            next.clip1 = next.clip1 || simpleInfo.clips?.find(name => /qwen/i.test(name)) || ''
-            if (!next.vae) next.vae = simpleInfo.vaes?.find(name => /qwen[_ -]?image[_ -]?vae/i.test(name)) || ''
-          }
-          setSimpleConfigDraft(next)
-        }
-        async function refreshSimpleInfo() {
-          setSimpleLoading(true); setSimpleNote('正在读取 ComfyUI 节点和模型列表…')
-          try {
-            const info = await post('/comfy-simple-info', {})
-            if (!info?.ok) throw new Error(info?.error || 'ComfyUI 没有返回节点信息')
-            setSimpleInfo(info)
-            const draft = simpleConfigDraft || simple
-            const next = Object.assign({}, draft)
-            if (!next.checkpoint && info.checkpoints?.length) next.checkpoint = info.checkpoints[0]
-            if (draft.template === 'anima') {
-              if (!info.animaUnets?.includes(next.unet)) next.unet = info.animaUnets?.[0] || ''
-            } else if (draft.template === 'flux') {
-              if (!info.fluxUnets?.includes(next.unet)) next.unet = info.fluxUnets?.[0] || ''
-            } else if (!next.unet && info.unets?.length) next.unet = info.unets[0]
-            if (!next.clip1 && draft.template === 'flux') next.clip1 = info.dualClips1?.find(name => /t5/i.test(name)) || ''
-            if (!next.clip2 && draft.template === 'flux') next.clip2 = info.dualClips2?.find(name => /clip[_ -]?l/i.test(name)) || ''
-            if (!next.clip1 && draft.template === 'anima') next.clip1 = info.clips?.find(name => /qwen/i.test(name)) || ''
-            if (!next.vae && draft.template === 'flux') next.vae = info.vaes?.find(name => /(?:^|[\\/])ae(?:[._-]|$)/i.test(name)) || ''
-            if (!next.vae && draft.template === 'anima') next.vae = info.vaes?.find(name => /qwen[_ -]?image[_ -]?vae/i.test(name)) || ''
-            setSimpleConfigDraft(next); setSimpleNote('已读取；模型列表来自当前 ComfyUI')
-            setLoraList(Array.isArray(info.loras) ? info.loras : [])
-          } catch (e) { setSimpleNote('读取失败：' + (e?.message ?? e)) }
-          finally { setSimpleLoading(false) }
-        }
-        const simpleDraft = simpleConfigDraft || simple
-        const setTemplate = value => { updateSimple({ template: value }); save({ comfyMode: 'simple', comfySimple: Object.assign({}, simpleDraft, { template: value }) }) }
-        const simpleSupport = simpleInfo?.templates?.[simpleDraft.template]
-        const options = (values, value, onChange, placeholder) => h('select', { value: value || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => onChange(e.target.value) },
-          !values?.length ? h('option', { value: '' }, placeholder || '先刷新模型列表') : null,
-          (values || []).map(item => h('option', { key: item, value: item }, item)))
         // 判定"读到的详情是不是当前这张"：file 或 id 任一匹配即可（file 由前端补进来）
         const detail = (wfDetail && (String(wfDetail.file ?? '') === String(wfOpen) || String(wfDetail.__id ?? '') === String(wfOpen))) ? wfDetail : null
 
@@ -4635,6 +4602,16 @@ function versionsOf(jobId) {
           } catch (e) { setWfNote('保存失败：' + (e?.message ?? e)) }
         }
 
+        async function patchReferenceBindings(bindings) {
+          if (!detail) return
+          const next = Object.assign({}, detail.bindings || {}, { referenceImages: bindings })
+          setWfDetail(Object.assign({}, detail, { bindings: next }))
+          try {
+            const r = await post('/workflow-bindings', { file: detail.file ?? wfOpen, patch: { bindings: { referenceImages: bindings } } })
+            setWfNote(r?.ok ? '参考图接入顺序已保存' : ('保存失败：' + (r?.error || '')))
+          } catch (e) { setWfNote('保存失败：' + (e?.message ?? e)) }
+        }
+
         async function loadLoraNames() {
           const r = await jsonFetch(BASE + '/loras-available', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null)
           if (r?.ok) { setLoraList(r.loras ?? []); setWfNote(r.loras?.length ? ('读到 ' + r.loras.length + ' 个已安装的 LoRA') : '没读到 LoRA 列表（ComfyUI 开了吗）') }
@@ -4665,69 +4642,14 @@ function versionsOf(jobId) {
         const ta = Object.assign({}, S.input, { width: '100%', minHeight: '110px', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '11px', lineHeight: '1.5', resize: 'vertical', boxSizing: 'border-box' })
 
         return h('div', { style: S.card },
-          h('div', { style: { padding: '12px', marginBottom: '12px', borderRadius: '10px', background: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, transparent)' } },
-            h('div', { style: { fontSize: '14px', fontWeight: 700, marginBottom: '8px' } }, 'ComfyUI 生成方式'),
-            h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-              h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '模式'),
-              h('select', { value: config.comfyMode === 'simple' ? 'simple' : 'workflow', style: Object.assign({}, S.input, { minWidth: '220px', flex: 1 }), onChange: e => save({ comfyMode: e.target.value }) },
-                h('option', { value: 'workflow' }, '工作流模式（当前默认）'), h('option', { value: 'simple' }, '简单模式（不需要 JSON）'))),
-            config.comfyMode === 'simple' ? h('div', { style: { marginTop: '10px' } },
-              h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, '从 ComfyUI 读取实际可用的模型与节点；此操作只读取信息，不会提交生成任务。'),
-              h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '模板'),
-                h('select', { value: simpleDraft.template || 'checkpoint', style: Object.assign({}, S.input, { minWidth: '220px', flex: 1 }), onChange: e => updateSimple({ template: e.target.value }) },
-                  h('option', { value: 'checkpoint' }, 'Checkpoint（SD / SDXL）'), h('option', { value: 'flux' }, 'Flux'), h('option', { value: 'anima' }, 'Anima')),
-                h('button', { style: buttonStyle, onClick: refreshSimpleInfo, disabled: simpleLoading }, simpleLoading ? '读取中…' : '刷新模型列表'),
-                h('button', { style: Object.assign({}, buttonStyle, { borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 65%, transparent)', color: 'var(--dsw-alias-state-success-primary)', fontWeight: 600 }), onClick: async () => { const r = await save({ comfyMode: 'simple', comfySimple: simpleDraft }); if (r) { setSimpleConfigDraft(null); setSimpleNote('简单模式设置已保存') } } }, '保存简单模式设置')),
-              simpleNote ? h('div', { style: { fontSize: '12px', color: /失败|不可用/.test(simpleNote) ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-brand-primary)', marginTop: '7px' } }, simpleNote) : null,
-              simpleSupport?.reason ? h('div', { role: 'status', style: { marginTop: '8px', padding: '9px 10px', color: 'var(--dsw-alias-state-warning-primary)', background: 'color-mix(in srgb, var(--dsw-alias-state-warning-primary) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warning-primary) 35%, transparent)', borderRadius: '8px', fontSize: '12px', lineHeight: 1.5 } }, simpleSupport.reason) : null,
-              ['checkpoint', 'flux', 'anima'].includes(simpleDraft.template) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' } },
-                simpleDraft.template === 'checkpoint'
-                  ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) }, h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'Checkpoint'),
-                      simpleInfo?.checkpoints?.length ? options(simpleInfo.checkpoints, simpleDraft.checkpoint, value => updateSimple({ checkpoint: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.checkpoint || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ checkpoint: e.target.value }) }))
-                  : h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) }, h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, simpleDraft.template === 'anima' ? 'Anima 扩散模型' : 'Flux UNet'),
-                      (simpleDraft.template === 'anima' ? simpleInfo?.animaUnets : (simpleDraft.template === 'flux' ? simpleInfo?.fluxUnets : simpleInfo?.unets))?.length ? options(simpleDraft.template === 'anima' ? simpleInfo.animaUnets : (simpleDraft.template === 'flux' ? simpleInfo.fluxUnets : simpleInfo.unets), simpleDraft.unet, value => updateSimple({ unet: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.unet || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ unet: e.target.value }) })),
-                simpleDraft.template === 'flux' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '双 CLIP（T5 / CLIP-L）'),
-                  options(simpleInfo?.dualClips1, simpleDraft.clip1, value => updateSimple({ clip1: value }), '选择 T5-XXL'),
-                  options(simpleInfo?.dualClips2, simpleDraft.clip2, value => updateSimple({ clip2: value }), '选择 CLIP-L')) : null,
-                simpleDraft.template === 'checkpoint' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '外置 VAE（可选）'),
-                  h('select', { value: simpleDraft.vae || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => updateSimple({ vae: e.target.value }) },
-                    h('option', { value: '' }, '使用 Checkpoint 内置 VAE'), (simpleInfo?.vaes || []).map(item => h('option', { key: item, value: item }, item)))) : null,
-                simpleDraft.template === 'anima' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'Anima Qwen CLIP'),
-                  simpleInfo?.clips?.length ? options(simpleInfo.clips, simpleDraft.clip1, value => updateSimple({ clip1: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.clip1 || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ clip1: e.target.value }) })) : null,
-                ['flux', 'anima'].includes(simpleDraft.template) ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'VAE'),
-                  simpleInfo?.vaes?.length ? h('select', { value: simpleDraft.vae || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => updateSimple({ vae: e.target.value }) },
-                    h('option', { value: '' }, simpleDraft.template === 'anima' ? '自动选择 qwen_image_vae' : '自动选择 ae.safetensors'), simpleInfo.vaes.map(item => h('option', { key: item, value: item }, item))) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.vae || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ vae: e.target.value }) })) : null,
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '步数 / CFG'),
-                  h('input', { type: 'number', min: 1, max: 200, value: simpleDraft.steps ?? 24, style: Object.assign({}, S.input, { width: '90px' }), onChange: e => updateSimple({ steps: e.target.value }) }),
-                  h('input', { type: 'number', step: '0.1', min: 0, max: 100, value: simpleDraft.cfg ?? (simpleDraft.template === 'flux' ? 3.5 : 7), style: Object.assign({}, S.input, { width: '90px' }), onChange: e => updateSimple({ cfg: e.target.value }) }),
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, paddingTop: '7px' } }, '采样器'), options(simpleInfo?.samplers, simpleDraft.sampler, value => updateSimple({ sampler: value }))),
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '调度器 / 尺寸'), options(simpleInfo?.schedulers, simpleDraft.scheduler, value => updateSimple({ scheduler: value })),
-                  h('input', { type: 'number', min: 64, max: 8192, step: 8, value: simpleDraft.width ?? 832, 'aria-label': '宽度', style: Object.assign({}, S.input, { width: '82px' }), onChange: e => updateSimple({ width: e.target.value }) }),
-                  h('span', { style: { paddingTop: '7px' } }, '×'),
-                  h('input', { type: 'number', min: 64, max: 8192, step: 8, value: simpleDraft.height ?? 1216, 'aria-label': '高度', style: Object.assign({}, S.input, { width: '82px' }), onChange: e => updateSimple({ height: e.target.value }) })),
-                h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', paddingLeft: '92px' } }, '宽高按 8 像素倍数生效（其他数值自动取最近值）；简单模式固定输出 ' + (simpleDraft.width || 832) + ' × ' + (simpleDraft.height || 1216) + ' 像素，工作流模式的画幅设置不会覆盖它。'),
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '固定种子'),
-                  h('input', { type: 'number', min: 0, max: 140737488355327, value: simpleDraft.seed ?? '', placeholder: '留空则每张随机', style: Object.assign({}, S.input, { width: '220px' }), onChange: e => updateSimple({ seed: e.target.value }) }),
-                  h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', paddingTop: '7px' } }, '只读取已保存的固定种子；默认每张随机')),
-                h('div', { style: { padding: '9px', border: '1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 30%, transparent)', borderRadius: '8px' } },
-                  h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '7px' } }, 'LoRA（按当前模板的模型路径连接）'),
-                  (simpleDraft.loras || []).map((lora, index) => h('div', { key: index, style: Object.assign({}, S.row, { marginBottom: '6px' }) },
-                    h('input', { type: 'checkbox', checked: lora.enabled !== false, 'aria-label': '启用 LoRA', onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { enabled: e.target.checked }) : item) }) }),
-                    simpleInfo?.loras?.length ? options(simpleInfo.loras, lora.name, value => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { name: value }) : item) }), '刷新列表后选择') : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: lora.name || '', placeholder: 'LoRA 名称', onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { name: e.target.value }) : item) }) }),
-                    h('input', { type: 'number', step: '0.05', value: lora.strengthModel ?? 1, 'aria-label': 'LoRA 模型权重', style: Object.assign({}, S.input, { width: '80px' }), onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { strengthModel: Number(e.target.value), strengthClip: Number(e.target.value) }) : item) }) }),
-                    h('button', { style: buttonStyle, onClick: () => updateSimple({ loras: simpleDraft.loras.filter((_, i) => i !== index) }) }, '移除'))),
-                  h('button', { style: buttonStyle, onClick: () => updateSimple({ loras: [...(simpleDraft.loras || []), { name: '', strengthModel: 1, strengthClip: 1, enabled: true }] }) }, '＋ 添加 LoRA'))
-              ) : null,
-            ) : null,
-          ),
+          (config.comfyMode === 'simple' || data.configurationWarning) ? h('div', { role: 'status', style: { padding: '10px 12px', marginBottom: '12px', borderRadius: '9px', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warning-primary) 45%, transparent)', color: 'var(--dsw-alias-state-warning-primary)' } },
+            h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, data.configurationWarning || '旧版简易模式已停止；原设置数据仍保留。'),
+            h('div', { style: { fontSize: '12px', marginBottom: '8px' } }, '导入完整 ComfyUI API 工作流或先选择一张可用工作流，再启用工作流模式。旧的简易模式参数不会删除。'),
+            h('button', { type: 'button', disabled: !list.some(wf => !wf.error && wf.enabled !== false), onClick: async () => {
+              const chosen = list.find(wf => wf.id === config.defaultWorkflow && !wf.error && wf.enabled !== false) || list.find(wf => !wf.error && wf.enabled !== false)
+              if (!chosen) return
+              await save({ comfyMode: 'workflow', defaultWorkflow: chosen.id })
+            } }, '启用选定的完整工作流')) : null,
           h('div', { style: { fontSize: '13px', marginBottom: '4px' } }, '工作流（' + list.length + ' 张）'),
           h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px' } },
             '从 ComfyUI 导出「API 格式」的 JSON 就能导进来，插件会自动认出正负面提示词、尺寸、步数、底模和 LoRA。',
@@ -4896,6 +4818,33 @@ function versionsOf(jobId) {
                               '读参数失败：' + wfValues.__error + '　（多半是宿主没重启，重启 DSH 后再试）')
                           : h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px' } }, '读取参数中…'),
 
+                        (() => {
+                          const loadImageNodes = Object.entries(detail.prompt || {}).filter(([, node]) => node?.class_type === 'LoadImage')
+                          if (!loadImageNodes.length) return null
+                          const selected = Array.isArray(detail.bindings?.referenceImages) ? detail.bindings.referenceImages : []
+                          const rows = selected.length ? selected : (loadImageNodes.length === 1 ? [{ node: loadImageNodes[0][0], input: 'image' }] : [])
+                          const nodeLabel = (id, node) => String(node?._meta?.title || node?.title || ('LoadImage ' + id))
+                          return h('div', { style: { margin: '12px 0', padding: '10px 12px', border: '1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 28%, transparent)', borderRadius: '9px' } },
+                            h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '4px' } }, '参考图接入顺序'),
+                            h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '8px', lineHeight: 1.5 } }, loadImageNodes.length === 1
+                              ? '本工作流只有一个 LoadImage 接图节点，参考图 1 会自动接入。'
+                              : '本工作流有多个 LoadImage 节点，可能用于姿势、蒙版或背景。请明确选择角色／服装参考图对应的节点；参考图按下方顺序逐张对应。'),
+                            rows.map((binding, index) => h('div', { key: index, style: Object.assign({}, S.row, { marginBottom: '6px' }) },
+                              h('span', { style: { minWidth: '82px', fontSize: '12px' } }, '参考图 ' + (index + 1)),
+                              h('select', { 'aria-label': '参考图 ' + (index + 1) + ' 接入节点', value: String(binding.node || ''), style: Object.assign({}, S.input, { flex: 1, minWidth: '180px' }), onChange: e => {
+                                if (!e.target.value) return
+                                const next = rows.map((item, i) => i === index ? { node: e.target.value, input: 'image' } : item)
+                                void patchReferenceBindings(next)
+                              } },
+                                !binding.node ? h('option', { value: '' }, '选择接图节点') : null,
+                                loadImageNodes.map(([id, node]) => h('option', { key: id, value: id, disabled: rows.some((item, i) => i !== index && String(item.node) === String(id)) }, nodeLabel(id, node)))),
+                              rows.length > 1 ? h('button', { type: 'button', 'aria-label': '移除参考图 ' + (index + 1) + ' 接入', onClick: () => void patchReferenceBindings(rows.filter((_, i) => i !== index)) }, '移除') : null)),
+                            loadImageNodes.length > 1 && rows.length < loadImageNodes.length ? h('button', { type: 'button', onClick: () => {
+                              const next = rows.concat({ node: '', input: 'image' })
+                              setWfDetail(Object.assign({}, detail, { bindings: Object.assign({}, detail.bindings || {}, { referenceImages: next }) }))
+                            } }, '＋ 添加接入节点') : null,
+                            loadImageNodes.length > 1 && !selected.length ? h('div', { role: 'note', style: { color: 'var(--dsw-alias-state-warning-primary)', fontSize: '11px', marginTop: '6px' } }, '尚未保存明确映射；存在多个接图节点时不会猜测参考图用途。') : null)
+                        })(),
                         h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '6px' } },
                           'LoRA（' + (detail.bindings?.loras?.length ?? 0) + ' 个）'),
                         (detail.bindings?.loras ?? []).length

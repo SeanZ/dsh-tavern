@@ -140,14 +140,24 @@ test('a completed upload cannot attach its image after its library editor unmoun
   assert.deepEqual(ui.patches, [])
 })
 
-for (const backend of ['atlascloud', 'openai', 'comfyui']) test(`global generation selector preserves model choice (${backend})`, () => {
-  const config = { generationMode: 'reference', imageChannels: [{ id: 'channel', model: 'user/exact-model' }] }, patches = []
-  const context = vm.createContext({ h, config, imageBackend: backend, S: { card: {}, row: {}, input: {}, label: {} }, save: patch => patches.push(clone(patch)) })
+for (const [backend, protocol, supported] of [
+  ['atlascloud', '', true], ['openai', '', true], ['comfyui', '', false],
+  ['custom', 'openai', true], ['custom', 'novelai', false], ['custom', 'grok', true],
+]) test(`global generation selector follows effective provider capability (${backend}${protocol ? '/' + protocol : ''})`, () => {
+  const channel = { id: 'channel', provider: backend, options: protocol ? { apiProtocol: protocol } : {}, model: 'user/exact-model' }
+  const config = { generationMode: 'reference', imageBackend: backend, activeImageChannel: 'channel', imageChannels: [channel] }, patches = []
+  const data = { config, referenceSupported: backend === 'comfyui' && supported }
+  const uiSupportsImageReferences = (selected, state) => {
+    if (selected?.provider === 'comfyui') return state.referenceSupported === true
+    const effective = selected?.provider === 'custom' ? selected.options?.apiProtocol || 'openai' : selected?.provider
+    return new Set(['atlascloud', 'openai', 'gemini', 'gemini-chat', 'sdwebui', 'seedream', 'grok', 'qwen']).has(effective)
+  }
+  const context = vm.createContext({ h, config, data, channelSecretDrafts: {}, uiSupportsImageReferences, imageBackend: backend, S: { card: {}, row: {}, input: {}, label: {} }, save: patch => patches.push(clone(patch)) })
   const tree = vm.runInContext(`(()=>{${generationCard};return generationModeCard()})()`, context)
   const select = one(tree, node => node.props['aria-label'] === '默认生图模式')
   assert.equal(select.props.value, 'reference')
-  assert.equal(one(select, node => node.type === 'option' && node.props.value === 'reference').props.disabled, backend !== 'atlascloud')
-  if (backend !== 'atlascloud') assert.match(text(tree), /不会自动降级/)
+  assert.equal(one(select, node => node.type === 'option' && node.props.value === 'reference').props.disabled, !supported)
+  if (!supported) assert.match(text(tree), /不会自动降级/)
   assert.equal(patches.length, 0, 'rendering never silently changes the mode or model')
   select.props.onChange({ target: { value: 'text' } })
   assert.deepEqual(patches, [{ generationMode: 'text' }])

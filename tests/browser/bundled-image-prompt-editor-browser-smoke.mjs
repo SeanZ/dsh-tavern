@@ -7,7 +7,7 @@ import { parse } from 'acorn'
 import { chromium } from 'playwright'
 import { browserReactScript } from '../fixtures/browser-react.mjs'
 
-const chromePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path))
+const chromePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path)) || chromium.executablePath()
 const clientSource = await readFile(new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/client.js', import.meta.url), 'utf8')
 
 function declaration(name) {
@@ -42,13 +42,13 @@ try {
   ].join('\n')
   const componentScript = [
     'const React=modules.react; const useEffect=React.useEffect, useState=React.useState;',
-    'const BASE="http://localhost/plugins/dsh-tavern-image"; let openPromptEditor=null;',
+    'const BASE="http://localhost/plugins/dsh-tavern-image"; let openPromptEditor=null; const IMAGE_REFERENCE_PROTOCOLS=new Set(["openai","gemini","gemini-chat","atlascloud","seedream","grok","qwen","sdwebui"]); function uiSupportsImageReferences(channel,state){ if(!channel)return state?.referenceSupported===true; if(channel.provider==="comfyui")return state?.referenceSupported===true&&state?.config?.imageBackend==="comfyui"; return IMAGE_REFERENCE_PROTOCOLS.has(channel.provider==="custom"?String(channel.options?.apiProtocol||"openai"):channel.provider); }',
     'const mediaPostLocks=new Set(), mediaUncertainActions=new Set(), requests=[]; window.__jobOverrides={};',
     'const validMediaContext=context=>Boolean(context&&context.gameId&&context.mediaId&&context.jobId&&context.textVersion&&Number.isFinite(Number(context.turn)));',
     `async function jsonFetch(url,options={}) {
       if(url.includes('/job-detail?')) return {ok:true,job:{rawPrompt:'two people in a garden',tag:'two people in a garden',prompt:'expanded',promptText:${JSON.stringify(promptText)},negative:'base uc'}};
       if(url.includes('/jobs?')) return {ok:true,job:{generationMode:'text',backend:'atlascloud',channelId:'atlas',references:[],positive:'expanded',negative:'base uc',submittedPrompt:'expanded',...(window.__jobOverrides[new URL(url).searchParams.get('id')]||{})}};
-      if(url.endsWith('/state')) return {config:{imageChannels:[{id:'atlas',name:'atlas cloud',provider:'atlascloud'},{id:'other',name:'other provider',provider:'openai'}]}};
+      if(url.endsWith('/state')) return {config:{imageChannels:[{id:'atlas',name:'atlas cloud',provider:'atlascloud'},{id:'other',name:'other provider',provider:'novelai'}]}};
       if(url.endsWith('/media-action')) { requests.push(JSON.parse(options.body)); return {ok:true,jobId:'replacement'}; }
       if(url.endsWith('/redraw')) { requests.push(JSON.parse(options.body)); return {ok:true,job:{id:'legacy-replacement'}}; }
       if(url.endsWith('/improve-prompt')) return {ok:true,prompt:'后台改写后的提示词'};
@@ -101,7 +101,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="本次生图模式"]')?.value === 'reference' && !document.querySelector('[aria-label="本次生图模式"]').disabled)
   await page.getByLabel('本次生图渠道').selectOption('other')
   assert.equal(await page.getByRole('button', { name: /用这段重画/ }).isDisabled(), true, 'reference mode cannot silently use another provider')
-  assert.match(await page.locator('[role="alert"]').first().textContent(), /仅支持 atlas cloud/)
+  assert.match(await page.locator('[role="alert"]').first().textContent(), /当前渠道不支持参考图输入/)
   await page.getByLabel('本次生图模式').selectOption('text')
   await page.getByRole('button', { name: /用这段重画/ }).click()
   await page.waitForFunction(() => window.__requests.length === 3)
@@ -119,7 +119,7 @@ try {
   assert.equal(await page.evaluate(() => window.__requests[3].generationMode), 'text')
   assert.equal(await page.evaluate(() => window.__requests[3].refreshReferences), false)
   assert.deepEqual(pageErrors, [], 'browser runtime reports no uncaught errors')
-  console.log('PASS Chromium bundled React prompt editor: role-preserving redraw, immutable input details, reference snapshot opt-in, atlas-only warning, legacy improve/redraw')
+  console.log('PASS Chromium bundled React prompt editor: role-preserving redraw, immutable input details, reference snapshot opt-in, capability warning, legacy improve/redraw')
 } finally {
   await browser.close()
 }
