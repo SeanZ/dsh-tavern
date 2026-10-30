@@ -6,7 +6,7 @@ import { isTurnInput } from './session-turn-input.js'
 import { nativeOpeningMessageId } from './native-opening.js'
 import { RETAINED_STORY_ROUNDS } from './story-compaction.js'
 
-// The Chat is the save; the native surface is its projection (docs/design/native-session-repair.md).
+// The Chat is the save; the native surface is its projection (Wiki「设计：native-session-repair」).
 // Repair keeps the longest surface prefix that still agrees with the Chat and rewrites
 // only the rounds after it, so the prompt-cache prefix and any compaction survive.
 // The walk starts at the last round and stops at the first intact one: its cost

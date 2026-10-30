@@ -78,7 +78,7 @@ Tavern 把 `plugins/` 下的插件登记在 DSH 的 Tavern 配置（`~/.dsh/prof
 
 ### 卡内插件
 
-插件也可以放进 DSH 人物卡（`.dshcard`）的 `plugins/<文件夹>/` 随卡分发，写法和上面的插件文件夹完全一样，并在卡的 `dsh.json` 里登记（见[格式设计](design/dsh-card-format.md)）：
+插件也可以放进 DSH 人物卡（`.dshcard`）的 `plugins/<文件夹>/` 随卡分发，写法和上面的插件文件夹完全一样，并在卡的 `dsh.json` 里登记（见[格式设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Adsh-card-format)）：
 
 - 导入卡时插件随卡启用：Tavern 把它放进 `plugins/` 加载（宿主侧几秒内生效，浏览器侧刷新页面后生效）。人物卡库的卡片详情里可以随时停用、再启用。
 - **只在这张卡的局里生效**：别的局里，它注册的回调不触发、提示词与结算内容不加入、界面（面板、舞台画面、正文标记、按钮）不出现；带别的局的 `gameId` 或别的卡的 `card` 调用接口会被拒绝；`listCards` 只看得到本卡。
@@ -130,6 +130,7 @@ export function apply(ctx) {
 | [媒体与数据](plugin-api-data.md) | 挂图片等媒体、按轮与整局数据、插件数据、本局配置项、插件在哪些局生效 |
 | [人物卡、Skill 与演出](plugin-api-cards.md) | 人物卡库、改卡、Skill、台词标注、角色素材 |
 | [浏览器侧 tavernUi](plugin-api-ui.md) | 显示媒体、正文标记、按钮、面板、舞台、配音与音乐 |
+| [皮肤](interface-skin.md) | 只换外观不写代码：一个 .css 文件，可用的变量与类名 |
 
 ## 插件自建 Agent 的请求记录
 

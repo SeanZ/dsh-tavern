@@ -18,7 +18,7 @@ const safeName = value => /^[a-zA-Z0-9_-]+$/.test(value)
  *   log        audit logs and diagnostics that can be dropped
  *   cache      transient state rebuilt on demand
  */
-export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.dirname(dataRoot), 'sessions') }) {
+export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.dirname(dataRoot), 'sessions'), readdir: listDirectory = readdir }) {
   const root = path.resolve(dataRoot)
   const file = relative => path.join(root, relative)
 
@@ -32,12 +32,12 @@ export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.di
     const wanted = new Set(ids.filter(safeName))
     if (!wanted.size) return []
     let projects
-    try { projects = await readdir(sessionsRoot, { withFileTypes: true }) } catch { return [] }
+    try { projects = await listDirectory(sessionsRoot, { withFileTypes: true }) } catch { return [] }
     const found = []
     for (const project of projects) {
       if (!project.isDirectory()) continue
       let entries
-      try { entries = await readdir(path.join(sessionsRoot, project.name), { withFileTypes: true }) } catch { continue }
+      try { entries = await listDirectory(path.join(sessionsRoot, project.name), { withFileTypes: true }) } catch { continue }
       for (const entry of entries) if (entry.isDirectory() && wanted.has(entry.name)) found.push({ id: entry.name, path: path.join(sessionsRoot, project.name, entry.name) })
     }
     return found
@@ -45,41 +45,69 @@ export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.di
 
   // ownsSession(id): whether a background session really belongs to this game. Imported
   // saves and old bugs can leave another game's ids in history; never delete those.
-  async function describe(chat, { ownsSession = async () => true } = {}) {
-    const chatId = str(chat?.id)
-    if (!safeName(chatId)) throw new Error('无效的游戏编号')
-    const foreground = str(chat.sessionId)
-    const sceneAgent = await readJson('scene-images/' + sha(chatId) + '/agent.json')
-    const background = new Set([
-      currentBackgroundSessionId(chat), ...referencedBackgroundSessionIds(chat),
-      ...(Array.isArray(chat.backgroundHistoryIds) ? chat.backgroundHistoryIds : []),
-      chat.candidates?.traceSessionId, ...(Array.isArray(chat.candidates?.traceSessionIds) ? chat.candidates.traceSessionIds : []),
-      sceneAgent?.sessionId
-    ].map(str).filter(id => id && id !== foreground))
-    for (const id of [...background]) if (!await ownsSession(id)) background.delete(id)
-    const sessionIds = [foreground, ...background].filter(Boolean)
-    const items = []
-    const add = (category, relative, kind = 'file') => items.push({ category, kind, path: file(relative) })
-    add('product', 'scene-images/' + sha(chatId), 'dir')
-    add('log', 'model-requests/' + chatId, 'dir')
-    add('log', 'worldbook-recalls/' + chatId, 'dir')
-    add('log', 'diagnostics/scene-' + sha(chatId) + '.json')
-    add('log', 'diagnostics/scene-' + sha(chatId), 'dir')
-    add('log', 'diffs/polish-' + chatId + '.html')
-    const importOperation = str(chat.importHistory?.operationId)
-    if (safeName(importOperation)) add('log', 'chat-imports/' + importOperation + '.json')
-    add('cache', '.conversation-locks/' + chatId, 'dir')
-    for (const id of sessionIds) {
-      add('log', 'model-request-sessions/' + encodeURIComponent(id) + '.json')
-      for (const kind of ['mvu', 'api-calls', 'compatibility']) add('log', 'diagnostics/' + kind + '-' + sha(id) + '.json')
-      add('log', 'diagnostics/mvu-' + sha(id) + '.jsonl')
-      add('cache', 'template-work/' + sha(id) + '.json')
-      if (safeName(id)) add('cache', 'session-prefixes/' + id + '.json')
+  // One batch = one sessions-tree scan and one ownership probe per session id: bulk
+  // deletion used to re-list every project directory once per game.
+  async function describeMany(chats, { ownsSession = async () => true } = {}) {
+    const prepared = []
+    for (const chat of chats) {
+      const chatId = str(chat?.id)
+      if (!safeName(chatId)) throw new Error('无效的游戏编号')
+      const foreground = str(chat.sessionId)
+      const sceneAgent = await readJson('scene-images/' + sha(chatId) + '/agent.json')
+      const background = new Set([
+        currentBackgroundSessionId(chat), ...referencedBackgroundSessionIds(chat),
+        ...(Array.isArray(chat.backgroundHistoryIds) ? chat.backgroundHistoryIds : []),
+        chat.candidates?.traceSessionId, ...(Array.isArray(chat.candidates?.traceSessionIds) ? chat.candidates.traceSessionIds : []),
+        sceneAgent?.sessionId
+      ].map(str).filter(id => id && id !== foreground))
+      prepared.push({ chat, chatId, foreground, background })
     }
-    for (const session of await nativeSessionDirectories(sessionIds)) {
-      items.push({ category: 'subsession', kind: 'dir', path: session.path, sessionId: session.id, foreground: session.id === foreground })
+    // Ownership is per game: one id can be a parent for one save and a stray for another.
+    const ownership = new Map()
+    for (const entry of prepared) {
+      for (const id of [...entry.background]) {
+        const key = entry.chatId + '\u0000' + id
+        let owned = ownership.get(key)
+        // Second argument keeps the per-game context available without changing the
+        // positional contract existing callers (and tests) rely on.
+        if (owned === undefined) { owned = await ownsSession(id, entry.chat); ownership.set(key, owned) }
+        if (!owned) entry.background.delete(id)
+      }
     }
-    return { chatId, foregroundSessionId: foreground, backgroundSessionIds: [...background], items }
+    const wanted = [...new Set(prepared.flatMap(entry => [entry.foreground, ...entry.background]))].filter(safeName)
+    const directories = new Map()
+    for (const session of await nativeSessionDirectories(wanted)) if (!directories.has(session.id)) directories.set(session.id, session.path)
+    return prepared.map(function (entry) {
+      const { chat, chatId, foreground, background } = entry
+      const sessionIds = [foreground, ...background].filter(Boolean)
+      const items = []
+      const add = (category, relative, kind = 'file') => items.push({ category, kind, path: file(relative) })
+      add('product', 'scene-images/' + sha(chatId), 'dir')
+      add('log', 'model-requests/' + chatId, 'dir')
+      add('log', 'worldbook-recalls/' + chatId, 'dir')
+      add('log', 'diagnostics/scene-' + sha(chatId) + '.json')
+      add('log', 'diagnostics/scene-' + sha(chatId), 'dir')
+      add('log', 'diffs/polish-' + chatId + '.html')
+      const importOperation = str(chat.importHistory?.operationId)
+      if (safeName(importOperation)) add('log', 'chat-imports/' + importOperation + '.json')
+      add('cache', '.conversation-locks/' + chatId, 'dir')
+      for (const id of sessionIds) {
+        add('log', 'model-request-sessions/' + encodeURIComponent(id) + '.json')
+        for (const kind of ['mvu', 'api-calls', 'compatibility']) add('log', 'diagnostics/' + kind + '-' + sha(id) + '.json')
+        add('log', 'diagnostics/mvu-' + sha(id) + '.jsonl')
+        add('cache', 'template-work/' + sha(id) + '.json')
+        if (safeName(id)) add('cache', 'session-prefixes/' + id + '.json')
+      }
+      for (const id of sessionIds) {
+        const found = directories.get(id)
+        if (found) items.push({ category: 'subsession', kind: 'dir', path: found, sessionId: id, foreground: id === foreground })
+      }
+      return { chatId, foregroundSessionId: foreground, backgroundSessionIds: [...background], items }
+    })
+  }
+
+  async function describe(chat, options = {}) {
+    return (await describeMany([chat], options))[0]
   }
 
   // Everything except the core save, which the conversation registry removes first.
@@ -155,5 +183,5 @@ export function createGameFootprint({ dataRoot, sessionsRoot = path.join(path.di
     }
     return removed
   }
-  return Object.freeze({ describe, removeLeftovers, readSceneFiles, readSceneWorldbook, deferSessionDeletion, processDeferredDeletions, sweepDeletedGameImages })
+  return Object.freeze({ describe, describeMany, removeLeftovers, readSceneFiles, readSceneWorldbook, deferSessionDeletion, processDeferredDeletions, sweepDeletedGameImages })
 }

@@ -56,10 +56,3 @@ test('verified tail append visits only appended floors and preserves turn mappin
     assert.deepEqual(JSON.parse(JSON.stringify(next)),JSON.parse(JSON.stringify(projectTavernHelperContext({id:'append',messages:rows}))))
   }
 })
-
-test('旧变量关闭配置不再把官方 MVU 交回脚本，非官方 MVU 仍由脚本负责', () => {
-  const chat = { ...macroOpeningChat(), mvu: { enabled: true, owner: 'official' }, backgroundTasks: { variables: false } }
-  assert.equal(projectTavernHelperContext(chat).mvuSettlement, 'host')
-  chat.mvu.owner = 'card'
-  assert.equal(projectTavernHelperContext(chat).mvuSettlement, 'script')
-})

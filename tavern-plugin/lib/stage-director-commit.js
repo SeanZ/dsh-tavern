@@ -10,7 +10,10 @@ export function stageDirectorCommit(persistence) {
       if (target.operationId && chat.timeline?.operations?.[target.operationId]?.status !== 'completed') {
         throw Object.assign(Error('导演所属正文 operation 已变化'), { retryable: false })
       }
-      if (chat.timeline?.branchId !== target.authority?.branchId || chat.timeline?.revision !== target.authority?.revision ||
+      // The stage depends on this turn's text alone: the branch, the latest turn and the scene key
+      // (this reply, its swipe and the story before it) prove it unchanged. Not the timeline
+      // revision: choices, the ledger or a character design move it without touching the text.
+      if (chat.timeline?.branchId !== target.authority?.branchId ||
           Number(latest?.turn || (latest?.greeting ? 1 : 0)) !== target.turn || computeSceneTarget(chat, target.turn).key !== target.key) {
         throw Object.assign(Error('剧情版本已变化，本次不提交舞台'), { retryable: false })
       }

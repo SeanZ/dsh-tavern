@@ -315,9 +315,9 @@ test('提交提示词按最终工具列表选择，插件工具关闭后仍留�
 
   chat.disabledForegroundTools = ['plugin_tool']
   const filtered = await assemble([{ name: 'submit_story' }, { name: 'plugin_tool' }])
-  assert.deepEqual(filtered.tools.map(tool => tool.name), ['submit_story', 'plugin_tool'])
+  assert.deepEqual(filtered.tools.map(tool => tool.name), ['submit_story'])
   assert.deepEqual(recorded.map(tool => tool.name), ['plugin_tool'], '关闭的工具仍要出现在设置目录里')
-  assert.match(filtered.sections.find(section => section.name === 'tavern:story-tool-submission').text, /可以先使用已开放的其他工具/)
+  assert.match(filtered.sections.find(section => section.name === 'tavern:story-tool-submission').text, /不要调用任何其他工具/)
   chat.disabledForegroundTools = []
 
   // 只开输入回放：submit_story 在工具表里，但不能把本轮也要求成工具输出。

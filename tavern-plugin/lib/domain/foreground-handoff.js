@@ -28,12 +28,8 @@ export function createForegroundHandoff(options = {}) {
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
-    const activity = chat === undefined ? { phase: 'idle', busy: false, role: '' } : tasks.activity(chat)
-    if (chat !== undefined && activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
-      await queueBackground(chat.id)
-    }
-    // Plugin tasks of the last turn (or one the player started) finish before the next turn.
-    if (chat !== undefined) await options.waitBackground?.(chat.id)
+    // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
+    if (chat !== undefined) await options.beforeNextTurn?.(chat)
     // A failed turn is cleaned up after the failure, but that may not have happened (no live
     // session then, or it failed). Its input must not reach this request beside the new one.
     if (chat !== undefined) await options.clearFailedTurns?.(input.sessionId)
@@ -61,9 +57,8 @@ export function createForegroundHandoff(options = {}) {
         // 临时回合不能启动变量结算，否则可能把尚未采用的正文写进正式状态。
         if (chat.regenInProgress === true) return
         // Independent session: start from the host's committed body, never await settlement.
-        options.directRound?.(input.sessionId)
-        // The 精修 pre-review reads the reply as written; settlement never waits for it.
-        void Promise.resolve(options.afterReply?.(input.sessionId)).catch(error => logger.warn('dsh-tavern: 精修预审未启动', error && error.message || error))
+        // A Tavern edit's own turn writes no reply: it is 剧情回退或改写, announced by the edit.
+        if (input.edit !== true) options.replyCommitted?.(input.sessionId)
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)
@@ -71,7 +66,7 @@ export function createForegroundHandoff(options = {}) {
       }, '启动后台结算')
       return true
     }
-    options.cancelDirector?.(input.sessionId, input.turn)
+    options.turnDiscarded?.(input.sessionId, input.turn)
     later(async function () {
       const target = { sessionId: input.sessionId, turn: input.turn }
       await turns.discard(target)

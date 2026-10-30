@@ -86,7 +86,6 @@ const server = createServer(async (req, res) => {
     if (method === 'getSession') result = { view: { mode: 'story', latestAssistantTurn: 1, releaseCapabilities: { sceneImages: true }, card: { name: '测试卡' },
       replyProjections: [{ version: 2, turn: 1, parts: [{ kind: 'markdown', text: story }, { kind: 'html', content: statusBar }] }] } }
     else if (method === 'listSessions') result = { sessions: [{ sessionId: 'plugin-game', mode: 'story' }] }
-    else if (method === 'sceneImageStatus') result = { illustration: { key: 'k1', turn: 1, status: 'succeeded', enabled: true, versions: [{ id: 'v1', anchor: '她抖落斗篷上的水珠，朝吧台走去。' }], reference: {} } }
     else if (method === 'getSceneImageSettings') result = { settings: { enabled: false } }
     else if (method === 'pluginMediaTurns') result = { turns: [1] }
     else if (method === 'pluginMediaForTurn') result = { key: 'k1', items }

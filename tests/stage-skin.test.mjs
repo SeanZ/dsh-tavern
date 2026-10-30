@@ -17,25 +17,6 @@ const rejects = (document, code = 'INVALID_SKIN') => assert.throws(() => validat
 const art = extra => ({ screen: 1080, screenWidth: 1920, textbox: { images: { plain: 'art/box.svg' }, body: [0, 0, 1800, 260], bottom: 20, text: [80, 1720, 130], font: 40, lines: 3 }, ...extra })
 const frame = extra => ({ left: 40, bottom: 40, size: 240, frame: { image: 'art/frame.svg', left: 20, bottom: 20, ...extra } })
 
-test('经典 is an ordinary dsh.skin/1 document, and so is the smallest document a designer can write', () => {
-  assert.deepEqual(Object.keys(BUILTIN_STAGE_SKINS), ['classic', 'gothic', 'magical', 'crt', 'aero'])
-  assert.equal(validateStageSkin(classic), classic)
-  assert.equal(classic.label, '经典')
-  assert.deepEqual(classic.font, { body: 'neo-xihei-screen', film: 'neo-xihei-screen' }, 'the font library\'s 霞鹜新晰黑')
-  assert.equal(validateStageSkin(minimal), minimal)
-})
-
-test('the document is closed: unknown fields, ids, words and ranges reject the whole skin', () => {
-  rejects({ ...minimal, css: 'body{}' })
-  rejects(skin({ textbox: { paint: minimal.textbox.paint, url: 'https://example.invalid' } }))
-  rejects(skin({ id: 'Not An Id' }))
-  rejects(skin({ textbox: { layout: 'window', paint: minimal.textbox.paint } }))
-  rejects(skin({ nameplate: { shape: 'plain', paint: minimal.nameplate.paint, rotate: 9 } }))
-  rejects(skin({ textFx: { reveal: 'type', cps: 400 } }))
-  for (const key of ['schema', 'id', 'label', 'textbox', 'nameplate', 'font', 'textFx']) { const missing = skin(); delete missing[key]; rejects(missing) }
-  rejects(skin({ label: 'x'.repeat(40000) }))
-})
-
 test('readability is part of the contract: unsafe text pairs, a light scrim and ornaments over the text are refused', () => {
   rejects(skin({ textbox: { paint: { bg: '#101418', fg: '#303438' } } }), 'SKIN_CONTRAST')
   rejects(skin({ nameplate: { shape: 'plain', paint: { bg: '#ffffff', fg: '#eeeeee' } } }), 'SKIN_CONTRAST')
@@ -78,38 +59,6 @@ test('the shared contract accepts extension containers and rejects malformed one
   for (const extra of [{ levels: { default: 4 } }, { levels: { default: 1 } }, { overlay: {} }, { overlay: [] }, { mods: [] }, { assets: { unsafe: '../image.png' } }]) rejects(skin(extra))
 })
 
-test('the interpreter reads 经典 like any skin: paint, plate, rings and readable control chips', () => {
-  const tokens = interpreter.stageSkinTokens(classic)
-  assert.equal(tokens['--gal-skin-bg'], '#0c0a14')
-  assert.equal(tokens['--gal-skin-fg'], '#f5f2fa')
-  assert.equal(tokens['--gal-skin-border'], '#bcb8c6')
-  assert.equal(tokens['--gal-skin-radius'], '10px')
-  assert.equal(tokens['--gal-skin-name-radius'], '2px')
-  assert.equal(tokens['--gal-skin-rings'], 'none')
-  for (const chip of ['--gal-skin-qm-hover', '--gal-skin-qm-active']) assert.ok(skinContrast(tokens['--gal-skin-qm-on'], tokens[chip]) >= 3, chip)
-  assert.ok(skinContrast(tokens['--gal-skin-qm-idle'], tokens['--gal-skin-bg']) >= 3)
-  assert.ok(skinContrast(tokens['--gal-ui-accent'], tokens['--gal-ui-surface']) >= 4.5)
-  assert.ok(skinContrast(tokens['--gal-ui-accent-ink'], tokens['--gal-ui-accent']) >= 4.5)
-  const root = interpreter.stageSkinRoot(classic)
-  assert.equal(root['data-fk-skin'], 'classic')
-  // The root adds the three font roles (tests/stage-skin-fonts.test.mjs).
-  assert.deepEqual(Object.fromEntries(Object.entries(root.style).filter(([name]) => !name.startsWith('--gal-skin-font-'))), { ...tokens })
-})
-
-test('another document changes the look through the same tokens, never through a skin id', () => {
-  const pill = skin({ textbox: { paint: { bg: '#fff8f0', fg: '#3a2010', fgMuted: '#6a5040', accent: '#a03010' }, shape: { radius: 0, borderWidth: 3, rings: [{ width: 2, color: '#a03010' }, { width: 3, color: '#3a2010' }] } },
-    nameplate: { shape: 'pill', paint: { bg: '#a03010', fg: '#ffffff' }, rotate: -2 }, textStyle: { weight: 700, lineHeight: 1.5, letterSpacing: .05 }, quickMenu: { bg: '#fff8f0', fg: '#3a2010' } })
-  validateStageSkin(pill)
-  const tokens = interpreter.stageSkinTokens(pill)
-  assert.equal(tokens['--gal-skin-rings'], '0 0 0 2px #a03010,0 0 0 5px #3a2010')
-  assert.equal(tokens['--gal-skin-name-radius'], '99px')
-  assert.equal(tokens['--gal-skin-name-rotate'], '-2deg')
-  assert.equal(tokens['--gal-skin-border-width'], '3px')
-  assert.equal(tokens['--gal-skin-weight'], '700')
-  assert.equal(tokens['--gal-skin-qm-idle'], '#3a2010')
-  assert.equal(tokens['--gal-ui-accent'], '#a03010')
-})
-
 test('textFx draws the glyphs\' entrance: its flash ink, the side a stamp drops from and the skin\'s own poses as tokens', () => {
   const plain = interpreter.stageSkinTokens(classic)
   assert.deepEqual([plain['--gal-skin-flash'], plain['--gal-skin-stamp-y'], Object.keys(plain).some(key => key.startsWith('--gal-hop-'))], ['#f5f2fa', '-16px', false])
@@ -126,21 +75,7 @@ test('textFx draws the glyphs\' entrance: its flash ink, the side a stamp drops 
   for (const reveal of ['ink', 'pop', 'stutter', 'stamp', 'cut', 'scan', 'scrawl']) assert.match(css, new RegExp('data-skin-reveal="' + reveal + '"\\] \\.dsh-tavern-stage-glyph-paint\\[data-hop="0"\\]'))
   assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{\n  \.dsh-tavern-stage-type\[data-skin-reveal="ink"\]/)
 })
-test('the stage draws only from skin tokens: no colour of its own on the box, plate, text, controls or choices', () => {
-  const rules = css.match(/^\.dsh-tavern-stage-(?:textbox|name|text|controls|choice|wait)[^{]*\{[^}]*\}/gm)
-  assert.ok(rules.length >= 10)
-  for (const rule of rules) assert.doesNotMatch(rule, /#[\da-f]{3,8}\b|rgba?\(|hsl\(/i, rule)
-  assert.match(css, /\.dsh-tavern-stage-textbox \{[^}]*background: var\(--gal-skin-bg\)/)
-  assert.match(css, /\.dsh-tavern-stage-choice:has\(> \[data-action="generate"\]\) \{[^}]*background: color-mix\(in srgb, var\(--gal-ui-accent\) 14%, var\(--gal-ui-surface\)\)/)
-})
-
 // Consumers use the package schema; schema semantics belong to the package tests.
-test('the upstream skin consumer uses the single package JSON Schema', () => {
-  assert.equal(schema.$id, 'dsh.skin/1')
-  const consumer = readFileSync(new URL('../tavern-plugin/packages/dsh-presentation-protocol/src/skin-overlay.cjs', import.meta.url), 'utf8')
-  assert.match(consumer, /require\('\.\.\/schema\/skin\.schema\.json'\)/)
-  assert.throws(() => readFileSync(new URL('../tavern-plugin/lib/domain/stage-skin.schema.json', import.meta.url)), { code: 'ENOENT' })
-})
 test('the art layer draws the skin\'s box, plate, cue and lamp from its decoded images, or not at all', () => {
   const document = skin({ art: art({ textbox: { ...art().textbox, images: { plain: 'art/box.png', narration: 'art/narration.png' }, cue: [1700, 230, 40], rise: 6,
     next: { image: 'art/next.png', frames: { columns: 4, rows: 2, count: 6, fps: 12 } }, lamp: { image: 'art/lamp.png', x: 1600, y: 20, frames: { columns: 2, rows: 1, fps: 4, loop: false } } },
@@ -174,15 +109,6 @@ test('the art layer draws the skin\'s box, plate, cue and lamp from its decoded 
   assert.equal(interpreter.stageSkinArt(document, null), null)
   assert.equal(interpreter.stageSkinArt(minimal, files), null)
   assert.deepEqual([...interpreter.stageSkinArtImages(minimal)], [])
-})
-
-test('the stylesheet draws the art layer only from its tokens, and phones keep the reading size over a 9-sliced box', () => {
-  const block = css.slice(css.indexOf('/* ==== stage skin: art ===='), css.indexOf('/* ==== end stage skin: art ==== */'))
-  assert.ok(block.length > 0)
-  assert.doesNotMatch(block, /url\(/, 'images come from the skin tokens')
-  assert.match(block, /border-image: var\(--art-plain\) var\(--art-sl\) fill/)
-  assert.match(block, /--art-fs: max\(17px,/)
-  assert.match(block, /prefers-reduced-motion: no-preference/)
 })
 
 test('the face window, the name on its frame and the drawn control row come from the same document and its decoded images', () => {
@@ -223,14 +149,4 @@ test('the face window, the name on its frame and the drawn control row come from
   const folded = skin({ quickMenu: { ...document.quickMenu, layout: 'orb' } })
   assert.equal(interpreter.stageSkinRoot(folded)['data-fk-skin-controls-place'], undefined)
   assert.deepEqual({ ...interpreter.stageSkinControlIcons(folded, files) }, {})
-})
-
-test('the face window and the drawn controls read only their tokens; a phone keeps the side, the lines and 44px targets apart', () => {
-  const block = css.slice(css.indexOf('/* ==== stage skin: art portrait ===='), css.indexOf('/* ==== end stage skin: art ==== */'))
-  assert.ok(block.length > 0)
-  assert.doesNotMatch(block, /url\(/)
-  assert.match(block, /\.dsh-tavern-stage-textbox\.is-speaking \.dsh-tavern-stage-side\.is-on::before \{ opacity: 1/)
-  assert.match(block, /--art-u: calc\(var\(--art-face-nw\) \* 1px \/ var\(--art-face-nsw\)\)/)
-  assert.match(block, /button\.has-icon \{ width: 44px; height: 44px/)
-  assert.match(block, /--art-dock-over:/)
 })

@@ -30,7 +30,7 @@ export async function load(url, context, next) {
   } else if (url.endsWith('/foreground-handoff.js')) {
     // Each wait the next turn's preparation goes through, to see which one holds a send.
     replace('    await options.waitReconcile?.(input.sessionId)', mark('prepare-start') + '\n    await options.waitReconcile?.(input.sessionId)')
-    replace('    if (chat !== undefined) await options.waitBackground?.(chat.id)', '    if (chat !== undefined) await options.waitBackground?.(chat.id)\n' + mark('prepare-background-waited'))
+    replace('    if (chat !== undefined) await options.beforeNextTurn?.(chat)', '    if (chat !== undefined) await options.beforeNextTurn?.(chat)\n' + mark('prepare-background-waited'))
     replace('    if (chat !== undefined) await options.syncWorldBook?.(chat)', '    if (chat !== undefined) await options.syncWorldBook?.(chat)\n' + mark('prepare-worldbook-synced'))
   } else if (url.endsWith('/style-reference.js')) {
     replace('    const taskRun = await beginTask(chat)', mark('style-reference-start') + '\n    const taskRun = await beginTask(chat)\n' + mark('style-reference-begun'))

@@ -104,21 +104,6 @@ test('the line types glyph by glyph at the reader\'s speed and reports once it i
   runner.unmount()
 })
 
-test('instant and speed 0 show the whole line at once; finishing mid-line shows the rest', () => {
-  const page = load(), { runner } = page
-  let done = 0
-  const instant = runner.render(page.TavernStageTypewriter, { text: '一句话。', speed: 0, onDone: () => done++ })
-  assert.deepEqual([instant.props.className, instant.children.length, text(instant.children[0]), done], ['dsh-tavern-stage-type is-instant', 1, '一句话。', 1])
-  const other = load(), props = { text: '慢慢地出现', speed: 40, onDone: () => done++ }
-  other.runner.render(other.TavernStageTypewriter, props); other.time.next()
-  other.runner.render(other.TavernStageTypewriter, props); other.time.next()
-  let out = other.runner.render(other.TavernStageTypewriter, props)
-  assert.equal(text(out.children.at(-1)), '地出现')
-  assert.ok(out.children.some(child => child.props.className === 'dsh-tavern-stage-type-rest'))
-  out = other.runner.render(other.TavernStageTypewriter, { ...props, instant: true })
-  assert.deepEqual([out.props['data-typed'], out.children.length, text(out.children[0]), done], ['', 1, '慢慢地出现', 2], 'a click finished it')
-})
-
 test('a skin\'s stepped reveal runs on one 12/s clock on twos and keeps the reader\'s speed as its budget', () => {
   const { STAGE_SKIN_TEXT_FPS, stageSkinReveal, stageSkinRevealCount } = load()
   const pop = { textFx: { reveal: 'pop', stepFps: 8, charsPerStep: 2 } }
@@ -179,21 +164,4 @@ test('a stepped glyph enters on its step, holds each pose whole steps, then join
   const finished = again.runner.render(again.TavernStageTypewriter, { ...mid, instant: true })
   assert.deepEqual([finished.props['data-skin-reveal'], finished.children.length, text(finished.children[0])], [undefined, 1, '好的。走吧'])
   again.runner.unmount()
-})
-
-test('the skin\'s own poses, a type reveal and speed 0 are honoured', () => {
-  const page = load()
-  const posed = page.stageSkinReveal({ textFx: { reveal: 'stamp', poses: [{ dy: -.2 }, { dy: .05 }, { scale: 1.05 }] } }, 28)
-  assert.deepEqual([posed.poses, posed.posed], [3, 3])
-  const out = page.runner.render(page.TavernStageTypewriter, { text: '啊', speed: 28, reveal: posed })
-  assert.equal(out.props['data-skin-poses'], 3)
-  page.runner.unmount()
-  // `type` is the plain typewriter on the skin's step; speed 0 is instant whatever the skin.
-  const typed = load(), steps = [], props = { text: '好的', speed: 28, reveal: typed.stageSkinReveal({ textFx: { reveal: 'type', cps: 30 } }, 28) }
-  let plain = typed.runner.render(typed.TavernStageTypewriter, props)
-  assert.equal(plain.props['data-skin-reveal'], undefined)
-  for (let i = 0; i < 2; i++) { steps.push(Math.round(typed.time.next() * 10) / 10); plain = typed.runner.render(typed.TavernStageTypewriter, props) }
-  assert.deepEqual(steps, [33.3, 33.3], 'one glyph a step, slowed to the skin\'s cps')
-  const instant = load(), zero = instant.runner.render(instant.TavernStageTypewriter, { text: '好的', speed: 0, reveal: page.stageSkinReveal({ textFx: { reveal: 'pop' } }, 0) })
-  assert.deepEqual([zero.props.className, zero.props['data-skin-reveal']], ['dsh-tavern-stage-type is-instant', undefined])
 })

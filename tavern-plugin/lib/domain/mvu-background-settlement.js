@@ -1,3 +1,4 @@
+import { keyForms } from './encoded-keys.js'
 import { createBackgroundTaskFrame } from './agent-input-frame.js'
 import {
   CHARACTER_DESIGN_READ_TOOL,
@@ -169,6 +170,30 @@ function valueAtPointer(value, pointer) {
   return { exists: true, value: current }
 }
 
+// Each pointer segment takes the form the variables actually have (encoded-keys.js: as written,
+// decoded once, twice); a key that does not exist yet (being created) gets its plain name.
+function resolveVariablePointer(pointer, variables) {
+  const segments = pointerSegments(pointer)
+  const rooted = segments[0] === 'stat_data'
+  let current = variables && typeof variables === 'object' ? variables.stat_data : undefined
+  const resolved = segments.slice(rooted ? 1 : 0).map(function (segment) {
+    const forms = keyForms(segment)
+    const found = current !== null && typeof current === 'object' ? forms.find(form => Object.prototype.hasOwnProperty.call(current, form)) : undefined
+    const key = found ?? forms.at(-1)
+    current = found === undefined ? undefined : current[found]
+    return key
+  })
+  return '/' + (rooted ? ['stat_data', ...resolved] : resolved).map(pointerSegment).join('/')
+}
+
+/** The submission with each path in the form the current variables have it. */
+export function resolveSubmissionPaths(submission, variables) {
+  return { ...submission, operations: submission.operations.map(function (operation) {
+    return { ...operation, path: resolveVariablePointer(operation.path, variables),
+      ...(operation.from === undefined ? {} : { from: resolveVariablePointer(operation.from, variables) }) }
+  }) }
+}
+
 function pathsOverlap(left, right) {
   return left === right || left.startsWith(right + '/') || right.startsWith(left + '/')
 }
@@ -267,8 +292,14 @@ function normalizeOperation(raw, index) {
         return item
       })
     } catch (error) {
-      // Name the path and the usual cause so the retry fixes this operation, not guesses.
-      throw new Error(label + '（' + normalized.path + '）的 valueJson 不是有效 JSON：' + (error instanceof RangeError ? error.message : '无法解析') + '；文本值须带 JSON 双引号，例如 "城市街道"')
+      // Models often send a text value bare (得意 for "得意"). Text that starts like neither JSON
+      // nor a number can only mean that text; a broken object, list or number still goes back.
+      const bare = operation.valueJson.trim()
+      if (error instanceof RangeError || !bare || /^[[{"\d+\-.]/.test(bare)) {
+        // Name the path and the usual cause so the retry fixes this operation, not guesses.
+        throw new Error(label + '（' + normalized.path + '）的 valueJson 不是有效 JSON：' + (error instanceof RangeError ? error.message : '无法解析') + '；文本值须带 JSON 双引号，例如 "城市街道"')
+      }
+      value = bare
     }
   } else {
     // Pending deliveries and older in-flight callers already store decoded values.
@@ -513,6 +544,7 @@ export function createMvuSettlementModule(options = {}) {
   }
 
   async function applySubmission(input, frame, submission, diagnosticId) {
+    submission = resolveSubmissionPaths(submission, input.currentVariables)
     if (input.onSubmission) await input.onSubmission(clone(submission))
     const applied = await options.runtime.settleMvuUpdate({
       compactResult: true,

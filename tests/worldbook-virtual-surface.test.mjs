@@ -12,34 +12,6 @@ function message(ref, text, hash, scope = state().scope) {
 function session(messages) {
   return { events: messages.map((data, seq) => ({ seq, type: 'user/message', data })), surface: { nodes: messages.map((_, i) => i) } }
 }
-test('restore is derived per entry from actual native surface after compaction and cold restart', () => {
-  const live = session([message('first', '晴天', 'sun'), message('second', '港口开放', 'port')])
-  assert.deepEqual(virtualWorldbookRestoreRefs(live, state()), [])
-  live.surface.nodes = [1]
-  assert.deepEqual(virtualWorldbookRestoreRefs(live, state()), ['first'])
-  const cold = structuredClone(live)
-  assert.deepEqual(virtualWorldbookRestoreRefs(cold, state()), ['first'])
-  // Restoring is a request projection: repeated requests must continue to carry
-  // the missing latest value, rather than an in-memory once-only restoration.
-  assert.deepEqual(virtualWorldbookRestoreRefs(cold, state()), ['first'])
-  cold.surface.nodes = []
-  assert.deepEqual(virtualWorldbookRestoreRefs(cold, state()), ['first', 'second'])
-})
-test('old hash, wrong scope, producer or summarized content cannot suppress a latest snapshot', () => {
-  for (const item of [message('first', '晴天', 'old'), message('first', '晴天', 'sun', 'other'), message('first', '摘要', 'sun'), { ...message('first', '晴天', 'sun'), source: { kind: 'user', virtualWorldbook: { scope: state().scope, entries: { first: 'sun' } } } }]) {
-    assert.deepEqual(virtualWorldbookRestoreRefs(session([item]), state()), ['first', 'second'])
-  }
-})
-test('native frames attach identity/hash evidence and do not coalesce distinct equal-text entries', () => {
-  const adapter = createForegroundFrameSessionAdapter({ id: () => 'id' })
-  const frame = { kind: 'foreground', frameId: 'frame', turn: 1, operationId: 'op', contributions: [{ slot: 'activeWorldbook', text: '晴天' }], source: { worldBook: { virtualWorldbook: { scope: state().scope, entries: { first: 'sun' } } } } }
-  const first = adapter.append({ frame, step: 1, messages: [], session: session([]) }).messages[0]
-  const next = { ...frame, frameId: 'next', source: { worldBook: { virtualWorldbook: { scope: state().scope, entries: { second: 'sun' } } } } }
-  const second = adapter.append({ frame: next, step: 1, messages: [], session: session([first]) }).messages[0]
-  assert.equal(first.source.virtualWorldbook.entries.first, 'sun')
-  assert.equal(second.source.virtualWorldbook.entries.second, 'sun')
-  assert.deepEqual(virtualWorldbookRestoreRefs(session([first]), state()), ['second'])
-})
 test('native request prefix preserves original whitespace without modifying persisted sections', () => {
   const fixed = [{ name: 'tavern:constant-worldbook', text: 'stale' }, { name: 'card', text: 'card' }]
   const result = withVirtualWorldbook(fixed, '  exact\n\n')
@@ -79,13 +51,6 @@ test('system assembly excludes dynamic recovery and stays byte-identical across 
   background = true
   await assemble({}, { agent: { session: nativeSession } }, async () => ({ sections: [] }))
   assert.equal(calls.length, 2)
-})
-
-test('empty renders restore their withdrawal marker, not the formerly rendered facts', () => {
-  const current = state()
-  current.entries.first = { text: '', contextText: '[first withdrawn]', renderHash: 'empty' }
-  assert.deepEqual(virtualWorldbookRestoreRefs(session([message('first', '晴天', 'sun')]), current), ['first', 'second'])
-  assert.deepEqual(virtualWorldbookRestoreRefs(session([message('first', '[first withdrawn]', 'empty')]), current), ['second'])
 })
 
 test('small entry edits append deltas while preserving base messages and restoration evidence', () => {

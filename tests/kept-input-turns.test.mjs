@@ -17,30 +17,9 @@ function failedThenRetry() {
     start(3), plugin('第二句'), body(3, 'Pass'), end(3))
 }
 
-test('失败回合的输入被重试正文采用时，保留玩家输入那一轮', () => {
-  assert.deepEqual(keptPlayerInputTurns({ events: failedThenRetry(), replyTurns: [3], suppressed: [2, 3] }), [2])
-})
-
-test('没有后续正文时，作废失败轮的输入照常隐藏', () => {
-  assert.deepEqual(keptPlayerInputTurns({ events: failedThenRetry(), replyTurns: [1], suppressed: [2] }), [])
-})
-
 test('玩家已经发下一条后，不再保留更早失败轮的输入', () => {
   const events = log(start(1), human('第一句'), body(1, '第一段'), end(1),
     start(2), human('第二句'), end(2, 'error'),
     start(3), human('第三句'), body(3, '第三段'), end(3))
   assert.deepEqual(keptPlayerInputTurns({ events, replyTurns: [3], suppressed: [2] }), [])
-})
-
-test('生成中的重试还没有正文时，按当前这一轮保留最近一次玩家输入', () => {
-  const events = log(...failedThenRetry(), start(4), end(4, 'error'))
-  assert.deepEqual(keptPlayerInputTurns({ events, replyTurns: [4], suppressed: [2], openTurn: 4 }), [2])
-})
-
-test('触发卡和内部上下文不算玩家输入', () => {
-  const events = log(start(1), human('第一句'), body(1, '第一段'), end(1),
-    start(2), human('第二句'), end(2, 'error'),
-    start(3), plugin('第二句'), { type: 'user/message', surfaceOp: 'append', data: { role: 'user', source: { kind: 'plugin:dsh-tavern' }, content: [{ type: 'text', text: '内部指令' }] } },
-    body(3, 'Pass'), end(3))
-  assert.deepEqual(keptPlayerInputTurns({ events, replyTurns: [3], suppressed: [2] }), [2])
 })

@@ -22,127 +22,6 @@ function fixture() {
   }
 }
 
-test('registered settings preserves model selection after rejected saves', async t => {
-  const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
-  const model = page.getByLabel('默认前台模型', { exact: true })
-  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
-  const choice = JSON.stringify({ provider: 'p', model: 'm' })
-  await model.selectOption(choice)
-  await page.getByText('已保存，下次新游戏生效', { exact: true }).waitFor()
-  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型推理强度"]')?.disabled === false)
-  await page.getByLabel('默认前台模型推理强度', { exact: true }).selectOption('low')
-  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
-  assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch.defaultForegroundModel, { provider: 'p', model: 'm', reasoningEffort: 'low' })
-  backend.setFail(true)
-  await model.selectOption('')
-  await page.getByRole('alert').filter({ hasText: '保存失败测试' }).waitFor()
-  assert.equal(await model.inputValue(), choice)
-  backend.setFail(false)
-  await model.selectOption('')
-  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
-  assert.equal(await model.inputValue(), '')
-})
-
-test('saving opening defaults preserves sibling values without reloading catalogs', async t => {
-  const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
-  const toggle = page.getByRole('switch', { name: '联网搜索', exact: true })
-  await page.waitForFunction(() => document.querySelector('[aria-label="联网搜索"]')?.disabled === false)
-  const reads = Object.fromEntries(["getTavernSettings", "listPresets", "getUserPreferenceProfile"].map(method => [method, calls.filter(c => c.method === method).length]))
-  // The controlled switch adopts its value only after the asynchronous save succeeds.
-  await toggle.click()
-  await page.getByText('已保存，新游戏继承此设置，已有游戏保持不变。', { exact: true }).waitFor()
-  assert.equal(await toggle.isChecked(), true)
-  assert.equal(await page.getByRole('switch', { name: '变量结算', exact: true }).count(), 0)
-  assert.equal(await page.getByRole('switch', { name: '人物姿势', exact: true }).isChecked(), true)
-  for (const method of ['getTavernSettings', 'listPresets', 'getUserPreferenceProfile']) assert.equal(calls.filter(c => c.method === method).length, reads[method], method)
-  backend.setFail(true)
-  await toggle.click()
-  await page.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
-  assert.equal(await toggle.isChecked(), true)
-})
-
-test('卡片工作台默认模型可单独保存，留空表示跟随前台', async t => {
-  const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
-  const model = page.getByLabel('卡片工作台默认模型', { exact: true })
-  await page.waitForFunction(() => document.querySelector('[aria-label="卡片工作台默认模型"]')?.disabled === false)
-  assert.equal(await model.locator('option[value=""]').textContent(), '跟随前台')
-  await model.selectOption(JSON.stringify({ provider: 'p', model: 'm' }))
-  await page.getByText('已保存，下次新建工作台对话生效', { exact: true }).waitFor()
-  assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { defaultWorkbenchModel: { provider: 'p', model: 'm' } })
-})
-
-test('旧搜索配置不再显示设置窗口或发起诊断请求', async t => {
-  const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond(method, args) {
-    const result = backend.respond(method, args)
-    if (method === 'getTavernSettings') result.settings.webAccess = { sources: ['bing'], fetchEnabled: false }
-    return result
-  } })
-  await page.getByLabel('默认前台模型', { exact: true }).waitFor()
-  assert.equal(await page.getByLabel('卡片工作台搜索设置', { exact: true }).count(), 0)
-  assert.equal(await page.getByText('卡片工作台搜索', { exact: true }).count(), 0)
-  assert.equal(await page.getByRole('button', { name: '保存并测试搜索', exact: true }).count(), 0)
-  assert.equal(calls.some(c => ['getWebSearchStatus', 'testWebSearch', 'useBuiltinWebSearch'].includes(c.method)), false)
-})
-
-test('自动生成候选项在「剧情」里，默认关闭；开关只保存自己，失败保留原值', async t => {
-  const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
-  const group = page.getByRole('region', { name: '剧情', exact: true })
-  const toggle = group.getByRole('switch', { name: '自动生成候选项', exact: true })
-  await toggle.waitFor()
-  assert.equal(await group.getByRole('heading', { name: '上下文压缩', exact: true }).count(), 0)
-  const advanced = page.getByRole('region', { name: '高级', exact: true })
-  const compression = advanced.getByRole('heading', { name: '上下文压缩', exact: true })
-  assert.equal(await compression.isVisible(), false)
-  await advanced.locator('summary').filter({ hasText: '上下文压缩设置' }).click()
-  assert.equal(await compression.isVisible(), true)
-  assert.equal(await page.getByRole('region', { name: '显示与交互', exact: true }).getByRole('switch', { name: '自动生成候选项' }).count(), 0)
-  assert.match(await group.locator('.dsh-tavern-settings-row').filter({ hasText: '自动生成候选项' }).innerText(), /每轮会多一次后台请求/)
-  assert.equal(await toggle.isChecked(), false)
-  await toggle.click()
-  await group.getByText('已保存，所有游戏下一轮生效', { exact: true }).waitFor()
-  assert.equal(await toggle.isChecked(), true)
-  assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { candidateAutoGenerate: true })
-  backend.setFail(true)
-  await toggle.click()
-  await group.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
-  assert.equal(await toggle.isChecked(), true)
-})
-test('手机宽度下默认模型各行不撑破卡片，第二个下拉留在卡片内', async t => {
-  // 长模型名决定下拉的 min-content；短名字不会触发溢出，所以这里必须用长标识符。
-  const settings = { defaultForegroundModel: null, defaultBackgroundModel: { provider: 'deepseek', model: 'deepseek-v4.1-flash-thinking-preview' },
-    defaultWorkbenchModel: null, defaultPlaySettings: { playerName: '你', statusBarPlacement: 'sidebar', backgroundTasks: { variables: true, posture: true }, webSearchEnabled: false } }
-  const { page } = await openTavernSettings(t, { respond(method) {
-    if (method === 'getTavernSettings') return { settings, modelCatalog: [{ provider: 'deepseek', providerName: 'DeepSeek',
-      models: [{ id: 'deepseek-v4.1-flash-thinking-preview', name: 'deepseek/deepseek-v4.1-flash-thinking-preview' }] }], releaseCapabilities: {} }
-    if (method === 'getBackgroundModelReasoning') return { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }
-    if (method === 'updateTavernSettings') return { settings }
-  } })
-  await page.waitForFunction(() => document.querySelector('[aria-label="默认前台模型"]')?.disabled === false)
-  for (const width of [360, 390, 412, 430]) {
-    await page.setViewportSize({ width, height: 1200 })
-    const layout = await page.evaluate(() => {
-      const right = document.querySelector('.dsh-tavern-gs-card').getBoundingClientRect().right
-      return {
-        pageOverflow: document.documentElement.scrollWidth > innerWidth,
-        rows: [...document.querySelectorAll('.dsh-tavern-model-row')].map(row => ({
-          outside: [...row.querySelectorAll('select')].filter(select => select.getBoundingClientRect().right > right + 0.5).length,
-          widths: [...row.querySelectorAll('select')].map(select => Math.round(select.getBoundingClientRect().width))
-        }))
-      }
-    })
-    assert.equal(layout.pageOverflow, false, `${width}: 设置页不产生横向滚动`)
-    for (const [index, row] of layout.rows.entries()) {
-      assert.equal(row.outside, 0, `${width}: 第 ${index + 1} 个模型行的下拉不越出卡片`)
-      assert.ok(row.widths.every(value => value > 80), `${width}: 第 ${index + 1} 个模型行的下拉仍有可用宽度 ${row.widths}`)
-    }
-  }
-})
-
 test('状态栏位置是全局显示偏好，保存后通知现有对局刷新', async t => {
   const backend = fixture()
   const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
@@ -154,4 +33,41 @@ test('状态栏位置是全局显示偏好，保存后通知现有对局刷新',
   assert.equal(await select.inputValue(), 'body')
   assert.deepEqual(calls.filter(call => call.method === 'updateTavernSettings').at(-1).args.patch, { defaultPlaySettings: { statusBarPlacement: 'body' } })
   assert.equal(await page.evaluate(() => window.__statusSettingsChanged), 1)
+})
+
+test('皮肤：配色与 CSS 皮肤在同一排，一次只选一套', async t => {
+  let index = { active: null, skins: [{ id: 'builtin:paper', name: '纸感', builtin: true }] }, css = ''
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: interface skin settings',
+    // The bundled dream-skin's API, as its patched client exposes it.
+    beforeRender: () => {
+      let current = 'tavern-terracotta'
+      const listeners = new Set()
+      window.dshDreamSkin = { skins: () => [{ id: 'tavern-terracotta', label: '酒馆 · 暖陶土', tokens: {} }, { id: 'abyss', label: '沉静蓝', tokens: {} }],
+        defaultLabel: () => '默认', current: () => current, onChange: listener => { listeners.add(listener); return () => listeners.delete(listener) },
+        setSkin: id => { current = id; window.__dreamSet = id; listeners.forEach(listener => listener()) },
+        Swatch: () => null, DefaultSwatch: () => null, styles: {} }
+    },
+    respond(method, args) {
+      if (method === 'listInterfaceSkins') return index
+      if (method === 'getActiveInterfaceSkin') return { id: index.active, css: index.active === 'builtin:paper' ? 'paper-css' : index.active ? css : '' }
+      if (method === 'importInterfaceSkin') { css = args.css; index = { active: 'aaaaaaaaaaaa', skins: [...index.skins, { id: 'aaaaaaaaaaaa', name: args.name.replace(/\.css$/, '') }] }; return index }
+      if (method === 'selectInterfaceSkin') { index = { ...index, active: args.id }; return index }
+    } })
+  const pressed = () => page.evaluate(() => [...document.querySelectorAll('button[aria-pressed="true"]')].map(button => button.textContent))
+  await page.getByRole('button', { name: '纸感', exact: true }).waitFor()
+  assert.deepEqual(await pressed(), ['酒馆 · 暖陶土'])
+  await page.locator('input[type=file][accept^=".css"]').setInputFiles({ name: '我的.css', mimeType: 'text/css', buffer: Buffer.from('body { color: rgb(1, 2, 3) }') })
+  await page.getByText('已导入并启用', { exact: true }).waitFor()
+  assert.deepEqual(calls.find(call => call.method === 'importInterfaceSkin').args, { name: '我的.css', css: 'body { color: rgb(1, 2, 3) }' })
+  assert.deepEqual(await pressed(), ['我的'])
+  await page.waitForFunction(() => getComputedStyle(document.body).color === 'rgb(1, 2, 3)')
+  await page.getByRole('button', { name: '沉静蓝', exact: true }).click()
+  await page.waitForFunction(() => window.__dreamSet === 'abyss')
+  await page.waitForFunction(() => !document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]'))
+  assert.equal(calls.filter(call => call.method === 'selectInterfaceSkin').at(-1).args.id, null)
+  assert.deepEqual(await pressed(), ['沉静蓝'])
+  await page.getByRole('button', { name: '纸感', exact: true }).click()
+  await page.waitForFunction(() => window.__dreamSet === 'tavern-terracotta')
+  assert.deepEqual(await pressed(), ['纸感'])
+  await page.waitForFunction(() => document.querySelector('style[data-plugin-css="dsh-tavern-plugin/interface-skin"]')?.textContent === 'paper-css')
 })

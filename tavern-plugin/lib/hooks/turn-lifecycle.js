@@ -8,7 +8,7 @@ import { sessionStablePrefixSections, withCurrentWorldbook } from '../domain/ses
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 import { turnRepliedByModel } from '../domain/story-alignment.js'
-import { sessionEvents } from '../domain/session-events.js'
+import { isSurfaceEditTurn, sessionEvents } from '../domain/session-events.js'
 import { withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
 import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
@@ -34,6 +34,7 @@ export function registerTurnLifecycleHooks({
   sessionStore,
   storyOutputToolCall,
   turnOrchestrator,
+  turnStarted,
   userMessageForTurn,
 }) {
   ctx.on('agent/turn-stopping', async function (payload) {
@@ -42,7 +43,7 @@ export function registerTurnLifecycleHooks({
     const sessionId = session.id
     // No template cancellation here: this hook runs when any Agent's turn ends normally,
     // and the game's template process is shared, so cancelling it killed whatever another
-    // task (settlement beside the director or 精修预审) was still rendering.
+    // task (settlement beside the director or 自动精修) was still rendering.
     clearRuntimePresetRequestState(payload.agent)
     if (backgroundAgentRunner.owns(sessionId)) return
     const userMessage = userMessageForTurn(session, payload.turn)
@@ -86,11 +87,16 @@ export function registerTurnLifecycleHooks({
 
   ctx.on('session/event', function (session, event) {
     // A new foreground request drops the previous reply's waiting automatic candidates.
-    if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) autoChoices.cancel(session.id)
+    // A Tavern edit (精修 write-back, body edit) opens a turn of its own: not 玩家发送.
+    const edit = isSurfaceEditTurn(session, event?.data?.turn)
+    if (event?.type === 'turn/start' && !backgroundAgentRunner.owns(session.id)) {
+      autoChoices.cancel(session.id)
+      if (!edit) turnStarted?.(session.id, event.data?.turn)
+    }
     if (!event || event.type !== 'turn/end') return
     if (backgroundAgentRunner.owns(session.id)) return
     const reason = event.data && event.data.reason ? event.data.reason.kind : ''
-    foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason })
+    foregroundHandoff.end({ sessionId: session.id, turn: event.data && event.data.turn, reason, edit })
     const reply = assistantResultForTurn(session, event.data && event.data.turn)
     void autoChoices.completed({ sessionId: session.id, turn: event.data && event.data.turn, messageId: String(reply?.event?.data?.message?.id || ''), reason })
     // A turn whose record went missing (#196) is adopted before the player's next

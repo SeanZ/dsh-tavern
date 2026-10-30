@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { cp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// The save must survive every way a turn can go wrong (docs/design/native-session-repair.md).
+// The save must survive every way a turn can go wrong (Wiki「设计：native-session-repair」).
 // After each failure the player must still be able to continue, roll back,
 // regenerate, and the model must read exactly what the save says.
 export async function failureResilienceChecks({ page, step, savedChat, output, report, root, restartServer }) {

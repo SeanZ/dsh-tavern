@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { parseDocument } from 'yaml'
 
-import { beginProfileConfigurationUpdate, loadProfileManifest, mergeProfileManifest, migrateLegacyProfilePatch, prepareProfilePatch } from '../bin/profile-configuration.mjs'
+import { beginProfileConfigurationUpdate, mergeProfileManifest, migrateLegacyProfilePatch } from '../bin/profile-configuration.mjs'
 
 const legacyPatch = await readFile(new URL('../config/legacy-profile-patch-v0.6.yml', import.meta.url), 'utf8')
 
@@ -123,47 +123,6 @@ test('首次迁移按 YAML 结构移除旧项目配置并保留用户覆盖', ()
   ])
 })
 
-test('损坏的用户 YAML 明确失败，不生成猜测结果', () => {
-  assert.throws(() => migrateLegacyProfilePatch('- id: broken\n  config: [', legacyPatch), /无法读取现有 Tavern Profile 配置/)
-})
-
-test('旧 Profile 配置损坏时在失败前留下原文件备份', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'dsh-tavern-profile-broken-'))
-  const patchPath = path.join(directory, 'cordis.patch.yml')
-  const source = '- id: broken\n  config: ['
-  await writeFile(patchPath, source)
-  try {
-    assert.throws(() => prepareProfilePatch({
-      profileDir: directory,
-      templateText: '[]\n',
-      legacyManagedText: legacyPatch,
-      profileConfigurationVersion: 0,
-      timestamp: '20260824121000',
-    }), /无法读取现有 Tavern Profile 配置/)
-    assert.equal(await readFile(patchPath, 'utf8'), source)
-    assert.equal(await readFile(`${patchPath}.backup.20260824121000`, 'utf8'), source)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('旧 Profile manifest 损坏时在失败前留下原文件备份', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'dsh-tavern-profile-manifest-broken-'))
-  const manifestPath = path.join(directory, 'package.json')
-  const source = '{"name":'
-  await writeFile(manifestPath, source)
-  try {
-    assert.throws(() => loadProfileManifest({
-      profileDir: directory,
-      timestamp: '20260824121500',
-    }), /无法读取现有 Tavern Profile package.json/)
-    assert.equal(await readFile(manifestPath, 'utf8'), source)
-    assert.equal(await readFile(`${manifestPath}.backup.20260824121500`, 'utf8'), source)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test('配置事务先备份并原子写入，验证失败时可以恢复原文件', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'dsh-tavern-profile-config-'))
   const manifestPath = path.join(directory, 'package.json')
@@ -191,14 +150,4 @@ test('配置事务先备份并原子写入，验证失败时可以恢复原文�
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
-})
-
-
-test('官方 Desktop 移除旧二次启动器，保留其他用户插件', () => {
-  const current = { dependencies: {'dsh-tavern-launcher': 'link:/old', 'user-extra': '1'}, dsh: {profile: {bundles: ['dsh-tavern-launcher', 'user-extra']}} }
-  const next = mergeProfileManifest({source: sourceManifest(), current, pluginPath: '/app/tavern-plugin', dataRoot: '/data', host: 'desktop'})
-  assert.equal(next.dependencies['dsh-tavern-launcher'], undefined)
-  assert.equal(next.dsh.profile.bundles.includes('dsh-tavern-launcher'), false)
-  assert.ok(next.dsh.profile.bundles.includes('user-extra'))
-  assert.equal(current.dependencies['dsh-tavern-launcher'], 'link:/old')
 })

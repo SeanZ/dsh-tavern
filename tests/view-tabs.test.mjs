@@ -133,7 +133,7 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   t.after(() => { Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act }); dom.window.close() })
 
   const saved = []
-  let value = { hideContextAndReasoning: false, headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: TAB_ENTRIES.map(entry => entry.id) } }
+  let value = { headerItems: { display: 'icon-text', items: ['dsh-tavern:status'] }, viewTabs: { items: TAB_ENTRIES.map(entry => entry.id) } }
   const listeners = new Set()
   const displayPreferences = {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -179,13 +179,4 @@ test('设置里的顶部标签：对话锁定首位不可移除，其余可排�
   await press(reset)
   assert.deepEqual(saved.at(-1), { viewTabs: { items: [...DEFAULT_VIEW_TABS.items] } })
   await act(async () => root.unmount())
-})
-
-test('标签行控制模块随 client 一起发布，自定义顶栏里挂上设置', () => {
-  assert.match(client, /function installTavernViewTabLayout\(options\)/)
-  assert.match(client, /tavernViewTabCatalog\.publish\(tavernViewTabEntries\(slots\)\)/)
-  assert.match(client, /"dsh-tavern: view tab layout"/)
-  assert.match(client, /TAVERN_VIEW_TAB_RESIDENT = "chat"/)
-  assert.match(client, /h\(TavernViewTabsSettings\)/)
-  assert.match(client, /title: "拖动排序"/)
 })

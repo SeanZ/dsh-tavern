@@ -36,7 +36,7 @@ function cloneFilesWithDeletes(files) { return new Map([...files].map(([key,valu
 /**
  * The asset library: packs of stage entries (backgrounds, music) and their media, under one explicit
  * profile-owned assetRoot. Every write is a compare-and-swap on the pack revision and one journaled
- * publication; reads and lease bytes pass the same publication fence. See docs/design/asset-library.md.
+ * publication; reads and lease bytes pass the same publication fence. See Wiki「设计：asset-library」.
  */
 export function createAssetPackService(options) {
   const limits = {...PACK_LIMITS, ...options.limits}, now = options.now || Date.now

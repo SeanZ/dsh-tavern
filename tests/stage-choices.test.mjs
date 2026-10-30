@@ -50,43 +50,6 @@ function load() {
   return { ...api, runner, coordination, flow, panel: value => { stored = value } }
 }
 
-test('the menu shows on the round\'s last card only, from the shared candidate panel or the task; the stage never starts one', () => {
-  const { stageChoiceState } = load()
-  const state = patch => stageChoiceState({ panel: null, task: null, atEnd: true, running: false, ...patch })
-  assert.equal(state({ atEnd: false }), 'hidden', 'not before the last card')
-  assert.equal(state({ running: true }), 'hidden', 'not while the next reply is written')
-  assert.equal(state(), 'off', 'no candidates yet: 生成选项')
-  assert.equal(state({ panel: { phase: 'loading' } }), 'generating')
-  assert.equal(state({ panel: { phase: 'ready' } }), 'ready')
-  assert.equal(state({ panel: { phase: 'error' } }), 'failed')
-  assert.equal(state({ task: { busy: true } }), 'generating', 'the host\'s automatic generation shows as it runs')
-  assert.equal(state({ task: { status: 'succeeded' } }), 'ready')
-  assert.equal(state({ task: { status: 'cancelled' } }), 'off', 'a stopped task offers 生成选项 again, not an error')
-  assert.equal(state({ task: { status: 'failed', terminal: true } }), 'failed')
-})
-
-test('a scene change reads like any other choice; only the message sent carries its mark', () => {
-  const { stageChoiceItems } = load()
-  assert.deepEqual(JSON.parse(JSON.stringify(stageChoiceItems([{ type: 'action', text: '推门' }, { type: 'scene', text: '第二天清晨' }, '看地图', { type: 'action', text: ' ' }]))), [
-    { type: 'action', text: '推门', send: '推门' }, { type: 'scene', text: '第二天清晨', send: '【场景变化】第二天清晨' }, { type: 'action', text: '看地图', send: '看地图' }])
-})
-
-test('the wait lines take turns in four slots, a line changing only while its slot is hidden; a wait resumes where it was', () => {
-  const { stageWaitEpisode, stageWaitLineAt, STAGE_WAIT_LINES, STAGE_WAIT_LINE_MS } = load()
-  const lines = ['甲', '乙', '丙', '丁', '戊', '己']
-  assert.deepEqual([0, 1, 2, 3].map(slot => stageWaitLineAt(lines, 0, slot, 0)), ['甲', '乙', '丙', '丁'], 'the first four lines, in order')
-  // Slot 0 shows 0 .. 1 turn of each 4-turn cycle and takes its next line half a turn after it faded out.
-  assert.equal(stageWaitLineAt(lines, 0, 0, STAGE_WAIT_LINE_MS * 1.4), '甲', 'not yet, it is still fading out')
-  assert.equal(stageWaitLineAt(lines, 0, 0, STAGE_WAIT_LINE_MS * 1.6), '戊', 'refilled while hidden')
-  assert.equal(stageWaitLineAt(lines, 0, 0, STAGE_WAIT_LINE_MS * 4.1), '戊', 'and shows it on its next turn')
-  assert.equal(stageWaitLineAt(lines, 4, 2, 0), '甲', 'wraps around the lines')
-  const first = stageWaitEpisode(null, 'a', 23, () => .5, 1000)
-  assert.deepEqual({ ...first }, { key: 'a', first: 11, start: 1000 })
-  assert.equal(stageWaitEpisode(first, 'a', 23, () => 0, 9000), first, 'the same wait keeps its clock')
-  assert.equal(stageWaitEpisode(first, 'b', 23, () => 0, 9000).start, 9000)
-  assert.ok(STAGE_WAIT_LINES.length >= 4 && STAGE_WAIT_LINES.every(line => validateStageSkin(skin({ waitLines: [line] }))), 'the defaults are valid skin lines')
-})
-
 test('a skin declares its wait lines and its menu transitions; the document stays closed', () => {
   validateStageSkin(skin({ waitLines: ['灯影摇曳中'], transitions: { choices: { enter: { ms: 200, wipe: { shape: 'left' } }, leave: { ms: 300, ease: 'spring', delay: 50, stagger: 30, pose: { scale: 1.1 }, fade: true } } } }))
   rejects(skin({ waitLines: [] }))

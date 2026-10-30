@@ -70,7 +70,8 @@ function harness() {
     setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id }, clearTimeout: id => timers.delete(id), confirm: () => true,
     navigator: { clipboard: { writeText: async value => clipboard.push(value) } },
   })
-  const renderFn = vm.runInContext(`(snapshot => { const {${Object.keys(state).join(',')}} = snapshot; const config=data.config; ${component}; return worldbookTab() })`, context)
+  const renderFn = vm.runInContext(`(snapshot => { const {${Object.keys(state).join(',')}} = snapshot; const config=data.config; ${component}
+; return worldbookTab() })`, context)
   let tree
   const render = () => { tree = renderFn(state); return tree }
   const button = label => one(tree, node => node.type === 'button' && text(node) === label, 'button ' + label)

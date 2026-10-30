@@ -1,4 +1,4 @@
-// The font library (lib/font-library.js, RPC listFonts; docs/design/cast-presentation.md「字体库」): its families, listed once
+// The font library (lib/font-library.js, RPC listFonts; Wiki「设计：cast-presentation」「字体库」): its families, listed once
 // when a stage first asks (an empty list until then, and again after a failed read). A family joins the page only when a
 // stage uses it: ensure(id) writes its @font-face rules (font-display: swap), and the browser fetches only the weights the
 // text actually shows.

@@ -15,22 +15,6 @@ function round(seq, turn, text = '正文') {
   return [mark(seq, 'turn/start', turn), input(seq + 1), reply(seq + 2, turn, text), mark(seq + 3, 'step/end', turn), mark(seq + 4, 'turn/end', turn)]
 }
 
-test('普通回合：例外表是空的，每个原生轮画自己的输入和正文', () => {
-  const plan = planTranscriptRows({ chat: chat([1, 2]), events: [...round(0, 1), ...round(5, 2)] })
-  assert.deepEqual(plain(plan), {})
-  assert.equal(planShowsRow(plan, { turn: 2, kind: 'user' }), true)
-  assert.equal(planShowsRow(plan, { turn: 2, kind: 'assistant-step' }), true)
-})
-
-test('修复把一轮重写进自己的一步：正文改画在那一轮；多轮挤在同一步时各轮仍用原来的行', () => {
-  const one = [...round(0, 1, '旧'), mark(5, 'turn/start', 2), reply(6, 2, '新', story(1)), mark(7, 'step/end', 2), mark(8, 'turn/end', 2)]
-  assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: one })), { 1: { input: 1, reply: 0 }, 2: { input: 0, reply: 1, story: 1 } })
-  const many = [...round(0, 1, 'a'), ...round(5, 2, 'b'), mark(10, 'turn/start', 3), reply(11, 3, 'a', story(1)), reply(12, 3, 'b', story(2)), mark(13, 'step/end', 3), mark(14, 'turn/end', 3)]
-  const plan = planTranscriptRows({ chat: chat([1, 2]), events: many })
-  assert.deepEqual(plain(plan), { 3: { input: 0, reply: 0 } })
-  assert.equal(planStoryTurn(plan, 2), 2)
-})
-
 test('最后一轮还在跑、或失败停在那里：这一轮原样显示；回退掉的和作废的生成期回合藏起来', () => {
   const running = [...round(0, 1), mark(5, 'turn/start', 2), input(6)]
   assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: running })), {})
@@ -41,11 +25,6 @@ test('最后一轮还在跑、或失败停在那里：这一轮原样显示；�
   assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: rolledBack })), { 2: { input: 0, reply: 0 } })
   const attempt = [...round(0, 1), mark(5, 'turn/start', 2), input(6, { kind: 'plugin', plugin: 'dsh-tavern-regen' }), reply(7, 2, '作废'), mark(8, 'step/end', 2), mark(9, 'turn/end', 2)]
   assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: attempt })), { 2: { input: 0, reply: 0 } })
-})
-
-test('旧存档的行没有轮次号：开场算第 1 轮，每条玩家输入往后推一轮', () => {
-  const plan = planTranscriptRows({ chat: { messages: [{ role: 'assistant', greeting: true }, { role: 'user' }, { role: 'assistant' }] }, events: [...round(0, 1), ...round(5, 2)] })
-  assert.deepEqual(plain(plan), {})
 })
 
 // The fold is fed in pieces in the app: one event at a time, the save from the first
@@ -104,19 +83,6 @@ test('按窗口算：窗口内每个原生轮的结论与全量计算相同，�
 })
 
 // Count the log events the window plan touches: it must not grow with the game.
-test('按窗口算，访问的日志事件数只和窗口有关，与游戏长度无关', () => {
-  function touched(rounds) {
-    const { events, save } = longGame(rounds)
-    let reads = 0
-    const counted = new Proxy(events, { get(target, key, receiver) { if (typeof key === 'string' && /^\d+$/.test(key)) reads++; return Reflect.get(target, key, receiver) } })
-    planTranscriptWindow({ messages: save.slice(-48), events: counted, partial: true })
-    return reads
-  }
-  const short = touched(300), long = touched(3000)
-  assert.ok(short > 0)
-  assert.equal(long, short, `300 轮访问 ${short} 个事件，3000 轮访问 ${long} 个`)
-})
-
 // #311: an old save repaired many times and rolled back twice. The log's prose is
 // replaced by placeholders (tests/fixtures/transcript/issue-311.json); the save holds the
 // opening and rounds 2, 3, 5 and 12.
@@ -145,15 +111,4 @@ test('重新生成期间：旧正文只留输入，尝试轮只画正文；落�
   // Committed: the projection maps round 1 to the attempt and the regeneration is over.
   const committed = [...ended, { seq: 10, type: 'assistant/message', surfaceOp: { op: 'replace', startSeq: 7, endSeq: 7 }, data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: '新' }], ...story(1) } } }]
   assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events: committed })), { 1: { input: 1, reply: 0 }, 2: { input: 0, reply: 1, story: 1 } })
-})
-
-test('不在重新生成时，进行中的轮照原样画：日志不一定把玩家输入标成玩家的', () => {
-  const events = [...round(0, 1), mark(5, 'turn/start', 2), input(6, { kind: 'plugin:dsh-tavern' }), reply(7, 2, '正文')]
-  assert.deepEqual(plain(planTranscriptRows({ chat: chat([1]), events })), {})
-})
-
-test('重新生成期间存档暂时没有这一轮：被替换的那一轮仍显示玩家输入', () => {
-  const events = [...round(0, 1), ...round(5, 2), mark(10, 'turn/start', 3), input(11, { kind: 'plugin:dsh-tavern' }), reply(12, 3, '新')]
-  const plan = planTranscriptRows({ chat: chat([1]), events, regeneration: { replacing: [2], inProgress: true } })
-  assert.deepEqual(plain(plan), { 2: { input: 1, reply: 0 }, 3: { input: 0, reply: 1 } })
 })

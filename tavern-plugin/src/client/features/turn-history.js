@@ -149,7 +149,7 @@
 			return { apply: apply, dispose: dispose };
 		}
 		// The conversation page shows the rows the server's row plan names
-		// (docs/design/transcript-row-plan.md): for each saved round, the native turn that
+		// (Wiki「设计：transcript-row-plan」): for each saved round, the native turn that
 		// draws its input and the one that draws its reply. The plan lists exceptions only,
 		// keyed by native turn; a turn absent from it shows its own input and reply, and
 		// native turns before a windowed plan's first round are left as the host draws them.

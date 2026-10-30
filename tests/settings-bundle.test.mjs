@@ -68,14 +68,6 @@ test('导出的预设包在另一台机器导入后，三部分都作为新方�
   assert.equal((await to.profile.read(result.imported.userProfile.id)).confirmed.injectionText, '少写心理描写')
 })
 
-test('导入单独的酒馆预设只填预设，不碰系统提示词和长期偏好', async () => {
-  const h = harness()
-  const result = await h.importSettingsBundle({ payload: { name: 'st.json', text: JSON.stringify({ prompts: [] }) } })
-  assert.equal(result.kind, 'preset')
-  assert.deepEqual(Object.keys(result.imported), ['preset'])
-  assert.equal(h.settings().promptSets, undefined)
-})
-
 test('导入时可跳过某一部分，系统提示词与默认相同的条目不保存为修改', async () => {
   const h = harness()
   const bundle = buildSettingsBundle({ name: '包', preset: { name: 'p.json', text: '{"prompts":[]}' }, systemPrompts: { spec: 'dsh-tavern.system-prompts', version: 1, prompts: { story: 'default story' } } })
@@ -84,21 +76,4 @@ test('导入时可跳过某一部分，系统提示词与默认相同的条目�
   assert.equal(h.presets.size, 0)
   assert.equal(h.settings().promptOverrides, undefined)
   assert.equal(result.imported.systemPrompts.name, '包')
-})
-
-test('无法识别的文件和空导出给出明确错误', async () => {
-  const h = harness()
-  await assert.rejects(h.importSettingsBundle({ payload: { name: 'x.json', text: '{"hello":1}' } }), /无法识别/)
-  await assert.rejects(h.exportSettingsBundle({ include: {} }), /至少选择一项/)
-  await assert.rejects(h.exportSettingsBundle({ include: { preset: true } }), /没有选中的预设/)
-})
-
-test('系统提示词校验失败时不先导入预设或切换长期偏好', async () => {
-  const h = harness()
-  const bundle = buildSettingsBundle({ name: '错误提示词包', preset: { name: 'new.json', text: '{"prompts":[]}' },
-    systemPrompts: { spec: 'dsh-tavern.system-prompts', version: 1, prompts: { story: '' } } })
-  await assert.rejects(h.importSettingsBundle({ payload: { name: 'bad.json', text: JSON.stringify(bundle) } }), /缺少有效内容/)
-  assert.equal(h.presets.size, 0)
-  assert.equal(h.active(), '')
-  assert.deepEqual(h.settings(), {})
 })

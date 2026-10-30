@@ -24,8 +24,8 @@ function productionGallery({ pluginMedia, pluginTurns, sessionSignals }) {
   return createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignals, attachments: () => null })
 }
 
-function productionRemoveHistoryRpc({ illustrations, removePluginGalleryItems, backgroundConfigForSession = async () => null }) {
-  const handlers = createMediaHandlers({ sceneIllustrations: illustrations, removePluginGalleryItems, backgroundConfigForSession, str })
+function productionRemoveHistoryRpc({ removePluginGalleryItems }) {
+  const handlers = createMediaHandlers({ removePluginGalleryItems, str })
   return args => handlers.removeSceneImageHistory(args)
 }
 
@@ -82,59 +82,26 @@ test('production plugin gallery filters by game, current text version, ready ima
   assert.equal(notifications[0][1].kind, 'plugin-media')
 })
 
-test('production removeSceneImageHistory validates combined count and parameter types before deleting native images', async () => {
-  let nativeDeleteCalls = 0
-  const illustrations = { async removeStoredImages(items) { nativeDeleteCalls++; return items.map(item => ({ versionId: item.id, ok: true })) } }
-  const rpc = productionRemoveHistoryRpc({ illustrations, removePluginGalleryItems: async () => [] })
-  await assert.rejects(rpc({ items: [{ id: 'native-valid' }], pluginItems: Array(500).fill('plugin-id') }), /最多删除 500/)
-  await assert.rejects(rpc({ items: [{ id: 'native-valid' }], pluginItems: 'plugin-id' }), /最多删除 500/)
-  await assert.rejects(rpc({ items: 'native-id', pluginItems: [] }), /最多删除 500/)
-  assert.equal(nativeDeleteCalls, 0, 'invalid combined input is rejected before any native deletion')
-  assert.deepEqual(await rpc({ items: [{ id: 'native-valid' }], pluginItems: [] }), { results: [{ versionId: 'native-valid', ok: true }] })
-  assert.equal(nativeDeleteCalls, 1)
-})
-
-test('production removeSceneImageHistory scopes native deletion to a resolved session before deleting either kind', async () => {
-  const nativeCalls = [], pluginCalls = []
-  const illustrations = { async removeStoredImages(items) { nativeCalls.push(items); return items.map(item => ({ versionId: item.versionId, ok: true })) } }
+test('production removeSceneImageHistory deletes only plugin pictures, at most 500, in the given game', async () => {
+  const pluginCalls = []
   const removePluginGalleryItems = async (sessionId, ids) => { pluginCalls.push({ sessionId, ids }); return ids.map(id => ({ versionId: id, ok: true })) }
-  const rpc = productionRemoveHistoryRpc({
-    illustrations, removePluginGalleryItems,
-    backgroundConfigForSession: async sessionId => sessionId === 'session-a' ? { id: 'chat-a' } : null
-  })
-
-  await assert.rejects(rpc({ sessionId: 'unknown', items: [{ chatId: 'chat-a', key: 'key', versionId: 'native-a' }], pluginItems: ['plugin-a'] }), /当前游戏不存在/)
-  await assert.rejects(rpc({ sessionId: 'session-a', items: [{ chatId: 'chat-b', key: 'key', versionId: 'native-b' }], pluginItems: ['plugin-a'] }), /不属于当前游戏/)
-  await assert.rejects(rpc({ sessionId: 'session-a', items: [
-    { chatId: 'chat-a', key: 'key', versionId: 'native-a' },
-    { chatId: 'chat-b', key: 'key', versionId: 'native-b' }
-  ], pluginItems: ['plugin-a'] }), /不属于当前游戏/)
-  assert.deepEqual(nativeCalls, [], 'invalid session batches do not start native deletion')
-  assert.deepEqual(pluginCalls, [], 'invalid session batches do not start plugin deletion')
-
-  const native = { chatId: 'chat-a', key: 'key', versionId: 'native-a' }
-  const scoped = await rpc({ sessionId: 'session-a', items: [native], pluginItems: ['plugin-a'] })
-  assert.deepEqual(scoped.results.map(result => result.versionId), ['native-a', 'plugin-a'])
-  assert.deepEqual(nativeCalls, [[native]], 'the resolved game chat id authorizes native deletion')
+  const rpc = productionRemoveHistoryRpc({ removePluginGalleryItems })
+  await assert.rejects(rpc({ sessionId: 'session-a', pluginItems: Array(501).fill('plugin-id') }), /最多删除 500/)
+  await assert.rejects(rpc({ sessionId: 'session-a', pluginItems: 'plugin-id' }), /最多删除 500/)
+  assert.deepEqual(pluginCalls, [], 'invalid input is rejected before any deletion')
+  const scoped = await rpc({ sessionId: 'session-a', pluginItems: ['plugin-a'] })
+  assert.deepEqual(scoped.results.map(result => result.versionId), ['plugin-a'])
   assert.deepEqual(pluginCalls, [{ sessionId: 'session-a', ids: ['plugin-a'] }])
-
-  const global = { chatId: 'chat-b', key: 'key', versionId: 'native-b' }
-  await rpc({ items: [global] })
-  assert.deepEqual(nativeCalls, [[native], [global]], 'omitting sessionId preserves global history deletion')
 })
 
-test('real HTTP routes serve legacy images, reject hostile origins, and dispatch gallery RPCs', async () => {
+test('real HTTP routes serve plugin pictures, reject hostile origins, and dispatch gallery RPCs', async () => {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3])
   const calls = [], registered = new Map()
   let handler
   const webServer = { register(route) { registered.set(route.path, route.handler); return () => registered.delete(route.path) } }
   const ctx = { get: name => name === 'webServer' ? webServer : { requestRejection: () => undefined }, effect(callback) { callback() } }
-  const sceneIllustrations = {
-    async readImage(...args) { calls.push(['readImage', ...args]); return { data: png, ref: { mediaType: 'image/png' } } },
-    async readStoredImage(...args) { calls.push(['readStoredImage', ...args]); return { data: png, ref: { mediaType: 'image/webp' } } }
-  }
   const dispatch = async (method, args) => { calls.push(['rpc', method, args]); return method === 'listSceneImageHistory' ? { items: [], pluginItems: [] } : { results: [] } }
-  registerTavernHttpRoutes({ ctx, dispatch, sceneIllustrations,
+  registerTavernHttpRoutes({ ctx, dispatch,
     readPluginMediaFile: async (sessionId, id) => { calls.push(['plugin-media', sessionId, id]); return { data: png, length: png.byteLength, mediaType: 'image/png' } },
     performanceDiagnostics: { http() {} }, runtimeGeneration: 'test', runtimeReadiness: Promise.resolve({ ok: true }), str })
   handler = registered.get('/api/dsh-tavern')
@@ -148,28 +115,18 @@ test('real HTTP routes serve legacy images, reject hostile origins, and dispatch
     return response
   }
 
-  const oldImage = await request('/api/dsh-tavern/scene-image?sessionId=s&turn=2&key=k&versionId=v')
-  assert.equal(oldImage.status, 200)
-  assert.equal(oldImage.headers['Content-Type'], 'image/png')
-  assert.deepEqual(oldImage.body, png)
-  const storedImage = await request('/api/dsh-tavern/scene-image-stored?chatId=c&key=k&versionId=v')
-  assert.equal(storedImage.status, 200)
-  assert.equal(storedImage.headers['Content-Type'], 'image/webp')
-  assert.deepEqual(storedImage.body, png)
-
-  const denied = await request('/api/dsh-tavern/scene-image?sessionId=s&turn=2&key=k&versionId=v', { origin: 'https://evil.example' })
+  const denied = await request('/api/dsh-tavern/plugin-media?sessionId=s&id=image-id', { origin: 'https://evil.example' })
   assert.equal(denied.status, 403)
   const pluginImage = await request('/api/dsh-tavern/plugin-media?sessionId=s&id=image-id')
   assert.equal(pluginImage.status, 200)
   assert.equal(pluginImage.headers['Content-Type'], 'image/png')
   assert.deepEqual(pluginImage.body, png)
+  assert.equal(calls.filter(call => call[0] === 'plugin-media').length, 1, 'hostile-origin read never reaches plugin media')
 
   for (const method of ['listSceneImageHistory', 'removeSceneImageHistory']) {
-    const response = await request('/api/dsh-tavern/' + method, { method: 'POST', body: JSON.stringify({ sessionId: 's', items: [], pluginItems: [] }) })
+    const response = await request('/api/dsh-tavern/' + method, { method: 'POST', body: JSON.stringify({ sessionId: 's', pluginItems: [] }) })
     assert.equal(response.status, 200)
     assert.equal(JSON.parse(response.body).ok, true)
   }
   assert.deepEqual(calls.filter(call => call[0] === 'rpc').map(call => call[1]), ['listSceneImageHistory', 'removeSceneImageHistory'])
-  assert.equal(calls.filter(call => call[0] === 'readImage').length, 1, 'hostile-origin read never reaches image storage')
-  assert.ok(calls.some(call => call[0] === 'plugin-media' && call[1] === 's' && call[2] === 'image-id'))
 })

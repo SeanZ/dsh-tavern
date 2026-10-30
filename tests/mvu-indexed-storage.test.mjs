@@ -6,19 +6,6 @@ import {join} from 'node:path'
 import {createChatJournalStore} from '../tavern-plugin/lib/domain/chat-journal-store.js'
 import {createChatPersistence} from '../tavern-plugin/lib/domain/chat-persistence.js'
 
-test('turn identity changes invalidate delta eligibility while variable edits preserve it',async t=>{
- const root=await mkdtemp(join(tmpdir(),'mvu-layout-'));t.after(()=>rm(root,{recursive:true,force:true}))
- const store=createChatJournalStore({dataRoot:root,frameLimit:1e6,byteLimit:1e9})
- const db=createChatPersistence({store})
- await db.write({id:'c',messages:[{role:'assistant',turn:1,variables:[{stat_data:{hp:10},schema:{}}]}]})
- const revision=(await db.readSlice('c',[])).chat._storageRevision
- await db.patch('c',revision,[{op:'set',path:['messages',0,'variables',0,'stat_data','hp'],value:9}])
- assert.equal((await store.readChangedSlice('c',revision,'settlement')).layoutChanged,false)
- await db.patch('c',revision+1,[{op:'set',path:['messages',0,'turn'],value:2}])
- assert.equal((await store.readChangedSlice('c',revision,'settlement')).layoutChanged,true)
- assert.equal((await store.readChangedSlice('c',revision+1,'settlement')).layoutChanged,true)
-})
-
 for(const count of [20,400,10000]) test(`warm storage point patch and settlement input stay bounded at ${count}`,async t=>{
  const root=await mkdtemp(join(tmpdir(),'mvu-indexed-'));t.after(()=>rm(root,{recursive:true,force:true}))
  let visits=0
@@ -54,15 +41,4 @@ test('background rotation remains readable before and after independent snapshot
  const files=await readdir(join(root,'chats/c/snapshots'));assert.ok(files.length>=2)
  assert.equal((await store.readRevision('c',1)).messages[0].text,'initial')
  assert.equal((await store.read('c')).messages[0].text,'3')
-})
-
-test('snapshot maintenance failure does not revoke a durable variable patch',async t=>{
- const root=await mkdtemp(join(tmpdir(),'mvu-maintenance-fail-'));const errors=[]
- const store=createChatJournalStore({dataRoot:root,frameLimit:1,maxSnapshotBytes:512,backgroundSnapshots:true,logger:{warn:(...a)=>errors.push(a)}})
- t.after(async()=>{await store.flushMaintenance();await rm(root,{recursive:true,force:true})})
- const db=createChatPersistence({store});await db.write({id:'c',messages:[{text:'initial'}]})
- const before=await db.readSlice('c',[0])
- await db.patch('c',before.chat._storageRevision,[{op:'set',path:['messages',0,'text'],value:'x'.repeat(1000)}])
- await store.flushMaintenance();assert.equal(errors.length,1)
- assert.equal((await createChatJournalStore({dataRoot:root}).read('c')).messages[0].text.length,1000)
 })

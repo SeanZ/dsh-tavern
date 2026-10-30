@@ -10,7 +10,7 @@ function str(value) {
 }
 
 // Everything one settlement turn knows about official MVU variables
-// (docs/design/background-task-pipeline.md, engine 1): which reply waits for
+// (Wiki「设计：background-task-pipeline」, engine 1): which reply waits for
 // them, the run with its durable delivery and deferral, what the commit and a
 // failure write into that reply, and when a retry may restart them. The main
 // settlement only asks these questions; it never reads MVU fields itself.

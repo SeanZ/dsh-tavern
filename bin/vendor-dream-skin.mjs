@@ -36,7 +36,7 @@ replace(/function rawActiveTheme\(snapshot\) \{/, `		/**
 			const preference = snapshot?.preference;
 			if (preference === "light" || preference === "dark") return preference;
 			// A remote browser's host preference is process-local and falls back to
-			// `system` on every reconnect (lock screen, app resume). That `system` is a
+			// \`system\` on every reconnect (lock screen, app resume). That \`system\` is a
 			// reset, not a choice: a recorded concrete scheme (built-in light/dark, or
 			// one half of a family picked in the skin picker) must outrank it.
 			const recorded = readBuiltinLast();
@@ -75,4 +75,26 @@ replace(/\[WALLPAPER_GRADIENT_KEY\]: "radial-gradient[^\n]+/, '[WALLPAPER_GRADIE
 for (const file of ['lib/index.js', 'package.json', 'cordis.patch.yml', 'LICENSE']) copyFileSync(path.join(source, file), new URL(file, root))
 
 replace(/function wallpapersSuggestionsFor\(activeId\) \{/, "function wallpapersSuggestionsFor(activeId) {\n            if (activeId === \"tavern-terracotta\") return \"radial-gradient(ellipse at top right, rgba(204,120,92,.16), transparent 65%), linear-gradient(160deg, #faf9f5, #f5f0e8)\";\n            if (activeId === \"tavern-terracotta-dark\") return \"radial-gradient(ellipse at top right, rgba(212,137,108,.14), transparent 65%), linear-gradient(160deg, #181715, #252320)\";")
+// No 主题包 row: packs only held colors, and Tavern's 界面皮肤 row takes custom looks.
+// Packs imported earlier still load and stay selectable in the 皮肤 row.
+replace(/\t*ctx\.slots\.inject\("settings\.dreamSkin\.item", \(\) => ctx\.slots\.register\(\{\n\t*name: "settings\.dreamSkin\.item",\n\t*id: "dream-skin-packs",[\s\S]*?\}, PacksRow\)\);\n/, '\t\t\t// Tavern: no 主题包 row. Packs only held colors (the 皮肤 row covers that) and\n\t\t\t// the Tavern 界面皮肤 row takes custom looks; packs imported earlier still load.\n')
+// One 皮肤 row lives in Tavern: drop the skin and accent rows and expose what that row needs.
+replace(/\t*ctx\.slots\.inject\("settings\.dreamSkin\.item", \(\) => ctx\.slots\.register\(\{\n\t*name: "settings\.dreamSkin\.item",\n\t*id: "dream-skin",\n\t*order: 20,[\s\S]*?\}, SkinRow\)\);\n/, () => `			// Tavern: no skin (配色) row here. Tavern's 皮肤 row lists these color skins next to
+			// its CSS skins, so the player picks one look in one place; it drives them here.
+			window.dshDreamSkin = Object.freeze({
+				skins: () => SKINS.map((skin) => ({ id: skin.id, label: skin.label || localeT(\`skin.\${skin.id}\`), tokens: skin.tokens })),
+				defaultLabel: () => localeT("skin.default"),
+				current: () => ctx.theme.getTheme().preference,
+				onChange: (listener) => ctx.on("theme/change", listener),
+				setSkin: (id) => skinInjected(skinBound).setSkin(id),
+				Swatch,
+				DefaultSwatch,
+				styles
+			});
+`)
+replace(/\t*ctx\.slots\.inject\("settings\.dreamSkin\.item", \(\) => ctx\.slots\.register\(\{\n\t*name: "settings\.dreamSkin\.item",\n\t*id: "dream-skin-accent",[\s\S]*?\}, AccentRow\)\);\n/, () => `			// Tavern: no 强调色 row; skins own the colors, and an accent would only be painted over.
+`)
+replace(/\t\t\tconst raw = readStorage\(ACCENT_KEY\);\n/, () => `			// Tavern: the 强调色 row is gone, so an accent saved earlier no longer applies.
+			const raw = null;
+`)
 writeFileSync(new URL('lib/client.js', root), client)

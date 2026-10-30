@@ -52,10 +52,28 @@ test('failed persistence retains instance and backs off before retry', async t =
   assert.equal(h.runner.owns(id), false); assert.equal(attempts, 2)
 })
 
-test('本局开了联网搜索：任务自己写明不联网时仍不联网（文风联想、世界书预筛）', async t => {
-  const seen = []
-  const h = harness(t, { options: { resolveWebSearch: async () => true }, work: async (input, state) => { seen.push([input.task, state.input.webSearchEnabled]) } })
-  await h.runner.run({ sessionId: 'parent-a', task: 'candidate', persistent: true, selection: { provider: 'test', model: 'test' } })
-  await h.runner.run({ sessionId: 'parent-a', task: 'style-reference', persistent: true, webSearchEnabled: false, selection: { provider: 'test', model: 'test' } })
-  assert.deepEqual(seen, [['candidate', true], ['style-reference', false]])
+test('插件成员：任务在它自己的常驻会话里按顺序跑，和书记的任务互不排队', async t => {
+  const { registerPluginMember } = await import('../tavern-plugin/lib/domain/background-members.js')
+  const remove = registerPluginMember({ owner: 'npc-plugin', name: 'luna', title: '露娜' })
+  t.after(remove)
+  const order = [], gates = []
+  const h = harness(t, { work: async input => {
+    order.push('start:' + input.text)
+    if (input.text?.startsWith('luna')) await new Promise(resolve => gates.push(resolve))
+    order.push('end:' + input.text)
+  } })
+  const plugin = text => h.runner.run({ sessionId: 'parent-a', task: 'plugin', pluginName: 'npc-plugin', member: 'plugin:npc-plugin:luna', persistent: true, selection: { provider: 'test', model: 'test' }, text })
+  const first = plugin('luna-1'), second = plugin('luna-2')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  // 书记 is not held up by the plugin member's queue.
+  const settlement = await h.run('parent-a', 'settle')
+  assert.ok(order.includes('end:settle'))
+  assert.deepEqual(order.filter(item => item.includes('luna')), ['start:luna-1'], 'the member runs one task at a time')
+  gates.shift()()
+  await new Promise(resolve => setTimeout(resolve, 20))
+  gates.shift()()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(a, b, 'both tasks ran in the member\'s one Session')
+  assert.notEqual(a, settlement, 'and not in 书记\'s')
+  assert.deepEqual(h.runner.runs('parent-a').filter(run => run.task === 'plugin').map(run => run.member), ['plugin:npc-plugin:luna', 'plugin:npc-plugin:luna'])
 })

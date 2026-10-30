@@ -1,4 +1,4 @@
-// Dialogue bubbles (docs/design/cast-presentation.md): the story model writes each spoken line on its own line as
+// Dialogue bubbles (Wiki「设计：cast-presentation」): the story model writes each spoken line on its own line as
 // `@bubble:handle|name|variant|[text]` (an inner thought as `[*text*]`); a speaker with a 配音语言 adds the words its voice
 // says, `…|[text]|[voice text]` (33/N). The one reader is bubble-line.cjs (parseBubbles), for the host (stage pages, the
 // turn's cast lines) and the browser (chat speaker rows); this module maps its segments onto the cast: the 28 emotion

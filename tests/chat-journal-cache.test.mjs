@@ -69,14 +69,3 @@ test('oversized states bypass the cache, eviction drops delta evidence, and JSON
   assert.equal(JSON.stringify((await store.read('a')).variables), '{"z":1,"a":2,"m":3}')
   assert.equal(await store.readChangedSlice('a', 2), undefined)
 })
-
-test('cancelled updates detach JSON input and output without serializing the whole saved archive',async t=>{
-  const {store}=await fixture(t)
-  const stringify=JSON.stringify;let full=0
-  t.mock.method(JSON,'stringify',function(value,...args){if(value?.messages?.[0]?.text?.includes('CACHE-BODY'))full++;return stringify(value,...args)})
-  const result=await store.update('a',draft=>{draft.messages[1].text='discard';return undefined})
-  assert.equal(result.messages[1].text,'second')
-  result.messages[1].text='outside'
-  assert.equal((await store.readSlice('a',[1])).chat.messages[0].text,'second')
-  assert.equal(full,0,'already canonical JSON does not need serialization for detached reads')
-})

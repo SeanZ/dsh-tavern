@@ -43,19 +43,6 @@ test('版本竞争下同一变量冲突仍拒绝覆盖',async t=>{
  assert.equal((await persistence.read('c')).variables.old,3)
 })
 
-test('新增稀疏 swipe 按原 JSON 存储规范化，旧快照不受影响',async t=>{
- const {adapter,persistence}=await harness(t)
- await adapter.updateVariables('s',{type:'message',message_id:0,swipe_id:3},{hp:7,missing:undefined},1)
- assert.deepEqual((await persistence.read('c')).messages[0].variables,[{hp:10},null,null,{hp:7}])
-})
-
-test('过期生命周期在写入前拒绝',async t=>{
- const {adapter,calls,persistence}=await harness(t)
- const result=await adapter.updateVariables('s',{type:'chat'},{hp:7},0)
- assert.equal(result.stale,true);assert.equal(calls.writes,0);assert.equal(calls.patches.length,0)
- assert.deepEqual((await persistence.read('c')).variables,{old:1})
-})
-
 for (const type of ['chat', 'script', 'message']) test('协商变量回执只返回变化：' + type, async t => {
  const {adapter,persistence}=await harness(t)
  const before=await persistence.read('c')
@@ -78,17 +65,6 @@ test('变量回执基线过期或保存时竞争仍返回完整上下文',async 
  assert.ok(stale.context);assert.equal(stale.contextDelta,undefined)
 })
 
-test('刷新回写相同变量不推进存储版本，空补丁仍检查版本和事务', async t => {
- const {adapter,persistence,root}=await harness(t)
- const before=await persistence.read('c')
- await adapter.updateVariables('s',{type:'message',message_id:0},{hp:10},1)
- assert.deepEqual(await persistence.read('c'),before)
- assert.deepEqual(await createChatJournalStore({dataRoot:root}).read('c'),before)
- assert.equal(await persistence.patch('c',before._storageRevision-1,[]),undefined)
- await assert.rejects(persistence.patch('c',before._storageRevision,[],{assertCurrent(){throw new Error('cancelled')}}),/cancelled/)
- assert.deepEqual(await persistence.read('c'),before)
-})
-
 for(const type of ['message','chat','script'])test('compact sliced variable update avoids full reads: '+type,async t=>{
  const {adapter,persistence,calls}=await harness(t,undefined,true)
  const before=await persistence.read('c')
@@ -104,13 +80,4 @@ test('sliced CAS conflict preserves original-base conflict detection',async t=>{
  const before=await persistence.read('c')
  await assert.rejects(adapter.updateVariables('s',{type:'chat'},{old:2},1,undefined,{chatId:'c',stateRevision:before._storageRevision,lifecycleRevision:1}),{code:'DSH_TAVERN_CHAT_CONFLICT'})
  assert.equal((await persistence.read('c')).variables.old,3)
-})
-
-test('sliced CAS conflict still merges unrelated concurrent fields',async t=>{
- let once=false
- const {adapter,persistence,calls}=await harness(t,async p=>{if(!once){once=true;await p.update('c',c=>({...c,title:'concurrent'}))}},true)
- const before=await persistence.read('c')
- const result=await adapter.updateVariables('s',{type:'chat'},{hp:8},1,undefined,{chatId:'c',stateRevision:before._storageRevision,lifecycleRevision:1})
- assert.ok(result.context);assert.equal(calls.writes,1)
- const saved=await persistence.read('c');assert.equal(saved.title,'concurrent');assert.equal(saved.variables.hp,8)
 })

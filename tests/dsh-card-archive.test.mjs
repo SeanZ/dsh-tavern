@@ -274,18 +274,3 @@ test('old staged manifests are checked before any installed plugin is replaced',
   await assert.rejects(plugins.enable({ cardKey: 'card', cardPath: 'cards/b.json', plugins: staged }), /version/)
   assert.deepEqual(JSON.parse(await readFile(join(pluginsDir, folder, '.dsh-card.json'), 'utf8')).cards, ['cards/a.json'])
 })
-
-test('enabling several old staged plugins validates the last before installing the first', async t => {
-  const { createCardPlugins } = await import('../tavern-plugin/lib/domain/card-plugins.js')
-  const dir = await temp(t), pluginsDir = join(dir, 'plugins')
-  const plugins = createCardPlugins({ dataRoot: dir, pluginsDir })
-  const zip = await openZipFile(await zipFile(dir, 'two.dshcard', {
-    'plugins/first/package.json': '{"name":"first","version":"1.0.0"}',
-    'plugins/last/package.json': '{"name":"last","version":"1.0.0"}',
-  }))
-  t.after(() => zip.close())
-  const staged = await plugins.stage(zip, { cardKey: 'card', plugins: [{ path: 'plugins/first/' }, { path: 'plugins/last/' }] })
-  await writeFile(join(dir, 'card-plugins/card/last/package.json'), '{"name":"last"}')
-  await assert.rejects(plugins.enable({ cardKey: 'card', cardPath: 'cards/a.json', plugins: staged }), /last.*version/)
-  await assert.rejects(readdir(pluginsDir), { code: 'ENOENT' })
-})

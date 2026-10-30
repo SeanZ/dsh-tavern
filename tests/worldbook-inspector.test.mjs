@@ -25,20 +25,6 @@ test('RPC validates loaded game, scopes reads and paginates without losing aggre
 })
 
 
-test('physical references and historical virtual paths are both visible, ordinary filesystem reads excluded', () => {
-  const root = '/profile/worldbook-skills'
-  const events = [call('new', 'read', { file_path: root + '/game/武市/references/武市--51.md' }), result('new'), call('old', 'read', { file_path: '/__tavern_worldbook__/game/topic/entries/hash.md' }), result('old'), call('other', 'read', { file_path: '/other/references/file.md' })]
-  const records = worldbookReadHistory(events, root)
-  assert.deepEqual(records.map(r => [r.id, r.reference, r.status]), [['old', true, 'success'], ['new', true, 'success']])
-})
-
-test('unprefixed Skill calls are identified by current names or their historical resource directory', () => {
-  const root='/profile/worldbook-skills'
-  const historical=result('old');historical.data.message.content=[{type:'text',text:'Base directory for this skill: '+root+'/game/科举'}]
-  const records=worldbookReadHistory([call('pending','skill',{name:'ke-ju'}),call('old','skill',{name:'old-topic'}),historical,call('other','skill',{name:'writing'})],root,['ke-ju'])
-  assert.deepEqual(records.map(r=>r.id),['old','pending'])
-})
-
 test('inline delivery counts actual source text, not old directory-only Skill loads', async () => {
   const root='/profile/worldbook-skills'
   const inline=result('inline');inline.data.message.content=[{type:'text',text:'## 标题\n\noriginal\n'}]

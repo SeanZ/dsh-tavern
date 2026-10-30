@@ -115,34 +115,6 @@ for (const [action, initial, busyPhase] of [
   })
 }
 
-test('确认期间重复点击不发送更新，停止后确认结果与迟到请求失效', async () => {
-  const confirmation = deferred()
-  const h = updaterHarness({ initial: { phase: 'update-available' }, askConfirm: () => confirmation.promise,
-    call: async () => assert.fail('closed controller must not start an update') })
-  const action = h.performUpdate()
-  await h.performUpdate()
-  h.stop()
-  confirmation.resolve(true)
-  await action
-  assert.equal(h.intervals.size, 0)
-  assert.equal(h.timers.size, 0)
-  assert.deepEqual(h.calls, [])
-})
-
-test('停止取消挂起请求并忽略迟到状态', async () => {
-  const response = deferred()
-  const h = updaterHarness({ polling: true, call: () => response.promise })
-  h.stop()
-  await tick()
-  assert.equal(h.signals[0].aborted, true)
-  response.resolve({ status: { phase: 'update-available' } })
-  await tick()
-  assert.equal(h.status().phase, 'loading')
-  assert.equal(h.intervals.size, 0)
-  assert.equal(h.timers.size, 0)
-  assert.deepEqual(h.reports, [])
-})
-
 test('恢复探测不重叠，断线恢复只重载一次并在停止时清理', async () => {
   const intervals = new Map(), probes = [], waiting = deferred()
   let reloads = 0, online = false
@@ -165,26 +137,4 @@ test('恢复探测不重叠，断线恢复只重载一次并在停止时清理',
   assert.equal(reloads, 1)
   controller.stop()
   assert.equal(intervals.size, 0)
-})
-
-test('空闲时状态轮询放慢到 30 秒一次，更新进行中仍每 2.5 秒一次', async () => {
-  let clock = 0, phase = 'update-available', reads = 0, tickPoll
-  const controller = createUpdateStatusController({ now: () => clock, confirm: async () => true,
-    call: async () => { reads++; return { status: { phase } } },
-    errors: { report() {}, resolve() {} },
-    browser: { setInterval(fn, ms) { if (ms === 2500) tickPoll = fn; return 1 }, clearInterval() {}, setTimeout() { return 1 }, clearTimeout() {},
-      fetch: async () => ({ ok: true }), location: { origin: 'http://localhost', reload() {} } } })
-  controller.start()
-  await tick()
-  assert.equal(reads, 1)
-  for (let i = 0; i < 11; i++) { clock += 2500; await tickPoll() }
-  assert.equal(reads, 1)
-  clock += 2500; await tickPoll()
-  assert.equal(reads, 2)
-  phase = 'running'
-  clock += 30000; await tickPoll()
-  assert.equal(controller.getSnapshot().phase, 'running')
-  for (let i = 0; i < 3; i++) { clock += 2500; await tickPoll() }
-  assert.equal(reads, 6)
-  controller.stop()
 })

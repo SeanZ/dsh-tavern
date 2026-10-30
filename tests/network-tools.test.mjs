@@ -20,7 +20,7 @@ test('联网门禁实时读取会话，插件、原生搜索和网页读取共�
   assert.deepEqual(await names('card'), tools.map(t => t.name))
   chat.webSearchEnabled = true
   chat.disabledForegroundTools = ['plugin_search']
-  assert.equal(await policy.denial('plugin_search', { id: 'play' }), undefined)
+  assert.match(await policy.denial('plugin_search', { id: 'play' }), /前台工具/)
   assert.equal(await policy.denial('plugin_search', { id: 'background' }), undefined)
   backgroundEnabled = false
   assert.deepEqual(await names('background'), ['local'])

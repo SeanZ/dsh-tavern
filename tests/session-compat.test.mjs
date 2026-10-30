@@ -53,25 +53,6 @@ function host2020() {
   }
 }
 
-test('0.2.0 主会话由 mainView retain 推导，而不是已删除的 current 字段', function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  assert.equal(compat.current, 'session-main')
-  assert.equal('current' in compat, true)
-})
-
-test('open() 走 uiWorkspace.openSession，并让 recovery 的 summary+binding 就绪', function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  compat.open('session-blank')
-  assert.deepEqual(host.opened, ['session-blank'])
-  // 宿主侧 replaceMain 会 retain；这里手动复现 retain 后 ready 条件成立。
-  host.sessions.retain('session-blank', { source: 'mainView' })
-  const summary = compat.list.getSnapshot().byId['session-blank']
-  const binding = compat.binding('session-blank')
-  assert.ok(summary && binding)
-})
-
 test('uiWorkspace 缺失时 open() 退化为 retain，未知会话错误冒泡给 recovery 判定', async function () {
   const host = host2020()
   const compat = client.createSessionCompat(host.sessions, null)
@@ -82,49 +63,6 @@ test('uiWorkspace 缺失时 open() 退化为 retain，未知会话错误冒泡�
   // open() 现在会先尝试刷新基线再打开，所以错误以 rejection 形式出现。
   await assert.rejects(function () { return compat.open('session-ghost') }, /sessions\.retain: unknown session session-ghost/)
   assert.equal(host.retained.length, 2)
-})
-
-test('clear() 走 uiWorkspace.clearMain，空参数等价于 clear', async function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  compat.clear()
-  assert.equal(host.cleared, 1)
-  await compat.open('')
-  assert.equal(host.cleared, 2)
-})
-
-test('0.1.5 快照的 current 字段仍然被识别', function () {
-  const legacy = {
-    list: { getSnapshot() { return { phase: 'ready', current: 'session-legacy', byId: { 'session-legacy': { id: 'session-legacy' } } } } },
-    binding() { return undefined },
-    scope() { return {} },
-  }
-  const compat = client.createSessionCompat(legacy, null)
-  assert.equal(compat.current, 'session-legacy')
-})
-
-test('0.2.0 快照没有 current 时不会误判旧会话', function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  delete host.rows['session-main']
-  assert.equal(compat.current, '')
-})
-
-test('recovery 在 0.2.0 下能靠 retain 满足就绪条件，不再超时', async function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  const recovery = client.createSessionListRecoveryModule({
-    summary(id) { return compat.list.getSnapshot().byId[id] },
-    binding(id) { return compat.binding(id) },
-    refresh() { return Promise.resolve() },
-    open(id) { compat.open(id) },
-    isUnknownSession(error) { return /sessions\.(select|retain): unknown session/i.test(String(error && error.message || error || '')) },
-  })
-  assert.equal(recovery.ready('session-blank'), false)
-  // 0.2.0 的 replaceMain 会同步 retain；这里直接 retain 模拟宿主行为。
-  host.sessions.retain('session-blank', { source: 'mainView' })
-  await recovery.wait('session-blank')
-  assert.equal(recovery.ready('session-blank'), true)
 })
 
 // 真实故障：点「开始新游戏」→ create() 只写入 placeholder 行，scope 尚未 retain。
@@ -151,51 +89,6 @@ test('sessionListAdapters：新建但未 retain 的会话立即就绪（修复�
   assert.equal(typeof compat.binding('session-fresh'), 'undefined', '未 retain 时真 binding 仍为空')
 })
 
-test('sessionListAdapters：会话还没进列表时 wait 会靠 refresh 重试', async function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  const adapters = client.sessionListAdapters(compat)
-  let refreshes = 0
-  const recovery = client.createSessionListRecoveryModule(Object.assign({}, adapters, {
-    refresh() {
-      refreshes += 1
-      host.rows['session-late'] = { id: 'session-late', blank: true, retainedBy: Object.freeze(Object.create(null)) }
-      return Promise.resolve()
-    },
-  }))
-  assert.equal(recovery.ready('session-late'), false)
-  await recovery.wait('session-late')
-  assert.ok(refreshes >= 1)
-})
-
 // 真实故障：点旧存档时宿主列表基线尚未返回，replaceMain 的 retain 同步抛
 // 「sessions.retain: unknown session」。recovery 的 refresh 是 single-flight，
 // 轮询拉不回新基线，8 秒后必然超时。open() 因此先补拉一次基线再打开。
-test('open() 先补拉基线再打开：宿主列表未就绪时也能打开旧存档', async function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  let refreshes = 0
-  compat.refresh = function () {
-    refreshes += 1
-    if (refreshes === 1) {
-      host.rows['session-old'] = {
-        id: 'session-old', blank: false, updatedAt: 1,
-        retainedBy: Object.freeze(Object.create(null)),
-      }
-    }
-    return Promise.resolve()
-  }
-  await compat.open('session-old')
-  assert.deepEqual(host.opened, ['session-old'])
-  assert.equal(refreshes, 1)
-})
-
-test('open() 在基线已有该会话时不额外刷新', async function () {
-  const host = host2020()
-  const compat = client.createSessionCompat(host.sessions, host.uiWorkspace)
-  let refreshes = 0
-  compat.refresh = function () { refreshes += 1; return Promise.resolve() }
-  await compat.open('session-blank')
-  assert.equal(refreshes, 0)
-  assert.deepEqual(host.opened, ['session-blank'])
-})

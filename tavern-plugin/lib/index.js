@@ -73,7 +73,10 @@ import { openingPreviewPayload } from './domain/opening-transport.js'
 import { createLiveCardUpdate } from './domain/live-card-update.js'
 import { createSessionViewReader, createSessionChatReader } from './domain/session-view-reader.js'
 import { createSettlementJobs } from './domain/settlement-jobs.js'
-import { createTurnSettledEvents } from './domain/turn-settled-events.js'
+import { createStoryEvents } from './domain/story-events.js'
+import { createWorkflow } from './domain/workflow.js'
+import { BACKGROUND_TASK_CATALOG, registerBackgroundTasks } from './domain/background-tasks.js'
+import { TIMELINE_MEMBERS, participantOf } from './domain/background-members.js'
 import { createPluginSettlementProgress } from './domain/plugin-settlement-progress.js'
 import { readHostCompatibility } from './domain/host-compatibility.js'
 import { installHostSessionPatch } from './domain/host-session-patch.js'
@@ -129,7 +132,7 @@ import { fileURLToPath } from 'node:url'
 import { createBackgroundAgentRunner, executeBackgroundCompaction } from './background-agent-runner.js'
 import { createApplicationUpdater } from './application-updater.js'
 import { CANDIDATE_SUBMIT_TOOL, SCRIPT_POINT_TOOL, SCRIPT_READ_TOOL, createCandidateGenerator } from './domain/candidate-generation.js'
-import { computeSceneTarget, createSceneIllustrations, projectedSceneText } from './domain/scene-illustration.js'
+import { computeSceneTarget, projectedSceneText } from './domain/scene-illustration.js'
 import { createPluginMedia } from './domain/plugin-media.js'
 import { createPluginMediaViews } from './domain/plugin-media-views.js'
 import { createPluginData } from './domain/plugin-data.js'
@@ -152,7 +155,7 @@ import { createModelCalls } from './domain/model-calls.js'
 import { createPlayCardSnapshots } from './domain/play-card-snapshots.js'
 import { createUserPreferenceProfile } from './domain/user-preference-profile.js'
 import { createContextPlanner } from './domain/context-planner.js'
-import { createConversationMarkdownExport, conversationStoryTurns } from './domain/conversation-text-export.js'
+import { createConversationMarkdownExport } from './domain/conversation-text-export.js'
 import { createCoordinationEventPublisher } from './domain/coordination-event-publisher.js'
 import { createSessionSignalTransport } from './domain/session-signal-transport.js'
 import { createCandidateTasks } from './domain/candidate-tasks.js'
@@ -189,6 +192,7 @@ import { POSTURE_SUBMIT_TOOL } from './domain/posture-submission.js'
 import { createCastPresentation } from './domain/cast-presentation.js'
 import { createPolishRecords } from './domain/polish-records.js'
 import { createPolishPrereview, createPolishReviewer } from './domain/polish-run.js'
+import { applyPolishEdits } from './domain/polish-review.js'
 import { createCardAutoReload } from './domain/card-auto-reload.js'
 import { createRuntimeLogBuffer, runtimeHealthReport } from './domain/runtime-health.js'
 import { createStageDirector, STAGE_UPDATE_TOOL } from './domain/stage-director.js'
@@ -214,6 +218,7 @@ import { createDisplayRuntimeStore } from './domain/display-runtime-store.js'
 import { createDisplayRuntimeCapture } from './domain/display-runtime-capture.js'
 import { createPhoneChat } from './domain/phone-chat.js'
 import { createPresetLibrary } from './domain/preset-library.js'
+import { createInterfaceSkins } from './domain/interface-skins.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
 import { clearFailedTurnSurface, rollbackAvailability, interruptedSurfaceTurns } from './domain/rollback-surface.js'
 import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
@@ -240,7 +245,7 @@ import { resolveTavernDataRoot } from './domain/tavern-data.js'
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import { createTavernSkillProvider } from './domain/tavern-skill-provider.js'
 import { canonicalTavernSkillName, createTavernSkillModule } from './domain/tavern-skills.js'
-import { readZipEntries, writeZipEntries } from './domain/zip-entries.js'
+import { readZipEntries } from './domain/zip-entries.js'
 import { createGameFootprint } from './domain/game-footprint.js'
 import { createGameSaveExporter } from './domain/game-save-export.js'
 import { readFileSync } from 'node:fs'
@@ -665,8 +670,8 @@ export async function apply(ctx) {
     return result.renderedText
   }
 
-  const turnSettled = createTurnSettledEvents()
-  turnSettled.subscribe(({ latest }) => { if (latest) return gameTitles.afterTurn(latest.sessionId, latest.cardName) })
+  const storyEvents = createStoryEvents()
+  const workflow = createWorkflow({ events: storyEvents, tasks: BACKGROUND_TASK_CATALOG })
   const settlementJobs = createSettlementJobs({ run: (...args) => wholeReads.scope('结算', () => settlementRun.runCycle(...args)), onSettled: (...args) => settlementRun.onSettled(...args) })
   const scriptContinuity = createScriptContinuity()
   const storyTimeline = createStoryTimeline({ id: uid, now: Date.now })
@@ -808,6 +813,7 @@ export async function apply(ctx) {
     return { path: sourcePath, title: record.title, sourceChars: record.sourceChars, chunkCount: record.chunks.length, importedAt: Date.now() }
   }
   const presetLibrary = createPresetLibrary({ resources: fileResources, state: profileData, prepareImport: prepareTextImport })
+  const interfaceSkins = createInterfaceSkins({ store: profileData })
   const { read: readPreset, readDocument: readPresetDocument, preview: previewPreset,
     import: importPreset, editor: presetEditor, runtime: runtimePresets } = presetLibrary
   const { exportSettingsBundle, importSettingsBundle } = createSettingsTransfer({
@@ -1011,7 +1017,6 @@ export async function apply(ctx) {
     }
   })
   ctx.effect(() => () => saveMaintenance.dispose(), 'dsh-tavern: save maintenance')
-  turnSettled.subscribe(({ chatId, latest }) => { if (latest) saveMaintenance.noteWrite(chatId, Number(latest._storageRevision)) })
   const historyRecall = createHistoryRecall()
   const foregroundRecallScopes = new WeakMap()
   async function recallHistoryForSession(sessionId, args, scope, audience) {
@@ -1028,12 +1033,12 @@ export async function apply(ctx) {
     return result
   }
   const castAssets = createCastAssets({ store: profileData })
-  // The asset library (docs/design/asset-library.md): one owner of the profile's packs, beside the tavern data root.
+  // The asset library (Wiki「设计：asset-library」): one owner of the profile's packs, beside the tavern data root.
   const assetLibrary = createAssetPackService({ assetRoot: path.join(path.dirname(dataRoot), 'asset-packs'), leaseTtlMs: STAGE_LEASE_TTL_MS,
     authorizeLease: async ({ scope }) => scope === STAGE_MEDIA_SCOPE || scope === STAGE_READ_SCOPE })
   const stageMaterial = createStageMaterial({ library: assetLibrary, castAssets, globalPackIds: async () => (await readTavernSettings()).globalEnabledPackIds, warn: error => console.warn('dsh-tavern: 舞台素材不可用', str(error?.message || error)) })
   ctx.effect(() => () => { stageMaterial.dispose(); return assetLibrary.dispose() })
-  // DSH cards (docs/design/dsh-card-format.md): asset packs stored once by content; big files uploaded to disk.
+  // DSH cards (Wiki「设计：dsh-card-format」): asset packs stored once by content; big files uploaded to disk.
   const assetPacks = createAssetPacks({ root: dataRoot, store: profileData })
   const uploads = createUploads({ root: dataRoot })
   const pluginDataStore = createPluginDataStore({ dataRoot })
@@ -1076,9 +1081,13 @@ export async function apply(ctx) {
   async function listCards() {
     const cardPaths = await fileResources.list('card')
     const scriptBindings = await fileResources.scriptBindingsForCards(cardPaths)
+    // One listing per originals directory for the whole library; asking per card made
+    // this N listings of N entries. A failure here (e.g. a duplicated original name)
+    // falls back to the per-card read so one broken card cannot hide the library.
+    const originals = await fileResources.originalCardNames(cardPaths).catch(() => null)
     const cards = await Promise.all(cardPaths.map(async function (cardPath) {
       try {
-        const [card, hasImage] = await Promise.all([cardSummaries.read(cardPath), fileResources.hasCardImage(cardPath)])
+        const [card, hasImage] = await Promise.all([cardSummaries.read(cardPath), fileResources.hasCardImage(cardPath, originals)])
         const scriptPath = scriptBindings[cardPath]
         return {
           path: cardPath,
@@ -1276,7 +1285,7 @@ export async function apply(ctx) {
       backupPath: restored.backupPath
     }
   }
-  // Turn a card's own plugins on or off (docs/design/dsh-card-format.md): they then load like user plugins, confined to this card.
+  // Turn a card's own plugins on or off (Wiki「设计：dsh-card-format」): they then load like user plugins, confined to this card.
   async function setCardPlugins(input, enabled) {
     const cardPath = normalizeResourcePath(input, 'card')
     const plugins = (await castAssets.read(cardPath)).plugins || []
@@ -1300,7 +1309,7 @@ export async function apply(ctx) {
   })
   async function stopChatForDeletion(chatId) {
     const chat = await readChat(str(chatId))
-    if (!chat) return
+    if (!chat) return undefined
     const ids = new Set([chat.sessionId, ...Object.values(storyTimeline.inspect({ chat }).participants || {}).map(item => item.sessionId)])
     const workers = [...ids].map(id => agentRegistry.get(id)).filter(Boolean)
     for (const worker of workers) {
@@ -1310,34 +1319,73 @@ export async function apply(ctx) {
     for (const worker of workers) {
       if (typeof worker.whenIdle === 'function') await worker.whenIdle()
     }
+    return chat
   }
+  // Deleting a batch stops every game first, describes the whole batch in one disk
+  // scan, then removes them one by one. Each game used to repeat all three phases,
+  // re-reading the same index and re-listing the same sessions tree per game.
   async function deleteChats(chatIds, prepareOnly = false) {
     if (!Array.isArray(chatIds) || chatIds.some(id => typeof id !== 'string' || !id.trim())) throw new Error('请选择有效的对话')
-    const results = []
-    // Registry index updates must remain sequential.
-    for (const chatId of new Set(chatIds)) {
-      try {
-        if (prepareOnly) await stopChatForDeletion(chatId)
-        else await deleteChat(chatId)
-        results.push({ chatId, ok: true })
-      } catch (error) { results.push({ chatId, ok: false, error: String(error?.message || error) }) }
+    const unique = [...new Set(chatIds)]
+    const outcomes = new Map()
+    if (prepareOnly) {
+      for (const chatId of unique) {
+        try { await stopChatForDeletion(chatId); outcomes.set(chatId, { chatId, ok: true }) }
+        catch (error) { outcomes.set(chatId, { chatId, ok: false, error: String(error?.message || error) }) }
+      }
+      return { results: unique.map(chatId => outcomes.get(chatId)) }
     }
-    return { results }
+    const prepared = []
+    for (const chatId of unique) {
+      try { prepared.push({ chatId, chat: await stopChatForDeletion(chatId) }) }
+      catch (error) { outcomes.set(chatId, { chatId, ok: false, error: String(error?.message || error) }) }
+    }
+    const known = prepared.filter(item => item.chat !== undefined)
+    const footprints = new Map()
+    let described = null
+    let indexSnapshot
+    const readChatIndex = async function () {
+      if (indexSnapshot === undefined) indexSnapshot = await readIndex()
+      return indexSnapshot
+    }
+    try {
+      described = typeof gameFootprint.describeMany === 'function'
+        ? await gameFootprint.describeMany(known.map(item => item.chat), { ownsSession: (id, chat) => ownsBackgroundSession(chat || {}, id, readChatIndex) })
+        : await Promise.all(known.map(item => gameFootprint.describe(item.chat, { ownsSession: id => ownsBackgroundSession(item.chat, id, readChatIndex) })))
+    } catch (error) { described = null }
+    for (let index = 0; described !== null && index < known.length; index++) footprints.set(known[index].chatId, described[index])
+    // A batch-wide description can fail on one damaged save; retry per game so the rest still go.
+    if (described === null) {
+      for (const item of known) {
+        try { footprints.set(item.chatId, await gameFootprint.describe(item.chat, { ownsSession: id => ownsBackgroundSession(item.chat, id, readChatIndex) })) }
+        catch (error) { outcomes.set(item.chatId, { chatId: item.chatId, ok: false, error: String(error?.message || error) }) }
+      }
+    }
+    const deferred = []
+    for (const item of prepared) {
+      if (outcomes.has(item.chatId)) continue
+      try {
+        await finishChatDeletion(item.chatId, item.chat, footprints.get(item.chatId) || null, deferred)
+        outcomes.set(item.chatId, { chatId: item.chatId, ok: true })
+      } catch (error) { outcomes.set(item.chatId, { chatId: item.chatId, ok: false, error: String(error?.message || error) }) }
+    }
+    // Two games can name the same loaded session; queue each directory once.
+    const pendingDeletions = [...new Map(deferred.map(item => [item.path, item])).values()]
+    if (pendingDeletions.length) await gameFootprint.deferSessionDeletion(pendingDeletions).catch(error => console.warn('dsh-tavern: 延迟删除队列写入失败', error?.message || error))
+    return { results: unique.map(chatId => outcomes.get(chatId)) }
   }
   // A background session is this game's only if its stored parent is this game's foreground
   // session and no other game still refers to it (imports used to keep foreign ids).
-  async function ownsBackgroundSession(chat, sessionId) {
-    const index = await readIndex()
+  async function ownsBackgroundSession(chat, sessionId, readIndexOnce) {
+    const index = readIndexOnce ? await readIndexOnce() : await readIndex()
     if ((index.chats || []).some(row => row.id !== chat.id && (row.backgroundSessionId === sessionId || (row.backgroundHistoryIds || []).includes(sessionId)))) return false
     try {
       const handle = await ctx.get('sessionPersistence').open(sessionId, 'read')
       try { return handle.header?.parentSession === chat.sessionId } finally { await handle.close() }
     } catch { return false }
   }
-  async function deleteChat(chatId) {
-    await stopChatForDeletion(chatId)
-    const chat = await readChat(str(chatId))
-    const footprint = chat ? await gameFootprint.describe(chat, { ownsSession: id => ownsBackgroundSession(chat, id) }) : null
+  // A batch hands every loaded session to one deferred queue write instead of one per game.
+  async function finishChatDeletion(chatId, chat, footprint, deferred) {
     const result = await conversationRegistry.remove(chatId)
     await worldbookSkillProvider?.removeChat(chat)
     deletedChatIds.add(chatId)
@@ -1353,29 +1401,30 @@ export async function apply(ctx) {
       // A session DSH still holds loaded would be written back; delete it on the next start.
       const live = footprint.items.filter(item => item.category === 'subsession' && agentRegistry.get(item.sessionId))
       footprint.items = footprint.items.filter(item => !live.includes(item))
-      await gameFootprint.deferSessionDeletion(live)
+      if (deferred) deferred.push(...live)
+      else await gameFootprint.deferSessionDeletion(live)
       const cleanup = await gameFootprint.removeLeftovers(footprint)
       if (cleanup.failures.length) console.warn('dsh-tavern: 删除游戏后有残留未清理', chatId, cleanup.failures.slice(0, 5))
     }
     return result
   }
+  async function deleteChat(chatId) {
+    const chat = await stopChatForDeletion(chatId)
+    let indexSnapshot
+    const readChatIndex = async function () {
+      if (indexSnapshot === undefined) indexSnapshot = await readIndex()
+      return indexSnapshot
+    }
+    const footprint = chat ? await gameFootprint.describe(chat, { ownsSession: id => ownsBackgroundSession(chat, id, readChatIndex) }) : null
+    return await finishChatDeletion(chatId, chat, footprint)
+  }
   async function exportConversation(chatId, sessionId, title) {
     const chat = str(chatId) === '' ? await chatForSession(str(sessionId)) : await readChat(str(chatId))
     if (chat === undefined) throw new Error('当前 Session 没有绑定 Tavern 对话')
     const full = (await readChat(chat.id)) || chat
-    const pictures = chat.sessionId ? await sceneIllustrations.exportImages(chat.sessionId, conversationStoryTurns(full)) : []
-    const extension = { 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
-    // A turn's added pictures follow its first: images/002.png, images/002-2.png, …
-    const pathOf = image => 'images/' + String(image.turn).padStart(3, '0') + (image.slot ? '-' + (image.slot + 1) : '') + '.' + (extension[image.mediaType] || 'png')
-    const images = new Map()
-    for (const image of pictures) images.set(image.turn, [...(images.get(image.turn) || []), { path: pathOf(image), anchor: image.anchor }])
-    const exported = createConversationMarkdownExport(full, { title: str(title), images })
+    const exported = createConversationMarkdownExport(full, { title: str(title), images: new Map() })
     if (exported.messageCount === 0) throw new Error('暂无可导出的对话')
-    if (!pictures.length) return { filename: exported.filename, text: exported.text }
-    // Pictures are linked from the Markdown, so the story and its images travel as one zip.
-    const zip = writeZipEntries([{ path: exported.filename, content: exported.text },
-      ...pictures.map(image => ({ path: pathOf(image), content: Buffer.from(image.data) }))])
-    return { filename: exported.title + '.zip', base64: zip.toString('base64'), images: pictures.length }
+    return { filename: exported.filename, text: exported.text }
   }
   const gameSaveSnapshot = createGameSaveSnapshot({
     readChat,
@@ -2084,6 +2133,7 @@ export async function apply(ctx) {
   const BACKGROUND_TOOLS = [POSTURE_SUBMIT_TOOL, CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL, CHARACTER_DESIGN_REUSE_TOOL, MVU_SUBMIT_UPDATE_TOOL, CANDIDATE_SUBMIT_TOOL, SCRIPT_READ_TOOL, SCRIPT_POINT_TOOL, LEDGER_SUBMIT_TOOL]
   const backgroundAgentRunner = createBackgroundAgentRunner({
     retirement: backgroundRetirement,
+    onRunFinished: run => { try { storyEvents.emit('task-finished', run) } catch (error) { console.warn('dsh-tavern: 任务完成通知失败', str(error?.message || error)) } },
     // The browser's session list keeps a disposed subagent as an idle row until the list is
     // reloaded; tell the game's page so its header count drops the retired worker at once.
     onRetired: (_id, parentId) => sessionSignals.publish(parentId, { kind: 'subagents', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) }),
@@ -2152,8 +2202,6 @@ export async function apply(ctx) {
       })
     }
   })
-  // A regenerated reply (no foreground end of its own) or one the pre-review has not read yet.
-  turnSettled.subscribe(({ latest }) => { if (latest) return polishPrereview.start(latest.sessionId) })
 
   // A new player input still cancels any optional independent polish pre-review.
   ctx.on('session/event', function (session, event) {
@@ -2215,11 +2263,6 @@ export async function apply(ctx) {
     characterDesign: characterDesignDocuments
   })
   ctx.effect(() => () => backgroundAgentRunner.dispose(), 'dsh-tavern: dispose resident background agents')
-  // Pictures Tavern drew before image plugins took over: shown, exported, listed and deleted, never drawn.
-  const sceneIllustrations = createSceneIllustrations({
-    store: profileData, chatForSession, chatSummaries: async () => (await readIndex()).chats || [], sceneStateForSession: sessionChats.readSceneImageState,
-    attachments: () => ctx.get('attachments')
-  })
   // Public extension service for third-party DSH plugins (docs/plugin-api.md).
   const pluginMedia = createPluginMedia({ store: profileData })
   const pluginData = createPluginData({ store: profileData })
@@ -2241,13 +2284,47 @@ export async function apply(ctx) {
     if (!selected) throw new Error('没有可用的模型配置，请先选择模型')
     return selected
   }, data: pluginData })
-  // 精修预审 (a setting, off by default): each reply is reviewed as soon as it is written.
+  // 自动精修 (setting polishPrereview, off by default): each reply is reviewed as soon as it is
+  // written, beside settlement, and the review is written back into the reply in place.
   const polishPrereview = createPolishPrereview({
     enabled: async () => (await readTavernSettings()).polishPrereview === true,
-    readTexts: async sessionId => (await bodyEditor.read(sessionId)).parts.filter(part => part.kind === 'text').map(part => part.text),
-    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal)
+    // Read-only: the review runs beside settlement, which holds the editing lock.
+    readTexts: sessionId => bodyEditor.peek(sessionId),
+    review: (sessionId, texts, signal) => polishReviewer.review(sessionId, texts, signal),
+    apply: autoPolish
   })
-  // Who speaks each line and how they feel: the story model's dialogue bubbles (docs/design/cast-presentation.md).
+  // A reworded reply (body.polish) keeps its settlement, choices and stage. The write waits
+  // for this turn's background work, which writes the same reply; a new message cancels it.
+  async function autoPolish(sessionId, texts, review, signal) {
+    const started = Date.now()
+    const edits = (review?.edits || []).filter(item => item.status === 'ok')
+    if (review?.fallback || !edits.length) return polishPrereview.settle(sessionId, texts)
+    for (let waited = 0; ; waited += 1000) {
+      signal.throwIfAborted()
+      const chat = await chatHeaderForSession(sessionId, ['timeline', 'settleStatus', 'regenInProgress'])
+      if (!chat) return
+      const busy = agentRegistry.get(sessionId)?.phase?.kind === 'running' || chat.regenInProgress ||
+        ['pending', 'running'].includes(chat.settleStatus) || backgroundTasks.activity(chat).busy
+      if (!busy) break
+      if (waited > 300000) throw new Error('后台任务一直未结束，本轮不写回')
+      await sleep(1000)
+    }
+    const edit = await bodyEditor.read(sessionId)
+    const current = edit.parts.filter(part => part.kind === 'text').map(part => part.text)
+    // The reply changed meanwhile (an edit, a regeneration, a 精修): this review is not for it.
+    if (JSON.stringify(current) !== JSON.stringify(texts)) return
+    signal.throwIfAborted()
+    const polished = applyPolishEdits(texts, edits)
+    // Settled before the write: writing the reply announces 正文写完 again, and the polished
+    // text must not start a review of itself.
+    polishPrereview.settle(sessionId, texts, polished)
+    await bodyEditor.polish(sessionId, { token: edit.token, texts: polished })
+    notifyPluginTimeline(sessionId, 'edit', { settled: true })
+    sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'auto-polish:' + Date.now() })
+    await polishRecords.save(sessionId, edit.turn, { original: texts, edits, seconds: Math.round((Date.now() - started) / 1000), auto: true })
+      .catch(error => console.warn('dsh-tavern: 自动精修记录保存失败', error))
+  }
+  // Who speaks each line and how they feel: the story model's dialogue bubbles (Wiki「设计：cast-presentation」).
   const castPresentation = createCastPresentation({
     // On for every game with 对话气泡; 舞台模式 needs it too, so the stage always has its speakers.
     enabled: async () => (await readTavernSettings()).castPresentation === true,
@@ -2313,11 +2390,6 @@ export async function apply(ctx) {
   function directRound(sessionId) {
     void directorJobs.cancel(sessionId, { wait: false }).then(() => directorJobs.start(sessionId))
       .catch(error => console.warn('dsh-tavern: 舞台导演任务失败', str(error?.message || error)))
-  }
-  // A committed reply: the director starts, and its dialogue bubbles are announced (they came with the text).
-  function bodyCommitted(sessionId) {
-    directRound(sessionId)
-    void castPresentation.announce(str(sessionId)).catch(error => console.warn('dsh-tavern: 台词通知失败', str(error?.message || error)))
   }
   ctx.effect(() => () => { stageDirectorStream.dispose(); return directorJobs.dispose() })
   const settlementItems = createSettlementItems({ plugins: () => pluginApi.settlement })
@@ -2525,19 +2597,25 @@ export async function apply(ctx) {
     patch: patchChat
   })
   // A plugin's one-off task: a fresh background Session, never the resident one settlement uses.
-  async function runPluginTask({ gameId, owner, prompt, tools, call, signal }) {
+  // A member with a prefix of its own (`system`): that prefix, and the prompt as the task's one
+  // message; the plugin hands it whatever story it needs.
+  async function runPluginTask({ gameId, owner, prompt, tools, call, signal, member = '', system }) {
     const selection = backgroundModelSelection(await backgroundConfigForSession(gameId))
     if (!selection) throw new Error('这局没有可用的后台模型')
     const chat = await storyContext({ sessionId: gameId })
     const recent = (chat?.messages || []).filter(message => message && !message.greeting && ['user', 'assistant'].includes(message.role)).slice(-2)
       .map(message => ({ role: message.role, content: [{ type: 'text', text: pluginSource(message).slice(-2400) }] }))
-    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: owner, persistent: false, sessionId: gameId, selection, signal,
-      turn: Number(chat?.messages?.at(-1)?.turn) || 0, system: prompt, messages: recent, tools, maxToolCalls: 16,
+    // With a plugin member, its resident Session (one per game) instead of a fresh one.
+    const own = system !== undefined ? { ownPrefix: true, system, taskText: prompt, messages: [] } : { system: prompt, messages: recent }
+    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: owner, member, persistent: Boolean(member), sessionId: gameId, selection, signal,
+      turn: Number(chat?.messages?.at(-1)?.turn) || 0, ...own, tools, maxToolCalls: 16,
       onToolCall: request => call(request.name, typeof request.arguments === 'string' ? JSON.parse(request.arguments || '{}') : request.arguments) })
   }
   const pluginApi = createTavernPluginApi({
     ctx,
     logger: console,
+    storyEvents,
+    workflow,
     // A plugin's settings changed in a game: its page side re-reads them (tavernUi.watchGameSettings).
     settingsChanged: (gameId, plugin) => sessionSignals.publish(gameId, { kind: 'plugin-settings', version: plugin + ':' + Date.now() + ':' + Math.random().toString(36).slice(2) }),
     // A plugin published new state for its page side (tavernUi.watchState re-reads it).
@@ -2644,7 +2722,6 @@ export async function apply(ctx) {
     publish: sessionId => sessionSignals.publish(sessionId, { kind: 'plugin-media', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
   })
   ctx.provide('tavern', pluginApi.service)
-  turnSettled.subscribe(({ latest }) => { if (latest) return pluginApi.turnSettled(latest.sessionId) })
   cardRevisionListeners.add((cardPath, revision) => pluginApi.cardChanged(cardPath, revision))
   // Tell plugins the story line changed (informational: their turn data follows text versions
   // by itself). After an edit or an undone rollback the visible version may be new to them.
@@ -2652,6 +2729,7 @@ export async function apply(ctx) {
     const id = str(sessionId)
     if (!id) return
     pluginApi.timelineChanged(id, { kind, turn })
+    storyEvents.emit('story-rewound', { sessionId: id, kind, turn })
     if (settled) void pluginApi.turnSettled(id).catch(error => console.warn('dsh-tavern: 插件轮次通知失败:', str(error?.message || error)))
   }
   const { readPluginMediaFile, removePluginMediaVersion, pluginMediaTurns, pluginMediaForTurn, pluginGalleryItems, removePluginGalleryItems } =
@@ -2659,7 +2737,9 @@ export async function apply(ctx) {
   const backgroundTasks = createBackgroundTaskCoordinator({
     store: { readChat, writeChat, updateChat, patchChat, readState: chatPersistence.readSessionState, readRecoveryState: taskStateReader.read, readSlice: chatPersistence.readSlice, readSettlementCheckpoint: chatPersistence.readSettlementCheckpoint },
     timeline: storyTimeline,
-    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) }
+    blocked: function (chat) { return Boolean(autoCompaction?.blocked(chat)) },
+    discarded: target => backgroundAgentRunner.discardRun(target),
+    lockEvent: event => backgroundAgentRunner.noteLock(event)
   })
   const configuredCompactionEngines = new WeakSet()
   const overflowingCompactions = new Set()
@@ -2724,8 +2804,8 @@ export async function apply(ctx) {
       const replaced = summary && events.some(event => event.type === 'user/message' && event.surfaceOp?.op === 'replace' && event.data?.source?.compactionId === summary.data.compactionId)
       return completed && replaced ? 'succeeded' : 'unknown'
     }),
-    markBackground: (id, target) => updateChat(id, chat => {
-      const participant = chat.timeline?.participants?.background
+    markBackground: (id, target, member = 'background') => updateChat(id, chat => {
+      const participant = chat.timeline?.participants?.[member]
       if (participant?.sessionId === target) { participant.requiresNewSessionOnRewind = true; participant.compactionPlannedAt = Date.now() }
       return chat
     }, { source: 'compaction.background' }),
@@ -2791,8 +2871,10 @@ export async function apply(ctx) {
       if (!background || background.task === 'phone') return
       const chat = await chatHeaderForSession(background.parentSessionId, [])
       if (!chat) throw new Error('后台压缩找不到所属对话')
+      // The Session belongs to its task's member (书记 for a task without a timeline member).
+      const member = TIMELINE_MEMBERS.includes(participantOf(background.task)) ? participantOf(background.task) : 'background'
       await updateChat(chat.id, current => {
-        const participant = current.timeline?.participants?.background
+        const participant = current.timeline?.participants?.[member]
         if (participant?.sessionId !== target.session.id) throw new Error('后台会话已变更，取消旧会话压缩')
         participant.requiresNewSessionOnRewind = true
         participant.compactionPlannedAt = Date.now()
@@ -2870,7 +2952,6 @@ export async function apply(ctx) {
     onError:error=>console.warn('dsh-tavern: 候选上下文提前准备失败:',str(error.message||error))
   })
   ctx.effect(()=>()=>candidateWorldbookPreparation.dispose())
-  turnSettled.subscribe(({ latest }) => { if (latest) return candidateWorldbookPreparation.warm(latest.sessionId) })
   const candidateGenerator = createCandidateGenerator({
     backgroundTasks: async chat => normalizeBackgroundTasks((await backgroundConfigForSession(chat.sessionId))?.backgroundTasks),
     store: {
@@ -2904,9 +2985,8 @@ export async function apply(ctx) {
         await writeChat(current, { source: 'settlement.opening-prepare' })
         shouldRun = true
       }
-      const activity = backgroundTasks.activity(current)
-      if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) shouldRun = true
       if (shouldRun) await queueSettlement(current.id)
+      else await workflow.needs('candidate', current)
     },
     sleep: sleep,
     now: Date.now,
@@ -3000,13 +3080,13 @@ export async function apply(ctx) {
   const plainSettlementEngine = createPlainSettlementEngine({ pluginApi, pluginSettlementProgress, settlementItems, backgroundModelSelection, postureItem, backgroundAgentRunner, agentRegistry, sessionStore })
   const settlementRun = createSettlementRun({
     backgroundTasks, chatPersistence, readChat, writeChat, readChatCard, taskStateReader, worldBookScanDepth,
-    mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, turnSettled
+    mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, storyEvents
   })
   const { startPluginTask } = settlementRun
   function queueSettlement(chatId) { return settlementJobs.start(chatId) }
   function cancelSettlement(chatId, options) { return settlementJobs.cancel(chatId, options) }
   const mvuSettlementReconciler = createMvuSettlementResume({
-    conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, turnSettled,
+    conversationRegistry, taskStateReader, sessionStateForSession, backgroundTasks, tavernScriptDispatch, pageInFront, queueSettlement, storyEvents,
     get serverScripts() { return serverScripts }
   })
   ctx.effect(() => function () {
@@ -3133,18 +3213,24 @@ export async function apply(ctx) {
     agentRegistry, sessionStore, chatForSession, chatSliceForSession, updateChat, turns: turnOrchestrator
   })
   const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
+  // One turn's stream, or (no turn: the next one starts) every director job of the game.
+  function cancelDirector(sessionId, turn) {
+    stageDirectorStream.cancel(sessionId, turn)
+    if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
+  }
+  // 任务表 (domain/background-tasks.js): every background task is declared there once; this
+  // hands it the services its tasks run on.
+  registerBackgroundTasks(workflow, { readTavernSettings, stageOn, directRound, cancelDirector, polishPrereview, castPresentation,
+    gameTitles, saveMaintenance, pluginApi, candidateWorldbookPreparation, backgroundTasks, queueSettlement, settlementJobs, settlementRun })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
-    directRound: bodyCommitted,
-    afterReply: sessionId => polishPrereview.start(sessionId),
-    cancelDirector: (sessionId, turn) => {
-      stageDirectorStream.cancel(sessionId, turn)
-      if (turn === undefined) return directorJobs.cancel(sessionId, { wait: false })
-    },
-    waitBackground: chatId => Promise.all([settlementJobs.pending(chatId), settlementRun.pluginTaskJob(chatId)]),
+    replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
+    turnDiscarded: (sessionId, turn) => storyEvents.emit('turn-discarded', { sessionId, turn }),
+    cancelDirector,
+    beforeNextTurn: chat => workflow.beforeNextTurn(chat),
     waitReconcile: storyReconciliation.waitReconcile,
     syncWorldBook: async function (chat) {
       if (!['story', 'script'].includes(chat.mode || 'story')) return
@@ -3256,7 +3342,7 @@ export async function apply(ctx) {
       dispatchEvent: function (event) { return tavernScriptHostAdapter.dispatchEvent(event) } },
     timeline: storyTimeline,
     queueSettlement,
-    bodyCommitted,
+    replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
     cancelSettlement,
     present: presentStory,
     sessionPatch,
@@ -3363,8 +3449,8 @@ export async function apply(ctx) {
 
   const fontLibrary = createFontLibrary({ dataRoot })
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
-  const rpcDeps = { worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
-    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog,
+  const rpcDeps = { interfaceSkins, worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
+    applicationUpdater, assetLibrary, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow,
     backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
     castCardOf, castEdit, castPresentation, castStage, castView, chatForSession, chatHeaderForSession,
@@ -3385,7 +3471,7 @@ export async function apply(ctx) {
     readOpeningWindow, readRawTavernSettings, readScript, readSessionMap, readTavernSettings, reconcileStory, reconcileWhenIdle,
     regenBody, regexLibrary, regexManager, removePluginGalleryItems, removePluginMediaVersion, renameResource,
     replayFailedTurn, requestPerformance, retrySettlement, retryStyleReference, rollbackTurn, rollbackToTurn,
-    runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, sceneIllustrations, scriptContinuity,
+    runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, scriptContinuity,
     scriptNavigation, sessionActivity, sessionInventory, sessionOperation, sessionPatch,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setCardPlugins, setPlayerName,
     fontLibrary, skillImportFiles, sleep, speakLine, prepareVoices, speech, speechReply, stageJudge, stageMaterial, stageMaterialChanged, stageMusicTracks, stageSkinOf, startChat, startPluginTask, stopBackground, str,
@@ -3479,7 +3565,6 @@ export async function apply(ctx) {
     performanceDiagnostics,
     runtimeGeneration,
     runtimeReadiness,
-    sceneIllustrations,
     readPluginMediaFile: (...args) => readPluginMediaFile(...args),
     sessionResources,
     str,
@@ -3648,7 +3733,14 @@ export async function apply(ctx) {
     capabilityFor: name => pluginApi.toolNetworkFor(name)
   }))
 
+  // 正文开始, once per turn: a reply makes several model requests (tool steps).
+  const startedReplies = new Map()
   registerModelStreamHooks({
+    replyStarted: (sessionId, turn) => {
+      if (startedReplies.get(sessionId) === String(turn)) return
+      startedReplies.set(sessionId, String(turn))
+      storyEvents.emit('reply-started', { sessionId, turn })
+    },
     agentRegistry,
     backgroundAgentRunner,
     chatForSession,
@@ -3672,6 +3764,7 @@ export async function apply(ctx) {
   })
 
   registerTurnLifecycleHooks({
+    turnStarted: (sessionId, turn) => storyEvents.emit('turn-started', { sessionId, turn }),
     autoChoices,
     backgroundAgentRunner,
     hookChatForSession,
@@ -3813,8 +3906,10 @@ export async function apply(ctx) {
     // Cards from before the asset library move their stage material once, in the background.
     setImmediate(async function () {
       for (const cardPath of await fileResources.list('card').catch(() => [])) {
-        const name = (await cardSummaries.read(cardPath).catch(() => null))?.name
-        await stageMaterial.ready(cardPath, name).catch(error => console.warn('dsh-tavern: 舞台素材迁移失败', cardPath, str(error?.message || error)))
+        // The name is only used if the card still holds pre-library stage material,
+        // so most cards no longer get their whole file read on every start.
+        const readName = () => cardSummaries.read(cardPath).catch(() => null).then(summary => summary?.name)
+        await stageMaterial.ready(cardPath, readName).catch(error => console.warn('dsh-tavern: 舞台素材迁移失败', cardPath, str(error?.message || error)))
       }
     })
     setImmediate(function () {

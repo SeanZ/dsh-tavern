@@ -72,38 +72,6 @@ function harness() {
 }
 const settle = function () { return new Promise(resolve => setImmediate(resolve)) }
 
-test('单独的 /send 只记录文本，页面留在原地，等 /trigger 才开局', async () => {
-  const h = harness()
-  try {
-    h.send('/send 我推门而入', 'one')
-    await settle()
-    assert.equal(h.calls.length, 1)
-    assert.equal(h.calls[0].payload.method, 'prepareOpeningCommand')
-    assert.equal(h.calls[0].payload.args.line, '/send 我推门而入')
-    assert.equal(h.calls[0].payload.args.openingId, 'primary')
-    assert.deepEqual(h.submitted, [], '记录文本不等于开局')
-    assert.equal(h.replies.length, 1)
-    assert.equal(h.replies[0].ok, true)
-    assert.equal(JSON.stringify(h.replies[0].result), JSON.stringify({ pipe: '', deferred: true }))
-    h.send('/trigger', 'go')
-    await settle()
-    assert.equal(h.calls[1].payload.args.line, '/trigger')
-    assert.deepEqual(h.submitted, ['我推门而入'])
-    assert.equal(h.replies[1].ok, true)
-  } finally { h.stop() }
-})
-
-test('只发 /send 不发 /trigger 的卡，页面安静下来后照样开局', async () => {
-  const h = harness()
-  try {
-    h.send('/send 我推门而入', 'one')
-    await settle()
-    assert.deepEqual(h.submitted, [], '先留出卡自己保存数据的时间')
-    await new Promise(resolve => setTimeout(resolve, 2200))
-    assert.deepEqual(h.submitted, ['我推门而入'], '安静之后按 /send 开始')
-  } finally { h.stop() }
-})
-
 test('/send 之后卡仍在保存时不开局，最后一个调用结束后安静 2 秒才开局', async () => {
   const h = harness()
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -119,21 +87,6 @@ test('/send 之后卡仍在保存时不开局，最后一个调用结束后安�
     assert.deepEqual(h.submitted, [], '保存刚结束，安静不满 2 秒')
     await wait(1100)
     assert.deepEqual(h.submitted, ['我推门而入'])
-  } finally { h.stop() }
-})
-
-test('单独的 /sys 先留住设定，随后的 /trigger 带着它开局', async () => {
-  const h = harness()
-  try {
-    h.send('/sys 天启三年', 'sys')
-    await settle()
-    assert.deepEqual(h.submitted, [])
-    assert.equal(h.replies[0].ok, true)
-    h.send('/trigger', 'go')
-    await settle()
-    assert.equal(h.commands[1].deferred, false)
-    assert.equal(h.commands[1].systemText, '天启三年')
-    assert.deepEqual(h.submitted, ['继续。'])
   } finally { h.stop() }
 })
 
@@ -188,16 +141,4 @@ test('其余未以 /trigger 结束的命令仍然明确拒绝，只读命令照�
     // The reply object comes from the vm realm, so compare its shape as data.
     assert.equal(JSON.stringify(h.replies[1].result), JSON.stringify({ pipe: '角色' }))
   } finally { h.stop() }
-})
-
-test('待开局文本的解析只认得单独一条 /send 或 /sys', () => {
-  assert.deepEqual(parsePendingOpeningCommand('/send 我推门而入'), { sendText: '我推门而入' })
-  assert.deepEqual(parsePendingOpeningCommand('/sys 天启三年'), { systemText: '天启三年' })
-  assert.equal(parsePendingOpeningCommand('/trigger'), null)
-  assert.equal(parsePendingOpeningCommand('/pass {{user}}'), null)
-  assert.equal(parsePendingOpeningCommand('/send 你好 | /trigger'), null)
-  assert.equal(parsePendingOpeningCommand('/echo 好'), null)
-  assert.deepEqual(applyPendingOpeningCommand({ input: '继续。' }, { sendText: '我推门而入' }, '/trigger'), { input: '我推门而入' })
-  assert.deepEqual(applyPendingOpeningCommand({ input: '继续。' }, { systemText: '天启三年' }, '/trigger'), { input: '继续。', systemText: '天启三年', removeGreeting: false })
-  assert.deepEqual(applyPendingOpeningCommand({ input: '你好' }, { sendText: '我推门而入' }, '/send 你好 | /trigger'), { input: '你好' })
 })

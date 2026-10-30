@@ -46,6 +46,11 @@ export function createGameSaveImportContent(save, { chatId, sessionId, cardPath,
     next.timeline = { ...(next.timeline || {}), participants: { background }, operations: {} }
     next.timeline.checkpoints = (next.timeline.checkpoints || []).filter(checkpoint => revisionMap.has(Number(checkpoint.beforeRevision)))
       .map(checkpoint => ({ ...checkpoint, beforeRevision: revisionMap.get(Number(checkpoint.beforeRevision)), ...(checkpoint.participants ? { participants: { background } } : {}) }))
+    // 卡上下文快照是缓存：读的时候 play-card-snapshots.ensure() 会按当前卡重新生成。
+    // 一局状态文档里它一家占了 86%（实测 23.3 KB / 27 KB），导进来纯属白写。
+    next.cardContextSnapshot = ''
+    next.cardContextSnapshotVersion = 0
+    delete next.cardContextConstants
     next._storageRevision = latestRevision
     return next
   }

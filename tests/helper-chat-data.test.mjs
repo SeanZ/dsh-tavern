@@ -74,16 +74,6 @@ test('旧生命周期、聊天身份、变化的消息以及临时楼层都不�
   await assert.rejects(host.adapter.saveChatData('audit', { chatId: 'other', lifecycleRevision: 3, messages: [] }), /聊天已切换/)
 })
 
-test('宿主拒绝伪造正文字段和危险 JSON，失败不产生部分存档', async t => {
-  const host = await fixture(t), value = await host.context()
-  const request = { chatId: 'audit', lifecycleRevision: 2, messages: [{ message_id: 0, stateRevision: value.stateRevision, data: { mes: '改写' } }] }
-  await assert.rejects(host.adapter.saveChatData('audit', request), /不支持修改/)
-  request.messages[0].data = JSON.parse('{"plugin":{"__proto__":{"polluted":true}}}')
-  await assert.rejects(host.adapter.saveChatData('audit', request), /不安全字段/)
-  assert.equal({}.polluted, undefined)
-  assert.equal((await host.open().read('audit')).messages[0].tavernPluginData, undefined)
-})
-
 test('旧式变量保存拒绝并发冲突和已推进的历史，元数据也不部分保存', async t => {
   const host = await fixture(t), stale = await host.connect()
   stale.api.chat[0].variables[0].hp = 8

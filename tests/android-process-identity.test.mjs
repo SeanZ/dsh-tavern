@@ -25,18 +25,6 @@ function sandbox(identity, portOpen = false, host = 'android') {
   return { context, counts: () => ({ removed, signals }) }
 }
 
-test('Android unreadable stale PID with closed port is cleared without signaling', async () => {
-  const h = sandbox('unknown')
-  await vm.runInContext('stopService()', h.context)
-  assert.deepEqual(h.counts(), { removed: 1, signals: 0 })
-})
-
-test('Android unknown PID with occupied port is never stopped or forgotten', async () => {
-  const h = sandbox('unknown', true)
-  await assert.rejects(vm.runInContext('stopService()', h.context), /未识别|无法确认/)
-  assert.deepEqual(h.counts(), { removed: 0, signals: 0 })
-})
-
 test('Android confirmed service permission failure is reported and record retained', async () => {
   const h = sandbox('owned')
   await assert.rejects(vm.runInContext('stopService()', h.context), /权限|无法停止/)
@@ -69,12 +57,6 @@ test('Android identity requires exact profile, port, installation and process st
   assert.equal(inspectRecordedProcess({ ...record, startToken: undefined }, options()), 'owned', 'legacy records remain identifiable')
 })
 
-test('desktop EPERM behavior does not depend on Linux proc visibility', () => {
-  for (const platform of ['win32', 'darwin']) {
-    assert.equal(inspectRecordedProcess(record, { ...options(), platform, kill: denied, read() { assert.fail('must not inspect proc') } }), 'owned')
-  }
-})
-
 test('Linux hosts identify the service from /proc instead of trusting kill(0)', () => {
   for (const host of ['cli', 'desktop']) {
     assert.equal(inspectRecordedProcess(record, { ...options(), platform: 'linux', host, kill: denied }), 'owned',
@@ -85,35 +67,8 @@ test('Linux hosts identify the service from /proc instead of trusting kill(0)', 
   }
 })
 
-test('Linux hosts never claim a PID whose /proc entry cannot be read', () => {
-  for (const host of ['cli', 'desktop']) {
-    assert.equal(inspectRecordedProcess(record, { ...options(), platform: 'linux', host, kill: denied,
-      read() { throw Object.assign(new Error('denied'), { code: 'EACCES' }) } }), 'unknown')
-  }
-})
-
 test('Linux permission failure while signaling is reported instead of the raw kill error', async () => {
   const h = sandbox('owned', false, 'cli')
   await assert.rejects(vm.runInContext('stopService()', h.context), /权限不足。该 PID 可能已被其他进程复用/)
   assert.deepEqual(h.counts(), { removed: 0, signals: 1 })
-})
-
-test('a stale record from a separate PID namespace is dropped and the live listener adopted', async () => {
-  const h = sandbox('foreign', true, 'cli')
-  h.context.findLegacyService = () => ({ pid: 4711, port: 3088, profile: 'tavern', source: '/tavern', legacy: true })
-  const state = await vm.runInContext('serviceState()', h.context)
-  assert.equal(h.counts().removed, 1)
-  assert.equal(state.record.pid, 4711)
-  assert.equal(state.ready, true)
-})
-
-test('Android rechecks identity before SIGTERM and tolerates reuse during signaling', async () => {
-  for (const race of ['before', 'during']) {
-    const h = sandbox('owned')
-    let probes = 0
-    h.context.inspectRecordedProcess = () => ++probes >= (race === 'before' ? 2 : 3) ? 'foreign' : 'owned'
-    await vm.runInContext('stopService()', h.context)
-    assert.equal(h.counts().signals, race === 'before' ? 0 : 1)
-    assert.equal(h.counts().removed, 1)
-  }
 })

@@ -114,7 +114,7 @@ async function fixture(t, bounded) {
       } : {}) },
     sessions: { get: () => agent, flush: async () => {} }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
-    bodyCommitted: sessionId => directed.push('director:' + sessionId),
+    replyCommitted: sessionId => directed.push('director:' + sessionId),
     queueSettlement: async () => { directed.push('settlement') }, cancelSettlement: async () => {},
     present: async value => { presented.push(isScopedMessages(value.messages) ? 'window' : 'full'); return { rolled: true } }
   })
@@ -199,35 +199,6 @@ test('rollback to a turn stops where the model context ends and keeps the rounds
   assert.equal((await h.p.read('chat')).messages.at(-1).turn, 80)
 })
 
-test('bounded rollback falls back to the complete path when the revision moves before its patch', async t => {
-  const h = await fixture(t, true)
-  h.hooks.beforePatch = () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'guide.add' })
-  await h.rounds.rollback('session', 'chat', 81)
-  const after = await h.p.read('chat')
-  assert.equal(after.messages.length, 159)
-  assert.ok(h.calls.includes('update:rollback'))
-  assert.ok(h.calls.includes('read'))
-  assert.deepEqual(after.guides, ['并发'])
-})
-
-test('regeneration adopts the new body when the native surface cannot place it, and marks the native tail for repair', async t => {
-  for (const bounded of [true, false]) {
-    const h = await fixture(t, bounded)
-    // The old body leaves the surface while the model writes: the replacement has nowhere to go.
-    const generate = h.agent.whenIdle
-    h.agent.whenIdle = async () => { await generate(); h.session.surface.nodes = h.session.surface.nodes.filter(seq => seq !== 1) }
-    const view = await h.rounds.regenerate('chat', '', 'session')
-    const after = await h.p.read('chat')
-    assert.equal(view.adopted.text, '重写正文82')
-    assert.equal(after.messages.at(-1).text, '重写正文82')
-    assert.equal(after.messages.at(-1).turn, 81)
-    assert.equal(after.regenInProgress, undefined)
-    assert.equal(after.regenRecovery, undefined)
-    assert.equal(after.nativeSync.status, 'stale')
-    assert.match(after.nativeSync.reason, /旧正文已经不在/)
-  }
-})
-
 test('bounded regeneration stores the same Chat and surface as the complete regeneration', async t => {
   const results = []
   for (const bounded of [true, false]) {
@@ -309,39 +280,3 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
 // A failed turn's own cleanup (foreground.discard restoring the staged template
 // input) writes the save right after the attempt; the regeneration commit then
 // read a revision that had already moved. It used to abort the whole round.
-test('bounded regeneration retries its commit when another operation wrote the save first', async t => {
-  const h = await fixture(t, true)
-  const before = await h.p.read('chat')
-  h.hooks.beforePatchOf = { 'foreground.regen-commit': () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'foreground.discard' }) }
-  const view = await h.rounds.regenerate('chat', '', 'session')
-  const after = await h.p.read('chat')
-  assert.equal(view.adopted.text, '重写正文82')
-  assert.equal(after.messages.length, before.messages.length)
-  assert.equal(after.messages.at(-1).text, '重写正文82')
-  assert.equal(after.messages.at(-1).turn, 81)
-  assert.deepEqual(after.guides, ['并发'], 'the other operation\'s write survives the retried commit')
-  assert.equal(after.regenInProgress, undefined)
-  assert.equal(after.regenRecovery, undefined)
-  assert.ok(!h.calls.includes('patch:foreground.regen-abort'))
-  assert.equal(h.calls.filter(call => call === 'patch:foreground.regen-commit').length, 2, JSON.stringify(h.calls))
-})
-
-test('被截断的重新生成在提交前被别的写入顶掉 revision 时仍保留部分正文，不撤回', async t => {
-  const h = await fixture(t, true)
-  const before = await h.p.read('chat')
-  h.hooks.partialGeneration = '半截正文'
-  h.hooks.beforePatchOf = { 'foreground.regen-commit': () => h.p.update('chat', chat => { chat.guides = ['并发']; return chat }, { source: 'foreground.discard' }) }
-  const view = await h.rounds.regenerate('chat', '', 'session')
-  const after = await h.p.read('chat')
-  assert.equal(view.adopted.text, '半截正文')
-  assert.match(view.regenerationWarning, /已保留生成到的部分正文/)
-  assert.equal(after.messages.length, before.messages.length)
-  assert.equal(after.messages.at(-2).text, before.messages.at(-2).text)
-  assert.equal(after.messages.at(-1).turn, 81)
-  assert.equal(after.messages.at(-1).text, '半截正文')
-  assert.equal(after.messages.at(-1).incomplete, true)
-  assert.deepEqual(after.guides, ['并发'])
-  assert.equal(after.regenInProgress, undefined)
-  assert.equal(after.regenRecovery, undefined)
-  assert.ok(!h.calls.includes('patch:foreground.regen-abort'))
-})

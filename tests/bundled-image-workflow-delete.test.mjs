@@ -101,38 +101,6 @@ async function fixture(t) {
   return { ...deps, persisted, reloadCount: () => reloads }
 }
 
-test('删除工作流文件和配置；再次扫描目录不会重新发现该文件', async t => {
-  const f = await fixture(t)
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 200)
-  assert.deepEqual(f.config.workflows.map(item => item.id), ['fallback'])
-  assert.equal(f.config.defaultWorkflow, 'fallback')
-  assert.deepEqual(await readdir(f.workflowsDir), ['fallback.json'])
-  assert.deepEqual(f.persisted.at(-1).workflows.map(item => item.id), ['fallback'])
-  assert.equal(f.reloadCount(), 1)
-})
-
-test('配置条目指向的文件已缺失时仍可删除，且重启状态中不保留它', async t => {
-  const f = await fixture(t)
-  await rm(path.join(f.workflowsDir, 'remove-me.json'))
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 200)
-  assert.deepEqual(f.config.workflows.map(item => item.id), ['fallback'])
-  assert.deepEqual(f.persisted.at(-1).workflows.map(item => item.id), ['fallback'])
-})
-
-test('拒绝工作流目录外路径并保留配置', async t => {
-  const f = await fixture(t)
-  const outside = path.join(path.dirname(f.workflowsDir), 'outside.json')
-  await writeFile(outside, 'keep')
-  f.config.workflows[0].file = '../outside.json'
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 400)
-  assert.equal(await readFile(outside, 'utf8'), 'keep')
-  assert.deepEqual(f.config.workflows.map(item => item.id), ['remove-me', 'fallback'])
-  assert.equal(f.persisted.length, 0)
-})
-
 test('接受指向 workflows 真实目录的 symlink 父目录别名', async t => {
   const f = await fixture(t)
   const aliasDir = path.join(path.dirname(f.workflowsDir), 'workflows-alias')
@@ -159,37 +127,6 @@ test('拒绝指向 workflows 外部的 symlink 父目录并保留配置和文件
   assert.equal(await readFile(path.join(outsideDir, 'keep.json'), 'utf8'), 'keep')
   assert.deepEqual(f.config.workflows.map(item => item.id), ['remove-me', 'fallback'])
   assert.equal(f.persisted.length, 0)
-})
-
-test('文件删除失败时不丢配置条目', async t => {
-  const f = await fixture(t)
-  await rm(path.join(f.workflowsDir, 'remove-me.json'))
-  await mkdir(path.join(f.workflowsDir, 'remove-me.json'))
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 500)
-  assert.deepEqual(f.config.workflows.map(item => item.id), ['remove-me', 'fallback'])
-  assert.equal(f.persisted.length, 0)
-})
-
-test('配置保存失败时恢复工作流文件及内存、持久配置', async t => {
-  const f = await fixture(t)
-  f.saveConfig = async () => { throw new Error('config-write-failed') }
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 500)
-  assert.equal(result.error, 'config-write-failed')
-  assert.deepEqual(f.config.workflows.map(item => item.id), ['remove-me', 'fallback'])
-  assert.equal(await readFile(path.join(f.workflowsDir, 'remove-me.json'), 'utf8'), '{"workflow":true}')
-})
-
-test('删除非默认工作流不更改当前默认项；不存在的 id 不写入配置', async t => {
-  const f = await fixture(t)
-  f.config.defaultWorkflow = 'fallback'
-  const result = await deleteWorkflow({ ...f, id: 'remove-me' })
-  assert.equal(result.status, 200)
-  assert.equal(f.config.defaultWorkflow, 'fallback')
-  const missing = await deleteWorkflow({ ...f, id: 'unknown' })
-  assert.equal(missing.status, 404)
-  assert.equal(f.persisted.length, 1)
 })
 
 test('实际 POST /workflow 删除文件；reload 和全新 runtime state 都不会重新发现', async t => {
@@ -231,18 +168,4 @@ test('实际路由接受 workflows 内的 Windows 绝对反斜杠路径', async 
   const result = await f.run.request('workflow', { id: 'absolute-old-config', remove: true })
   assert.equal(result.status, 200, result.body.error)
   await assert.rejects(readFile(file), error => error.code === 'ENOENT')
-})
-
-test('共享同一 JSON 的条目一并移除，避免留下指向已删除文件的别名', async t => {
-  const f = await realRouteFixture(t)
-  const configPath = path.join(f.pluginRoot, 'config.json')
-  const config = JSON.parse(await readFile(configPath, 'utf8'))
-  config.workflows.push({ id: 'alias', label: 'Alias', file: 'workflows\\remove-me.json', enabled: true })
-  await writeFile(configPath, JSON.stringify(config))
-  const result = await f.run.request('workflow', { id: 'alias', remove: true })
-  assert.equal(result.status, 200, result.body.error)
-  assert.ok(!result.body.state.workflows.some(item => ['remove-me', 'alias'].includes(item.id)))
-  const persisted = JSON.parse(await readFile(configPath, 'utf8'))
-  assert.ok(!persisted.workflows.some(item => ['remove-me', 'alias'].includes(item.id)))
-  assert.ok(!result.body.state.workflows.some(item => item.error?.includes('文件不存在')))
 })

@@ -1,4 +1,4 @@
-// Green-lamp recall (docs/design/asset-library.md): a blue entry is always offered; a green one when the text so far names
+// Green-lamp recall (Wiki「设计：asset-library」): a blue entry is always offered; a green one when the text so far names
 // it, or — with 判断模型 configured — when the judge finds it fits this turn. A switched-off entry is never in the catalog
 // and never asked about. Judge failures fall back to triggers only; nothing is filled in at random.
 import { triggerEvidence } from './asset-pack-lexical.js'

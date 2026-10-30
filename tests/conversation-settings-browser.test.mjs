@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { openTavernSettings } from './fixtures/tavern-settings-browser.mjs'
 
-test('注册的本局设置保存玩家称呼、预设、后台模型且无前台工具面板，失败时保留已保存模型', async t => {
+test('注册的本局设置保存玩家称呼、预设、后台模型与前台工具，失败时保留已保存模型', async t => {
   let playerName = '你', preset = null, model = null, disabledTools = [], strategy = 'legacy', screening = true, fail = false
   const { page, calls } = await openTavernSettings(t, { sessionId: 'game', respond(method, args) {
     if (method === 'listSessions') return { sessions: [{ sessionId: 'game', mode: 'story' }] }
@@ -49,7 +49,24 @@ test('注册的本局设置保存玩家称呼、预设、后台模型且无前�
   assert.deepEqual(model, { provider: 'p', model: 'm' })
 
   await page.locator('details.dsh-local-advanced > summary').click()
-  assert.equal(await page.getByRole('region', { name: '前台工具' }).count(), 0)
+  const worldbook = page.getByLabel('召回历史', { exact: true })
+  await worldbook.waitFor()
+  assert.equal(await worldbook.isChecked(), true)
+  await worldbook.click()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="召回历史"]')?.checked === false)
+  assert.deepEqual(disabledTools, ['tavern_recall_history'])
+  await page.getByRole('button', { name: '全部关闭' }).click()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="正文提交"]')?.checked === false)
+  assert.deepEqual([...disabledTools].sort(), ['plugin_lookup', 'submit_story', 'tavern_recall_history'])
+  await page.getByRole('button', { name: '全部开启' }).click()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="正文提交"]')?.checked === true)
+  assert.deepEqual(disabledTools, [])
+  const plugin = page.getByLabel('插件查询', { exact: true })
+  await plugin.waitFor()
+  await plugin.click()
+  await page.waitForFunction(() => document.querySelector('input[aria-label="插件查询"]')?.checked === false)
+  assert.deepEqual(disabledTools, ['plugin_lookup'])
+
   assert.equal(await page.getByLabel('状态栏位置', { exact: true }).count(), 0)
   assert.equal(await page.getByLabel('本局世界书策略', { exact: true }).count(), 0)
   assert.equal(await page.getByLabel('世界书模型筛选', { exact: true }).count(), 0)

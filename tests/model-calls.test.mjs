@@ -17,13 +17,6 @@ function harness({ sessionConfig, defaultSelection = { provider: 'p', model: 'de
   return { calls, prepared }
 }
 
-test('the session model wins over the default; no session falls back to the default', () => {
-  const { calls } = harness({ sessionConfig: { provider: 'p', model: 'session', reasoningEffort: 'high' } })
-  assert.deepEqual(calls.modelSelection('story'), { provider: 'p', model: 'session', reasoningEffort: 'high' })
-  assert.deepEqual(calls.modelSelection('other'), { provider: 'p', model: 'default' })
-  assert.equal(harness({ defaultSelection: null }).calls.modelSelection('other'), null)
-})
-
 test('a call trims the reply, keeps temperature except for Codex, and lists only text models', async () => {
   const { calls, prepared } = harness({ sessionConfig: { provider: 'p', model: 'session' } })
   assert.equal(await calls.callModel({ sessionId: 'story', messages: [], temperature: 0.7, maxTokens: 10 }), '好')

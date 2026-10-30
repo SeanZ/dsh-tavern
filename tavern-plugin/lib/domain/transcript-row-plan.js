@@ -1,7 +1,7 @@
 import { surfaceReplacementRange } from './session-events.js'
 import { createImmutableTurnFields } from './freeze-json.js'
 
-// The conversation page's row plan (docs/design/transcript-row-plan.md). The host draws
+// The conversation page's row plan (Wiki「设计：transcript-row-plan」). The host draws
 // every append-origin message forever; instead of listing what to hide, say for each
 // saved round which native turn draws its input and which draws its reply. Every other
 // finished native turn draws nothing.

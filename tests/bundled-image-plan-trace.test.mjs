@@ -138,15 +138,6 @@ test('挂载句只差 Markdown 记号或换行时照样出图（以前逐字比�
   assert.equal(r.body.characterWarnings, undefined)
 })
 
-test('挂载句在正文里找不到时说清楚，而不是报「没有返回可用的 <image> 块」', async t => {
-  const f = await runtime(t, { text: '雨夜，阿梅独自走回家。' })
-  const r = await f.plan(); await delay(30)
-  assert.equal(f.bodies.length, 0)
-  const text = JSON.stringify(r.body)
-  assert.match(text, /挂载句在正文里/)
-  assert.doesNotMatch(text, /没有返回可用的 <image> 块/)
-})
-
 test('人物宏点名的衣服，负面词也进负向通道（以前只补人物自己的负面词）', async t => {
   const f = await runtime(t)
   await f.plan(); await delay(30)

@@ -3,6 +3,7 @@ import { replaceSessionSurface } from './session-surface-mutations.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { editableReplyParts } from './reply-presentation.js'
 import { replyProse } from './reply-prose.js'
+import { sceneSourceDigest } from './scene-illustration.js'
 import { locateRegenerationSurface } from './rollback-surface.js'
 import { sessionEvents } from './session-events.js'
 import { isScopedMessages } from './scoped-messages.js'
@@ -128,11 +129,11 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
   // A bounded history edits only its last floor: apply the same timeline intent to
   // the header and that floor, then patch them on the read revision. A moved
   // revision returns undefined so the complete path re-validates the edit token.
-  async function saveLatestFloor(sessionId, chat, message, patch, target, agent) {
+  async function saveLatestFloor(sessionId, chat, message, patch, target, agent, kind = 'body.edit') {
     if (!isScopedMessages(chat.messages) || typeof chats.patch !== 'function') return undefined
     const index = chat.messages.length - 1
     const { messages: _rows, ...header } = chat
-    const edited = timeline.apply({ chat: { ...header, messages: [message] }, intent: { kind: 'body.edit', turn: message.turn, patch } }).chat
+    const edited = timeline.apply({ chat: { ...header, messages: [message] }, intent: { kind, turn: message.turn, patch } }).chat
     const { messages: [row], ...head } = edited
     const changes = diffJson({ ...header, messages: [] }, { ...head, messages: [] }).filter(change => !['_storageRevision', 'updatedAt'].includes(change.path[0]))
     for (const change of diffJson(message, row)) changes.push({ ...change, path: ['messages', index, ...change.path] })
@@ -148,7 +149,15 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     const { chat, message, parts } = await context(sessionId)
     return { token: token(chat, message), turn: message.turn, parts: parts.map(part => part.kind === 'text' ? part : { kind: part.kind }) }
   }
-  async function saveText(sessionId, input) {
+  // The last reply's text parts as saved, for reading only (the 精修 review): no editing lock,
+  // so it reads while the turn's settlement still runs. Writing goes through read/polish.
+  async function peek(sessionId) {
+    const chat = await chats.forSession(sessionId)
+    if (!chat) throw new Error('会话不存在')
+    return editableReplyParts(source(latest(chat))).filter(part => part.kind === 'text').map(part => part.text)
+  }
+  // `kind`: body.edit, or body.polish for 自动精修 (same text checks, nothing else invalidated).
+  async function saveText(sessionId, input, kind = 'body.edit') {
     if (pending.has(sessionId)) throw new Error('正在保存正文，请稍候')
     pending.add(sessionId)
     try {
@@ -167,6 +176,8 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
       const reply = await project(text, chat)
       const patch = {
         ...replyProse(text, { ...reply, projectionText: text }),
+        // The scene stays the original reply's (scene-illustration.js), however often it is reworded.
+        ...(kind === 'body.polish' ? { polishedFrom: message.polishedFrom || sceneSourceDigest(source(message)) } : {}),
         ...(target ? { bodyEdit: { formatVersion: 4, id: 'tavern-body-edit:' + randomUUID(), seq: target.assistantSeq, turn: target.turn } } : {})
       }
       if (Array.isArray(message.swipes)) {
@@ -182,14 +193,14 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
         const preview = agent.session.constructor.fromRestore(agent.session.id, structuredClone(sessionEvents(agent.session)), structuredClone(agent.session.header), agent.session.inheritedEventCount, 'detached')
         await synchronizeBodyEdits(preview, { messages: [{ ...message, ...patch }] }, async () => {})
       }
-      const patched = await saveLatestFloor(sessionId, chat, message, patch, target, agent)
+      const patched = await saveLatestFloor(sessionId, chat, message, patch, target, agent, kind)
       if (patched) return patched
       const saved = await chats.update(chat.id, current => {
         idle(current, agent)
         if (token(current, latest(current)) !== input.token) throw new Error('正文或会话已变化，请重新打开编辑')
         if (target && !agent.session.surface?.nodes.includes(target.assistantSeq)) throw new Error('模型上下文已变化，请重新打开编辑')
-        return timeline.apply({ chat: current, intent: { kind: 'body.edit', turn: message.turn, patch } }).chat
-      }, { source: 'foreground.body-edit' })
+        return timeline.apply({ chat: current, intent: { kind, turn: message.turn, patch } }).chat
+      }, { source: kind === 'body.polish' ? 'foreground.body-polish' : 'foreground.body-edit' })
       if (target) await synchronizeBodyEdits(agent.session, saved, sessions.flush)
       else await repairNative(sessionId, agent.session)
       return present(saved)
@@ -365,5 +376,12 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     if (gaps.some(rest => rest.trim())) throw new Error('只能修改原有的文字段落，不能在 HTML 块之间新增段落')
     return await save(sessionId, { token: token(chat, message), texts })
   }
-  return Object.freeze({ read, save, readUser, saveUser, replaceText })
+  // 自动精修: the reply reworded in place; dialogue speakers follow as for an edit.
+  async function polish(sessionId, input) {
+    const carry = typeof beforeReplyEdit === 'function' ? await beforeReplyEdit(sessionId) : null
+    const saved = await saveText(sessionId, input, 'body.polish')
+    if (carry) await carry()
+    return saved
+  }
+  return Object.freeze({ read, peek, save, polish, readUser, saveUser, replaceText })
 }

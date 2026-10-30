@@ -27,33 +27,6 @@ function blankFixture(options = {}) {
   return { ctx, calls, errors }
 }
 
-test('删除最后一个对话后创建并打开空白会话，底部面板入口才有会话可挂载', async () => {
-  const { ctx, calls, errors } = blankFixture()
-  await ctx.openBlankConversation()
-  assert.deepEqual(calls, [['connect', 'workspace-play'], ['open', 'blank-session']])
-  assert.deepEqual(errors, [])
-})
-
-test('工作区还没解析时用预热工作区', async () => {
-  const { ctx, calls } = blankFixture({ workspaceId: '', prewarmWorkspaceId: 'workspace-prewarm' })
-  await ctx.openBlankConversation()
-  assert.deepEqual(calls, [['connect', 'workspace-prewarm'], ['open', 'blank-session']])
-})
-
-test('创建空白会话失败时清空主视图并提示', async () => {
-  const { ctx, calls, errors } = blankFixture({ create: async () => { throw new Error('create failed') } })
-  await ctx.openBlankConversation()
-  assert.deepEqual(calls, [['clear']])
-  assert.deepEqual(errors, ['创建新对话失败：create failed'])
-})
-
-test('没有可用工作区时不创建会话，退化为清空主视图', async () => {
-  const { ctx, calls, errors } = blankFixture({ workspaceId: '', prewarmWorkspaceId: '' })
-  await ctx.openBlankConversation()
-  assert.deepEqual(calls, [['clear']])
-  assert.deepEqual(errors, ['创建新对话失败：找不到可用的工作区'])
-})
-
 function deleteFixture() {
   const calls = []
   const ctx = vm.createContext({

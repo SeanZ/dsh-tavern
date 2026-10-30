@@ -119,7 +119,18 @@ export function createDurableFilePromotion(options = {}) {
     return snapshots
   }
 
+  // Targets this process promoted itself. A successful promotion clears every pending
+  // snapshot it wrote, so a reader that already promoted a target has nothing to recover
+  // there and can skip the directory listing every read used to pay for. A snapshot left
+  // by another process that later crashed is still picked up on the next start.
+  const promoted = new Set()
   async function readTarget(target) {
+    if (promoted.has(target)) {
+      try { return await readFile(target) } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+        promoted.delete(target)
+      }
+    }
     const snapshots = await pendingSnapshots(target)
     if (snapshots.length > 0) return snapshots[snapshots.length - 1].value
     try { return await readFile(target) } catch (error) { if (error?.code === 'ENOENT') return undefined; throw error }
@@ -169,6 +180,7 @@ export function createDurableFilePromotion(options = {}) {
       await replaceTarget(pending, target)
       await syncDirectory(path.dirname(target))
       await cleanupPending(target)
+      promoted.add(target)
       return { status: 'promoted', revision }
     } catch (error) {
       if (handle) await handle.close().catch(function () {})
@@ -256,6 +268,7 @@ export function createDurableFilePromotion(options = {}) {
     async remove(target) {
       const absolute = path.resolve(target)
       await enqueue(absolute, () => withWriteLock(absolute, async function () {
+        promoted.delete(absolute)
         await rm(absolute, { force: true })
         await cleanupPending(absolute)
         await syncDirectory(path.dirname(absolute))

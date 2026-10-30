@@ -3,6 +3,7 @@ import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
 import { createBackgroundRunLedger } from './background-run-ledger.js'
+import { memberOf, pluginMember } from './domain/background-members.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -140,12 +141,20 @@ export function createBackgroundAgentSessions(options, task) {
     return reaping
   }
 
+  // The resident member a persistent task runs on (background-members.js): the plugin member it
+  // names, else its built-in one, else 书记.
+  function memberFor(input) {
+    return (pluginMember(input.member) && input.member) || memberOf(input.task) || 'background'
+  }
+
+  // One queue per member: its tasks share one Session, so they run one at a time.
   function queueKey(input) {
-    return input.task === 'polish' ? JSON.stringify([str(input.sessionId), 'polish']) : str(input.sessionId)
+    const member = memberFor(input)
+    return member === 'background' ? str(input.sessionId) : JSON.stringify([str(input.sessionId), member])
   }
 
   function residentKey(input) {
-    return JSON.stringify([str(input.sessionId), input.task === 'polish' ? 'polish' : 'background'])
+    return JSON.stringify([str(input.sessionId), memberFor(input)])
   }
 
   async function releaseSuperseded(key) {
@@ -156,6 +165,8 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function descriptorFor(input, persistent) {
+    const member = persistent ? pluginMember(input.member) : null
+    if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: LEGACY_BACKGROUND_PROVIDER, label: '插件成员：' + member.name })
     if (input.task === 'polish') return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-polish', label: '正文精修', agentProvider: input.selection.provider, agentModel: input.selection.model, persona: '只审读正文，通过精修工具逐处提交修改。' })
     if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
@@ -184,10 +195,10 @@ export function createBackgroundAgentSessions(options, task) {
     const parent = agents.get(input.sessionId)
     if (parent === undefined || parent.session === undefined) throw new Error('无法创建后台 Agent：前台会话不可用')
     const runtimeInput = Object.assign({}, input)
-    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && Boolean(await options.resolveWorldbookSkills?.(input))
+    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && Boolean(await options.resolveWorldbookSkills?.(input))
     // The game's web search setting, unless the task rules it out (style reference, worldbook
     // filter: paid, slow, and what they look for is not on the open web).
-    if (options.resolveWebSearch && !['phone', 'polish'].includes(input.task) && input.webSearchEnabled !== false) {
+    if (options.resolveWebSearch && !['phone', 'polish'].includes(input.task) && input.ownPrefix !== true && input.webSearchEnabled !== false) {
       runtimeInput.webSearchEnabled = await options.resolveWebSearch(input)
     }
     const persistent = input.persistent === true
@@ -195,7 +206,8 @@ export function createBackgroundAgentSessions(options, task) {
     const requestedSessionId = startOver ? '' : str(persistent && typeof input.resolvePersistentSessionId === 'function'
       ? await input.resolvePersistentSessionId() : input.persistentSessionId)
     const key = residentKey(input)
-    const needsSession = persistent && input.task !== 'polish' && typeof options.needsNewBackgroundSession === 'function'
+    // Only 书记's Session is bound in the save and may need a fresh one after a rewind.
+    const needsSession = persistent && memberFor(input) === 'background' && typeof options.needsNewBackgroundSession === 'function'
       && await options.needsNewBackgroundSession(input.sessionId)
     const residentSessionId = startOver || needsSession && requestedSessionId === '' ? '' : str(residentSessionByParent.get(key))
     let traceSessionId = requestedSessionId || (persistent ? residentSessionId : '') || makeId()
@@ -294,13 +306,14 @@ export function createBackgroundAgentSessions(options, task) {
     requestSessions.set(traceSessionId, handle.agent.session)
     requestContexts.set(traceSessionId, {
       scope: 'background',
-      webSearchEnabled: !['phone', 'stage-director', 'polish'].includes(input.task) && runtimeInput.webSearchEnabled === true,
+      webSearchEnabled: !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && runtimeInput.webSearchEnabled === true,
       parentSessionId: str(input.sessionId),
       selection: { ...input.selection },
       maxTokens,
       task: str(input.task) || 'background',
       turn: Math.max(0, Number(input.turn) || 0)
     })
+    input.runRecord?.bind(traceSessionId)
     try {
       return await task.execute({ agent: handle.agent, state, traceSessionId, persistent }, input)
     } catch (error) {
@@ -346,16 +359,20 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function run(input) {
-    if (input.task === 'worldbook-filter') return Promise.reject(new Error('独立世界书召回任务已停用，请在当前任务中按需搜索和读取'))
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
-    const record = runs.begin(input)
+    const record = runs.begin({ ...input, member: input.persistent === true ? memberFor(input) : '' })
     input = { ...input, runRecord: record }
     const work = input.persistent !== true ? execute(input) : enqueue(queueKey(input), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
     })
-    return work.then(result => { record.finish(); return result }, error => {
-      record.fail(error, input.signal?.aborted === true || error?.name === 'AbortError')
+    // Every run's end is announced (任务完成), so other work can follow it.
+    const finished = status => options.onRunFinished?.({ sessionId: str(input.sessionId), task: str(input.task), plugin: str(input.pluginName),
+      member: input.persistent === true ? memberFor(input) : '', turn: Math.max(0, Number(input.turn) || 0), status })
+    return work.then(result => { record.finish(); finished('completed'); return result }, error => {
+      const cancelled = input.signal?.aborted === true || error?.name === 'AbortError'
+      record.fail(error, cancelled)
+      finished(cancelled ? 'cancelled' : 'failed')
       throw error
     })
   }
@@ -453,5 +470,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, runs: gameId => runs.list(gameId), run, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

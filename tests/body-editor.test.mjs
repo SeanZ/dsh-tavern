@@ -34,6 +34,15 @@ test('stale tabs, blank text, new HTML, running turns and HTML-only replies reje
   const html = fixture('<div>纯 HTML</div>'); await assert.rejects(html.editor.read(html.session.id), /没有可编辑文本/)
 })
 
+test('peek reads the last reply\'s text while settlement runs, the same text read gives once idle', async () => {
+  const h = fixture('第一段\n\n第二段')
+  h.change(chat => { chat.settleStatus = 'running' }); h.busy(true)
+  await assert.rejects(h.editor.read(h.session.id), /等待/)
+  const peeked = await h.editor.peek(h.session.id)
+  h.change(chat => { chat.settleStatus = 'done' }); h.busy(false)
+  assert.deepEqual(peeked, (await h.editor.read(h.session.id)).parts.filter(part => part.kind === 'text').map(part => part.text))
+})
+
 test('issue #72: stale bodyEdit after migration clears instead of blocking turns', async () => {
   const h = fixture('原正文')
   h.change(chat => {

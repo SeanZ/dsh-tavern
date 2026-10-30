@@ -30,6 +30,9 @@ function chatSummary(chat, preservedLastOpenedAt = 0) {
     title: str(chat && chat.title),
     mode: str(chat && chat.mode) || 'story',
     requestMode: chat && chat.requestMode === 'sillytavern' ? 'sillytavern' : 'dsh',
+    // Recovery (a new or background Session asking for its chat) matches on this
+    // column; without it every save had to be read in full to learn its Session.
+    sessionId: str(chat && chat.sessionId),
     ...(currentBackgroundSessionId(chat) === null ? {} : { backgroundSessionId: currentBackgroundSessionId(chat) }),
     ...(Array.isArray(chat?.backgroundHistoryIds) ? { backgroundHistoryIds: chat.backgroundHistoryIds } : {}),
     createdAt,
@@ -44,7 +47,11 @@ function stampOf(index, links) {
 }
 
 function sameSummary(left, right) {
-  return left && right && JSON.stringify(left.backgroundHistoryIds || []) === JSON.stringify(right.backgroundHistoryIds || []) && ['id', 'cardPath', 'cardName', 'title', 'mode', 'requestMode', 'createdAt', 'updatedAt', 'lastOpenedAt', 'backgroundSessionId'].every(function (key) { return left[key] === right[key] })
+  if (!left || !right) return false
+  // Rows written before summaries carried the bound Session have no column; both
+  // missing and empty mean "no Session", so an old row migrates once and then stops.
+  if (str(left.sessionId) !== str(right.sessionId)) return false
+  return JSON.stringify(left.backgroundHistoryIds || []) === JSON.stringify(right.backgroundHistoryIds || []) && ['id', 'cardPath', 'cardName', 'title', 'mode', 'requestMode', 'createdAt', 'updatedAt', 'lastOpenedAt', 'backgroundSessionId'].every(function (key) { return left[key] === right[key] })
 }
 
 /**
@@ -118,8 +125,13 @@ export function createTavernConversationRegistry(options = {}) {
       const linkedChatIds = new Set(Object.values(current).filter(value => typeof value === 'string'))
       for (const item of chatRows(index)) {
         if (linkedChatIds.has(item.id)) continue
+        // A row that already names its Session skips the file; rows written before
+        // summaries carried it still get one read and are rewritten by the next sync.
+        const declared = typeof item.sessionId === 'string' ? item.sessionId : null
+        if (declared !== null && declared !== id) continue
         const chat = await readChat(item.id)
-        if (chat !== undefined && str(chat.sessionId) === id) {
+        if (chat === undefined || linkedChatIds.has(chat.id)) continue
+        if (str(chat.sessionId) === id) {
           current[id] = chat.id
           found = chat
           return current

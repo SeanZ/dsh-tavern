@@ -15,6 +15,7 @@ description: "编写或修改给 DSH Tavern 用的插件：文生图、文生视
 - `plugin-recipes.md`：按要做的插件找写法。
 - `example-plugin.md`：起步代码。
 - `plugin-publishing.md`：用户要把插件分享出去时读。
+- `interface-skin.md`：用户只想换外观时读；皮肤是一个 .css 文件，不是插件。
 
 ## 硬性要求
 

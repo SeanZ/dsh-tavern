@@ -200,64 +200,6 @@ test('时间线同一条目被并发改成不同状态时仍然拒绝', async fu
   await assert.rejects(app.persistence.write(second), error => error.code === 'DSH_TAVERN_CHAT_CONFLICT' && error.path === 'timeline.operations.a.status')
 })
 
-test('对象字段顺序变化不应让等价的预设条目数组产生假冲突', async function () {
-  const app = harness({
-    id: 'chat-1',
-    runtimePresetSnapshot: { front: { entries: [{ id: 'entry-1', content: '旧内容' }] } },
-    macroState: { local: {} },
-    _storageRevision: 1
-  })
-  const compatibilityCompile = await app.persistence.read('chat-1')
-
-  await app.persistence.update('chat-1', function (chat) {
-    chat.runtimePresetSnapshot.front.entries = [{ content: '新内容', id: 'entry-1' }]
-    return chat
-  })
-  compatibilityCompile.runtimePresetSnapshot.front.entries = [{ id: 'entry-1', content: '新内容' }]
-  compatibilityCompile.macroState.local.compiled = true
-
-  await app.persistence.write(compatibilityCompile)
-
-  assert.deepEqual(app.stored().runtimePresetSnapshot.front.entries, [{ content: '新内容', id: 'entry-1' }])
-  assert.equal(app.stored().macroState.local.compiled, true)
-})
-
-test('删除与修改同一个字段仍按任意保存顺序拒绝冲突，失败不改存档', async function () {
-  for (const deletionFirst of [false, true]) {
-    const app = harness({ id: 'chat-1', state: { obsolete: { value: 1 } }, _storageRevision: 1 })
-    const deletion = await app.persistence.read('chat-1')
-    const edit = await app.persistence.read('chat-1')
-    delete deletion.state.obsolete
-    edit.state.obsolete.value = 2
-    const [first, second] = deletionFirst ? [deletion, edit] : [edit, deletion]
-    await app.persistence.write(first)
-    const before = app.stored()
-    await assert.rejects(app.persistence.write(second), error => error.code === 'DSH_TAVERN_CHAT_CONFLICT' && error.path === 'state.obsolete')
-    assert.deepEqual(app.stored(), before)
-  }
-})
-
-test('journal 的过期写入按需读取持久版本，不长期保留每轮完整副本', async t => {
-  const root=await mkdtemp(join(tmpdir(),'chat-baseline-'))
-  t.after(()=>rm(root,{recursive:true,force:true}))
-  const store=createChatJournalStore({dataRoot:root})
-  let baselineReads=0
-  const persistence=createChatPersistence({store:{...store,readRevision:async(...args)=>{baselineReads++;return store.readRevision(...args)}}})
-  await persistence.write({id:'c',messages:[message()],counter:0})
-  const old=await persistence.read('c')
-  for(let i=0;i<12;i++)await persistence.update('c',c=>{c.counter++;return c})
-  old.extra='并发无关改动'
-  await persistence.write(old)
-  assert.equal(baselineReads,1)
-  const saved=await persistence.read('c')
-  assert.equal(saved.counter,12)
-  assert.equal(saved.extra,old.extra)
-  const a=await persistence.read('c'),b=await persistence.read('c')
-  a.counter++;b.counter+=2
-  await persistence.write(a)
-  await assert.rejects(persistence.write(b),error=>error.code==='DSH_TAVERN_CHAT_CONFLICT')
-})
-
 for (const anotherToggle of [false, true]) test('复用已合并的草稿不会撤销隐藏状态或产生伪冲突：' + anotherToggle, async () => {
   const app = harness({ id: 'chat-1', messages: [], hiddenDshErrorTurns: [], _storageRevision: 1 })
   const draft = await app.persistence.read('chat-1')

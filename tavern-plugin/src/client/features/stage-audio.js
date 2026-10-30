@@ -1,4 +1,4 @@
-// The stage's audio layers (docs/design/cast-presentation.md「舞台 core（23/N）：CONFIG」): the page's one AudioContext and its
+// The stage's audio layers (Wiki「设计：cast-presentation」「舞台 core（23/N）：CONFIG」): the page's one AudioContext and its
 // mixer. Every stage sound ends in its layer's bus, its dip (避让, below) and then 总音量: the BGM (modules/stage-music.js), 音效 (modules/stage-sfx.js) and
 // 环境音 on Web Audio; a voice is an <audio> (or the system's speech, features/speech.js) set to 配音 × 总音量.
 // State: the player's level per layer and a mute per layer, kept apart - a mute keeps the level and unmuting restores it;

@@ -1,0 +1,9 @@
+{
+  "name": "tavern-plugin-diarist",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs"
+  }
+}

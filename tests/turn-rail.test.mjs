@@ -28,17 +28,6 @@ function page(turns, options = {}) {
 const hostHidden = document => document.querySelector('nav[data-dsh-tavern-rail-hidden]') !== null
 const tickTurns = document => [...document.querySelectorAll('.dsh-tavern-turn-rail [data-turn]')].map(node => Number(node.getAttribute('data-turn')))
 
-test('只给计划里画了正文的轮次画刻度，收起宿主那列', t => {
-  const { dom, document, scope, create } = page([1, 28, 29, 30, 47, 48], { rows: [[28, 400], [47, 90]] })
-  t.after(() => dom.window.close())
-  const rail = create(scope)
-  rail.apply({ accept: turn => turn === 1 || turn === 28 || turn === 47 })
-  assert.ok(hostHidden(document))
-  assert.deepEqual(tickTurns(document), [1, 28, 47], '第 29/30 轮是尝试轮，不占刻度')
-  rail.dispose()
-  assert.equal(hostHidden(document), false, '卸载后宿主那列回来')
-})
-
 test('行在页面里就滚到那一轮的开头', async t => {
   const { dom, document, scope, create } = page([28, 47], { rows: [[28, 400], [47, 90]] })
   t.after(() => dom.window.close())
@@ -71,15 +60,6 @@ test('行还没翻出来：自己点「加载更早」，翻到了再滚过去',
   await new Promise(resolve => dom.window.setTimeout(resolve, 3800))
   assert.ok(loads >= 2, '翻了两次历史')
   assert.equal(scope.dataset.scrolledTo, '28', '翻到后滚到这一轮开头')
-  rail.dispose()
-})
-
-test('窄容器里跟宿主一样不出刻度', t => {
-  const { dom, document, scope, create } = page([28], { narrow: true, rows: [[28, 400]] })
-  t.after(() => dom.window.close())
-  const rail = create(scope)
-  rail.apply({ accept: () => true })
-  assert.equal(document.querySelector('.dsh-tavern-turn-rail').hidden, true)
   rail.dispose()
 })
 

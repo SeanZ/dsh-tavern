@@ -165,6 +165,8 @@ export function createSessionViewProjection({
       // tavernStatusView duplicated tavernStatusViews[0] in every read; clients use the list.
       tavernStatusViews: replyDisplay.statusViews || [],
       mvuReceipts: mvuReceiptsOf(chat),
+      // Replies 自动精修 reworded (body.polish), by turn, for the mark beside their receipt.
+      autoPolishedTurns: (Array.isArray(chat.messages) ? chat.messages : []).filter(message => message?.role === 'assistant' && message.polishedFrom).map(message => Number(message.turn) || 0),
       tavernHelper: helperContext ? { ...helperContext, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost: sessionOpeningDescriptor(chat, card), worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: applyRegexOverrides(activePresetSnapshot?.regexScripts || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), character: cardExtensions.characterRegexScripts || [] } } : null,
       tavernMvuRuntime: chat.mvu && chat.mvu.enabled === true ? {
         owner: chat.mvu.owner === 'official' ? 'official' : 'legacy',
@@ -341,7 +343,7 @@ export function createSessionViewProjection({
     }
     return [...turns].filter(turn => turn > 0).sort((left, right) => left - right)
   }
-  // The row plan (docs/design/transcript-row-plan.md) over what the view holds — the
+  // The row plan (Wiki「设计：transcript-row-plan」) over what the view holds — the
   // window of floors, or the whole short history — and the log since its first round, as
   // turn-keyed exceptions. The page shows exactly the rows it plans. The log grows every
   // turn without a save change, so every projection, cached or not, plans again; the cost

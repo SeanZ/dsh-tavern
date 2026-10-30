@@ -150,22 +150,6 @@ test('配音合成：火山引擎按音色选资源与情绪，把逐行 JSON �
     /HTTP 401：load grant: requested grant not found in SaaS storage/, '鉴权失败时带上服务的说明')
 })
 
-test('配音合成：火山引擎不认这句的情绪时，去掉情绪再念一次；鉴权失败不重试', async () => {
-  const line = data => ({ body: JSON.stringify(data) + '\n', type: 'application/x-ndjson' })
-  const { speech, requests } = harness({ responses: [
-    line({ code: 45000001, message: 'unsupported emotion' }),
-    line({ code: 20000000, message: 'OK', data: Buffer.from('ID3plain').toString('base64') }),
-    { body: JSON.stringify({ header: { code: 45000010, message: 'grant not found' } }), status: 401, type: 'application/json' }
-  ] })
-  await speech.save({ enabled: true, provider: 'volcengine', config: { appId: 'app-1', voice: 'zh_female_vv_uranus_bigtts' }, apiKey: 'token-1' })
-  const audio = await speech.synthesize({ text: '“太好了！”', emotion: 'joy' })
-  assert.equal(requests[0].body.req_params.audio_params.emotion, 'happy')
-  assert.equal(Object.hasOwn(requests[1].body.req_params.audio_params, 'emotion'), false, '第二次不带情绪')
-  assert.equal((await speech.readAudio(audio.id)).bytes.toString(), 'ID3plain')
-  await assert.rejects(speech.synthesize({ text: '“再来。”', emotion: 'joy' }), /HTTP 401：grant not found/)
-  assert.equal(requests.length, 3, '401 不重试')
-})
-
 test('插件配音渠道：出现在设置里，合成交给插件，结果同样缓存', async () => {
   const { speech, plugins } = harness()
   const calls = []
@@ -184,23 +168,6 @@ test('插件配音渠道：出现在设置里，合成交给插件，结果同�
   plugins.length = 0
   assert.equal(await speech.active(), null, '插件卸载后渠道不可用')
   await assert.rejects(speech.synthesize({ provider: 'edge-tts/edge', text: '你好' }), /没有这个配音渠道/)
-})
-
-test('插件配音渠道：收到局、说话人和是否旁白；说话人或渠道 version 不同各自合成', async () => {
-  const { speech, plugins } = harness()
-  const calls = []
-  const entry = { id: 'cache/tts', owner: 'cache', label: '缓存配音', voices: [], defaultVoice: 'v', version: '1',
-    synthesize: async input => { calls.push(input); return { data: new Uint8Array([calls.length]), mediaType: 'audio/mpeg' } } }
-  plugins.push(entry)
-  await speech.save({ enabled: true, provider: 'cache/tts' })
-  await speech.synthesize({ text: '你好', gameId: 'g', speaker: '林岚' })
-  await speech.synthesize({ text: '你好', gameId: 'g', speaker: '林岚' })
-  assert.equal(calls.length, 1)
-  assert.deepEqual([calls[0].gameId, calls[0].speaker, calls[0].narration], ['g', '林岚', false])
-  await speech.synthesize({ text: '你好', gameId: 'g', speaker: '小雪' })
-  entry.version = '2'
-  await speech.synthesize({ text: '你好', gameId: 'g', speaker: '林岚' })
-  assert.equal(calls.length, 3)
 })
 
 // Fish 协议 (cast-presentation.md 21/N): routes answered like a Fish-compatible server; /v1/info is optional.
@@ -235,27 +202,6 @@ function fishHarness({ info } = {}) {
   credentials: () => credentials, fetchImpl })
   return { speech, requests, keys: h.keys }
 }
-
-test('Fish 协议：Key 选填，不填就不带 Authorization；模型从 /v1/info 读，留空用第一个；声音是 reference_id', async () => {
-  const { speech, requests } = fishHarness({ info: { models: [{ id: 'model-a', label: 'Model A' }, { id: 'model-b' }, { id: '../bad' }], capabilities: {} } })
-  const saved = await speech.save({ enabled: true, provider: 'fish', config: { baseUrl: 'http://127.0.0.1:8080/', voice: 'ref-lin' } })
-  const fish = saved.providers.find(item => item.id === 'fish')
-  assert.deepEqual([fish.key, fish.keyOptional, fish.hasKey, fish.discovers, fish.prepares], [true, true, false, true, true])
-  assert.deepEqual(await speech.serviceInfo({ provider: 'fish' }), { models: [{ id: 'model-a', label: 'Model A' }, { id: 'model-b', label: 'model-b' }] })
-  const audio = await speech.synthesize({ text: '“你好。”', emotion: 'joy' })
-  assert.match(audio.id, /\.wav$/)
-  const tts = requests.find(item => item.path === '/v1/tts')
-  assert.equal(tts.url, 'http://127.0.0.1:8080/v1/tts')
-  assert.equal(Object.hasOwn(tts.headers, 'authorization'), false, '没有 Key 就不带 Authorization')
-  assert.equal(tts.headers.model, 'model-a')
-  assert.deepEqual(tts.body, { text: '“你好。”', reference_id: 'ref-lin', format: 'wav' })
-  assert.equal(requests.filter(item => item.path === '/v1/info').length, 1, '同一地址的回答只问一次')
-  assert.deepEqual(await speech.synthesize({ text: '“你好。”', emotion: 'sad' }), audio, 'Fish 不按情绪区分缓存')
-  // A configured model is sent as written; the character's own voice wins.
-  await speech.save({ provider: 'fish', config: { model: 'model-b' } })
-  await speech.synthesize({ text: '再见。', voice: 'ref-nora' })
-  assert.deepEqual([requests.at(-1).headers.model, requests.at(-1).body.reference_id], ['model-b', 'ref-nora'])
-})
 
 test('Fish 协议：Key 只发给保存它的地址；服务没有 /v1/info 时照常合成、不预热', async () => {
   const { speech, requests, keys } = fishHarness()

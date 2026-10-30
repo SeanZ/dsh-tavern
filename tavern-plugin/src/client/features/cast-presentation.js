@@ -1,4 +1,4 @@
-		// Dialogue avatars (docs/design/cast-presentation.md): the story model writes each spoken line as a dialogue bubble
+		// Dialogue avatars (Wiki「设计：cast-presentation」): the story model writes each spoken line as a dialogue bubble
 		// naming its speaker, shown as that speaker's row from the moment the line starts streaming (32/N). The chat reads
 		// the rows from the text alone; a turn's stored lines are for the stage and plugins.
 		const TAVERN_CAST_EMOTIONS = CAST_EMOTIONS;

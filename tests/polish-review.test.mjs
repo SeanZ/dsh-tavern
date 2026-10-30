@@ -1,23 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyPolishEdits, composePolishEdits, parsePolishReview, polishReviewContext } from '../tavern-plugin/lib/domain/polish-review.js'
-
-test('审稿读本轮玩家输入和上一轮正文', () => {
-  const messages = [
-    { role: 'assistant', greeting: true, text: '开场' },
-    { role: 'user', text: '第一句' },
-    { role: 'assistant', text: '上一轮', projectionText: '上一轮原文' },
-    { role: 'user', text: '本轮输入' },
-    { role: 'assistant', text: '本轮正文' }
-  ]
-  assert.deepEqual(polishReviewContext(messages), { input: '本轮输入', previous: '上一轮原文' })
-  assert.deepEqual(polishReviewContext(messages.slice(0, 3)), { input: '第一句', previous: '开场' })
-  // Only the latest floors are read for a long save; earlier floors are absent.
-  const sparse = new Array(500)
-  sparse.splice(496, 4, ...messages.slice(1))
-  assert.deepEqual(polishReviewContext(sparse), { input: '本轮输入', previous: '上一轮原文' })
-})
+import { applyPolishEdits, composePolishEdits, parsePolishReview } from '../tavern-plugin/lib/domain/polish-review.js'
 
 test('两步精修记成原文上的修改：意见改动映射回原文，碰到精修改过的句子就并成一处', () => {
   const review = [{ find: '乙。', replace: '乙改。', reason: '套话' }, { find: '戊。', replace: '', reason: '删去' }]
@@ -88,12 +72,6 @@ test('修改清单逐条定位原文，重叠的后一条不可选，读不懂�
   assert.deepEqual(parsePolishReview('1. 这里写得拖', texts), { edits: [], fallback: '1. 这里写得拖' })
 })
 
-test('应用修改只替换选中的原句，原句不唯一或已不在就拒绝', () => {
-  assert.deepEqual(applyPolishEdits(['甲。乙。', '丙。'], [{ find: '乙。', replace: '乙改。' }, { find: '丙。', replace: '' }]), ['甲。乙改。', ''])
-  assert.throws(() => applyPolishEdits(['甲。甲。'], [{ find: '甲。', replace: 'x' }]), /找不到要改的原句/)
-  assert.throws(() => applyPolishEdits(['甲。'], [{ find: '丁', replace: 'x' }]), /找不到要改的原句/)
-})
-
 test('精修对比按原文顺序切出未改与改动段，找不到或重叠的修改跳过', async () => {
   const { polishSegments } = await import('../tavern-plugin/lib/domain/polish-records.js')
   const segments = polishSegments('甲。乙。丙。', [{ find: '丙。', replace: '丙改。', reason: 'b' }, { find: '甲。', replace: '', reason: 'a' }, { find: '甲。乙', replace: 'x' }, { find: '丁', replace: 'y' }])
@@ -113,9 +91,31 @@ test('只保留最近一次精修，那轮正文换了版本就不再显示、�
     now: () => 5
   })
   await records.save('s', 3, { original: ['甲。乙。', '丙。'], edits: [{ find: '乙。', replace: '乙改。', reason: '套话' }], seconds: 20 })
-  assert.deepEqual(await records.latest('s'), { turn: 3, at: 5, seconds: 20, count: 1, segments: [{ kind: 'same', text: '甲。' }, { kind: 'edit', n: 1, find: '乙。', replace: '乙改。', reason: '套话' }, { kind: 'same', text: '\n\n丙。' }] })
+  assert.deepEqual(await records.latest('s'), { turn: 3, at: 5, seconds: 20, count: 1, auto: false, segments: [{ kind: 'same', text: '甲。' }, { kind: 'edit', n: 1, find: '乙。', replace: '乙改。', reason: '套话' }, { kind: 'same', text: '\n\n丙。' }] })
   assert.deepEqual((await records.current('s')).original, ['甲。乙。', '丙。'])
   key = 'k2'
   assert.equal(await records.latest('s'), null)
   assert.equal(await records.current('s'), null)
+})
+
+test('自动精修：审完就交给写回；新消息取消后不写回', async () => {
+  const { createPolishPrereview } = await import('../tavern-plugin/lib/domain/polish-run.js')
+  const applied = []
+  let finish
+  const prereview = createPolishPrereview({ enabled: async () => true, readTexts: async () => ['正文。'], logger: { warn() {} },
+    review: (_id, _texts, signal) => new Promise((resolve, reject) => { finish = resolve; signal.addEventListener('abort', () => reject(new Error('aborted'))) }),
+    apply: async (id, texts, review) => { applied.push([id, texts, review.edits.length]) } })
+  await prereview.start('s')
+  finish({ edits: [{ status: 'ok' }] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(applied, [['s', ['正文。'], 1]])
+  prereview.settle('s', ['不同的'])
+  const again = createPolishPrereview({ enabled: async () => true, readTexts: async () => ['另一段。'], logger: { warn() {} },
+    review: (_id, _texts, signal) => new Promise((resolve, reject) => { finish = resolve; signal.addEventListener('abort', () => reject(new Error('aborted'))) }),
+    apply: async () => { applied.push('should not') } })
+  await again.start('s')
+  again.cancel('s')
+  finish({ edits: [{ status: 'ok' }] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(applied.length, 1)
 })

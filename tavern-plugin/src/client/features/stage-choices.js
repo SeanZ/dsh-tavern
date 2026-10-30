@@ -1,4 +1,4 @@
-// 回合末选项 (docs/design/cast-presentation.md 34/N; modules/stage-choices.js; tavern.css 「stage choices」): on the round's
+// 回合末选项 (Wiki「设计：cast-presentation」 34/N; modules/stage-choices.js; tavern.css 「stage choices」): on the round's
 // last card the stage offers what next - the latest reply's candidates as ribbons (a skin's art.choices draws them as its own
 // bars), then 自由输入. It reuses the chat's candidate pipeline (`flow`: the candidate panel store, readyCandidatePanel and
 // submitCandidateTask from play-controls.js), so the stage and the chat show one panel and one task. A click on a ribbon

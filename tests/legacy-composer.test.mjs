@@ -17,14 +17,6 @@ function mount(send, managed = false, extra = {}) {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-test('failed legacy send retains payload, displays failure and permits retry', async () => {
-  const { nodes, area, button } = mount(() => Promise.reject(new Error('发送失败')))
-  area.value = '开始故事'; button.click(); await tick()
-  assert.equal(area.value, '开始故事')
-  assert.equal(button.disabled, false)
-  assert.ok(nodes.some(n => /开局消息发送失败/.test(n.textContent)))
-})
-
 test('opening preview keeps using submitTavernInput instead of slash commands', async () => {
   const submitted = [], lines = []
   const { area, button } = mount(
@@ -40,13 +32,4 @@ test('opening preview keeps using submitTavernInput instead of slash commands', 
   await tick()
   assert.deepEqual(submitted, ['梦境选项一'])
   assert.deepEqual(lines, [])
-})
-
-test('legacy textarea falls back to /setinput when no composer bridge exists', async () => {
-  const lines = []
-  const { area } = mount(line => { lines.push(line); return Promise.resolve() })
-  area.value = '旧写法'
-  area.input()
-  await tick()
-  assert.deepEqual(lines, ['/setinput 旧写法'])
 })

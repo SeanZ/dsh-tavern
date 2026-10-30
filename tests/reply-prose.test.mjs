@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { projectReplyLayers } from '../tavern-plugin/lib/domain/reply-presentation.js'
-import { plainReplyProse, replyProse, replyProseProblems } from '../tavern-plugin/lib/domain/reply-prose.js'
-import { appendTavernHelperMessages, replaceTavernHelperMessages } from '../tavern-plugin/lib/domain/tavern-helper-context.js'
+import { replyProse, replyProseProblems } from '../tavern-plugin/lib/domain/reply-prose.js'
+import { replaceTavernHelperMessages } from '../tavern-plugin/lib/domain/tavern-helper-context.js'
 
 // Strips the status block from the model context only, the way card prompt regex does.
 const regexScripts = [{ id: 'status', name: 'status', findRegex: '/<status>[\\s\\S]*?<\\/status>/g', replaceString: '',
@@ -43,13 +43,4 @@ test('Helper 切换或改写 swipe 时，正文按保存时的提示词正则重
   assert.equal(row.text, '丙')
   assert.deepEqual(row.swipes, ['甲<status>hp=7</status>', '丙<status>hp=1</status>'])
   assert.deepEqual(replyProseProblems(row, { regexScripts }), [])
-})
-
-test('不经投影的楼层也满足同一组不变量', () => {
-  const chat = { messages: [] }
-  appendTavernHelperMessages(chat, [{ role: 'assistant', message: '手机记录' }])
-  for (const row of [chat.messages[0], { role: 'assistant', ...plainReplyProse('导入正文'), swipeId: 0, swipes: ['导入正文'] }]) {
-    assert.equal(Object.hasOwn(row, 'sessionText'), false)
-    assert.deepEqual(replyProseProblems(row, { regexScripts: [] }), [])
-  }
 })

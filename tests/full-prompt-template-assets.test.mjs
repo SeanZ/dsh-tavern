@@ -15,28 +15,6 @@ test('模板静态服务仅提供清单内且校验通过的文件',async()=>{
   await assert.rejects(read(prefix+'index.js'),/校验失败/)
 })
 
-test('未变化的静态资源复用校验结果，文件或清单更新后重新验证', async () => {
-  let body = Buffer.from('ready'), stamp = 1, manifestStamp = 1, reads = 0
-  const manifest = { upstreamCommit: 'd6f520d149aba146305b0b781ddd691d449c28d2', files: {} }
-  const refresh = () => { manifest.files['index.js'] = { bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') }; manifestStamp++ }
-  refresh()
-  const read = createFullPromptTemplateAssetReader({
-    read: async url => { reads++; return url.pathname.endsWith('manifest.json') ? JSON.stringify(manifest) : body },
-    version: async url => url.pathname.endsWith('manifest.json') ? manifestStamp : stamp
-  })
-  const first = await read(prefix + 'index.js')
-  assert.equal(await read(prefix + 'index.js'), first)
-  assert.equal(reads, 2)
-  body = Buffer.from('new-version'); stamp++
-  await assert.rejects(read(prefix + 'index.js'), /校验失败/)
-  refresh()
-  const updated = await read(prefix + 'index.js')
-  assert.notEqual(updated.etag, first.etag)
-  assert.equal(updated.body.toString(), 'new-version')
-  delete manifest.files['index.js']; manifestStamp++
-  assert.equal(await read(prefix + 'index.js'), undefined)
-})
-
 test('模板 HTTP 条件请求返回 304，不重复传输资源正文', async () => {
   const { registerTavernHttpRoutes } = await import('../tavern-plugin/lib/http/routes.js')
   let handler

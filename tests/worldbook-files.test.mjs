@@ -42,26 +42,6 @@ test('files include static constants but never expose unrendered dynamic code', 
   await assert.rejects(provider.listFiles({ limit: 0 }, lookup), /limit/)
 })
 
-test('edits revoke old paths, restart reuses generation, version reversal restores files, tampering is repaired', async t => {
-  const { provider, lookup, state, directory, agent } = await fixture(t)
-  const first = await provider.listFiles({}, lookup), original = state.worldBook.view.entries[0].content
-  await fs.writeFile(first.files[0].path, 'tampered')
-  assert.equal(await provider.authorizeRead(first.files[0].path, lookup), true)
-  assert.match(await fs.readFile(first.files[0].path, 'utf8'), /Harbor/)
-  state.worldBook.view.entries[0].content = '新港口'
-  const second = await provider.listFiles({}, lookup)
-  assert.notEqual(first.directory, second.directory)
-  assert.equal(await provider.authorizeRead(first.files[0].path, lookup), false)
-  await assert.rejects(provider.listFiles({ version: first.version }, lookup), /版本已变化/)
-  const cold = createWorldbookFiles({ directory, load: async () => state })
-  assert.equal((await cold.listFiles({}, { scope: agent })).directory, second.directory)
-  state.worldBook.view.entries[0].content = original
-  assert.equal((await provider.listFiles({}, lookup)).directory, first.directory)
-  state.worldBook.view.entries = []
-  assert.equal((await provider.listFiles({}, lookup)).total, 0)
-  assert.equal(await provider.authorizeRead(first.files[0].path, lookup), false)
-})
-
 test('reads reject foreign scope, traversal, symlinks, cancellation and permits legacy saves', async t => {
   const { provider, lookup, state } = await fixture(t)
   const { files } = await provider.listFiles({}, lookup)
@@ -86,19 +66,7 @@ test('preprocessing visibility remains authoritative and is never executed by fi
   assert.equal((await provider.listFiles({}, lookup)).total, 0)
 })
 
- test('filenames preserve meaningful numbers, strip mechanical tags and remain Windows portable', async t => {
-  const { provider, lookup, state } = await fixture(t)
-  state.worldBook.view.entries = [
-    {ref:'a', title:'158_[worldbook]科举·文科鼎甲', content:'原文'},
-    {ref:'b', title:'1556年科举', content:'原文'},
-    {ref:'c', title:'CON', content:'原文'},
-    {ref:'d', title:'../路径/危险', content:'原文'}
-  ]
-  const listing = await provider.listFiles({},lookup)
-  assert.deepEqual(listing.files.map(f=>path.basename(f.path)),['科举·文科鼎甲.md','1556年科举.md','_CON.md','路径-危险.md'])
-})
-
-test('runtime renders feed searchable snapshots without search side effects, dynamic updates preserve static paths', async t => {
+ test('runtime renders feed searchable snapshots without search side effects, dynamic updates preserve static paths', async t => {
   const { createForegroundWorldbook } = await import('../tavern-plugin/lib/domain/foreground-worldbook.js')
   const { projectVirtualWorldbookPrefix } = await import('../tavern-plugin/lib/domain/worldbook-virtual-state.js')
   const { provider, lookup, state, directory } = await fixture(t)

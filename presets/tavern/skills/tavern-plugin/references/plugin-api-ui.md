@@ -66,7 +66,7 @@ context = { gameId, turn, busy }
 
 ## `listIllustrations()`（第 4 版）
 
-列出 Tavern 自带场景生图画过的全部插图（所有游戏，新的在前），只读。返回 Promise，每项是 `{ gameId, gameTitle, cardName, turn, gameDeleted, description, createdAt, url }`，`url` 可直接用作 `<img src>`。插件自己挂的媒体不在其中。
+原本列出 Tavern 自带场景生图画过的插图。Tavern 已不再保留这些旧图（配图都由插件生成），现在总是返回空列表；方法保留，旧插件调用不会出错。插件自己挂的媒体请用插件媒体接口读取。
 
 ## `getGames(gameIds)`（第 4 版）
 

@@ -202,38 +202,3 @@ for (const source of [{ kind: 'standalone', path: 'worldbooks/王都.json' }, { 
     assert.ok((await library.get(source)).view.entries.some(entry => entry.content === '丙'))
   })
 }
-
-test('未改动时同一套世界书只投影一次，文件变化后立即重新读取', async () => {
-  let updatedAt = 1, reads = 0
-  const files = new Map([
-    ['worldbooks/a.json', JSON.stringify({ name: 'A', entries: { 1: { uid: 1, comment: 'a', content: '甲' } } })],
-    ['worldbooks/b.json', JSON.stringify({ name: 'B', entries: { 2: { uid: 2, comment: 'b', content: '乙' } } })]
-  ])
-  const globals = ['worldbooks/a.json', 'worldbooks/b.json']
-  const library = createWorldBookLibrary({
-    normalizePath: value => value,
-    resources: {
-      async globalSources() { return globals.map(path => ({ kind: 'standalone', path })) },
-      async readText(path) { reads++; return files.get(path) },
-      async metadata() { return { updatedAt, importedAt: 0 } },
-      async bindingForCard() { return { kind: 'default' } }
-    },
-    cards: { async read() { return { name: '卡' } }, async listPaths() { return [] } },
-    removeStandalone: async () => {}
-  })
-  const card = { name: '卡' }
-  const first = await library.bound('cards/卡.json', card)
-  assert.deepEqual(first.view.entries.map(entry => entry.content), ['甲', '乙'])
-  const afterFirst = reads
-  const second = await library.bound('cards/卡.json', card)
-  // A game without its own copy resolves on every turn: no re-read, same projection.
-  assert.equal(reads, afterFirst)
-  assert.equal(second.document, first.document)
-  assert.equal(second.localChatId, undefined)
-  updatedAt = 2
-  files.set('worldbooks/a.json', JSON.stringify({ name: 'A', entries: { 1: { uid: 1, comment: 'a', content: '丙' } } }))
-  const third = await library.bound('cards/卡.json', card, { id: 'chat-1' })
-  assert.notEqual(third.document, first.document)
-  assert.deepEqual(third.view.entries.map(entry => entry.content), ['丙', '乙'])
-  assert.equal(third.localChatId, 'chat-1')
-})

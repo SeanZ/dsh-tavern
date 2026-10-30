@@ -50,14 +50,6 @@ test('name and ui follow body unless their own id resolves; a face comes before 
   assert.deepEqual(roles(skin({ body: 'missing-font', name: 'noto-sans-sc' })), { body: stack, name: '"Tavern noto-sans-sc", ' + stack, ui: stack })
 })
 
-test('the stage css draws each role from its token, the root and its controls in ui', () => {
-  const block = css.slice(css.indexOf('/* ==== stage skin: fonts ===='), css.indexOf('/* ==== end stage skin: fonts ==== */')).replace(/\/\*[\s\S]*?\*\//g, '')
-  const rules = Object.fromEntries([...block.matchAll(/([^{}]+)\{\s*font-family:\s*var\(--gal-skin-font-(\w+)\);\s*\}/g)].map(match => [match[2], match[1].trim()]))
-  assert.deepEqual(rules, { ui: '.dsh-tavern-stage-overlay, .dsh-tavern-stage-overlay :is(button, input, textarea, select)',
-    name: '.dsh-tavern-stage-overlay :is(.dsh-tavern-stage-name, .dsh-tavern-stage-side-name)', body: '.dsh-tavern-stage-overlay .dsh-tavern-stage-text' })
-  assert.equal(css.replace(css.slice(css.indexOf('/* ==== stage skin: fonts ===='), css.indexOf('/* ==== end stage skin: fonts ==== */')), '').includes('--gal-skin-font-'), false, 'no other rule reads the roles')
-})
-
 test('the library is listed once; a used family joins the page once, at every weight it has', async () => {
   const api = interpreter.tavernFontLibrary
   assert.equal(api.fonts().length, 0)

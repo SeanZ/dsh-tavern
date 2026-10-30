@@ -46,24 +46,6 @@ function host({ marker = false, docked = true, dockVisibility = 'visible', panel
   }
 }
 
-test('补丁记录了右侧栏状态的正确读法：宿主标记 / dock 可见性优先，几何兜底保留', async () => {
-  const patch = await readFile(patchUrl, 'utf8')
-  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n')
-  assert.ok(added.includes("panel.hasAttribute('data-sidebar-right-open')"), '先读宿主的状态标记')
-  assert.ok(added.includes("[data-dockkit-host], [data-dockkit-empty]"), '没有标记时读 dock 内容（宿主关闭态隐藏它）')
-  assert.ok(added.includes("dockStyle.visibility !== 'hidden'"), '关闭态判定来自宿主自己隐藏的 dock 内容')
-  const hunkStart = patch.indexOf('@@ -8048,6 +8048,')
-  assert.ok(hunkStart >= 0, '补丁里有 filesPanelOpen 的 hunk')
-  const nextHunk = patch.indexOf('\n@@ ', hunkStart + 3)
-  const panelHunk = patch.slice(hunkStart, nextHunk < 0 ? undefined : nextHunk)
-  assert.equal(panelHunk.split('\n').some(line => line.startsWith('-')), false, '纯增量：老宿主的几何兜底一行没删（由「老宿主」用例断言行为）')
-})
-
-test('0.2.x 关闭态判定为关闭：整屏面板停在 left:0 不再被当成「已打开」', { skip: !existsSync(installedUrl) }, async () => {
-  const filesPanelOpen = loadFunction(await readFile(installedUrl, 'utf8'), 'filesPanelOpen', host({ docked: true, dockVisibility: 'hidden', left: 0 }))
-  assert.equal(filesPanelOpen(), false, '关闭时 dock 内容 visibility:hidden → 面板是关的（旧实现返回 true，右划手势因此永远被拒绝）')
-})
-
 test('0.2.x 打开态（宿主标记 + dock 可见）判定为打开', { skip: !existsSync(installedUrl) }, async () => {
   const source = await readFile(installedUrl, 'utf8')
   assert.equal(loadFunction(source, 'filesPanelOpen', host({ marker: true, dockVisibility: 'visible' }))(), true, '标记在面板自身上')

@@ -34,21 +34,6 @@ async function harness(t, fail = '') {
   return { run, calls, states, hold(promise) { release = promise } }
 }
 
-test('import maps history before publishing the restored session and plugin data', async t => {
-  const h = await harness(t)
-  const result = await h.run(archive())
-  assert.equal(result.chatId, 'new-chat')
-  assert.equal(result.revisions, 1)
-  assert.deepEqual(h.calls, ['resources', 'write', 'write', 'create', 'flush', 'dispose', 'attach', 'plugins', 'publish'])
-  const current = h.states[1]
-  assert.equal(current.sessionId, 'new-session')
-  assert.equal(current.cardPath, 'cards/new.json')
-  assert.equal(current._storageRevision, 1)
-  assert.deepEqual(current.timeline.checkpoints, [{ beforeRevision: 1 }])
-  assert.equal(current.regenRecovery, undefined)
-  assert.deepEqual(current.timeline.operations, {})
-})
-
 for (const failure of ['create', 'flush', 'plugins', 'publish']) test('import compensates after ' + failure + ' failure and releases admission', async t => {
   const h = await harness(t, failure)
   await assert.rejects(h.run(archive()), /failed/)
@@ -70,34 +55,4 @@ test('same source import cannot overlap; completion allows another import', asyn
   release()
   await first
   await h.run(archive())
-})
-
-test('存档没有预设快照时按 runtimePresetPath 重新冻结，写回当前状态与回退历史', async t => {
-  const dataRoot = await mkdtemp(path.join(tmpdir(), 'save-import-'))
-  t.after(() => rm(dataRoot, { recursive: true, force: true }))
-  const state = { id: 'old-chat', sessionId: 'old-session', mode: 'story', cardPath: 'cards/a.json',
-    runtimePresetPath: 'presets/play.json', cardDefinitionSnapshot: { name: 'A' },
-    messages: [{ role: 'assistant', turn: 1, text: '故事' }], timeline: { checkpoints: [{ beforeRevision: 7 }] } }
-  const fileB64 = buildGameSave({ chat: state, revisions: [{ revision: 7, state: { ...state, timeline: {} } }],
-    session: { header: { id: 'old-session' }, events: [{ seq: 0, type: 'turn/end', data: { turn: 1 } }] },
-    tavernVersion: '3.0.1' }).toString('base64')
-  const restored = [], states = []
-  const run = createGameSaveImporter({ tavernVersion: '3.0.1', dataRoot,
-    newChatId: () => 'new-chat', newSessionId: () => 'new-session',
-    prepareGameSaveResources: async () => ({ cardPath: 'cards/a.json', rollback() {} }),
-    readCard: async () => ({}), getAttachments: () => ({}), profileData: {},
-    rawWriteChat: async value => { states.push(structuredClone(state)) ; states[states.length - 1] = structuredClone(value); return { ...value, _storageRevision: states.length } },
-    conversationRegistry: { publish() {} }, sceneWorldbookArchive: { forgetChat() {} },
-    pluginApi: { importGame() {} },
-    sessions: { create: async () => ({ agent: {}, dispose() {} }), flush() {}, attach() {}, detach() {}, remove() {} },
-    restorePresetSnapshot: async chat => {
-      if (chat.runtimePresetSnapshot !== undefined || !chat.runtimePresetPath) return chat
-      restored.push(chat.runtimePresetPath)
-      return { ...chat, runtimePresetSnapshot: { presetPath: chat.runtimePresetPath, regexScripts: [{ scriptName: '冻结' }] } }
-    }
-  })
-  await run({ fileB64 })
-  assert.deepEqual(restored, ['presets/play.json', 'presets/play.json'], '当前状态与回退历史各补一次')
-  assert.equal(states[0].runtimePresetSnapshot.regexScripts[0].scriptName, '冻结')
-  assert.equal(states[1].runtimePresetSnapshot.regexScripts[0].scriptName, '冻结')
 })

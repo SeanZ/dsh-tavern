@@ -37,7 +37,7 @@ function backgroundPrompt(messages, turnContext, task, taskProtocol, input = {})
       : (message && message.role === 'assistant' ? '正文' : '用户')
     return '[' + role + ']\n' + messageText(message)
   }).filter(function (text) { return text.trim() !== '' }).join('\n\n')
-  const taskName = task === 'stage-director' ? '舞台导演' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
+  const taskName = task === 'stage-director' ? '舞台导演' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
   sections.push('【最近剧情与本次任务】\n任务类型：' + taskName + '\n' + recent)
   const protocol = str(taskProtocol).trim()
   if (protocol !== '') sections.push('【任务要求】\n' + protocol)
@@ -125,7 +125,9 @@ export function createBackgroundAgentTask(options) {
   }
 
   function setupFor(state, descriptor, appendDescriptor) {
-    const isolated = ['stage-director', 'polish'].includes(state.input.task)
+    // Tasks with a prefix of their own (its system prompt and tools only): 舞台导演, 精修, and a
+    // plugin member that defines one (tavern.member with `system`).
+    const isolated = ['stage-director', 'polish'].includes(state.input.task) || state.input.ownPrefix === true
     const backgroundPersona = state.input.task === 'phone'
       ? '你是与故事正文隔离的手机私聊 Agent。你只代表指定联系人回复当前手机消息，不推进正文、不修改状态，也不把私聊虚构成已经发生的现场剧情。'
       : state.input.task === 'plugin'
@@ -146,7 +148,8 @@ export function createBackgroundAgentTask(options) {
         }
         if (decision.kind !== 'enter') return decision
         const input = state.input || {}
-        const snapshot = input.task !== 'polish' && typeof options.resolveRuntimePresetSnapshot === 'function'
+        // A prefix of its own carries no card preset either.
+        const snapshot = input.task !== 'polish' && input.ownPrefix !== true && typeof options.resolveRuntimePresetSnapshot === 'function'
           ? await options.resolveRuntimePresetSnapshot({ sessionId: input.sessionId, operation: input.task || 'background' })
           : null
         const messageOptions = { scope: 'background', turn, step }
@@ -187,7 +190,7 @@ export function createBackgroundAgentTask(options) {
       childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'worldbook_list', 'worldbook_grep', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
-        if (state.input.task === 'polish') {
+        if (state.input.task === 'polish' || state.input.ownPrefix === true) {
           const names = new Set((state.input.tools || []).map(tool => tool.name))
           assembly.tools = (assembly.tools || []).filter(tool => names.has(tool.name))
           assembly.sections = (assembly.sections || []).filter(section => !section?.name?.startsWith('tool:') || names.has(section.name.slice(5)))
@@ -270,7 +273,7 @@ export function createBackgroundAgentTask(options) {
     let refusedCount = 0
     let removed = false
     const allowed = new Map(tools.map(function (tool) { return [tool.name, tool] }))
-    if (stableBackgroundTools.length > 0 && !['stage-director', 'polish'].includes(input.task)) {
+    if (stableBackgroundTools.length > 0 && !['stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true) {
       state.activeToolTask = {
         async execute(tool, args, execution) {
           const registeredShared = sharedByName.get(tool.name)
@@ -391,7 +394,7 @@ export function createBackgroundAgentTask(options) {
     state.session = agent.session
     if (input.undoLastTask === true) return undoLastTask(agent.session, traceSessionId, agent)
     const runtimeInput = state.input
-    const isolated = ['stage-director', 'polish'].includes(input.task)
+    const isolated = ['stage-director', 'polish'].includes(input.task) || input.ownPrefix === true
     try { rewindBackgroundSurface(agent.session, input.rewindTo, agent, input.rewindFormatVersion || 3) }
     catch (error) {
       const failure = new Error('后台历史回退失败，本次任务已停止，未基于旧上下文继续执行。原因：' + str(error?.message || error), { cause: error })
@@ -448,7 +451,7 @@ export function createBackgroundAgentTask(options) {
       const candidateNotes = input.task === 'candidate' && typeof options.pluginCandidate === 'function'
         ? await options.pluginCandidate()?.sections(pluginContext).catch(() => []) || [] : []
       const candidateText = candidateNotes.length ? ['【插件附加的候选要求】', ...candidateNotes.map(note => note.text)].join('\n\n') : ''
-      const taskText = input.task === 'polish' ? (typeof input.taskText === 'function' ? input.taskText() : input.taskText) : [snapshot?.rendered, systemUpdate?.rendered,
+      const taskText = input.task === 'polish' || input.ownPrefix === true ? (typeof input.taskText === 'function' ? input.taskText() : input.taskText) : [snapshot?.rendered, systemUpdate?.rendered,
         backgroundPrompt(input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
       agent.followup({
         id: randomUUID(),

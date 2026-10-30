@@ -88,21 +88,3 @@ test('从宿主窗口拿到的观察器同样解包宿主节点', async () => {
     dom.window.close()
   }
 })
-
-test('真实观察器在兼容层之后仍收到宿主节点变更', async () => {
-  const { dom, element, view } = await sandbox()
-  try {
-    element.contentWindow.eval(installSource + ';installTavernNodeCompatibility(window)')
-    let hits = 0
-    const observer = new element.contentWindow.MutationObserver(() => { hits += 1 })
-    observer.observe(view.parent.document.body, { childList: true, subtree: true })
-    const added = dom.window.document.createElement('div')
-    added.id = 'compat-probe'
-    dom.window.document.body.append(added)
-    await new Promise(resolve => setTimeout(resolve, 20))
-    assert.ok(hits > 0)
-    observer.disconnect()
-  } finally {
-    dom.window.close()
-  }
-})

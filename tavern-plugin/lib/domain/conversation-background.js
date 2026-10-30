@@ -1,4 +1,5 @@
 import { configuredChatBackgroundModel, normalizeBackgroundModel } from './background-model-selection.js'
+import { normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { normalizeConfiguredBackgroundTasks } from './tavern-settings.js'
 
 // Legacy settings are read only when adopting an old save. New games own defaults.
@@ -26,7 +27,10 @@ export function patchConversationBackground(chat, patch) {
     if (typeof patch.webSearchEnabled !== 'boolean') throw new Error('开关配置必须为布尔值')
     next.webSearchEnabled = patch.webSearchEnabled
   }
-  delete next.disabledForegroundTools
+  if (Object.hasOwn(patch, 'disabledForegroundTools')) {
+    if (!Array.isArray(patch.disabledForegroundTools)) throw new Error('前台工具配置无效')
+    next.disabledForegroundTools = normalizeDisabledForegroundTools(patch.disabledForegroundTools)
+  }
   return next
 }
 

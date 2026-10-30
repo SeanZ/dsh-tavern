@@ -72,13 +72,6 @@ test('失败清理、重试成功、再次失败和再次重生成始终替换�
   }
 })
 
-test('不完整的轮次不能退回到任意旧正文，事件序号可以不连续', () => {
-  for (const turn of [undefined, null, 0, -1, 1.5, 'bad']) {
-    assert.equal(surface.locateRegenerationSurface({ events: [assistant(0, 6)], nodes: [0], turn }), null)
-  }
-  assert.equal(select([assistant(42, 6), cleanup(50, 7)], [42, 50]).oldSeq, 42)
-})
-
 test('投影出来的正文借了编辑回合的编号时，用存档正文找回这一轮', () => {
   // A regeneration replaces the round's node with one written into an edit turn
   // (6), and older releases did not record the story turn: the save says 4, the

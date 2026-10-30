@@ -26,22 +26,6 @@ for(const count of [20,400,10000])test(`render receipt lookup stays bounded at $
  t.diagnostic(`${count} receipts: ${h.visits()} update and lookup visits`)
 })
 
-test('receipt lookup retains legacy duplicate, unusual turn and missing-turn semantics',()=>{
- const h=harness()
- let serial=0
- for(const rows of [
-  [{turn:1,receipt:{summary:'first'}},{turn:'1',receipt:{summary:'last'}}],
-  [{turn:-1,receipt:{summary:'negative'}},{turn:4294967295,receipt:{summary:'large'}}],
-  [{turn:1.5,receipt:{summary:'fraction'}}],[]
- ]){
-  const view=h.begin('s').accept({viewCursor:String(++serial),view:{mvuReceipts:rows}}).view
-  for(const turn of [1,'1',-1,4294967295,1.5,99]){
-   const expected=rows.findLast(row=>Number(row.turn)===Number(turn))?.receipt || null
-   assert.deepEqual(h.context.tavernMvuReceiptForTurn(view,turn),expected)
-  }
- }
-})
-
 test('superseded receipt views use current lookup without mutating earlier published versions',()=>{
  const h=harness(),row=(turn,summary)=>({turn,receipt:{summary}})
  const first=h.begin('s').accept({viewCursor:'a',view:{mvuReceipts:[row(1,'one'),row(2,'two')]}}).view

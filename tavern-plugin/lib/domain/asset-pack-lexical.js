@@ -1,4 +1,4 @@
-// Green-lamp recall (docs/design/asset-library.md): an entry is offered when its name, a keyword or a keyword's
+// Green-lamp recall (Wiki「设计：asset-library」): an entry is offered when its name, a keyword or a keyword's
 // synonym appears in the text.
 const length = value => [...value].length
 export function normalizeCatalogueText(value) {

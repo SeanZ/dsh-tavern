@@ -45,29 +45,6 @@ function fixture() {
     set replaceSession(value) { replaceSession = value }, set fail(value) { fail = value }, get saved() { return saved } }
 }
 
-test('跨轮与重启复用精修历史，system/tools 稳定，每轮只追加新材料', async () => {
-  const f = fixture()
-  let reviewer = createPolishReviewer(f.options)
-  await reviewer.review('parent', ['甲。乙。'])
-  assert.match(f.calls[0].text, /开场/)
-  assert.match(f.calls[0].system, /固定设定/)
-  f.chat.messages.push({ role: 'user', text: '下一句' }, { role: 'assistant', text: '丙。丁。' })
-  reviewer = createPolishReviewer(f.options)
-  await reviewer.review('parent', ['丙。丁。'])
-  assert.equal(f.calls[1].id, f.calls[0].id)
-  assert.equal(f.calls[1].system, f.calls[0].system)
-  assert.deepEqual(f.calls[1].tools, f.calls[0].tools)
-  assert.doesNotMatch(f.calls[1].text, /甲。乙。|开场|固定设定/)
-  assert.match(f.calls[1].text, /未应用精修草稿/)
-  assert.match(f.calls[1].text, /丙。丁。/)
-  assert.equal(f.saved.complete, true)
-  for (const call of f.calls) {
-    assert.match(call.text, /【本轮执行提醒】.*\n按固定前缀中的完整精修原则/)
-    assert.match(call.text, /保留剧情事实、力量等级、人物意图和有效信息/)
-    assert.ok(call.text.indexOf('【本轮执行提醒】') < call.text.indexOf('【本轮正文】'))
-  }
-})
-
 test('真实存储的密集尾窗保留绝对楼层，跨轮不误判成同轮重生成', async () => {
   const f = fixture()
   f.chat = { ...f.chat, sessionId: 'parent', messages: [{ role: 'user', text: '前一轮输入' }, ...f.chat.messages] }
@@ -98,8 +75,8 @@ test('意见修改复用同一 Agent，草稿与实际正文区别明确', async
   assert.match(f.calls[1].text, /本轮只按玩家意见修改，不额外扩展原则精修/)
 })
 
-test('回退、重生成、前文变化和固定设定变化不复用错误历史', async () => {
-  for (const change of ['rewind', 'regenerate', 'previous', 'card', 'fork']) {
+test('回退、重生成、前文变化仍用同一个润色会话并说明剧情有变；固定设定变化或分叉才换会话', async () => {
+  for (const change of ['rewind', 'regenerate', 'previous']) {
     const f = fixture(), reviewer = createPolishReviewer(f.options)
     await reviewer.review('parent', ['甲。乙。'])
     if (change === 'rewind') f.chat.messages = [{ role: 'assistant', text: '开场' }]
@@ -107,28 +84,17 @@ test('回退、重生成、前文变化和固定设定变化不复用错误历�
       f.chat.messages[2].text = '已手动改过'
       f.chat.messages.push({ role: 'user', text: '继续' }, { role: 'assistant', text: '新正文' })
     }
+    await reviewer.review('parent', [change === 'regenerate' ? '另一个正文' : '甲。乙。'])
+    assert.equal(f.calls[1].id, f.calls[0].id, change)
+    assert.match(f.calls[1].text, /【剧情有变】/, change)
+  }
+  for (const change of ['card', 'fork']) {
+    const f = fixture(), reviewer = createPolishReviewer(f.options)
+    await reviewer.review('parent', ['甲。乙。'])
     if (change === 'card') f.card = { name: '人物', description: '新的固定设定' }
-    await reviewer.review(change === 'fork' ? 'fork-parent' : 'parent', [change === 'regenerate' ? '另一个正文' : '甲。乙。'])
+    await reviewer.review(change === 'fork' ? 'fork-parent' : 'parent', ['甲。乙。'])
     assert.notEqual(f.calls[1].id, f.calls[0].id, change)
   }
-})
-
-test('跳过轮次或 native 会话丢失时补入前文；失败记录不能作为有效缓存', async () => {
-  const f = fixture(), reviewer = createPolishReviewer(f.options)
-  await reviewer.review('parent', ['甲。乙。'])
-  f.chat.messages.push({ role: 'user', text: '继续' }, { role: 'assistant', text: '漏审一轮' }, { role: 'user', text: '继续' }, { role: 'assistant', text: '新正文' })
-  await reviewer.review('parent', ['新正文'])
-  assert.match(f.calls[1].text, /补充前文.*\n漏审一轮/)
-  f.replaceSession = true
-  await reviewer.review('parent', ['新正文'])
-  assert.match(f.calls[2].text, /补充前文.*\n漏审一轮/)
-  assert.match(f.calls[2].text, /本轮正文.*\n新正文/)
-  f.fail = true
-  await assert.rejects(reviewer.review('parent', ['新正文']), /模型失败/)
-  assert.equal(f.saved.complete, false)
-  f.fail = false; f.replaceSession = false
-  await reviewer.review('parent', ['新正文'])
-  assert.equal(f.calls.at(-1).newSession, true)
 })
 
 test('无修改必须显式完成，正文或模型错误不冒充成功', async () => {

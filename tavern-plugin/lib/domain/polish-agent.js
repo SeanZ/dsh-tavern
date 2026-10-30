@@ -62,12 +62,15 @@ export function createPolishReviewer({ latestFloors, readCard, prompt, runAgent,
       '【人物卡：' + (text(card?.name) || '未命名') + '】\n' + setting, '【玩家角色】' + (text(chat.macroState?.userName) || '你')].join('\n\n')
     const prefix = hash(system)
     const saved = await data.readGame({ chatId: chat.id, owner: OWNER })
-    const previous = saved?.version === 1 && saved.parent === sessionId && saved.prefix === prefix && saved.complete ? saved : null
+    // One 润色 Session per game (and per prompt prefix): it continues through regeneration,
+    // rollback and failed or cut-short reviews. When the story did not simply move on from the
+    // last finished review, the task says so and gives the current previous floor.
+    const previous = saved?.version === 1 && saved.parent === sessionId && saved.prefix === prefix && saved.traceSessionId ? saved : null
     const known = value => previous && [previous.original, previous.draft].includes(hash(value))
-    // Rewinds/regeneration and changes to the previous floor must not leave future/obsolete plot in history.
-    const reusable = previous && (floor === previous.floor ? known(body) : floor > previous.floor && (floor !== previous.floor + 2 || known(context.previous)))
+    const linear = Boolean(previous?.complete) && (floor === previous.floor ? known(body) : floor === previous.floor + 2 && known(context.previous))
+    const reusable = Boolean(previous)
     let continued = false
-    const state = { version: 1, parent: sessionId, prefix, floor, complete: false, original: hash(body) }
+    const state = { version: 1, parent: sessionId, prefix, floor, complete: false, original: hash(body), traceSessionId: previous?.traceSessionId || '' }
     const status = { phase: 'running', edits: [], startedAt: Date.now(), traceSessionId: '' }
     progress.set(sessionId, status)
     const draft = createPolishDraft(texts, edits => { status.edits = edits.map(edit => ({ ...edit })) })
@@ -85,11 +88,13 @@ export function createPolishReviewer({ latestFloors, readCard, prompt, runAgent,
         },
         taskText: () => {
           const sections = []
-          if (continued && floor === previous.floor) {
+          if (continued && linear && floor === previous.floor) {
             sections.push('仍是同一轮；以此前提交的' + (hash(body) === previous.original ? '原文' : '精修草稿') + '作为本次原文，重新开始一份独立草稿。')
+          } else if (continued && linear) {
+            sections.push('上一轮实际采用' + (hash(context.previous) === previous.original ? '此前输入的原文（未应用精修草稿）' : '此前的精修草稿') + '。')
           } else {
-            if (continued && floor === previous.floor + 2) sections.push('上一轮实际采用' + (hash(context.previous) === previous.original ? '此前输入的原文（未应用精修草稿）' : '此前的精修草稿') + '。')
-            else if (context.previous) sections.push('【补充前文（上一轮实际正文）】\n' + context.previous.slice(-3000))
+            if (continued) sections.push('【剧情有变】此前审过的内容可能已被回退、重写，或上次没有审完；以下面的前文和本轮正文为准。')
+            if (context.previous) sections.push('【补充前文（上一轮实际正文）】\n' + context.previous.slice(-3000))
           }
           sections.push('【本轮执行提醒】\n' + (guidance ? '本轮只按玩家意见修改，不额外扩展原则精修。' : '按固定前缀中的完整精修原则审读本轮正文，只改明确的问题。') +
             '保留剧情事实、力量等级、人物意图和有效信息；不要把正常比喻当作错误，不为改而改，不补造情节。每处修改调用 polish_edit；没有必要修改就直接调用 polish_finish。')

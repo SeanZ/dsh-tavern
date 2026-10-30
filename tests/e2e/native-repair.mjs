@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createChatJournalStore } from '../../tavern-plugin/lib/domain/chat-journal-store.js'
 import { createChatPersistence } from '../../tavern-plugin/lib/domain/chat-persistence.js'
 
-// The save is the truth (docs/design/native-session-repair.md). Damage the model
+// The save is the truth (Wiki「设计：native-session-repair」). Damage the model
 // context's agreement with the save while the server is down, then play on: the
 // game must heal itself, every history action must work, and what the model reads
 // must be what the save says.

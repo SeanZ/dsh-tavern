@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
+import { folderHoldsZip } from './transfer-folder-match.js'
 
 // 导出/导入里的插件子模块：只负责 zip 与文件读写，manifest 由调用方自己管。
 const MAX_ZIP_BYTES = 40 * 1024 * 1024
@@ -148,6 +149,10 @@ export function createTransferPlugins(deps) {
     const entries = readZipEntries(content, { label: '插件包' })
     const base = folderNameOf(key, title)
     let folder = base
+    // 同一个包再来一次：目录里已经就是这份内容，直接认它，不再造一个 (2)。
+    if (existsSync(path.join(pluginsDir, folder)) && await folderHoldsZip(path.join(pluginsDir, folder), entries).catch(() => false)) {
+      return { folder, reused: true }
+    }
     if (existsSync(path.join(pluginsDir, folder))) {
       folder = ''
       for (let index = 2; index <= MAX_RENAME_ATTEMPTS; index += 1) {

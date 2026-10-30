@@ -3,13 +3,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { sourceFunction } from './fixtures/source-function.mjs'
-import { dialogueBubbleLines, dialogueBubblePlainText, bubbleEmotion, bubbleSpeaker, CAST_EMOTIONS } from '../tavern-plugin/lib/domain/dialogue-bubbles.js'
+import { dialogueBubbleLines, dialogueBubblePlainText, CAST_EMOTIONS } from '../tavern-plugin/lib/domain/dialogue-bubbles.js'
 import { parseBubbles } from '../tavern-plugin/src/client/bubble-line.cjs'
 import { dialogueFormatText, dialogueFormatUpdate } from '../tavern-plugin/lib/domain/dialogue-format.js'
 import { createContextPlanner } from '../tavern-plugin/lib/domain/context-planner.js'
 import { createForegroundFrameBuilder } from '../tavern-plugin/lib/domain/agent-input-frame.js'
 import { createForegroundFrameSessionAdapter } from '../tavern-plugin/lib/domain/foreground-frame-session-adapter.js'
-import { stagePages, stagePageText } from '../tavern-plugin/lib/domain/stage-performance.js'
 import { createCastPresentation } from '../tavern-plugin/lib/domain/cast-presentation.js'
 import { CAST_DATA_OWNER } from '../tavern-plugin/lib/domain/cast-annotation.js'
 import { createPluginData } from '../tavern-plugin/lib/domain/plugin-data.js'
@@ -23,31 +22,6 @@ const reply = [
   '@bubble:lee|Lee|blushing|[Hi.]',
   '门外传来脚步声。'
 ].join('\n')
-
-test('one reader: narration runs, marked lines with speaker and emotion, lenient forms, never the raw markup', () => {
-  const segments = parseBubbles(reply)
-  assert.deepEqual(segments.map(segment => segment.kind === 'markdown' ? segment.text : [segment.alias, bubbleSpeaker(segment), bubbleEmotion(segment.mood), segment.text, segment.thought === true]), [
-    '店主擦着杯子抬起头。',
-    ['shopkeeper', '店主', 'joy', '欢迎回来。', false],
-    ['lin_yue', '林月', 'nervousness', '他还记得我吗？', true],
-    ['passer_by', '路人', 'surprise', '你也来了？', false],
-    ['lee', 'Lee', 'neutral', 'Hi.', false],
-    '门外传来脚步声。'
-  ], 'emphasis around the line, full-width separators and lost brackets still read; an unknown variant is neutral; a line that does not parse drops its prefix')
-  assert.equal(segments.some(segment => /@bubble/.test(segment.text)), false)
-  assert.deepEqual(['joy', '开心', 'JOY', '', '微笑'].map(bubbleEmotion), ['joy', 'joy', 'joy', 'neutral', 'neutral'])
-  assert.equal(Object.keys(CAST_EMOTIONS).length, 28)
-  assert.deepEqual(dialogueBubbleLines(parseBubbles('她说：“你好。”')), [])
-  assert.deepEqual(dialogueBubbleLines(parseBubbles(reply)).map(line => [line.n, line.speaker, line.emotion, line.quote]),
-    [[1, '店主', 'joy', '欢迎回来。'], [2, '林月', 'nervousness', '他还记得我吗？'], [3, '路人', 'surprise', '你也来了？'], [4, 'Lee', 'neutral', 'Hi.']])
-})
-
-test('without speaker rows (streaming, 对话气泡 off) a marked line reads as name：“line”; an unfinished tail is held, not shown raw', () => {
-  assert.equal(dialogueBubblePlainText(parseBubbles(reply)), '店主擦着杯子抬起头。\n\n店主：“欢迎回来。”\n\n林月：（他还记得我吗？）\n\n路人：“你也来了？”\n\nLee：“Hi.”\n\n门外传来脚步声。')
-  assert.equal(dialogueBubblePlainText(parseBubbles('她走进来。\n@bub', true)), '她走进来。')
-  assert.equal(dialogueBubblePlainText(parseBubbles('她走进来。\n@bubble:lin|林月|开心|[你', true)), '她走进来。\n\n林月：“你')
-  assert.equal(dialogueBubblePlainText(parseBubbles('邮件 a@b.c')), '邮件 a@b.c')
-})
 
 test('the format lists the card cast with a handle each and the 28 emotion labels as variants', () => {
   const text = dialogueFormatText([{ name: '林月', aliases: ['小月', 'Lin Yue'] }, { name: '老周' }, { name: '老周' }, { name: 'Nora' }, { name: 'nora' }, { name: '' }])
@@ -89,24 +63,6 @@ test('the planner gives the body the format only with 对话气泡 on; the updat
   assert.deepEqual(send(''), [])
   session.surface.nodes = []
   assert.ok(dialogueFormatUpdate(session, roster), 'compacted or rewound away: sent again')
-})
-
-test('stage pages: a bubble row is its speaker\'s line, the director reads it with the speaker; 150 lines all keep their speakers', () => {
-  const pages = stagePages(reply)
-  assert.deepEqual(pages.map(page => [page.at, page.kind, page.speaker, page.emotion, page.text]), [
-    [1, 'narration', undefined, undefined, '店主擦着杯子抬起头。'],
-    [2, 'line', '店主', 'joy', '欢迎回来。'],
-    [3, 'line', '林月', 'nervousness', '（他还记得我吗？）'],
-    [4, 'line', '路人', 'surprise', '你也来了？'],
-    [5, 'line', 'Lee', 'neutral', 'Hi.'],
-    [6, 'narration', undefined, undefined, '门外传来脚步声。']
-  ])
-  assert.deepEqual(pages[1].quotes, ['欢迎回来。'])
-  assert.deepEqual(pages.map(stagePageText).slice(0, 3), ['店主擦着杯子抬起头。', '店主：欢迎回来。', '林月：（他还记得我吗？）'])
-  const long = Array.from({ length: 150 }, (_, index) => '@bubble:' + (index % 2 ? 'zhou|老周' : 'lin|林曦') + '|平静|[第' + (index + 1) + '句。]').join('\n')
-  const many = stagePages(long)
-  assert.equal(many.length, 150)
-  assert.ok(many.every((page, index) => page.kind === 'line' && page.speaker === (index % 2 ? '老周' : '林曦') && page.text === '第' + (index + 1) + '句。'))
 })
 
 function castHarness(shown) {

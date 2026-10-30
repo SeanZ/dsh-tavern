@@ -1,35 +1,6 @@
-		// Pictures Tavern itself drew in older versions (generation now belongs to image plugins):
-		// read-only, so a turn's record only changes when the gallery deletes one.
-		function useSceneImageRecord(sessionId, turn) {
-			const [state, setState] = React.useState(null);
-			React.useEffect(function () {
-				let active = true, timer, revision = 0, missingRetries = 0;
-				setState(null);
-				if (!sessionId || !turn) return;
-				async function refresh(event) {
-					if (event && event.detail && event.detail.sessionId !== sessionId) return;
-					const requested = ++revision;
-					window.clearTimeout(timer);
-					try {
-						const result = await rpc("sceneImageStatus", { turn: turn }, sessionId);
-						if (!active || requested !== revision) return;
-						setState(result.illustration);
-						// A just-finished turn may not be addressable yet.
-						if (result.illustration.reason === "target-unavailable" && missingRetries++ < 5) timer = window.setTimeout(refresh, 1500);
-					} catch (e) {
-						if (active && requested === revision) setState(function (previous) { return Object.assign({}, previous || { status: "unavailable", versions: [] }, { error: String(e.message || e) }); });
-					}
-				}
-				void refresh();
-				window.addEventListener("dsh-tavern-image-changed", refresh);
-				return function () { active = false; window.clearTimeout(timer); window.removeEventListener("dsh-tavern-image-changed", refresh); };
-			}, [sessionId, turn]);
-			return state;
-		}
-		// Every picture across games, including deleted ones, for review and clean-up. Deleting
-		// detaches the picture only; the story text and saves are untouched.
-		// Gallery tab beside 对话/轨迹/完整上下文: this game's pictures, one row per
-		// turn from the first turn on. Delete one from its corner, or pick several.
+		// Gallery tab beside 对话/轨迹/完整上下文: the pictures plugins attached to this game, one
+		// row per turn from the first turn on. Delete one from its corner, or pick several;
+		// deleting removes the picture only, the story text and saves are untouched.
 		function SceneImageGallery(props) {
 			const h = React.createElement;
 			const askConfirm = useTavernConfirm();
@@ -46,7 +17,7 @@
 				setBusy(true);
 				try {
 					const result = await rpc("listSceneImageHistory", { sessionId: sessionId }, sessionId);
-					if (requested === loadRevision.current) { setItems({ sessionId: sessionId, native: result.items || [], plugin: result.pluginItems || [] }); setNotice(""); }
+					if (requested === loadRevision.current) { setItems({ sessionId: sessionId, plugin: result.pluginItems || [] }); setNotice(""); }
 				}
 				catch (e) { if (requested === loadRevision.current) setNotice(String(e.message || e)); }
 				finally { if (requested === loadRevision.current) setBusy(false); }
@@ -63,15 +34,6 @@
 			}, [load]);
 			const currentItems = items && items.sessionId === props.gallerySessionId ? items : null;
 			const rows = [];
-			// Tavern's own pictures (old saves) and pictures plugins attached share one timeline.
-			(currentItems ? currentItems.native : []).forEach(function (item) {
-				let row = rows.find(function (entry) { return entry.turn === item.turn; });
-				if (!row) rows.push(row = { turn: item.turn, shots: [] });
-				item.versions.forEach(function (version) {
-					row.shots.push({ item: item, version: version, id: item.chatId + "/" + item.key + "/" + version.id,
-						url: "/api/dsh-tavern/scene-image-stored?" + new URLSearchParams({ chatId: item.chatId, key: item.key, versionId: version.id }).toString() });
-				});
-			});
 			(currentItems ? currentItems.plugin : []).forEach(function (item) {
 				let row = rows.find(function (entry) { return entry.turn === item.turn; });
 				if (!row) rows.push(row = { turn: item.turn, shots: [] });
@@ -93,8 +55,7 @@
 				try {
 					const results = (await rpc("removeSceneImageHistory", {
 						sessionId: sessionId,
-						items: list.filter(function (shot) { return !shot.plugin; }).map(function (shot) { return { chatId: shot.item.chatId, key: shot.item.key, versionId: shot.version.id }; }),
-						pluginItems: list.filter(function (shot) { return shot.plugin; }).map(function (shot) { return shot.item.id; })
+						pluginItems: list.map(function (shot) { return shot.item.id; })
 					}, sessionId)).results;
 					const failed = results.filter(function (row) { return !row.ok; });
 					if (revision === galleryRevision.current) {

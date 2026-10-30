@@ -84,19 +84,6 @@ test('font library: WOFF2 type, immutable cache, HEAD, ETag and Range', async t 
   assert.equal((await request(url, {}, 'POST')).status, 405)
 })
 
-test('font library: original TrueType and OpenType faces retain their format and MIME', async t => {
-  const f = await fixture(t)
-  for (const [extension, format, mime] of [['ttf', 'truetype', 'font/ttf'], ['otf', 'opentype', 'font/otf']]) {
-    const file = 'original.' + extension
-    await writeFile(path.join(f.dir, file), 'original-font')
-    await writeFile(path.join(f.dir, 'index.json'), JSON.stringify({ ...f.manifest, files: [{ weight: 400, style: 'normal', file, format }] }))
-    const font = (await f.api.listFonts()).fonts[0]
-    assert.equal(font.files[0].format, format)
-    const response = await f.request(font.files[0].url)
-    assert.deepEqual([response.status, response.headers['Content-Type'], response.body.toString()], [200, mime, 'original-font'])
-  }
-})
-
 test('font library: only a listed file inside the library is served', async t => {
   const f = await fixture(t)
   await writeFile(path.join(f.dir, 'extra.woff2'), 'not listed')

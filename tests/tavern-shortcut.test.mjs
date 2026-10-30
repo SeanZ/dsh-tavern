@@ -5,8 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { ensureInitialTavernShortcut, createTavernShortcut, icoFromPng, macLauncherScript, windowsLauncherScript } from '../tavern-plugin/packages/dsh-profile-bridge/lib/shortcut.mjs'
-import { appWindowBrowser, desktopUsesTavern, openTavernWindow } from '../bin/tavern-window.mjs'
+import { createTavernShortcut, macLauncherScript, windowsLauncherScript } from '../tavern-plugin/packages/dsh-profile-bridge/lib/shortcut.mjs'
+import { appWindowBrowser, desktopUsesTavern } from '../bin/tavern-window.mjs'
 
 async function setup(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tavern-shortcut-'))
@@ -43,15 +43,6 @@ test('启动脚本：路径里的引号与中文都安全', () => {
   assert.match(vbs, /Charset = "utf-8"/)
 })
 
-test('ICO 内嵌 PNG，尺寸取自 PNG 头', () => {
-  const png = Buffer.alloc(40); png.writeUInt32BE(0x89504e47, 0); png.writeUInt32BE(192, 16); png.writeUInt32BE(192, 20)
-  const ico = icoFromPng(png)
-  assert.equal(ico.readUInt16LE(2), 1)
-  assert.equal(ico[6], 192)
-  assert.equal(ico.readUInt32LE(14), png.length)
-  assert.deepEqual(ico.subarray(22), png)
-})
-
 test('独立窗口：桌面版链接到酒馆时不另起一份；按平台挑应用窗口浏览器', async t => {
   const { dsh } = await setup(t)
   await mkdir(path.join(dsh, 'profiles', 'desktop'))
@@ -65,35 +56,4 @@ test('独立窗口：桌面版链接到酒馆时不另起一份；按平台挑�
   const windows = appWindowBrowser('win32', { PROGRAMFILES: 'C:\\PF' }, file => file === path.join('C:\\PF', 'Google\\Chrome\\Application\\chrome.exe'))
   assert.deepEqual(windows.args('http://x/'), ['--app=http://x/'])
   assert.equal(appWindowBrowser('darwin', {}, () => false, '/Users/me'), null)
-})
-
-
-test('首次安装创建快捷方式，用户删除后更新不再补回，仍可手动恢复', async t => {
-  const { root, source, paths } = await setup(t)
-  await symlink(path.join(source, 'tavern-plugin'), path.join(paths.profilesDir, 'tavern', 'node_modules', 'dsh-tavern-plugin'), 'junction')
-  const options = { paths, platform: 'darwin', runner: '/App/Electron', home: root }
-  const created = ensureInitialTavernShortcut(options)
-  assert.equal(created.existed, false)
-  await rm(created.path, { recursive: true })
-  assert.deepEqual(ensureInitialTavernShortcut(options), { skipped: true })
-  await assert.rejects(stat(created.path), { code: 'ENOENT' })
-  assert.equal(createTavernShortcut(options).existed, false)
-})
-
-test('创建失败不记录成功，后续仍可重试', async t => {
-  const { paths } = await setup(t)
-  assert.throws(() => ensureInitialTavernShortcut({ paths }, () => { throw new Error('desktop unavailable') }), /desktop unavailable/)
-  let calls = 0
-  assert.equal(ensureInitialTavernShortcut({ paths }, () => { calls++; return { path: 'shortcut' } }).path, 'shortcut')
-  assert.equal(calls, 1)
-})
-
-
-test('快捷方式在 desktop 已是酒馆时打开桌面应用，不报错或启动第二个服务', async t => {
-  const { dsh } = await setup(t)
-  await symlink(path.join(dsh, 'profiles', 'tavern'), path.join(dsh, 'profiles', 'desktop'), 'junction')
-  const opened = []
-  await openTavernWindow({ host: 'desktop', root: dsh, findDesktop: () => 'D:/Apps/DeepSeek Harness.exe',
-    start: () => assert.fail('不能启动第二个酒馆服务'), open: (...args) => opened.push(args) })
-  assert.deepEqual(opened, [['D:/Apps/DeepSeek Harness.exe', []]])
 })

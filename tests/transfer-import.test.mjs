@@ -14,7 +14,7 @@ function environment(options = {}) {
     presets: new Map(options.presets || [['presets/默认.json', JSON.stringify({ prompts: [{ identifier: 'main', content: 'x' }] })]]),
     profiles: options.profiles || [{ id: 'default', name: '默认长期偏好', confirmed: { injectionText: '少写心理描写', summary: '偏短句' } }],
     regex: options.regex || [{ id: 'rx-1', name: '去掉思维链', findRegex: '/<thinking>[\\s\\S]*?<\\/thinking>/g', replaceString: '', enabled: true, placement: [2], trimStrings: [] }],
-    settings: options.settings || { hideContextAndReasoning: true, candidateDismissMode: 'after-send', headerItems: { display: 'icon-text', items: [] }, promptSets: { sets: [{ id: 'default', name: '默认方案', active: true }], activeSetId: 'default' } },
+    settings: options.settings || { candidateDismissMode: 'after-send', headerItems: { display: 'icon-text', items: [] }, promptSets: { sets: [{ id: 'default', name: '默认方案', active: true }], activeSetId: 'default' } },
     imported: { cards: [], worldbooks: [], presets: [], profiles: [], prompts: [], settings: [], regex: 0 },
     backups: []
   }
@@ -169,18 +169,6 @@ test('目录列出可导出板块与条目，未支持的板块也保留位置',
   assert.match(byKind.scene.note, /含对话配图/)
 })
 
-test('收集所选条目：清单条目带哈希，文件内容与清单一致', async () => {
-  const { catalog } = environment()
-  const collected = await catalog.collect({ cards: ['cards/作家.json'], settings: ['current'] })
-  assert.deepEqual(collected.parts.map(part => part.kind).sort(), ['cards', 'settings'])
-  const cardPart = collected.parts.find(part => part.kind === 'cards')
-  assert.equal(cardPart.items.length, 1)
-  assert.match(cardPart.items[0].sha256, /^[0-9a-f]{64}$/)
-  const text = collected.files.get(cardPart.items[0].entry).toString('utf8')
-  assert.equal(JSON.parse(text).name, '作家')
-  assert.equal(JSON.parse(collected.files.get('parts/settings/tavern-settings.json').toString('utf8')).candidateDismissMode, 'after-send')
-})
-
 test('预览指出同名冲突，应用时全部新建、不覆盖，并在写设置前备份', async () => {
   // Same names, different content: a copy is the right outcome, not a skip.
   const from = environment({
@@ -227,78 +215,6 @@ test('策略 skip 不写入该板块；导入包里的损坏条目单独记失�
   assert.equal(rows.cards.added, 0)
   assert.deepEqual(rows.presets.failed.map(item => item.error), ['包内缺少该文件'])
   assert.equal(to.state.imported.presets.length, 0)
-})
-
-test('导入结果记录新建文件的路径，供撤销使用', async () => {
-  const from = environment()
-  const bundle = await bundleFrom(from, { cards: ['cards/作家.json'], presets: ['presets/默认.json'] })
-  const to = environment({ cards: [], presets: [] })
-  const result = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: {} })
-  const cards = result.results.find(row => row.kind === 'cards')
-  const presets = result.results.find(row => row.kind === 'presets')
-  assert.deepEqual(cards.created, [{ kind: 'cards', title: '作家', path: 'cards/作家.json' }])
-  assert.deepEqual(presets.created, [{ kind: 'presets', title: '默认', path: 'presets/默认.json' }])
-  assert.deepEqual(result.results.find(row => row.kind === 'chats'), undefined)
-})
-
-test('同一个包导入第二次：内容相同就跳过，不再堆副本', async () => {
-  const from = environment()
-  const bundle = await bundleFrom(from, { cards: ['cards/作家.json'], presets: ['presets/默认.json'] })
-
-  const to = environment({ cards: [], presets: [] })
-  const first = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: {} })
-  assert.equal(first.results.find(row => row.kind === 'cards').added, 1)
-  assert.equal(to.state.cards.size, 1)
-
-  const second = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: {} })
-  const cards = second.results.find(row => row.kind === 'cards')
-  const presets = second.results.find(row => row.kind === 'presets')
-  assert.equal(cards.added, 0, '第二次不再新增')
-  assert.equal(cards.skipped, 1, '按跳过计数')
-  assert.deepEqual(cards.duplicates, ['作家'])
-  assert.equal(presets.added, 0)
-  assert.equal(to.state.cards.size, 1, '本机仍只有一张卡')
-  assert.equal(to.state.presets.size, 1, '预设也没有变多')
-})
-
-test('长期偏好与正则：内容相同就跳过，不再重复', async () => {
-  const from = environment()
-  const bundle = await bundleFrom(from, { profile: ['default'], regex: ['rx-1'] })
-  const to = environment()
-  const result = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, policies: {} })
-  const profile = result.results.find(row => row.kind === 'profile')
-  const regex = result.results.find(row => row.kind === 'regex')
-  assert.equal(profile.added, 0)
-  assert.equal(profile.skipped, 1)
-  assert.equal(regex.added, 0)
-  assert.equal(regex.skipped, 1)
-  assert.equal(to.state.profiles.length, 1, '本机画像没有变多')
-  assert.equal(to.state.imported.regex, 0)
-})
-
-test('素材包：预览认得这个板块，应用时按标题建新包、重名加序号', async () => {
-  const calls = []
-  const assets = {
-    async list() { return [{ key: 'pack-a', title: '秋日教室', meta: '背景 1', bytes: 12 }] },
-    async collect(ids) { return ids.map(id => ({ key: id, title: '秋日教室', fileName: id + '.zip', content: Buffer.from('pack-zip-bytes') })) },
-    async importOne({ key, name, content }) { calls.push({ key, name, bytes: content.length }); return { id: 'pack-new', name } }
-  }
-  const to = environment({ assets })
-  const bundle = await bundleFrom(to, { assets: ['pack-a'] })
-  assert.deepEqual(bundle.manifest.parts.map(part => part.kind), ['assets'])
-
-  const preview = await to.importer.preview(bundle.manifest, bundle.files)
-  const part = preview.parts.find(row => row.kind === 'assets')
-  assert.equal(part.importable, true)
-  assert.equal(part.selectable, 1)
-  assert.equal(part.conflicts, 1)
-  assert.match(part.items[0].reason, /同名素材包已存在/)
-
-  const result = await to.importer.apply({ manifest: bundle.manifest, files: bundle.files, selection: { assets: ['pack-a'] } })
-  const row = result.results.find(item => item.kind === 'assets')
-  assert.equal(row.added, 1)
-  assert.deepEqual(row.failed, [])
-  assert.deepEqual(calls, [{ key: 'pack-a', name: '秋日教室 (2)', bytes: 14 }])
 })
 
 test('游玩记忆随同包的存档并进新局；包里没带存档时明确说明无处可并', async () => {

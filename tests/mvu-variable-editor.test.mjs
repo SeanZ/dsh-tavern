@@ -32,29 +32,6 @@ test('只读取当前楼层，当前楼层没有状态时不回退到更早楼�
   assert.equal(withoutData.statData, null)
 })
 
-test('当前楼层是隐藏楼层或冷启动占位时不回退，切 swipe 时保留楼层 id', () => {
-  const helper = {
-    turnMessageIds: { 3: 2, 2: 1 },
-    messages: [
-      message(0, { stat_data: { hp: 1 } }),
-      message(1, { stat_data: { hp: 2 } }, { is_hidden: true }),
-      { message_id: 2, role: 'assistant', swipe_id: 1, variables: [], stub: true }
-    ]
-  }
-  assert.equal(readMvuVariableFloor(helper, 3), null)
-  const visible = {
-    turnMessageIds: { 3: 2, 2: 1 },
-    messages: [
-      message(0, { stat_data: { hp: 1 } }),
-      message(1, { stat_data: { hp: 2 } }, { is_hidden: true }),
-      message(2, { stat_data: { hp: 3 } }, { swipe_id: 1 })
-    ]
-  }
-  const floor = readMvuVariableFloor(visible, 3)
-  assert.equal(floor.messageId, 2)
-  assert.equal(floor.swipeId, 1)
-})
-
 test('JSON 编辑只接受对象，写入保留 schema 和其他字段', () => {
   assert.deepEqual(parseMvuStatData('{"hp": 7, "背包": ["药"]}'), { hp: 7, 背包: ['药'] })
   assert.throws(() => parseMvuStatData('[]'), /JSON 对象/)

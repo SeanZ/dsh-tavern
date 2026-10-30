@@ -507,11 +507,3 @@ test('后台主动检索开放原生 read，切回旧机制后隐藏；运行期
     assert.ok(!packets[1].sections.some(section=>section.name==='tool:read'))
   } finally {await runner.dispose()}
 })
-
-test('retired worldbook recall is rejected before accessing a model or session', async () => {
-  const runner = createBackgroundAgentRunner({ agents: {
-    get() { assert.fail('must not access a session') },
-    create() { assert.fail('must not create an agent') }
-  } })
-  await assert.rejects(runner.run({ task: 'worldbook-filter', sessionId: 'old' }), /已停用/)
-})

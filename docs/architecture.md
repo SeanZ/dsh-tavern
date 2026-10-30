@@ -222,4 +222,4 @@ tavern-plugin/
         └── worldbook-resource.js
 ```
 
-跨 Agent 同步见[剧情时间线设计](design/agent-timeline.md)，剧本进度见[剧本游标设计](design/script-cursor.md)。权威决策记录在 [`adr/`](adr/)；产品取舍以[产品设计原则](product-design.md)为准，本文件的“领域语言”章节是术语权威来源。
+跨 Agent 同步见[剧情时间线设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Aagent-timeline)，剧本进度见[剧本游标设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Ascript-cursor)。权威决策记录在 [`adr/`](adr/)；产品取舍以[产品设计原则](product-design.md)为准，本文件的“领域语言”章节是术语权威来源。

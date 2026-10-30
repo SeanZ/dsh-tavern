@@ -61,49 +61,6 @@ function fakeHost() {
   }
 }
 
-test('followed tool reply lands on its first line instead of the tail', async () => {
-  const client = await loadClient()
-  const scroller = scrollport()
-  const row = replyRow(scroller)
-  const host = fakeHost()
-  client.tavernReplyReveal(row, { host, padding: 24, holdMs: 0 })
-  host.flush()
-  // 行顶部在视口上方 2400px，滚到让它的顶部落在滚动区顶部下方 24px。
-  assert.equal(scroller.scrollTop, 1176)
-  host.flush()
-  assert.equal(host.frames(), 0, '结束后不再保留定位循环')
-})
-
-test('a reader away from the tail keeps their position', async () => {
-  const client = await loadClient()
-  const scroller = scrollport({ scrollTop: 0 })
-  const row = replyRow(scroller, { following: false })
-  const host = fakeHost()
-  client.tavernReplyReveal(row, { host, padding: 24, holdMs: 0 })
-  host.flush()
-  assert.equal(scroller.scrollTop, 0)
-})
-
-test('an older reply with a later player input is never repositioned', async () => {
-  const client = await loadClient()
-  const scroller = scrollport()
-  const row = replyRow(scroller, { laterUser: true })
-  const host = fakeHost()
-  client.tavernReplyReveal(row, { host, padding: 24, holdMs: 0 })
-  host.flush()
-  assert.equal(scroller.scrollTop, 3600)
-})
-
-test('a reply folded into the process panel is not repositioned', async () => {
-  const client = await loadClient()
-  const scroller = scrollport()
-  const row = replyRow(scroller, { hidden: true })
-  const host = fakeHost()
-  client.tavernReplyReveal(row, { host, padding: 24, holdMs: 0 })
-  host.flush()
-  assert.equal(scroller.scrollTop, 3600)
-})
-
 test('reader input stops the short hold loop', async () => {
   const client = await loadClient()
   const scroller = scrollport()

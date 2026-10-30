@@ -112,3 +112,34 @@ test('真实任务组装一次绑定；改词重画、重启仍使用快照，�
     assert.doesNotMatch(payload.prompt, /characterId|outfitId|人物“江铭”：|服装图/)
   }
 })
+
+test('sync: saving and restarting preserves structured mode alongside the Chinese switch', async t => {
+  const fixture = await imagePluginFixture(t)
+  const runtime = await fixture.start()
+  assert.equal((await runtime.request('config', { promptMode: 'structured', allowChinesePrompt: true })).status, 200)
+  const saved = await fixture.read('config.json')
+  assert.equal(saved.promptMode, 'structured')
+  assert.equal(saved.allowChinesePrompt, true)
+  const restarted = await fixture.start()
+  const state = await restarted.request('state')
+  assert.equal(state.body.config.promptMode, 'structured')
+  assert.equal(state.body.config.allowChinesePrompt, true)
+  assert.equal((await restarted.request('config', { allowChinesePrompt: false })).status, 200)
+  assert.equal((await fixture.read('config.json')).allowChinesePrompt, false)
+  assert.equal((await restarted.request('config', { allowChinesePrompt: 'true' })).status, 200)
+  assert.equal((await fixture.read('config.json')).allowChinesePrompt, false, 'string true must not enable the switch')
+})
+
+test('sync: compiled character positive and negative prompts honor Chinese opt-in without flattening structured text', () => {
+  const source = '【人物】\n黑发，白衬衫。\n\n【约束】\n保留[文字]。'
+  for (const allowChinesePrompt of [false, true]) {
+    const structured = compileChannelJob({ params: { tag: source, characters: [{ prompt: source, uc: '不要帽子。\n不要眼镜。' }] },
+      definitions: {}, config: { promptMode: 'structured', imageBackend: 'comfyui', allowChinesePrompt }, channel: { provider: 'comfyui' } })
+    assert.ok(structured.positive.includes(source))
+    assert.match(structured.negative, /不要帽子。\n不要眼镜。/)
+    const tags = compileChannelJob({ params: { tag: 'portrait', characters: [{ prompt: '黑发, portrait', uc: '帽子, hat' }] },
+      definitions: {}, config: { promptMode: 'tags', imageBackend: 'comfyui', allowChinesePrompt }, channel: { provider: 'comfyui' } })
+    assert.equal(tags.positive.includes('黑发'), allowChinesePrompt)
+    assert.equal(tags.negative.includes('帽子'), allowChinesePrompt)
+  }
+})
