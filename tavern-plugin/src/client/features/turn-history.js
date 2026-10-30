@@ -13,13 +13,14 @@
 			const view = props.view;
 			// "pinned": only panels pinned from messages (status bar shown in the story body);
 			// "status": only the card's status views (that body copy). Default: both.
-			const statuses = view && isPlayMode(view.mode) && props.panels !== "pinned" ? (view.tavernStatusViews || []) : [];
+			// Automatic status frames still need Helper; moving an existing message frame does not.
+			const statuses = view && view.tavernHelper && isPlayMode(view.mode) && props.panels !== "pinned" ? (view.tavernStatusViews || []) : [];
 			const manual = props.panels === "status" ? [] : entries.filter(function (entry) { return entry.sessionId === props.sessionId && entry.pinned; });
 			const newest = manual.reduce(function (latest, entry) { return !latest || entry.activation > latest.activation ? entry : latest; }, null);
 			React.useEffect(function () { if (newest) setSelected(newest.id); }, [props.sessionId, newest && newest.activation]);
 			const ids = statuses.map(function (panel) { return panel.viewId; }).concat(manual.map(function (entry) { return entry.id; }));
 			const active = ids.includes(selected) ? selected : ids[0];
-			if (!view || !view.tavernHelper || !ids.length) return null;
+			if (!view || !ids.length) return null;
 			const h = React.createElement;
 			const runtime = h("section", { className: "dsh-tavern-status-runtime" + (ids.length === 1 ? " single-panel" : "") },
 				h("div", { className: "dsh-tavern-panel-toolbar" }, ids.length > 1 ? h("div", { className: "dsh-tavern-panel-tabs", role: "tablist", "aria-label": "人物卡面板" },

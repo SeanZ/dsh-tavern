@@ -11191,7 +11191,7 @@ function bindTavernFontZoom(node, win) {
 					};
 				},
 				pin: function (id, pinned) {
-					const entry = entries.get(id); if (!entry) return;
+					const entry = entries.get(id); if (!entry) throw new Error("面板尚未准备好，请稍后重试。");
 					if (typeof entry.home.moveBefore !== "function") throw new Error("当前浏览器不支持保留页面状态的移动，请在原消息中使用此面板。");
 					if (!pinned) move(entry, entry.home);
 					entry.pinned = pinned; if (pinned) entry.activation = ++activation; publish();
@@ -11489,6 +11489,7 @@ function bindTavernFontZoom(node, win) {
 
 		function TavernRetainedMessageFrame(props) {
 		    const home = React.useRef(null), lease = React.useRef(null);
+		    const pendingPin = React.useRef(null);
 		    // A floor that scrolls back in finds its retained document still alive: reattach it at
 		    // once instead of waiting behind a placeholder and reloading.
 		    const [activated, setActivated] = React.useState(props.eager === true || tavernRetainedFrames.has(props));
@@ -11530,13 +11531,21 @@ function bindTavernFontZoom(node, win) {
 		            ? Object.assign({}, frameProps, { helperContext: props.helperContextReader() }) : frameProps;
 		        const mounted = tavernRetainedFrames.mount(initialProps, home.current);
 		        lease.current = mounted;
+		        // The first click may activate a cold frame. Wait for mount to register its
+		        // panel before pinning, and never carry that intent to another message.
+		        const pinAfterMount = pendingPin.current === panelId;
+		        pendingPin.current = null;
+		        if (pinAfterMount) {
+		            try { tavernPanelRegistry.pin(panelId, true); }
+		            catch (error) { tavernErrorHub.report("固定面板", error); }
+		        }
 		        return function () { lease.current = null; mounted.detach(); };
 		    }, [activated, key]);
 		    React.useLayoutEffect(function () { if (lease.current) lease.current.update(frameProps); });
 		    const movable = !props.persistent && /<(?:script|iframe|object|embed)\b/i.test(String(props.content || ""));
 		    return React.createElement("div", null,
 		        movable && !pinned ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", onClick: function () {
-		            if (!activated) { setActivated(true); return; }
+		            if (!activated) { pendingPin.current = panelId; setActivated(true); return; }
 		            try { tavernPanelRegistry.pin(panelId, true); }
 		            catch (error) { tavernErrorHub.report("固定面板", error); }
 		        } }, "固定到右侧") : null,
@@ -12950,7 +12959,8 @@ function bindTavernFontZoom(node, win) {
 			const actions = tavernUiExtensions.messageActions().filter(function (entry) { return tavernPluginAllowed(entry.owner, props.sessionId); });
 			if (!actions.length) return null;
 			return React.createElement(TavernPluginActionButtons, { actions: actions, className: "dsh-tavern-plugin-message-actions", buttonClassName: "dsh-tavern-btn",
-				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled } });
+				// text: the reply as written, so `when` can show a button only for the replies it fits.
+				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled, text: String(props.text || "") } });
 		}
 
 		function TavernPluginComposerActions(props) {
@@ -17096,8 +17106,11 @@ function useTavernStageNameFit(ref, name, art) {
 }
 
 /** The stage data as plugins see it (tavernUi.getStage). */
+// `music` (the track playing, or null for silence) is there only while the stage's BGM is in charge of the game (`musicOwned`):
+// a plugin with music of its own leaves the music to Tavern when the field is there, and plays its own when it is not.
 function tavernStagePublicData(data) {
-	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
+	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", ...(data.musicOwned ? { music: data.music } : {}),
+		stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
 }
 
 // The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
@@ -21746,7 +21759,7 @@ function TavernBgmChat(props) {
 				const pluginMediaNode = trailingMedia.length ? React.createElement("div", { className: "dsh-tavern-plugin-media-list" }, trailingMedia.map(function (item) {
 					return React.createElement(TavernPluginMediaItem, { key: item.id, item: item, sessionId: props.sessionId, turn: storyTurn });
 				})) : null;
-				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
+				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled, text: replyTextForFold }) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
 				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}
@@ -29221,13 +29234,14 @@ const transferFeature = createTransferFeatureModule()
 			const view = props.view;
 			// "pinned": only panels pinned from messages (status bar shown in the story body);
 			// "status": only the card's status views (that body copy). Default: both.
-			const statuses = view && isPlayMode(view.mode) && props.panels !== "pinned" ? (view.tavernStatusViews || []) : [];
+			// Automatic status frames still need Helper; moving an existing message frame does not.
+			const statuses = view && view.tavernHelper && isPlayMode(view.mode) && props.panels !== "pinned" ? (view.tavernStatusViews || []) : [];
 			const manual = props.panels === "status" ? [] : entries.filter(function (entry) { return entry.sessionId === props.sessionId && entry.pinned; });
 			const newest = manual.reduce(function (latest, entry) { return !latest || entry.activation > latest.activation ? entry : latest; }, null);
 			React.useEffect(function () { if (newest) setSelected(newest.id); }, [props.sessionId, newest && newest.activation]);
 			const ids = statuses.map(function (panel) { return panel.viewId; }).concat(manual.map(function (entry) { return entry.id; }));
 			const active = ids.includes(selected) ? selected : ids[0];
-			if (!view || !view.tavernHelper || !ids.length) return null;
+			if (!view || !ids.length) return null;
 			const h = React.createElement;
 			const runtime = h("section", { className: "dsh-tavern-status-runtime" + (ids.length === 1 ? " single-panel" : "") },
 				h("div", { className: "dsh-tavern-panel-toolbar" }, ids.length > 1 ? h("div", { className: "dsh-tavern-panel-tabs", role: "tablist", "aria-label": "人物卡面板" },
@@ -31671,8 +31685,8 @@ function createTurnRailFilter(root, options) {
 					) : null,
 					view.worldBookError ? h("div", { className: "dsh-card-error" }, h("div", null, "世界书召回失败：" + view.worldBookError), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
 					view.foregroundError ? h("div", { className: "dsh-card-error" }, h("div", null, view.foregroundError.message || "前台正文生成失败，请重新生成本轮正文。"), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
-					view.tavernHelper ? h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
-						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }) : null,
+					h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
+						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }),
 					(view.presentationWarnings || []).map(function (warning, index) {
 						return h("div", { className: "dsh-card-error", key: "presentation-warning-" + index }, warning);
 					}),

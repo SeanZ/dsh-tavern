@@ -674,7 +674,7 @@
 				const pluginMediaNode = trailingMedia.length ? React.createElement("div", { className: "dsh-tavern-plugin-media-list" }, trailingMedia.map(function (item) {
 					return React.createElement(TavernPluginMediaItem, { key: item.id, item: item, sessionId: props.sessionId, turn: storyTurn });
 				})) : null;
-				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
+				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled, text: replyTextForFold }) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
 				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}

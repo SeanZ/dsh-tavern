@@ -51,6 +51,20 @@ test('window envelope and events repair in the same request; sealed pages cannot
   assert.deepEqual(h.errors, [])
 })
 
+test('the remainder window reads the directed pages and played one-shots read-only; the first window reads only its own pages', async () => {
+  const h = await fixture(async ({ context, call }) => {
+    await call(context.window.sequence === 1 ? { figures: [{ speaker: 'Nora' }], performances: [{ at: 2, op: 'actor.act.play', actor: 'Nora', motion: 'nod' }, { at: 4, op: 'screen.play', effect: 'shake-1' }] } : {})
+  })
+  ;(await h.stream.begin('game', 2)).append(text)
+  await until(() => h.receipts.length === 1)
+  await h.stream.finish(await h.submit())
+  assert.equal(h.prompts[0].input.messages[0].content[0].text, '[1] One.\n[2] Two.\n[3] Three.\n[4] Four.\n[5] Five.')
+  assert.equal(h.prompts[1].input.messages[0].content[0].text, [
+    '已导演（只读，不再安排）：', '[1] One.', '[2] Two.', '[3] Three.', '[4] Four.', '[5] Five.',
+    '已演出（不重复）：[2] actor.act.play Nora nod；[4] screen.play shake-1', '本窗口：', '[6] Six.', '[7] Seven.'].join('\n'))
+  assert.deepEqual(h.errors, [])
+})
+
 for (const change of ['prefix', 'catalog', 'branch', 'operation', 'cancel']) test('stale stream cannot persist either channel: ' + change, async () => {
   const h = await fixture(), observer = await h.stream.begin('game', 2)
   observer.append(text)

@@ -348,8 +348,8 @@
 					) : null,
 					view.worldBookError ? h("div", { className: "dsh-card-error" }, h("div", null, "世界书召回失败：" + view.worldBookError), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
 					view.foregroundError ? h("div", { className: "dsh-card-error" }, h("div", null, view.foregroundError.message || "前台正文生成失败，请重新生成本轮正文。"), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
-					view.tavernHelper ? h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
-						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }) : null,
+					h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
+						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }),
 					(view.presentationWarnings || []).map(function (warning, index) {
 						return h("div", { className: "dsh-card-error", key: "presentation-warning-" + index }, warning);
 					}),

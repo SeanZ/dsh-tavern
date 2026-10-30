@@ -2467,7 +2467,10 @@ export async function apply(ctx) {
       music: await stageMusic(assets.music.find(item => item.name === stage.music)),
       // 环境音: the state's ambience while its entry is lit (a loop the stage plays alongside the BGM), or null.
       ambience: await stageMusic(assets.ambience.find(item => item.name === stage.ambience)),
-      musicEnabled: (await readTavernSettings()).stageToggles.music, sfxEnabled: (await readTavernSettings()).stageToggles.sfx,
+      musicEnabled: (await readTavernSettings()).stageToggles.music,
+      // The stage's BGM is in charge of this game: the stage is on and the card offers music (BGM on). Otherwise nothing of
+      // Tavern's plays, and a plugin's own music (tavernUi.playMusic) is the only one there is.
+      musicOwned: stageSwitchedOn(await readTavernSettings()) && assets.music.length > 0, sfxEnabled: (await readTavernSettings()).stageToggles.sfx,
       ambienceEnabled: (await readTavernSettings()).stageToggles.ambience, cast: assets.cast, turns, stage,
       skin: await stageSkinOf(card.path).then(skin => ({ document: skin.document, base: skin.base })).catch(() => null),
       // 入场演出 (stageToggles.entrance): the entrance of the card's own packs the stage opens with, or null.

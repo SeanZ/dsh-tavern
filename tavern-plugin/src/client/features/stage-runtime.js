@@ -214,8 +214,11 @@ function useTavernStageNameFit(ref, name, art) {
 }
 
 /** The stage data as plugins see it (tavernUi.getStage). */
+// `music` (the track playing, or null for silence) is there only while the stage's BGM is in charge of the game (`musicOwned`):
+// a plugin with music of its own leaves the music to Tavern when the field is there, and plays its own when it is not.
 function tavernStagePublicData(data) {
-	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", music: data.music, stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
+	return { enabled: data.enabled !== false, player: data.player, card: data.card, background: data.background || "", ...(data.musicOwned ? { music: data.music } : {}),
+		stage: data.stage, characters: data.cast || [], turns: data.turns || [] };
 }
 
 // The look of the stage: Tavern's own, or a plugin's registerStageView; remembered per browser.
