@@ -64,7 +64,7 @@ function harness() {
     if (gate) await gate.promise
     return snapshot
   }
-  const context = vm.createContext({ ...refs, ...setters, BASE: '/plugins/dsh-tavern-image', jsonFetch: transport,
+  const context = vm.createContext({ ...refs, ...setters, WorldbookUpgradePanel: () => null, promptFormatFocus: { current: false }, setTab: value => { state.tab = value }, BASE: '/plugins/dsh-tavern-image', jsonFetch: transport,
     post: (path, body) => transport('/plugins/dsh-tavern-image' + path, { method: 'POST', body: JSON.stringify(body) }),
     h: (type, props, ...children) => ({ type, props: props || {}, children }), S: { card: {}, row: {}, input: {}, label: {}, tab: () => ({}) }, buttonStyle: {},
     setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id }, clearTimeout: id => timers.delete(id), confirm: () => true,
@@ -90,6 +90,7 @@ test('worldbook selector reads another format without changing the global prompt
   await h.switch('structured')
   assert.equal(h.state.wbFormat, 'structured')
   assert.equal(h.state.data.config.promptMode, 'tags')
+  assert.match(text(h.tree), /正在编辑：结构化自然语言；实际生图：标签/)
   assert.match(text(h.tree), /structured-main-rule/)
   await h.click('编辑')
   h.editContent('中文结构化内容')
@@ -176,6 +177,31 @@ test('late refresh of a previous format cannot replace the newly selected format
   gate.resolve(); await refresh
   assert.equal(h.state.wbFormat, 'structured')
   assert.match(text(h.tree), /structured-main-rule/)
+})
+
+test('format settings navigation saves drafts, never changes prompt mode and stops on failure', async () => {
+  const ui = harness()
+  await ui.click('编辑'); ui.editContent('before navigation')
+  ui.failWrites = true
+  await ui.click('前往提示词格式设置')
+  assert.equal(ui.state.tab, undefined)
+  assert.match(ui.state.wbNote, /未保存/)
+  ui.failWrites = false
+  await ui.click('前往提示词格式设置')
+  assert.equal(ui.state.tab, 'plan')
+  assert.equal(ui.server.tags[0].entries[0].content, 'before navigation')
+  assert.equal(ui.state.data.config.promptMode, 'tags')
+  assert.equal(ui.calls.some(call => call.path === '/config'), false)
+})
+
+test('auto effective format is server supplied, never inferred from the editor selection', async () => {
+  const ui = harness()
+  ui.state.data.config = { promptMode: 'auto', promptEffectiveFormat: 'natural' }
+  ui.render()
+  assert.match(text(ui.tree), /正在编辑：标签；实际生图：自然语言（自动选择）/)
+  delete ui.state.data.config.promptEffectiveFormat
+  ui.render()
+  assert.match(text(ui.tree), /实际生图：尚未解析/)
 })
 
 test('an invalid response format never populates the requested format editor', async () => {

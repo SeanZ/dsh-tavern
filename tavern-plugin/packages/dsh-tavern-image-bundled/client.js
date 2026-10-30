@@ -857,7 +857,7 @@ let openImageOverlay = null
       try {
         if (!jobId || typeof openPromptEditor !== 'function') return
         const requestId = openEditorFor.requestId = (openEditorFor.requestId || 0) + 1
-        openPromptEditor({ open: true, openRequestId: requestId, jobId: String(jobId), prompt: '', negative: '', rawPrompt: '', finalPrompt: '', instruction: '', note: '正在读取提示词…', busy: '', loading: true, submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '', generationMode: 'text', refreshReferences: false, references: [], submittedPrompt: '', actualPositive: '', actualNegative: '', sourceBackend: '', providerError: '', inputsLoading: true, inputsError: '', inputsReload: 0, showInputs: false, channels: [], channelLoadFailed: false })
+        openPromptEditor({ open: true, openRequestId: requestId, jobId: String(jobId), prompt: '', negative: '', rawPrompt: '', originalPrompt: '', rawPromptSource: '', submittedPromptSource: '', promptAssembly: null, finalPrompt: '', instruction: '', note: '正在读取提示词…', busy: '', loading: true, submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '', generationMode: 'text', refreshReferences: false, references: [], submittedPrompt: '', actualPositive: '', actualNegative: '', sourceBackend: '', providerError: '', inputsLoading: true, inputsError: '', inputsReload: 0, showInputs: false, channels: [], channelLoadFailed: false })
         jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(String(jobId)), { cache: 'no-store' })
           .then(r => {
             if (!r?.ok || !r.job) { openPromptEditor({ forJobId: String(jobId), forRequestId: requestId, loading: false, note: '读不到提示词：' + (r?.error || '') }); return }
@@ -869,6 +869,10 @@ let openImageOverlay = null
               negative: String(r.job.negative || ''),
               note: blocksText ? '场景与角色块一起显示；改完重画会按角色分区重新发送' : '',
               rawPrompt: String(r.job.rawPrompt || ''),
+               originalPrompt: String(r.job.promptText || r.job.rawPrompt || ''),
+               rawPromptSource: String(r.job.rawPromptSource || ''),
+               submittedPromptSource: String(r.job.submittedPromptSource || ''),
+               promptAssembly: r.job.promptAssembly?.version === 2 ? r.job.promptAssembly : null,
               finalPrompt: String(r.job.prompt || ''),
             })
           })
@@ -1207,6 +1211,15 @@ function versionsOf(jobId) {
       const backend = view.channelId === 'comfyui' ? 'comfyui' : view.channelId ? (view.channels || []).find(channel => channel.id === view.channelId)?.provider : view.sourceBackend
       const referenceUnavailable = view.generationMode === 'reference' && backend !== 'atlascloud'
       const controlsDisabled = Boolean(view.loading || view.inputsLoading || view.busy || view.submitted || view.uncertain)
+      // Strip only known legacy metadata decorations from captions, never alter recorded prompts.
+      const referenceLabel = reference => String(reference.label || '').replace(/\s*\[(?:characterId|outfitId)=[^\]]*\]/g, '').trim() || '未记录名称（详见调试信息）'
+      const referenceOwner = reference => {
+        const label = referenceLabel(reference)
+        if (reference.kind === 'character') return '所属人物：' + label
+        if (!reference.characterId) return '所属：公共服装；' + (label.includes('本图穿着者：') ? label : '原记录未标明穿着者')
+        const slash = label.indexOf('／')
+        return slash > 0 ? '所属人物：' + label.slice(0, slash) : '所属人物：原记录未提供可读姓名（详见调试信息）'
+      }
 
       async function improve() {
         openPromptEditor({ busy: 'improve', note: '后台正在改…' })
@@ -1298,7 +1311,7 @@ function versionsOf(jobId) {
           React.createElement('button', { type: 'button', onClick: close, style: { padding: '5px 14px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' } }, '关闭'),
         ),
         React.createElement('img', { src: BASE + '/jobs?id=' + encodeURIComponent(view.jobId) + '&image=1', style: { display: 'block', maxWidth: '260px', borderRadius: '10px', margin: '0 auto 16px', background: '#1a1d24' } }),
-        React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2', marginBottom: '6px' } }, '正向提示词（可直接改，然后重画）'),
+        React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2', marginBottom: '6px' } }, '本次重画草稿（可编辑；不会改动下方原任务记录）'),
         React.createElement('textarea', {
           value: view.prompt,
           style: area,
@@ -1343,15 +1356,30 @@ function versionsOf(jobId) {
           view.inputsError ? React.createElement('div', { role: 'alert', style: { fontSize: '12px', color: '#f0bf76' } }, view.inputsError,
             React.createElement('button', { type: 'button', disabled: Boolean(view.inputsLoading || view.busy), onClick: () => openPromptEditor({ inputsReload: (view.inputsReload || 0) + 1 }) }, '重新读取输入')) : null,
           React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '8px' } }, '下列为原任务记录，不会随上方编辑或模式切换而改写。'),
-          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.submittedPrompt ? '实际提交提示词' : '记录的最终正向提示词（旧任务可能没有完整提交文本）'),
+          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.rawPromptSource && view.rawPromptSource !== 'rawTag' ? '原始输入回退记录（原文缺失）' : '规划原文／原始输入（原任务）'),
+          React.createElement('pre', { 'aria-label': '规划原文', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto', fontSize: '12px' } }, view.loading ? '正在读取原文…' : view.originalPrompt || view.rawPrompt || '未记录原始输入'),
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2' } }, '这里展示原任务保存的场景与角色块，不是完整规划会话；手动任务可能是用户输入，旧任务可能由后端回退为已处理文本。'),
+          view.promptAssembly?.version === 2 ? React.createElement('div', { 'aria-label': '提示词组装来源' },
+            React.createElement('details', null, React.createElement('summary', null, '人物／服装／场景库自动补充'),
+              React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto' } }, Array.isArray(view.promptAssembly.definitionAdditions) && view.promptAssembly.definitionAdditions.length ? view.promptAssembly.definitionAdditions.join('\n\n') : '本张没有自动补充')),
+            React.createElement('details', null, React.createElement('summary', null, '插件生成的参考图绑定文本'),
+              React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto' } }, String(view.promptAssembly.referenceText || '本张没有参考图绑定文本'))))
+            : React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2' } }, '原任务未记录分层组装来源；不从最终文本反推资料补充或参考图绑定。'),
+          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.submittedPrompt && view.submittedPromptSource !== 'positive' ? '最终提交文本（原任务记录）' : '记录的最终正向提示词（旧任务可能没有完整提交文本）'),
           React.createElement('pre', { 'aria-label': '实际提交提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '260px', overflowY: 'auto', fontSize: '12px' } }, view.submittedPrompt || view.actualPositive || view.finalPrompt || '暂无记录'),
           view.actualNegative ? React.createElement('pre', { 'aria-label': '实际负向提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px' } }, '负向：' + view.actualNegative) : null,
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2', margin: '8px 0' } }, '参考图按原任务上传顺序展示，不按图库顺序；用途与归属取自原任务快照。旧任务的最终文本可能只有正向记录；此处不推测或重建。'),
           (view.references || []).length ? React.createElement('div', { 'aria-label': '原任务参考图', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' } },
             view.references.map((reference, position) => React.createElement('figure', { key: String(position), style: { margin: 0, padding: '8px', border: '1px solid #3a4150', borderRadius: '7px' } },
-              /^[a-f0-9]{64}$/i.test(String(reference.image?.id || '')) ? React.createElement('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(reference.image.id), alt: '参考图 ' + (reference.index ?? position + 1) + ' ' + String(reference.label || ''), style: { maxWidth: '100%', height: '120px', objectFit: 'contain' } }) : null,
+              /^[a-f0-9]{64}$/i.test(String(reference.image?.id || '')) ? React.createElement('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(reference.image.id), alt: '参考图 ' + (reference.index ?? position + 1) + ' ' + referenceLabel(reference), style: { maxWidth: '100%', height: '120px', objectFit: 'contain' } }) : null,
               React.createElement('figcaption', { style: { fontSize: '12px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
-                '参考图 ' + (reference.index ?? position + 1) + ' · ' + (reference.kind === 'character' ? '角色' : '服装') + ' · ' + String(reference.label || reference.characterId || reference.outfitId || ''),
-                reference.consistencyText ? '\n' + String(reference.consistencyText) : ''))))
+                '上传顺序 ' + (position + 1) + ' · 参考图 ' + (reference.index ?? position + 1) + ' · ' + referenceLabel(reference),
+                '\n用途：' + (reference.kind === 'character' ? '身份参考（面部、发型、固有体型比例；不继承服装和姿势）' : reference.kind === 'outfit' ? '服装参考（服饰设计；不继承模特身份）' : '未记录'),
+                '\n' + referenceOwner(reference),
+                reference.consistencyText ? '\n一致性补充：' + String(reference.consistencyText) : ''),
+              React.createElement('details', { 'aria-label': '参考图调试信息' },
+                React.createElement('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '调试信息（内部 ID）'),
+                React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '11px' } }, JSON.stringify({ characterId: reference.characterId, outfitId: reference.outfitId, imageId: reference.image?.id, originalLabel: reference.label }, null, 2))))))
             : React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2' } }, '原任务未记录参考图。'),
           view.providerError ? React.createElement('div', { role: 'alert', 'aria-label': '平台错误', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px', color: '#f0bf76', marginTop: '8px' } }, '平台／任务错误：' + view.providerError) : null),
         view.inputsError && !view.showInputs ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '8px' } }, view.inputsError + '，请展开实际提交输入重试。') : null,
@@ -2352,6 +2380,46 @@ function versionsOf(jobId) {
         note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '5px', overflowWrap: 'anywhere' } }, note) : null)
     }
 
+    function WorldbookUpgradePanel({ book, request, onApplied }) {
+      const [status, setStatus] = React.useState(null)
+      const [selected, setSelected] = React.useState([])
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState('')
+      const live = React.useRef(true), running = React.useRef(false)
+      React.useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+      const selectable = entry => ['update', 'customized', 'missing'].includes(entry.state)
+      const labels = { current: '已是新版', update: '旧版默认，可更新', customized: '已自定义，更新会替换内容', missing: '当前不存在，勾选后重新加入', disabled: '已禁用，保持不变', ambiguous: '条目有歧义，请手动处理' }
+      async function load(apply = false) {
+        if (running.current || (apply && (!status || !selected.length))) return
+        if (apply && !confirm('只更新勾选条目；其中自定义内容将被新版替换，缺失条目将重新加入。确认继续？')) return
+        running.current = true; setBusy(true); setNote('')
+        try {
+          const result = await request(apply ? '/worldbook-upgrade' : '/worldbook-upgrade?book=' + encodeURIComponent(book),
+            apply ? { book, expectedFingerprint: status.fingerprint, entryIds: selected } : undefined)
+          if (!result?.ok || result.upgrade?.format !== 'structured' || result.upgrade?.key !== book || !Array.isArray(result.upgrade?.entries) || typeof result.upgrade?.fingerprint !== 'string') throw new Error(result?.error || '未收到有效升级预览')
+          if (!live.current) return
+          setStatus(result.upgrade); setSelected([])
+          setNote(apply ? '所选规则已更新；其他条目保持不变。' : '请展开对比并勾选需要更新的条目；默认不选择任何条目。')
+          if (apply) {
+            try { await onApplied() } catch { if (live.current) setNote('规则已更新，但列表刷新失败；请手动刷新世界书。') }
+          }
+        } catch (error) { if (live.current) { setNote('未完成：' + (error?.message || error) + '。请重新读取预览后再试。'); setSelected([]); setStatus(null) } }
+        finally { running.current = false; if (live.current) setBusy(false) }
+      }
+      return h('details', { 'aria-label': '结构化默认规则升级', style: { margin: '12px 0', padding: '8px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px' } },
+        h('summary', { style: { cursor: 'pointer' } }, '检查结构化默认规则更新（保留用户选择）'),
+        h('p', { style: { fontSize: '12px' } }, '先保存当前编辑并读取差异，再显式选择要更新的条目。禁用条目不启用；删除过的条目不会自动恢复。'),
+        h('button', { type: 'button', disabled: busy, onClick: () => load() }, busy ? '处理中…' : '读取／刷新升级预览'),
+        status ? h('div', null,
+          status.entries.map(entry => h('details', { key: entry.id, style: { marginTop: '8px' } },
+            h('summary', null, (entry.proposed?.comment || entry.current?.comment || '未命名条目') + ' · ' + (labels[entry.state] || '未知状态')),
+            h('label', null, h('input', { type: 'checkbox', 'aria-label': '更新规则 ' + entry.id, disabled: busy || !selectable(entry), checked: selected.includes(entry.id), onChange: event => setSelected(old => event.target.checked ? [...new Set([...old, entry.id])] : old.filter(id => id !== entry.id)) }), '应用此条新版规则'),
+            h('div', null, '当前内容'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '180px', overflowY: 'auto' } }, entry.current?.content ?? '（当前不存在）'),
+            h('div', null, '新版内容'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '180px', overflowY: 'auto' } }, entry.proposed?.content ?? '（没有新版内容）'))),
+          h('button', { type: 'button', disabled: busy || !selected.length, onClick: () => load(true) }, '确认更新所选 ' + selected.length + ' 条')) : null,
+        note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '8px' } }, note) : null)
+    }
+
     function SettingsPanel() {
       const [data, setDataState] = React.useState(null)
       // 让定时器/异步回调读到"最新的" data，而不用把它写进 effect 依赖
@@ -2380,6 +2448,7 @@ function versionsOf(jobId) {
         setSaveState('')
       }
       const [tab, setTab] = React.useState('plan')
+      const promptFormatFocus = React.useRef(false)
       const [updateOpen, setUpdateOpen] = React.useState(false)
       const [pluginUpdateLocal, setPluginUpdateLocal] = React.useState(null)
       const [pluginUpdateCheck, setPluginUpdateCheck] = React.useState(null)
@@ -4856,6 +4925,8 @@ function versionsOf(jobId) {
         // 每种提示词格式有独立的两本书；浏览其他格式不改全局 promptMode。
         const formats = [['tags', '标签'], ['natural', '自然语言'], ['mixed', '混合'], ['structured', '结构化自然语言']]
         const activeFormat = wbFormat || data.worldbookFormat || config.promptEffectiveFormat || 'tags'
+        const formatLabel = value => formats.find(([key]) => key === value)?.[1] || '尚未解析'
+        const effectiveFormat = config.promptEffectiveFormat || (formats.some(([key]) => key === config.promptMode) ? config.promptMode : '')
         const bookData = wbView?.worldbookFormat === activeFormat ? wbView
           : !data.worldbookFormat || data.worldbookFormat === activeFormat ? data : { worldbook: [], worldbookBooks: [] }
         const books = Array.isArray(bookData.worldbookBooks) && bookData.worldbookBooks.length
@@ -5134,6 +5205,20 @@ function versionsOf(jobId) {
             h('select', { 'aria-label': '世界书格式', value: activeFormat, style: S.input, onChange: event => changeWorldbook(event.target.value, 'main') },
               formats.map(([value, label]) => h('option', { key: value, value }, label)))),
           h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '8px' } }, '只编辑所选格式的独立世界书，不改变当前生图格式。切换前会保存未完成的输入；失败时留在原格式。'),
+          h('div', { 'aria-label': '世界书格式状态', style: { fontSize: '12px', marginBottom: '8px' } },
+            '正在编辑：' + formatLabel(activeFormat) + '；实际生图：' + formatLabel(effectiveFormat) + ((config.promptMode || 'auto') === 'auto' ? '（自动选择）' : ''),
+            effectiveFormat && effectiveFormat !== activeFormat ? '。当前编辑的规则不会用于实际生图，除非切换提示词格式。' : ''),
+          h('button', { type: 'button', style: buttonStyle, onClick: async () => {
+            if (!await flushWbPending()) { setWbNote('有未保存的输入，请重试保存后再前往设置'); return }
+            await Promise.all([...wbActions.current]); await wbWriteQueue.current
+            if (Object.keys(wbPending.current).length) { setWbNote('有未保存的输入，请重试保存后再前往设置'); return }
+            promptFormatFocus.current = true; setTab('plan')
+          } }, '前往提示词格式设置'),
+          activeFormat === 'structured' ? h(WorldbookUpgradePanel, { key: scope, book: activeKey,
+            request: (path, body) => trackWbAction(async () => {
+              if (!await flushWbPending()) throw new Error('请先保存当前世界书输入')
+              return queueWbWrite(() => body === undefined ? jsonFetch(BASE + path, { cache: 'no-store' }) : post(path, body))
+            }), onApplied: refreshWb }) : null,
           wbLoading ? h('div', { role: 'status' }, '正在保存并切换世界书…') : null,
           h('div', { style: { fontSize: '13px', marginBottom: '8px' } },
             '世界书：' + (activeBook?.name ? '《' + activeBook.name + '》' : '') + '（' + onCount + ' / ' + list.length + ' 条启用）'),
@@ -5719,7 +5804,7 @@ function versionsOf(jobId) {
           h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '9px' } }, '可选标签、自然语言、混合或结构化自然语言；各格式使用独立世界书。结构化格式默认中文分节，文生图与参考图模式均可用。预设本身不保证跨图一致。'),
           h('div', { style: S.row },
             h('label', { style: S.label }, '提示词格式'),
-            h('select', { 'aria-label': '提示词格式', value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
+            h('select', { 'aria-label': '提示词格式', ref: node => { if (node && promptFormatFocus.current) { promptFormatFocus.current = false; node.focus(); node.scrollIntoView?.({ block: 'center' }) } }, value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
               h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合'), h('option', { value: 'structured', style: optStyle }, '结构化自然语言')),
             h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, '当前：' + (config.promptEffectiveFormat || 'mixed')),
           ),
