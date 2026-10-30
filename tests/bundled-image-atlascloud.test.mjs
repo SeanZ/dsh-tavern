@@ -1,31 +1,54 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { IMAGE_PROVIDERS, generateImage, testImageChannel } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/image-providers.js'
-import { activeChannel, channelConfigPatch, publicChannels } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/image-channels.js'
+import { IMAGE_PROVIDERS, generateImage, supportsImageTaskResume, testImageChannel } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/image-providers.js'
+import { activeChannel, channelConfigPatch, migrateLegacyImageConfig, normalizeChannels, publicChannels } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/image-channels.js'
 import { resolvePromptMode } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/prompt-presets.js'
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4c40000000049454e44ae426082', 'hex')
 const CDN = 'https://images.example.test/result.png'
 const BASE = 'https://api.atlascloud.ai/api/v1'
-const preset = IMAGE_PROVIDERS.find(item => item.id === 'atlascloud')
 const channel = (options = {}, fields = {}) => ({ id: 'atlas-test', provider: 'atlascloud', apiKey: 'atlas-test-secret', authMode: 'bearer', options: { pollIntervalMs: 1, ...options }, ...fields })
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 const prediction = (data, status = 200) => json({ code: status, data }, status)
 const png = () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } })
 
-test('atlas cloud 注册默认地址/模型，渠道保存兼容密钥保留和自然语言提示词', () => {
-  assert.deepEqual(preset, { id: 'atlascloud', label: 'atlas cloud', baseUrl: BASE, model: 'black-forest-labs/flux-schnell' })
-  const configured = channelConfigPatch({ imageBackend: 'comfyui', imageChannels: [] }, {
-    imageBackend: 'atlascloud', activeImageChannel: 'atlas-test', imageChannels: [channel()],
+test('旧 Atlas channel/backend 无损迁移为 custom 协议，用户 provider 列表不再单列 Atlas', () => {
+  assert.equal(IMAGE_PROVIDERS.some(item => item.id === 'atlascloud'), false)
+  const legacyChannel = channel({ sizeMode: 'none' }, { name: '我的 Atlas', baseUrl: BASE, model: 'custom/model' })
+  const configured = migrateLegacyImageConfig({ imageBackend: 'atlascloud', activeImageChannel: 'atlas-test', imageChannels: [legacyChannel] })
+  const active = activeChannel(configured)
+  assert.equal(configured.imageBackend, 'custom')
+  assert.equal(active.provider, 'custom')
+  assert.equal(active.options.apiProtocol, 'atlascloud')
+  assert.equal(active.id, legacyChannel.id)
+  assert.equal(active.name, legacyChannel.name)
+  assert.equal(active.baseUrl, legacyChannel.baseUrl)
+  assert.equal(active.model, legacyChannel.model)
+  assert.equal(active.apiKey, legacyChannel.apiKey)
+  assert.equal(supportsImageTaskResume(active), true)
+
+  const patched = channelConfigPatch({ imageBackend: 'comfyui', imageChannels: [] }, {
+    imageBackend: 'atlascloud', activeImageChannel: 'atlas-test', imageChannels: [legacyChannel],
   })
-  assert.equal(activeChannel(configured).provider, 'atlascloud')
-  assert.equal(activeChannel(configured).name, 'atlas cloud')
+  assert.equal(activeChannel(patched).provider, 'custom')
   const publicValue = publicChannels(configured.imageChannels)
   assert.equal(publicValue[0].hasApiKey, true)
   assert.equal('apiKey' in publicValue[0], false)
   const saved = channelConfigPatch(configured, { imageChannels: publicValue })
   assert.equal(activeChannel(saved).apiKey, 'atlas-test-secret')
+  assert.equal(normalizeChannels([legacyChannel])[0].options.apiProtocol, 'atlascloud')
   assert.equal(resolvePromptMode({}, 'atlascloud'), 'natural')
+})
+
+test('升级前已接单的 Atlas task 可通过迁移后的 custom channel 继续恢复', async () => {
+  const migratedChannel = activeChannel(migrateLegacyImageConfig({ imageBackend: 'atlascloud', activeImageChannel: 'atlas-test', imageChannels: [channel({ sizeMode: 'none' }, { baseUrl: BASE })] }))
+  const calls = []
+  await generateImage(migratedChannel, { positive: 'old task snapshot' }, { resumeTaskId: 'accepted-before-upgrade', fetchImpl: async (url, init) => {
+    calls.push([url, init.method])
+    assert.equal(init.method, 'GET', 'restoring must never submit or upload a new generation')
+    return prediction({ id: 'accepted-before-upgrade', status: 'completed', outputs: [`data:image/png;base64,${PNG.toString('base64')}`] })
+  } })
+  assert.deepEqual(calls, [[BASE + '/model/prediction/accepted-before-upgrade', 'GET']])
 })
 
 test('Atlas 原生异步提交、持久化任务号、轮询、下载；图片服务器不收到密钥', async () => {

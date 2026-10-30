@@ -1,4 +1,5 @@
 import { IMAGE_PROVIDERS } from './image-providers.js'
+import { IMAGE_API_PROTOCOLS } from './image-provider-capabilities.js'
 
 const providerIds = new Set(IMAGE_PROVIDERS.map(item => item.id))
 const text = (value, limit = 1000) => String(value ?? '').trim().slice(0, limit)
@@ -11,10 +12,12 @@ export function normalizeChannels(value, previous = []) {
     const id = text(raw.id, 100)
     if (!/^[\w-]+$/.test(id) || seen.has(id)) throw new Error('生图渠道编号缺失或重复')
     seen.add(id)
-    const provider = text(raw.provider, 30)
+    const sourceProvider = text(raw.provider, 30)
+    const legacyAtlas = sourceProvider === 'atlascloud'
+    const provider = legacyAtlas ? 'custom' : sourceProvider
     if (!providerIds.has(provider)) throw new Error('不支持的生图渠道类型')
-    const prior = previous.find(item => item.id === id && item.provider === provider)
-    const baseUrl = text(raw.baseUrl, 2000).replace(/\/+$/, '')
+    const prior = previous.find(item => item.id === id && (item.provider === provider || (legacyAtlas && item.provider === 'atlascloud')))
+    const baseUrl = (text(raw.baseUrl, 2000) || (legacyAtlas ? 'https://api.atlascloud.ai/api/v1' : '')).replace(/\/+$/, '')
     if (baseUrl) {
       let url
       try { url = new URL(baseUrl) } catch { throw new Error('渠道地址必须是完整的 http:// 或 https:// 地址') }
@@ -28,28 +31,53 @@ export function normalizeChannels(value, previous = []) {
       if (typeof item === 'number' && Number.isFinite(item)) options[key] = item
       if (typeof item === 'boolean') options[key] = item
     }
+    if (provider === 'custom') {
+      options.apiProtocol = legacyAtlas ? 'atlascloud' : String(options.apiProtocol || 'openai')
+      if (!IMAGE_API_PROTOCOLS.includes(options.apiProtocol)) throw new Error('自定义渠道接口协议无效')
+    }
     return { id, provider, name: text(raw.name, 100) || IMAGE_PROVIDERS.find(item => item.id === provider).label,
-      baseUrl, model: text(raw.model, 300), authMode: ['none', 'basic'].includes(raw.authMode) ? raw.authMode : 'bearer',
+      baseUrl, model: text(raw.model, 300) || (legacyAtlas ? 'black-forest-labs/flux-schnell' : ''), authMode: ['none', 'basic'].includes(raw.authMode) ? raw.authMode : 'bearer',
       username: text(raw.username, 300), apiKey: secret('apiKey', 'clearApiKey'), password: secret('password', 'clearPassword'), options }
   })
 }
 
 export function publicChannels(channels) {
-  return channels.map(({ apiKey, password, ...item }) => ({ ...item, hasApiKey: Boolean(apiKey), hasPassword: Boolean(password) }))
+  return channels.map(({ apiKey, password, ...item }) => {
+    if (item.provider === 'atlascloud') {
+      item = { ...item, provider: 'custom', options: { ...item.options, apiProtocol: 'atlascloud' } }
+    }
+    return { ...item, hasApiKey: Boolean(apiKey) || item.hasApiKey === true, hasPassword: Boolean(password) || item.hasPassword === true }
+  })
 }
 
 export function activeChannel(config) {
-  if (!config.imageBackend || config.imageBackend === 'comfyui') return null
-  const channel = config.imageChannels.find(item => item.id === config.activeImageChannel && item.provider === config.imageBackend)
+  const backend = config.imageBackend === 'atlascloud' ? 'custom' : config.imageBackend
+  if (!backend || backend === 'comfyui') return null
+  const channel = config.imageChannels.find(item => item.id === config.activeImageChannel && (item.provider === backend || (backend === 'custom' && item.provider === 'atlascloud')))
   if (!channel) throw new Error('请先选择并保存一个生图渠道')
-  return structuredClone(channel)
+  const clone = structuredClone(channel)
+  if (clone.provider === 'atlascloud') {
+    clone.provider = 'custom'
+    clone.options = { ...clone.options, apiProtocol: 'atlascloud' }
+  }
+  return clone
+}
+
+/** One-time, lossless migration for persisted Atlas channels and backend IDs. */
+export function migrateLegacyImageConfig(config = {}) {
+  return {
+    ...config,
+    imageBackend: config.imageBackend === 'atlascloud' ? 'custom' : config.imageBackend,
+    imageChannels: normalizeChannels(config.imageChannels ?? [], config.imageChannels ?? []),
+  }
 }
 
 export function channelConfigPatch(config, patch) {
+  const requestedBackend = patch.imageBackend ?? config.imageBackend ?? 'comfyui'
   const next = {
-    imageBackend: patch.imageBackend ?? config.imageBackend ?? 'comfyui',
+    imageBackend: requestedBackend === 'atlascloud' ? 'custom' : requestedBackend,
     activeImageChannel: text(patch.activeImageChannel ?? config.activeImageChannel, 100),
-    imageChannels: patch.imageChannels === undefined ? config.imageChannels : normalizeChannels(patch.imageChannels, config.imageChannels),
+    imageChannels: normalizeChannels(patch.imageChannels === undefined ? (config.imageChannels ?? []) : patch.imageChannels, config.imageChannels),
   }
   if (next.imageBackend !== 'comfyui' && !providerIds.has(next.imageBackend)) throw new Error('不支持的生图后端')
   activeChannel(next)

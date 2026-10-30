@@ -115,7 +115,7 @@ test('Atlas 不白名单/裁剪/去重/换模型，不管模型限制都提交�
   assert.equal(posts, 1)
 })
 
-test('Atlas 空 references/纯文生图不上传，也在提交前 await hook；其他渠道不调用 hook', async () => {
+test('Atlas 空 references/纯文生图不上传；所有渠道都在付费 POST 前 await hook', async () => {
   for (const request of [{ positive: 'lake' }, { positive: 'lake', references: [] }]) {
     let notified = 0, calls = 0
     await generateImage(channel(), request, {
@@ -133,9 +133,13 @@ test('Atlas 空 references/纯文生图不上传，也在提交前 await hook；
     })
     assert.equal(calls, 2)
   }
+  let persisted = false
   await generateImage({ provider: 'openai' }, { positive: 'lake', references: [] }, {
-    onGenerationSubmit: () => assert.fail('新增持久化 hook 仅用于 Atlas'),
-    fetchImpl: async () => json({ data: [{ b64_json: PNG.toString('base64') }] }),
+    onGenerationSubmit: async () => { await Promise.resolve(); persisted = true },
+    fetchImpl: async (_url, init) => {
+      assert.equal(persisted, true, 'non-Atlas paid requests also persist submit intent first')
+      return json({ data: [{ b64_json: PNG.toString('base64') }] })
+    },
   })
 })
 
@@ -157,12 +161,10 @@ test('Atlas 自定义根地址仍在同一 API 根上传，不把密钥发到返
   assert.deepEqual(calls, ['https://relay.example.test/atlas/model/uploadMedia', 'https://relay.example.test/atlas/custom/generate', CDN])
 })
 
-test('所有非 Atlas provider 必须明确拒绝参考图，不能忽略后退为纯文生图', async t => {
-  for (const provider of IMAGE_PROVIDERS.filter(item => item.id !== 'atlascloud')) await t.test(provider.id, async () => {
-    await assert.rejects(generateImage({ provider: provider.id }, { positive: 'portrait', references: [reference()] }, {
-      fetchImpl: () => assert.fail('不支持参考图不能提交生成'),
-    }), error => notStarted(error) && /参考图模式仅支持 atlas cloud/.test(error.message))
-  })
+test('NovelAI 当前接口必须明确拒绝参考图，不能忽略后退为纯文生图', async () => {
+  await assert.rejects(generateImage({ provider: 'novelai' }, { positive: 'portrait', references: [reference()] }, {
+    fetchImpl: () => assert.fail('不支持参考图不能提交生成'),
+  }), error => notStarted(error) && /当前接口协议不支持参考图/.test(error.message))
 })
 
 test('参考图参数和全部本地图片先校验，错误时不上传任何子集、不读取路径或 URL', async t => {

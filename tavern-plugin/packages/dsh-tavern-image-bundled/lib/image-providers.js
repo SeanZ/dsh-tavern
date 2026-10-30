@@ -1,6 +1,8 @@
 import { inflateRawSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 import { combineStructuredPrompt } from './prompt-presets.js'
+import { effectiveImageProvider, supportsImageReferences, supportsImageTaskResume } from './image-provider-capabilities.js'
+export { effectiveImageProvider, supportsImageReferences, supportsImageTaskResume }
 
 const DEFAULT_MAX = 32 * 1024 * 1024
 const DEFAULT_TIMEOUT = 300_000
@@ -13,10 +15,15 @@ const PROVIDERS = {
   seedream: ['Seedream / 火山方舟', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seedream-5-0-pro-260628'],
   qwen: ['百炼 Qwen-Image', 'https://dashscope-intl.aliyuncs.com/api/v1', 'qwen-image-3.0'],
   atlascloud: ['atlas cloud', 'https://api.atlascloud.ai/api/v1', 'black-forest-labs/flux-schnell'],
-  sdwebui: ['Stable Diffusion WebUI / Forge', 'http://127.0.0.1:7860', '']
+  sdwebui: ['Stable Diffusion WebUI / Forge', 'http://127.0.0.1:7860', ''],
+  custom: ['自定义兼容渠道', '', '']
 }
 
-export const IMAGE_PROVIDERS = Object.entries(PROVIDERS).map(([id, [label, baseUrl, model]]) => ({ id, label, baseUrl, model }))
+// Atlas Cloud remains a supported wire adapter, but users configure it as an
+// explicitly selected protocol under the single custom channel type.
+export const IMAGE_PROVIDERS = Object.entries(PROVIDERS)
+  .filter(([id]) => id !== 'atlascloud')
+  .map(([id, [label, baseUrl, model]]) => ({ id, label, baseUrl, model }))
 
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 const secretValues = channel => [channel?.apiKey, channel?.password,
@@ -223,6 +230,25 @@ function zipImage(bytes, max) {
 }
 function endpointFromOption(channel, key, fallback) { return String(option(channel, key, fallback)) }
 
+function imageExtension(mediaType) { return ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[mediaType] }
+function referenceFiles(references, max) {
+  if (references === undefined) return []
+  if (!Array.isArray(references)) throw new Error('参考图必须是数组')
+  return references.map((reference, index) => {
+    const label = `第 ${index + 1} 张参考图`
+    if (!(reference?.data instanceof Uint8Array) || !reference.data.byteLength) throw new Error(`${label}缺少本地图片数据`)
+    if (reference.data.byteLength > max) throw new Error(`${label}超过允许大小`)
+    const mediaType = String(reference.mediaType ?? '').split(';')[0].trim().toLowerCase()
+    if (!imageTypes.has(mediaType)) throw new Error(`${label}格式不受支持`)
+    const bytes = Buffer.from(reference.data.buffer, reference.data.byteOffset, reference.data.byteLength)
+    let detected
+    try { detected = imageType(bytes) } catch { throw new Error(`${label}不是有效图片`) }
+    if (detected !== mediaType) throw new Error(`${label}内容与声明的图片格式不符`)
+    return { bytes, mediaType }
+  })
+}
+function imageDataUrl(reference) { return `data:${reference.mediaType};base64,${reference.bytes.toString('base64')}` }
+
 // 对话格式：有些中转站把 NovelAI 包成 chat/completions。它按固定的中文字段模板校验
 // 用户消息、优先读 nai 对象里的值；每个采样器单列一个模型（nai-diffusion-4-5-full:k_euler）；
 // 回复文字里带图片链接。移植自 Tavern 原生生图的 novelaiChatRequest。
@@ -333,6 +359,33 @@ async function generateOpenai(channel, request, ctx, provider) {
     }
   }
   if (provider === 'grok') delete payload.size
+  if (request.references?.length) {
+    const refs = referenceFiles(request.references, max)
+    if (provider === 'grok') {
+      if (refs.length !== 1) throw new Error('Grok Images 编辑接口一次只接受 1 张参考图')
+      const edit = { model: payload.model, prompt: payload.prompt,
+        image: { url: imageDataUrl(refs[0]), type: 'image_url' } }
+      const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'editPath', '/images/edits')),
+        { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(edit) }, jsonLimit, signal, ch)
+      return fromDataObject(data.data, fetchImpl, max, signal, ch)
+    }
+    if (provider === 'seedream') {
+      payload.image = refs.map(imageDataUrl)
+      const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+      return fromDataObject(data.data, fetchImpl, max, signal, ch)
+    }
+    const body = new FormData()
+    body.append('model', payload.model)
+    body.append('prompt', payload.prompt)
+    body.append('size', payload.size)
+    body.append('n', '1')
+    if (payload.quality) body.append('quality', String(payload.quality))
+    if (payload.output_format) body.append('output_format', String(payload.output_format))
+    for (const [index, ref] of refs.entries()) body.append('image[]', new Blob([ref.bytes], { type: ref.mediaType }), `reference-${index + 1}.${imageExtension(ref.mediaType)}`)
+    const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'editPath', '/images/edits')),
+      { method: 'POST', headers: requestHeaders(ch, provider, false), body }, jsonLimit, signal, ch)
+    return fromDataObject(data.data, fetchImpl, max, signal, ch)
+  }
   const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
   return fromDataObject(data.data, fetchImpl, max, signal, ch)
 }
@@ -345,12 +398,13 @@ async function generateGemini(channel, request, ctx) {
   let imageSize = option(ch, 'imageSize', option(ch, 'size', sizeLabel(width, height)))
   const sizePixels = String(imageSize).match(/^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i)
   if (sizePixels) imageSize = sizeLabel(Number(sizePixels[1]), Number(sizePixels[2]))
-  const payload = { contents: [{ parts: [{ text: combinedPrompt(request) }] }], generationConfig: {
+  const parts = [...referenceFiles(request.references, max).map(ref => ({ inlineData: { mimeType: ref.mediaType, data: ref.bytes.toString('base64') } })), { text: combinedPrompt(request) }]
+  const payload = { contents: [{ parts }], generationConfig: {
     responseModalities: ['IMAGE'], responseFormat: { image: { aspectRatio: ratio, imageSize } }
   } }
   const data = await fetchJson(fetchImpl, joinUrl(base, `/models/${model}:generateContent`), { method: 'POST', headers: requestHeaders(ch, 'gemini'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
-  const parts = data.candidates?.flatMap(candidate => candidate.content?.parts || []) || []
-  for (const part of parts) if (part.inlineData?.data || part.inline_data?.data) {
+  const responseParts = data.candidates?.flatMap(candidate => candidate.content?.parts || []) || []
+  for (const part of responseParts) if (part.inlineData?.data || part.inline_data?.data) {
     const blob = part.inlineData || part.inline_data
     return decodeBase64(blob.data, max, blob.mimeType || blob.mime_type || '')
   }
@@ -380,7 +434,7 @@ function requestedDims(channel, request) {
   if (ratio) {
     const area = width * height, value = Number(ratio[1]) / Number(ratio[2])
     if (value > 0 && Number.isFinite(value)) {
-      const unit = channel.provider === 'sdwebui' ? 8 : 64
+      const unit = effectiveImageProvider(channel) === 'sdwebui' ? 8 : 64
       width = Math.max(64, Math.round(Math.sqrt(area * value) / unit) * unit)
       height = Math.max(64, Math.round(Math.sqrt(area / value) / unit) * unit)
     }
@@ -389,7 +443,8 @@ function requestedDims(channel, request) {
 }
 async function generateGeminiChat(channel, request, ctx) {
   const { base, fetchImpl, signal, max, channel: ch, jsonLimit } = ctx
-  const payload = { model: ch.model || PROVIDERS['gemini-chat'][2], messages: [{ role: 'user', content: combinedPrompt(request) }], n: 1 }
+  const content = [...referenceFiles(request.references, max).map(ref => ({ type: 'image_url', image_url: { url: imageDataUrl(ref) } })), { type: 'text', text: combinedPrompt(request) }]
+  const payload = { model: ch.model || PROVIDERS['gemini-chat'][2], messages: [{ role: 'user', content: request.references?.length ? content : combinedPrompt(request) }], n: 1 }
   const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', '/chat/completions')), { method: 'POST', headers: requestHeaders(ch, 'gemini-chat'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
   const message = data.choices?.[0]?.message || data
   const contents = [message.content, ...(Array.isArray(message.images) ? message.images.map(x => x.image_url?.url || x.url || x) : [])]
@@ -408,10 +463,12 @@ async function generateQwen(channel, request, ctx) {
   const { base, fetchImpl, signal, max, channel: ch, jsonLimit } = ctx
   const { width, height } = dims(request)
   const legacyAsync = Boolean(ctx.resumeTaskId) || option(ch, 'apiMode', 'sync') === 'async'
+  if (request.references?.length && legacyAsync) throw new Error('Qwen 旧版异步任务接口不支持参考图；请切换为同步 Qwen-Image 接口')
+  const content = [...referenceFiles(request.references, max).map(ref => ({ image: imageDataUrl(ref) })), { text: String(request.positive || '') }]
   const payload = legacyAsync ? {
     model: ch.model || 'wanx-v1', input: { prompt: String(request.positive || '') }, parameters: { negative_prompt: String(request.negative || ''), size: `${width}*${height}`, n: 1 }
   } : {
-    model: ch.model || PROVIDERS.qwen[2], input: { messages: [{ role: 'user', content: [{ text: String(request.positive || '') }] }] }, parameters: {
+    model: ch.model || PROVIDERS.qwen[2], input: { messages: [{ role: 'user', content }] }, parameters: {
       negative_prompt: String(request.negative || ''), size: `${width}*${height}`, n: 1,
       ...(Number.isFinite(Number(request.seed)) ? { seed: ((Math.trunc(Number(request.seed)) % 2147483648) + 2147483648) % 2147483648 } : {})
     }
@@ -437,7 +494,7 @@ async function generateQwen(channel, request, ctx) {
     if (image) return fetchBytes(fetchImpl, checkedRemoteUrl(image), { method: 'GET', headers: {} }, max, signal, ch)
     throw new Error(redact(response.message || response.code || 'DashScope 没有返回任务编号', ch))
   }
-  await ctx.onTask?.({ provider: 'qwen', taskId: String(taskId) })
+  await ctx.onTask?.({ provider: effectiveImageProvider(ch), taskId: String(taskId) })
   const pollPath = endpointFromOption(ch, 'taskPath', '/tasks/')
   const deadline = Date.now() + bounded(option(ch, 'pollTimeoutMs', 240000), 1000, 600000)
   while (Date.now() < deadline) {
@@ -552,21 +609,17 @@ async function generateAtlascloud(channel, request, ctx) {
     } else if (sizeMode === 'aspect_ratio') {
       payload.aspect_ratio = String(option(ch, 'aspectRatio', closestRatio(width, height))).trim()
     } else if (sizeMode !== 'none') throw new Error('atlas cloud 尺寸参数模式无效')
-    // Resolve the endpoint and construct the request before recording a paid
-    // submission. Upload failures (even lost upload responses) cannot incur a
-    // generation charge; their errors must remain safe-to-retry.
+    // Resolve the endpoint and construct the request before the tracked POST.
+    // Reference uploads use uploadFetch, so they never mark a paid submission.
     const path = endpointFromOption(ch, 'generatePath', '/model/generateImage')
     joinUrl(ctx.base, path)
     if (request.references?.length) payload.images = await uploadAtlasReferences(request.references, ctx)
     const init = { method: 'POST', headers: requestHeaders(ch, 'atlascloud'), body: JSON.stringify(payload) }
-    signal.throwIfAborted()
-    await ctx.onGenerationSubmit?.()
-    signal.throwIfAborted()
     task = await fetchAtlasJson(ctx, path, init)
   }
   const taskId = task?.id
   if (taskId !== undefined && !validTaskId(taskId)) throw new Error('atlas cloud 返回了无效的平台任务编号')
-  if (taskId) await ctx.onTask?.({ provider: 'atlascloud', taskId })
+  if (taskId) await ctx.onTask?.({ provider: effectiveImageProvider(ch), taskId })
   const deadline = Date.now() + bounded(option(ch, 'pollTimeoutMs', 240000), 1000, 600000)
   const pollPath = endpointFromOption(ch, 'taskPath', '/model/prediction/')
   while (true) {
@@ -592,8 +645,6 @@ async function generateAtlascloud(channel, request, ctx) {
   }
 }
 
-export function supportsImageTaskResume(provider) { return provider === 'qwen' || provider === 'atlascloud' }
-
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason || new Error('请求已取消'))
@@ -608,34 +659,42 @@ async function generateSdwebui(channel, request, ctx) {
   const { width, height } = requestedDims(ch, request)
   const payload = { prompt: String(request.positive || ''), negative_prompt: String(request.negative || ''), width, height,
     steps: bounded(request.steps ?? option(ch, 'steps', 20), 1, 200), cfg_scale: clampedNumber(request.cfg ?? option(ch, 'cfg', 7), 0, 50, 7), seed: Number.isFinite(Number(request.seed)) ? Number(request.seed) : -1, sampler_name: option(ch, 'sampler', 'Euler a'), batch_size: 1 }
-  const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', '/sdapi/v1/txt2img')), { method: 'POST', headers: requestHeaders(ch, 'sdwebui'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const refs = referenceFiles(request.references, max)
+  if (refs.length > 1) throw new Error('SD WebUI img2img 一次只支持 1 张参考图；请改用支持多图参考的协议或减少所选参考图')
+  const path = refs.length ? endpointFromOption(ch, 'editPath', '/sdapi/v1/img2img') : endpointFromOption(ch, 'generatePath', '/sdapi/v1/txt2img')
+  if (refs.length) payload.init_images = refs.map(ref => ref.bytes.toString('base64'))
+  const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, 'sdwebui'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
   if (!Array.isArray(data.images) || !data.images[0]) throw new Error('SD WebUI 没有返回图片')
   return decodeBase64(String(data.images[0]).replace(/^data:image\/[^;]+;base64,/i, ''), max)
 }
 
 /**
  * request.references?: Array<{ data: Uint8Array | Buffer, mediaType: string, name?: string }>
- * Only Atlas accepts references. Callers load local bytes; no path/URL fetching
- * happens here. Array order is the image-number order used by the prompt.
- * onGenerationSubmit is Atlas-only, awaited immediately before its billable POST
- * (also for text-only jobs). Uploads and task resumption never invoke the hook.
+ * Callers load local bytes; no path/URL fetching happens here. Array order is
+ * the image-number order used by the prompt.
+ * onGenerationSubmit is awaited immediately before the first billable POST for
+ * every protocol. Atlas uploads and task resumption never invoke the hook.
  */
 export async function generateImage(channel, request = {}, { signal, fetchImpl = globalThis.fetch, maxImageBytes = DEFAULT_MAX, onTask, onGenerationSubmit, resumeTaskId } = {}) {
   let scope
   let sentGeneration = false
   let generationStatus = null
+  let generationSubmitNotified = false
   try {
     if (!channel || !PROVIDERS[channel.provider]) throw new Error('不支持的生图渠道')
+    const provider = effectiveImageProvider(channel)
     if (typeof fetchImpl !== 'function') throw new Error('当前环境没有可用的网络请求功能')
+    if (channel.provider === 'custom' && !String(channel.baseUrl || '').trim()) throw new Error('请填写自定义渠道地址')
+    if (channel.provider === 'custom' && !String(channel.model || '').trim()) throw new Error('请填写自定义渠道模型')
     const base = validateBase(channel), max = bounded(maxImageBytes, 1024, 128 * 1024 * 1024)
     const jsonLimit = Math.min(192 * 1024 * 1024, max * 2 + 1024 * 1024)
-    if (resumeTaskId !== undefined && (!supportsImageTaskResume(channel.provider) || !validTaskId(resumeTaskId))) throw new Error('无效的平台任务编号')
+    if (resumeTaskId !== undefined && (!supportsImageTaskResume(channel) || !validTaskId(resumeTaskId))) throw new Error('无效的平台任务编号')
     // A recovered Atlas task needs neither the original images nor their local
     // availability. Never inspect or load them, let alone upload/POST them again.
-    if (!(resumeTaskId && channel.provider === 'atlascloud')) {
+    if (!(resumeTaskId && provider === 'atlascloud')) {
       const references = request?.references
       if (references !== undefined && !Array.isArray(references)) throw new Error('参考图必须是数组')
-      if (references?.length && channel.provider !== 'atlascloud') throw new Error('参考图模式仅支持 atlas cloud；当前渠道不能接收参考图')
+      if (references?.length && !supportsImageReferences(channel)) throw new Error('当前接口协议不支持参考图，已停止请求，没有发送文字生图任务')
     }
     sentGeneration = Boolean(resumeTaskId)
     generationStatus = resumeTaskId ? 200 : null
@@ -647,18 +706,23 @@ export async function generateImage(channel, request = {}, { signal, fetchImpl =
     const trackedFetch = async (url, init = {}) => {
       scope.signal.throwIfAborted()
       const generation = String(init.method ?? 'GET').toUpperCase() === 'POST'
+      if (generation && !resumeTaskId && !generationSubmitNotified) {
+        await onGenerationSubmit?.()
+        generationSubmitNotified = true
+        scope.signal.throwIfAborted()
+      }
       if (generation) sentGeneration = true
       const response = await fetchImpl(url, init)
       if (generation) generationStatus = response.status
       return response
     }
     const ctx = { base, fetchImpl: trackedFetch, uploadFetch, signal: scope.signal, max, jsonLimit, channel, onTask, onGenerationSubmit, resumeTaskId }
-    if (channel.provider === 'novelai') return await generateNovelai(channel, request, ctx)
-    if (channel.provider === 'openai' || channel.provider === 'grok' || channel.provider === 'seedream') return await generateOpenai(channel, request, ctx, channel.provider)
-    if (channel.provider === 'gemini') return await generateGemini(channel, request, ctx)
-    if (channel.provider === 'gemini-chat') return await generateGeminiChat(channel, request, ctx)
-    if (channel.provider === 'qwen') return await generateQwen(channel, request, ctx)
-    if (channel.provider === 'atlascloud') return await generateAtlascloud(channel, request, ctx)
+    if (provider === 'novelai') return await generateNovelai(channel, request, ctx)
+    if (provider === 'openai' || provider === 'grok' || provider === 'seedream') return await generateOpenai(channel, request, ctx, provider)
+    if (provider === 'gemini') return await generateGemini(channel, request, ctx)
+    if (provider === 'gemini-chat') return await generateGeminiChat(channel, request, ctx)
+    if (provider === 'qwen') return await generateQwen(channel, request, ctx)
+    if (provider === 'atlascloud') return await generateAtlascloud(channel, request, ctx)
     return await generateSdwebui(channel, request, ctx)
   } catch (error) {
     const message = scope?.signal.aborted && !signal?.aborted ? '生图请求超时' : redact(error?.message || '生图请求失败', channel)
@@ -673,21 +737,22 @@ export async function generateImage(channel, request = {}, { signal, fetchImpl =
 
 export async function testImageChannel(channel, { signal, fetchImpl = globalThis.fetch } = {}) {
   if (!channel || !PROVIDERS[channel.provider]) throw new Error('不支持的生图渠道')
+  const provider = effectiveImageProvider(channel)
   const base = validateBase(channel)
   const safePaths = { novelai: '/user/subscription', openai: '/models', grok: '/models', 'gemini-chat': '/models', gemini: '/models', atlascloud: '/model/history?no=1&size=1', sdwebui: '/sdapi/v1/sd-models' }
-  const chatNovelai = channel.provider === 'novelai' && option(channel, 'protocol', 'native') === 'chat'
-  const safePath = chatNovelai ? (new URL(base).pathname.replace(/\/+$/, '') ? '/models' : '/v1/models') : safePaths[channel.provider]
+  const chatNovelai = provider === 'novelai' && option(channel, 'protocol', 'native') === 'chat'
+  const safePath = chatNovelai ? (new URL(base).pathname.replace(/\/+$/, '') ? '/models' : '/v1/models') : safePaths[provider]
   const path = safePath && endpointFromOption(channel, 'testPath', safePath)
   if (!path) return { ok: true, status: 'configured', message: '地址和渠道参数已配置；此服务没有可安全探测的无计费接口。' }
   const scope = abortScope(signal, 8000)
   try {
-    const headers = requestHeaders(channel, channel.provider)
+    const headers = requestHeaders(channel, provider)
     const response = await fetchImpl(joinUrl(base, path), { method: 'GET', headers, redirect: 'error', signal: scope.signal })
     if (!response.ok) return { ok: false, status: 'reachable', message: `服务已响应 HTTP ${response.status}` }
     const bytes = await readLimited(response, 2 * 1024 * 1024)
     let parsed = null; try { parsed = JSON.parse(bytes.toString('utf8')) } catch {}
     if (!parsed) return { ok: false, status: 'reachable', message: '服务已响应，但返回内容不是有效 JSON。' }
-    if (channel.provider === 'atlascloud') {
+    if (provider === 'atlascloud') {
       if ((parsed.code !== undefined && ![0, 200].includes(Number(parsed.code))) || !Array.isArray(parsed.data?.items)) {
         return { ok: false, status: 'reachable', message: redact(parsed.message || parsed.msg || '任务查询未返回有效结果；请检查 API 根地址、密钥及查询权限。', channel) }
       }
@@ -702,7 +767,7 @@ export async function testImageChannel(channel, { signal, fetchImpl = globalThis
       } catch (error) { if (signal?.aborted) throw error }
       return { ok: true, status: 'reachable', message: '鉴权与任务查询正常；实际生图仍需模型权限和可用额度。', ...(models.length ? { models: models.slice(0, 200) } : {}) }
     }
-    const models = channel.provider === 'sdwebui'
+    const models = provider === 'sdwebui'
       ? (Array.isArray(parsed) ? parsed.map(x => x && typeof x === 'object' ? x.model_name : null).filter(Boolean) : [])
       : (Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : []).map(x => x && typeof x === 'object' ? x.id || x.name : null).filter(Boolean)
     return { ok: true, status: 'reachable', message: '连接正常。', ...(models.length ? { models: models.slice(0, 200) } : {}) }
