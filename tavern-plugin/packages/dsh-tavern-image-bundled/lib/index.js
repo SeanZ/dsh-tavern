@@ -261,7 +261,7 @@ export function pickOutfitForScene(scene, before, after) {
   return 'unclear'
 }
 const BARE_SCENE = /\b(nude|naked|topless|bottomless|half-naked|undress(?:ed|ing)?|unclothed|strip(?:ped|ping)|nipples?|breasts?|penis|pussy|sex|penetration|underwear|lingerie|bra|panties|thong|showering|taking a shower|in the shower|under the shower|bathing|in the bath(?:tub)?|soaking in the (?:tub|bath)|hot spring|onsen|skinny dipping|spread legs|exposed (?:waist|chest|skin|body|thighs?|hips?|belly|stomach))\b/i
-const stripMacros = text => String(text ?? '').replace(/\$\{[\s\S]*?\}\$/g, ' ')
+const stripMacros = text => repairMacros(text).replace(MACRO_BLOCK, ' ')
 /** 「当前穿着」记录写的是没穿（全脱了）：什么衣服都不补，也不写 "is wearing naked" 这种句子。 */
 const NOTHING_WORN = /^(?:nude|naked|nothing|no clothes|completely (?:nude|naked))\b|^(?:全裸|裸体|赤裸|一丝不挂|没穿|什么都没穿)/i
 
@@ -310,7 +310,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       const natural = style === 'natural' || style === 'structured'
       let lastPerson = null
       const nameKey = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
-      const standaloneNames = new Set([...String(text ?? '').matchAll(/\$\{([\s\S]*?)\}\$/g)].flatMap((m) => {
+      const standaloneNames = new Set([...repairMacros(text).matchAll(MACRO_BLOCK)].flatMap((m) => {
         try { const c = JSON.parse('{' + m[1] + '}'); return [nameKey(stripUsualSuffix(c.name ?? c['名称'] ?? c['角色']))] } catch { return [] }
       }).filter(Boolean))
       const bareScene = BARE_SCENE.test(stripMacros(text))
@@ -320,7 +320,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       const backView = BACK_VIEW.test(sceneText)
       let lastBack = false
       // 同一角色的不同形态：画面写着某形态的线索（如狐耳狐尾）时，宏改指向那个形态。
-      return resolveCharacterForms(text, scoped).replace(/\$\{([\s\S]*?)\}\$/g, (_match, body) => {
+      return resolveCharacterForms(repairMacros(text), scoped).replace(MACRO_BLOCK, (_match, body) => {
         const source = String(body ?? '').trim()
         if (!source) return ''
         let parsed = null
@@ -358,6 +358,13 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const base = loose.filter((ch) => loose.every((other) => other === ch || String(other.name ?? '').startsWith(String(ch.name ?? ''))))
           matches = loose.length <= 1 ? loose : (base.length === 1 ? base : loose)
         }
+        // 命中的是同一角色的几个形态（宏只写了「Yin Xue」）：按画面里的形态线索挑；没有线索就用不带线索的那个（通常是人形）。
+        if (matches.length > 1 && matches.every(m => matches.every(o => o === m || sameCharacterFamily(m, o)))) {
+          const cueCount = c => splitTags(String(c.formCues ?? '').replace(/[，、]/g, ','))
+            .filter(cue => (/[\u3400-\u9fff]/.test(cue) ? sceneText.includes(cue) : new RegExp('(?<![\\w-])' + cue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(sceneText))).length
+          const ranked = [...matches].sort((a, b) => cueCount(b) - cueCount(a) || (String(a.formCues ?? '').trim() ? 1 : 0) - (String(b.formCues ?? '').trim() ? 1 : 0))
+          matches = [ranked[0]]
+        }
         // 仍然命中多个不同的人：不猜，保留原名，交给后面的按名字注入。
         if (matches.length > 1) note({ macro: source, asked, result: 'ambiguous', candidates: matches.map((ch) => String(ch.id ?? '')) })
         const person = matches.length === 1 ? matches[0] : null
@@ -368,7 +375,21 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const upper = String(parsed.upperBody ?? parsed.body ?? '').toLowerCase()
           const lower = String(parsed.lowerBody ?? '').toLowerCase()
           const nsfw = upper === 'nsfw' || lower === 'nsfw' || mode === 'all'
-          const outfitName = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
+          // 「服装名（状态）」：括号前是服装库里的名字，括号里是这一刻的临时状态（袖子挽起、赤足、沾了土）。
+          // 整串拿去对服装库会对不上，于是被当成一句自写描述，模型不知道「常服」长什么样，衣服每张都变。
+          const outfitAsked = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
+          const enabledOutfits = (person.outfits ?? []).filter((o) => o && o.enabled !== false)
+          const exactHit = enabledOutfits.some((o) => o.name === outfitAsked)
+          const stated = exactHit ? null : /^(.+?)\s*[（(]([^（()）]*)[）)]\s*$/.exec(outfitAsked)
+          const statedBase = stated && enabledOutfits.some((o) => o.name === stated[1].trim()) ? stated[1].trim() : ''
+          // 服装名本身带括号（「日常襦裙（女装·常服）」）时，规划常漏写括号、或把状态塞进同一个括号
+          //（「日常襦裙（女装·常服，袖口沾墨）」）。去掉所有括号后名字对得上就认作这一套，括号里多出来的部分当状态。
+          const bareName = (v) => String(v ?? '').replace(/[（(][^（）()]*[）)]/g, '').replace(/\s+/g, '')
+          const parenParts = (v) => [...String(v ?? '').matchAll(/[（(]([^（）()]*)[）)]/g)].flatMap((m) => m[1].split(/[，,；;]/)).map((t) => t.trim()).filter(Boolean)
+          const looseHit = !exactHit && !statedBase && bareName(outfitAsked) ? enabledOutfits.find((o) => bareName(o.name) && bareName(o.name) === bareName(outfitAsked)) : null
+          const outfitName = exactHit ? outfitAsked : (statedBase || (looseHit ? looseHit.name : outfitAsked))
+          const outfitState = statedBase ? stated[2].trim()
+            : (looseHit ? parenParts(outfitAsked).filter((t) => !parenParts(looseHit.name).includes(t)).join('，') : '')
           // 衣服的优先级：宏里指定的服装库服装 > 宏里直接写的英文描述 > 之前正文记录的「当前穿着」> 常穿。
           // 同一段里另有属于此人的单独服装宏时，衣服交给那个宏。
           const hiddenBody = /hidden/i.test(upper) && /hidden/i.test(lower)
@@ -409,10 +430,13 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
             tags: !natural,
           })
           const angleTag = angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle)) ? angle : ''
-          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style) || person.promptLabel || person.name || asked)
+          // 服装名后面括号里的这一刻状态，接在衣服后面写。
+          const extras = [outfitState, angleTag].filter(Boolean)
+          if (natural) bits.push(boundCharacterPhrase(person, picked, extras, wear, style) || person.promptLabel || person.name || asked)
           else {
             if (picked.tags.length) bits.push(...picked.tags)
             if (wear) bits.push(wear)
+            if (outfitState) bits.push(outfitState)
             if (angleTag) bits.push(angleTag)
           }
           note({ macro: source, asked, result: 'character', characterId: String(person.id ?? ''), characterName: String(person.name ?? ''), outfitAsked: outfitName, outfitResult: outfitName ? (libraryHit ? 'found' : (wear ? 'free-text' : 'not-found')) : 'none-requested', wear, ...(wearMoment ? { wearMoment } : {}), droppedNegatives: picked.negative, origins: picked.origins })
@@ -454,6 +478,22 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       })
     }
 
+// 一个完整的宏：${ … }$，中间不能再出现 ${（否则坏宏会一路吞到下一个宏的结尾，把中间的画面描述一起吞掉）。
+const MACRO_BLOCK = /\$\{((?:(?!\$\{)[\s\S])*?)\}\$/g
+// 宏的键值对本身（从 "name" 开始，后面跟着若干 "键":"值"），两头的 ${ 、{ 、} 、}$ 可有可无。
+const MACRO_PAIRS = /\$?\{?\s*("(?:name|名称|角色)"\s*:\s*"[^"]*"(?:\s*,\s*"[^"\n]{1,20}"\s*:\s*"[^"]*")*)\s*,?\s*\}?\$?/g
+/**
+ * 规划偶尔把人物宏写坏：漏了结尾的 $、只写了 { … }、漏了开头的 ${。补成完整的宏，
+ * 否则整段 JSON 会原样漏进提示词，这个人的外貌也补不上。
+ */
+export function repairMacros(text) {
+  // ① ${ … } 漏了结尾的 $。
+  const fixed = String(text ?? '').replace(/\$\{(\s*"(?:name|名称|角色)"[^{}$]*?)\}(?!\$)/g, '${$1}$')
+  // ② 其余的坏写法：在完整宏以外的文字里找键值对，补成完整的宏。
+  return fixed.split(/(\$\{(?:(?!\$\{)[\s\S])*?\}\$)/).map((part, i) => i % 2 ? part
+    : part.replace(MACRO_PAIRS, (_m, body) => '${' + body.trim() + '}$')).join('')
+}
+
 /** 规划有时把角色清单里的「（常穿）」标记一起抄进宏里；匹配服装名前去掉它。 */
 function stripUsualSuffix(value) {
   return String(value ?? '').trim().replace(/\s*[（(]\s*(?:这套是)?常穿\s*[)）]\s*$/, '')
@@ -462,7 +502,9 @@ function stripUsualSuffix(value) {
 /** 同一角色的不同形态：名字互为前缀（如「阿梅」与「阿梅（狐形）」）。 */
 function sameCharacterFamily(a, b) {
   const x = String(a?.name ?? ''), y = String(b?.name ?? '')
-  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x)))
+  // 「殷雪（人形）」和「殷雪（显形）」去掉括号后缀是同一个名字，也算同一角色的不同形态。
+  const base = v => v.replace(/\s*[（(][^）)]*[）)]\s*$/, '')
+  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x) || (base(x) && base(x) === base(y))))
 }
 
 /**
@@ -5626,7 +5668,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   }
   // 规划原文里调用了几个不同的库中人物（同一角色的不同形态算一个）。tag 写法下展开后的文字认不出人，所以看原文。
   const rawText = String(options?.raw ?? '')
-  const calledNames = [...rawText.matchAll(/\$\{([\s\S]*?)\}\$/g)].map(m => { try { return String(JSON.parse('{' + m[1] + '}').name ?? '').trim().toLowerCase() } catch { return '' } }).filter(Boolean)
+  const calledNames = [...repairMacros(rawText).matchAll(MACRO_BLOCK)].map(m => { try { return String(JSON.parse('{' + m[1] + '}').name ?? '').trim().toLowerCase() } catch { return '' } }).filter(Boolean)
   const called = (definitions.characters ?? []).filter(c => c && c.enabled !== false && [c.id, c.name, ...splitTags(c.match)].some(k => k && calledNames.includes(String(k).trim().toLowerCase())))
   const families = called.filter((c, i) => !called.slice(0, i).some(o => sameCharacterFamily(c, o)))
   // 画面里写着的东西不能出现在负面里（例如路人的 short black hair 对上负面的 short hair）。
