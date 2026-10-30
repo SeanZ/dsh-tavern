@@ -671,6 +671,83 @@ function chineseCharacterPhrase(person, traits, outfit, extras, wear, look, labe
   return sentences.filter(Boolean).join('。') + '。'
 }
 
+/**
+ * 画面里有几个人：取「人物宏里不同的名字数」和「画面里是三个人 / 三女一男」里写的人数中较大的那个。
+ */
+const ZH_DIGIT = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+export function sceneHeadcount(text) {
+  const raw = String(text ?? '')
+  const names = new Set([...repairMacros(raw).matchAll(MACRO_BLOCK)].map(m => {
+    try { const c = JSON.parse('{' + m[1] + '}'); const up = String(c.upperBody ?? c.body ?? '').toLowerCase(); return up === 'visible' ? '' : String(c.name ?? c['名称'] ?? c['角色'] ?? '').trim().toLowerCase() } catch { return '' }
+  }).filter(Boolean))
+  let said = 0
+  for (const m of stripMacros(raw).matchAll(/画面(?:里|中)(?:只有|是|有|共有|一共有)?([^。；;]{0,14}?)(?:个人|位|名|人)/g)) {
+    const phrase = m[1]
+    const parts = [...phrase.matchAll(/([一二两三四五六七八九十]|\d+)\s*(?:个|位|名)?\s*(男|女)/g)].reduce((n, x) => n + (ZH_DIGIT[x[1]] ?? Number(x[1]) ?? 0), 0)
+    const total = [...phrase.matchAll(/([一二两三四五六七八九十]|\d+)\s*(?:个|位|名)?\s*$/g)].reduce((n, x) => Math.max(n, ZH_DIGIT[x[1]] ?? Number(x[1]) ?? 0), 0)
+    said = Math.max(said, parts, total)
+  }
+  for (const m of stripMacros(raw).matchAll(/画面(?:里|中)是([一二两三四五六七八九十])(?:个|位|名)(?:女子|男子|女人|男人|姑娘)/g)) said = Math.max(said, ZH_DIGIT[m[1]] ?? 0)
+  return Math.max(names.size, said)
+}
+
+/** 三个人以上的画面竖图放不下：竖图（或没写画幅）改成横图。 */
+export function crowdSize(size, scene) {
+  const value = String(size ?? '').trim()
+  if (sceneHeadcount(scene) < 3) return value
+  const px = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i.exec(value)
+  if (!value || /竖|portrait|vertical/i.test(value) || (px && Number(px[2]) > Number(px[1]))) return '横图'
+  return value
+}
+
+/**
+ * 白天黑夜：画面描述没写时间时，从正文的状态栏 [时间|…|傍晚|酉时] 补一句；
+ * 夜里、傍晚的画面再补一句「窗外漆黑、没有日光」，否则模型常把夜景画成白天（画风前缀里的光线描述也偏白天）。
+ */
+const ZH_DAY_WORDS = /清晨|早晨|早上|一早|上午|晌午|正午|中午|午后|下午|白天|白日|日头|阳光|日光|天光|黎明|拂晓/
+const ZH_DUSK_WORDS = /傍晚|黄昏|日落|夕阳|擦黑|日暮|暮色/
+const ZH_NIGHT_WORDS = /夜|天黑|凌晨|月光|月色/
+const ZH_DARK_WORDS = /漆黑|黑沉沉|黑漆漆|黑黢黢|没有日光|天已经黑|天黑透/
+const ZH_PERIOD_SENTENCE = {
+  night: '时间是夜里，画面里看得到的窗外、门外和天空都是漆黑的夜色，光线昏暗，只有近处被灯火照亮',
+  dusk: '时间是傍晚，天色正在暗下来，天空是昏暗的灰蓝色，光线发暗',
+  morning: '时间是清晨，天光清淡柔和',
+  forenoon: '时间是上午，白天明亮的自然光',
+  noon: '时间是正午，日光明亮',
+  afternoon: '时间是午后，白天的自然光',
+}
+function statusPeriod(body) {
+  const bars = [...String(body ?? '').matchAll(/\[时间[|｜]([^\]\n]{0,80})\]/g)]
+  if (!bars.length) return ''
+  const t = bars[bars.length - 1][1]
+  if (/深夜|半夜|午夜|夜|子时|丑时|寅时|亥时|戌时|凌晨/.test(t)) return 'night'
+  if (/黄昏|傍晚|日暮|酉时/.test(t)) return 'dusk'
+  if (/清晨|早晨|早上|黎明|拂晓|卯时|辰时/.test(t)) return 'morning'
+  if (/上午|巳时/.test(t)) return 'forenoon'
+  if (/中午|正午|晌午|午时/.test(t)) return 'noon'
+  if (/午后|下午|未时|申时/.test(t)) return 'afternoon'
+  return ''
+}
+export function addSceneTime(scene, body) {
+  const original = String(scene ?? '')
+  // 先把漏了 $ 的宏补全，否则认不出开头的人物宏，时间句会插进两个宏中间。
+  const text = repairMacros(original)
+  const plain = stripMacros(text)
+  if (!/[\u3400-\u9fff]/.test(plain)) return original
+  let period = ''
+  if (ZH_NIGHT_WORDS.test(plain)) period = ZH_DARK_WORDS.test(plain) ? '' : 'night'
+  else if (ZH_DUSK_WORDS.test(plain)) period = ZH_DARK_WORDS.test(plain) ? '' : 'dusk'
+  else if (!ZH_DAY_WORDS.test(plain)) period = statusPeriod(body)
+  const sentence = ZH_PERIOD_SENTENCE[period]
+  if (!sentence) return original
+  // 插在开头的人物宏和镜头句之后：「${…}$, 半身近景，正面平视。」+ 时间句 + 其余画面。
+  const lead = /^(?:\s*[^\s$。]{0,8}?\s*[,，、]?\s*\$\{(?:(?!\$\{)[\s\S])*?\}\$\s*[,，、]?\s*)*/.exec(text)?.[0] ?? ''
+  const rest = text.slice(lead.length)
+  const firstEnd = rest.indexOf('。')
+  const camera = firstEnd > 0 && firstEnd <= 24 && SCENE_CAMERA_ZH.test(rest.slice(0, firstEnd)) ? rest.slice(0, firstEnd + 1) : ''
+  return lead + camera + sentence + '。' + rest.slice(camera.length)
+}
+
 /** 服装条目 → 一句完整描述。中文服装用中文逗号连成一句。 */
 function outfitDescription(outfit) {
   const parts = ['upper', 'lower', 'shoes', 'accessory'].map(k => String(outfit?.[k] ?? '').trim().replace(/[，,。\s]+$/, '')).filter(v => v && !PLACEHOLDER_VALUE.test(v))
@@ -2440,17 +2517,24 @@ function createRuntime(ctx, overrides, logger, deps) {
       // 只提交已经闭合的 <image> 块；提交仍排队，ComfyUI 保持自己的 GPU 执行队列。
       // 第一张可以在模型继续规划后续画面时开画，无需等整份规划结束。
       const submitImages = images => {
-        for (const image of images) {
+        for (let image of images) {
           if (!imageGeneration || submissionStopped) continue
           if (smart && (streamDecision !== 'draw' || !decisionFrozen || streamConflict)) continue
           const planCharacters = Array.isArray(image.characters) ? image.characters.filter(item => item && String(item.prompt ?? '').trim()) : []
-          const sceneText = String(image.prompts ?? '')
+          let sceneText = String(image.prompts ?? '')
           if (!sceneText.trim() && !planCharacters.length) continue
           if (!mountInBody(image.mount)) {
             // 以前逐字比对、静默跳过：规划少抄一个 * 或换行就整张图不画，全部跳过时还报成「没有返回可用的 <image> 块」。
             const mount = String(image.mount ?? '').trim()
             if (mount) missingMounts.add(mount.slice(0, 24))
             continue
+          }
+          // 中文自然语言：画面没写时间时从正文状态栏补一句（夜里补「窗外漆黑」）；三个人以上把竖图改成横图。
+          if (rosterStyle(config, plannerWorkflow) === 'natural' && chineseAllowed(config, plannerWorkflow)) {
+            const timed = addSceneTime(image.prompts, body)
+            const size = crowdSize(image.size, image.prompts)
+            if (timed !== image.prompts || size !== String(image.size ?? '').trim()) image = { ...image, prompts: timed, size, sizeAsked: image.size }
+            sceneText = String(image.prompts ?? '')
           }
           const identity = JSON.stringify([image.mount, sceneText, planCharacters])
           const promptIdentity = [sceneText, ...planCharacters.map(item => item.prompt)].join(' ').replace(/\s+/g, ' ').trim().toLowerCase()
