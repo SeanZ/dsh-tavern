@@ -650,43 +650,53 @@ test('真实发行副本：完整安装、入口可加载且默认不创建私�
   assert.equal(readFileSync(configPath, 'utf8'), userConfig)
 })
 
-test('真实 3.2.1 发行副本升级 3.2.0：保留参考图、分格式规则及凭据，重复安装跳过', t => {
+test('真实 3.3.0 发行副本升级 3.1.x 与 3.2.1：保留用户数据和删除状态，重复安装跳过', t => {
   const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const source = path.join(sourceRoot, 'tavern-plugin', 'packages', 'dsh-tavern-image-bundled')
   const info = readBundledSceneImage(sourceRoot)
   assert.equal(info.ok, true, info.reason)
-  assert.equal(info.version, '3.2.1')
-  const dataRoot = makeData(t)
-  const target = path.join(dataRoot, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER)
-  mkdirSync(path.join(target, 'lib'), { recursive: true })
-  writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: '3.2.0', main: './lib/index.js', dsh: CONTRACT }))
-  writeFileSync(path.join(target, 'lib', 'index.js'), '// previous 3.2.0 code\n')
-  writeFileSync(path.join(target, 'client.js'), '// previous client\n')
-  const preserved = privateData(target, 'existing-private')
-  preserved.push(
-    ['config.json', '{"imageChannels":[{"id":"atlas","apiKey":"local-secret"}],"comfyAuthToken":"local-token"}\n'],
-    ['definitions.json', '{"characters":[{"id":"character","referenceImage":{"id":"' + 'a'.repeat(64) + '"}}]}\n'],
-    ['jobs-store.json', '{"jobs":[],"referenceSnapshot":"existing-snapshot"}\n'],
-    ['workflows/custom.json', '{"custom":true}\n'],
-  )
-  for (const [file, text] of preserved) {
-    mkdirSync(path.dirname(path.join(target, file)), { recursive: true })
-    writeFileSync(path.join(target, file), text)
+  assert.equal(info.version, '3.3.0')
+  for (const installedVersion of ['3.1.9', '3.2.1']) {
+    const dataRoot = makeData(t)
+    const target = path.join(dataRoot, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER)
+    mkdirSync(path.join(target, 'lib'), { recursive: true })
+    writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: installedVersion, main: './lib/index.js', dsh: CONTRACT }))
+    writeFileSync(path.join(target, 'lib', 'index.js'), '// previous ' + installedVersion + ' code\n')
+    writeFileSync(path.join(target, 'client.js'), '// previous client\n')
+    const referenceId = 'b'.repeat(64), outfitReferenceId = 'c'.repeat(64)
+    const preserved = privateData(target, 'existing-private-' + installedVersion)
+    preserved.push(
+      ['config.json', '{"imageChannels":[{"id":"custom","provider":"custom","apiKey":"local-secret"}],"comfyAuthToken":"local-token"}\n'],
+      ['definitions.json', '{"characters":[{"id":"character","referenceImage":{"id":"' + referenceId + '"},"outfits":[{"id":"outfit","referenceImage":{"id":"' + outfitReferenceId + '"}}]}]}\n'],
+      ['reference-images/' + referenceId, 'immutable-reference-bytes-' + installedVersion],
+      ['reference-images/' + outfitReferenceId, 'immutable-outfit-reference-' + installedVersion],
+      ['jobs-store.json', '{"jobs":[{"referenceSnapshot":[{"image":{"id":"' + referenceId + '"}},{"image":{"id":"' + outfitReferenceId + '"}}]}]}\n'],
+      ['workflows/custom.json', '{"custom":true}\n'],
+    )
+    for (const [file, text] of preserved) {
+      mkdirSync(path.dirname(path.join(target, file)), { recursive: true })
+      writeFileSync(path.join(target, file), text)
+    }
+    const options = { sourceRoot, dataRoot, logger: quiet }
+    const result = installBundledSceneImagePlugin(options)
+    assert.equal(result.action, 'upgraded', installedVersion)
+    assert.equal(result.installedVersion, installedVersion)
+    assert.equal(result.version, '3.3.0')
+    assert.equal(JSON.parse(readFileSync(path.join(target, 'package.json'), 'utf8')).version, '3.3.0')
+    for (const file of [
+      'lib/index.js', 'lib/reference-images.js', 'lib/format-worldbooks.js',
+      'lib/image-channels.js', 'lib/image-provider-capabilities.js', 'lib/image-providers.js',
+      'lib/comfy-reference-images.js', 'client.js',
+    ]) {
+      assert.deepEqual(readFileSync(path.join(target, file)), readFileSync(path.join(source, file)), 'current release code: ' + file)
+    }
+    for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed: ' + file)
+    assert.equal(existsSync(path.join(target, 'workflows', 'seed-deleted.json')), false, 'a removed bundled workflow stays removed')
+    assert.equal(existsSync(path.join(target, 'BUNDLED-VERSION.json')), false)
+    const repeated = installBundledSceneImagePlugin(options)
+    assert.equal(repeated.action, 'skipped')
+    assert.equal(repeated.installedVersion, '3.3.0')
+    for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed on repeat: ' + file)
+    assert.deepEqual(readdirSync(path.join(dataRoot, 'plugins')), [BUNDLED_SCENE_IMAGE_FOLDER])
   }
-  const options = { sourceRoot, dataRoot, logger: quiet }
-  const result = installBundledSceneImagePlugin(options)
-  assert.equal(result.action, 'upgraded')
-  assert.equal(result.installedVersion, '3.2.0')
-  assert.equal(result.version, '3.2.1')
-  assert.equal(JSON.parse(readFileSync(path.join(target, 'package.json'), 'utf8')).version, '3.2.1')
-  for (const file of ['lib/index.js', 'lib/reference-images.js', 'lib/format-worldbooks.js', 'client.js']) {
-    assert.deepEqual(readFileSync(path.join(target, file)), readFileSync(path.join(source, file)), 'current release code: ' + file)
-  }
-  for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed: ' + file)
-  assert.equal(existsSync(path.join(target, 'BUNDLED-VERSION.json')), false)
-  const repeated = installBundledSceneImagePlugin(options)
-  assert.equal(repeated.action, 'skipped')
-  assert.equal(repeated.installedVersion, '3.2.1')
-  for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed on repeat: ' + file)
-  assert.deepEqual(readdirSync(path.join(dataRoot, 'plugins')), [BUNDLED_SCENE_IMAGE_FOLDER])
 })

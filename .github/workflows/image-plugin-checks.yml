@@ -1,0 +1,77 @@
+name: Image plugin checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/image-plugin-checks.yml'
+      - 'bin/bundled-scene-image-plugin.mjs'
+      - 'tests/bundled-image-*.test.mjs'
+      - 'tests/bundled-scene-image-plugin.test.mjs'
+      - 'tests/browser/bundled-image-reference-settings-browser-smoke.mjs'
+      - 'tests/fixtures/browser-react.mjs'
+      - 'tavern-plugin/packages/dsh-tavern-image-bundled/**'
+      - 'bin/build-tavern-client.mjs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  image-plugin:
+    name: Image plugin / ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            node: 24.18.1
+          - os: ubuntu-22.04
+            node: 22.19.0
+          - os: macos-15
+            node: 22.19.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check plugin JavaScript syntax
+        shell: bash
+        run: |
+          node --check bin/bundled-scene-image-plugin.mjs
+          node --input-type=module -e '
+            import { readdirSync } from "node:fs";
+            import path from "node:path";
+            import { spawnSync } from "node:child_process";
+            const root = "tavern-plugin/packages/dsh-tavern-image-bundled";
+            const files = [];
+            function visit(dir) {
+              for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                const file = path.join(dir, entry.name);
+                if (entry.isDirectory()) visit(file);
+                else if (entry.isFile() && entry.name.endsWith(".js")) files.push(file);
+              }
+            }
+            visit(root);
+            for (const file of files) {
+              const result = spawnSync(process.execPath, ["--check", file], { stdio: "inherit" });
+              if (result.status !== 0) process.exitCode = result.status ?? 1;
+            }
+          '
+      - name: Check Tavern client bundle
+        run: pnpm check:client
+      - name: Run bundled image and installer tests
+        shell: bash
+        run: node --test --test-concurrency=2 --test-timeout=30000 tests/bundled-image-*.test.mjs tests/bundled-scene-image-plugin.test.mjs
+      - name: Install Chromium
+        if: matrix.os == 'ubuntu-22.04'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run reference settings browser check
+        if: matrix.os == 'ubuntu-22.04'
+        run: node tests/browser/bundled-image-reference-settings-browser-smoke.mjs
