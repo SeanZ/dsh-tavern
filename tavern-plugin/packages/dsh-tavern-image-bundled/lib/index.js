@@ -422,6 +422,37 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       })
     }
 
+/**
+ * 规划抄挂载句时偶尔改了几个字（「喷在」写成「落在」）：在正文里找和它最像的一段（一到三句）代替，不再整张图丢掉。
+ * 按两字片段的重合度（Dice ≥ 0.45）；同样像时取靠后的（正文前面有时混着写作计划）。
+ */
+export function closestMount(mount, body, anchor = v => String(v ?? '')) {
+  const needle = anchor(mount)
+  if (needle.length < 4) return ''
+  const grams = text => { const out = new Set(); for (let i = 0; i + 1 < text.length; i++) out.add(text.slice(i, i + 2)); return out }
+  const want = grams(needle)
+  const source = String(body ?? '')
+  const cuts = [0]
+  for (const m of source.matchAll(/[。！？!?…\n]+/g)) cuts.push(m.index + m[0].length)
+  cuts.push(source.length)
+  let best = '', bestScore = 0
+  for (let i = 0; i < cuts.length - 1; i++) {
+    for (let j = i + 1; j < cuts.length && j <= i + 3; j++) {
+      const piece = source.slice(cuts[i], cuts[j]).trim()
+      const hay = anchor(piece)
+      if (hay.length < 4) continue
+      if (hay.length > needle.length * 2 + 10) break
+      const have = grams(hay)
+      let hit = 0
+      for (const g of want) if (have.has(g)) hit++
+      // 两边都算（Dice）：多带一句无关的正文会拉低分数；分数一样时取靠后的。
+      const score = 2 * hit / (want.size + have.size)
+      if (score >= bestScore) { bestScore = score; best = piece }
+    }
+  }
+  return bestScore >= 0.45 ? best : ''
+}
+
 /** 规划有时把角色清单里的「（常穿）」标记一起抄进宏里；匹配服装名前去掉它。 */
 function stripUsualSuffix(value) {
   return String(value ?? '').trim().replace(/\s*[（(]\s*(?:这套是)?常穿\s*[)）]\s*$/, '')
@@ -2207,17 +2238,22 @@ function createRuntime(ctx, overrides, logger, deps) {
       // 只提交已经闭合的 <image> 块；提交仍排队，ComfyUI 保持自己的 GPU 执行队列。
       // 第一张可以在模型继续规划后续画面时开画，无需等整份规划结束。
       const submitImages = images => {
-        for (const image of images) {
+        for (let image of images) {
           if (!imageGeneration || submissionStopped) continue
           if (smart && (streamDecision !== 'draw' || !decisionFrozen || streamConflict)) continue
           const planCharacters = Array.isArray(image.characters) ? image.characters.filter(item => item && String(item.prompt ?? '').trim()) : []
           const sceneText = String(image.prompts ?? '')
           if (!sceneText.trim() && !planCharacters.length) continue
           if (!mountInBody(image.mount)) {
-            // 以前逐字比对、静默跳过：规划少抄一个 * 或换行就整张图不画，全部跳过时还报成「没有返回可用的 <image> 块」。
-            const mount = String(image.mount ?? '').trim()
-            if (mount) missingMounts.add(mount.slice(0, 24))
-            continue
+            // 规划抄挂载句时改了几个字：换成正文里最像的那一句，图照画、照样挂在那一句后面。
+            const nearest = closestMount(image.mount, body, anchorText)
+            if (nearest && mountInBody(nearest)) image = { ...image, mount: nearest, mountAsked: image.mount }
+            else {
+              // 以前逐字比对、静默跳过：规划少抄一个 * 或换行就整张图不画，全部跳过时还报成「没有返回可用的 <image> 块」。
+              const mount = String(image.mount ?? '').trim()
+              if (mount) missingMounts.add(mount.slice(0, 24))
+              continue
+            }
           }
           const identity = JSON.stringify([image.mount, sceneText, planCharacters])
           const promptIdentity = [sceneText, ...planCharacters.map(item => item.prompt)].join(' ').replace(/\s+/g, ' ').trim().toLowerCase()
