@@ -84,11 +84,12 @@ test('参考模式全无图或协议不支持时明确拒绝，单图明确文�
   assert.equal(calls.filter(c => c.url.endsWith('/uploadMedia')).length, 0)
   const bad = await runtime.request('jobs', { tag: raw, generationMode: 'unknown' })
   assert.equal(bad.status, 400)
-  await runtime.request('config', { imageBackend: 'custom', activeImageChannel: 'nai-reference-test', imageChannels: [{ id: 'nai-reference-test', provider: 'custom', name: 'NovelAI', baseUrl: 'https://nai.example.test', model: 'nai-diffusion-5-full', options: { apiProtocol: 'novelai' } }] })
+  const configured = await runtime.request('config', { imageBackend: 'custom', activeImageChannel: 'nai-reference-test', imageChannels: [{ id: 'nai-reference-test', provider: 'custom', name: 'NovelAI', baseUrl: 'https://nai.example.test', model: 'nai-diffusion-5-full', options: { apiProtocol: 'novelai' } }] })
+  assert.equal(configured.body.state.imageProvider, 'novelai')
   const count = calls.length
   const unsupported = await runtime.request('jobs', { tag: raw, subjects: [{ characterId: 'lin' }], generationMode: 'reference' })
   assert.equal(unsupported.status, 400)
-  assert.match(unsupported.body.error, /NovelAI.*参考图|参考图.*NovelAI/i)
+  assert.match(unsupported.body.error, /协议不支持参考图/)
   assert.equal(calls.length, count, 'unsupported protocol must make zero HTTP/paid requests')
 })
 
