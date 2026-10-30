@@ -668,7 +668,7 @@
 					};
 				},
 				pin: function (id, pinned) {
-					const entry = entries.get(id); if (!entry) return;
+					const entry = entries.get(id); if (!entry) throw new Error("面板尚未准备好，请稍后重试。");
 					if (typeof entry.home.moveBefore !== "function") throw new Error("当前浏览器不支持保留页面状态的移动，请在原消息中使用此面板。");
 					if (!pinned) move(entry, entry.home);
 					entry.pinned = pinned; if (pinned) entry.activation = ++activation; publish();
