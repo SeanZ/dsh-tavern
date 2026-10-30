@@ -31,7 +31,8 @@ import { buildAutoImageGenPrompt } from './prompts.js'
 import { installTavernBridge, removeMountedPicture } from './tavern-bridge.js'
 import { createPluginUpdater } from './updater.js'
 import { IMAGE_PROVIDERS, generateImage, testImageChannel, supportsImageTaskResume } from './image-providers.js'
-import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch } from './image-channels.js'
+import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences } from './image-provider-capabilities.js'
+import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch, migrateLegacyImageConfig } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
 import { parseImagePlan, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
@@ -40,9 +41,9 @@ import { createDownloadPackage, PLUGIN_DOWNLOADS } from './download-package.js'
 import { createMediaActions } from './media-actions.js'
 import { applyCharacterSnapshot, boundCharacterSnapshot, emptyCharacterSnapshot, mergeCharacterUpdates } from './character-history.js'
 import { getPromptGuidance } from './prompt-presets.js'
-import { BUILTIN_PROMPT_PRESETS, normalizePromptPresets, resolvePromptMode, composePresetText, promptPresetNegative, effectivePromptPreset, formatPromptForBackend, validPromptPresetId, promptBackendContext } from './prompt-presets.js'
+import { PROMPT_FORMATS, BUILTIN_PROMPT_PRESETS, normalizePromptPresets, resolvePromptMode, composePresetText, promptPresetNegative, effectivePromptPreset, formatPromptForBackend, validPromptPresetId, promptBackendContext } from './prompt-presets.js'
 import { transcodeImageOutputAsync, isBlankImage } from './image-output.js'
-import { buildComfySimpleWorkflow, inspectComfySimple, normalizeComfySimpleConfig } from './comfy-simple.js'
+import { comfyLoadImageBindings, applyComfyReferenceImages } from './comfy-reference-images.js'
 import { createDiagnostics } from './diagnostics.js'
 import { deleteWorkflow } from './workflow-delete.js'
 import { createFormatWorldbooks } from './format-worldbooks.js'
@@ -75,8 +76,6 @@ const DEFAULTS = {
   activeImageChannel: '',
   imageConcurrency: 2,
   comfyUrl: 'http://127.0.0.1:8188',
-  comfyMode: 'workflow',
-  comfySimple: normalizeComfySimpleConfig(),
   // 服务鉴权：none / bearer / basic
   comfyAuthMode: 'none',
   comfyAuthToken: '',
@@ -707,7 +706,6 @@ route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => e
   route(`${BASE}/image-channel-test`, (request, response, url, engine) => engine.handleConsole('image-channel-test', request, response, url))
   route(`${BASE}/llm-models`, (request, response, url, engine) => engine.handleConsole('llm-models', request, response, url))
   route(`${BASE}/comfy-test`, (request, response, url, engine) => engine.handleConsole('comfy-test', request, response, url))
-  route(`${BASE}/comfy-simple-info`, (request, response, url, engine) => engine.handleConsole('comfy-simple-info', request, response, url))
   route(`${BASE}/loras-available`, (request, response, url, engine) => engine.handleConsole('loras-available', request, response, url))
   route(`${BASE}/job-detail`, (request, response, url, engine) => engine.handleConsole('job-detail', request, response, url))
   route(`${BASE}/redraw`, (request, response, url, engine) => engine.handleConsole('redraw', request, response, url))
@@ -819,6 +817,17 @@ function createRuntime(ctx, overrides, logger, deps) {
       catch { return '' }
     }
     const channelEndpointOf = channel => endpointOf(channel?.baseUrl || IMAGE_PROVIDERS.find(item => item.id === channel?.provider)?.baseUrl)
+    const channelForSavedJob = job => {
+      const channel = config.imageChannels.find(item => item.id === job?.channelId)
+      if (!channel) return null
+      let provider = ''
+      try { provider = effectiveImageProvider(channel) } catch { return null }
+      return [job.backend, job.providerTaskProvider].filter(Boolean).includes(provider) ? channel : null
+    }
+    const resumableChannelForJob = job => {
+      const channel = channelForSavedJob(job)
+      return channel && supportsImageTaskResume(channel) ? channel : null
+    }
 
     // ---- 作业落盘：图文件本来就在 cache/ 里，缺的是这份元数据 ----
     const JOBS_STORE = join(ROOT, 'jobs-store.json')
@@ -865,7 +874,7 @@ function createRuntime(ctx, overrides, logger, deps) {
                 catch { job.mediaType = 'image/png' }
               }
               if (job.backend && job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) {
-                job.requestMayHaveSucceeded = job.requestStarted === true || (job.state === 'running' && !(job.backend === 'atlascloud' && job.submissionTracked === true))
+                job.requestMayHaveSucceeded = job.requestStarted === true || (job.state === 'running' && job.submissionTracked !== true)
                 job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
                 job.error = job.requestMayHaveSucceeded ? '插件重启后无法确认平台是否已接单；请先在平台检查任务，未自动重试' : '插件重启中断了尚未提交的排队任务，可以手动重试'
               }
@@ -1028,13 +1037,26 @@ function createRuntime(ctx, overrides, logger, deps) {
     logger.info?.(`dsh-tavern-image: ${workflows.filter(wf => !wf.error).length} 份工作流可用，默认 ${config.defaultWorkflow || '（无）'}`)
 
     const usable = () => workflows.filter(wf => !wf.error && wf.enabled)
+    const effectiveConfiguredProvider = (cfg = config) => {
+      if (cfg.imageBackend === 'comfyui') return 'comfyui'
+      try { return effectiveImageProvider(activeChannel(cfg)) } catch { return String(cfg.imageBackend ?? '') }
+    }
+    const referenceCapability = () => {
+      if (config.imageBackend === 'comfyui') {
+        if (config.comfyMode === 'simple') return false
+        const workflow = styleWorkflow(config)
+        if (!workflow) return false
+        try { return comfyLoadImageBindings(workflow).length > 0 } catch { return false }
+      }
+      try { return supportsImageReferences(activeChannel(config)) } catch { return false }
+    }
     /**
      * 这次出图会用到的 ComfyUI 工作流：指定了就用指定的，否则用默认工作流。
      * 规划、人物宏展开和编译都按它的模型判断提示词写法；不传工作流时只看得到 "comfyui"，
      * 默认工作流是 Z-Image 这类自然语言模型时，人物宏会被展开成 tag，和编译时的写法对不上。
      */
     const styleWorkflow = (cfg = config, id = '') => {
-      if (cfg.imageBackend !== 'comfyui' || cfg.comfyMode === 'simple') return null
+      if (cfg.imageBackend !== 'comfyui') return null
       return id ? (workflows.find(wf => wf.id === id && !wf.error) ?? null) : (usable().find(wf => wf.id === cfg.defaultWorkflow) ?? null)
     }
 
@@ -1054,22 +1076,62 @@ function createRuntime(ctx, overrides, logger, deps) {
       return response.json()
     }
 
-    let simpleObjectInfo = null
-    let simpleObjectInfoAt = 0
-    async function getSimpleObjectInfo(force = false) {
-      if (!force && simpleObjectInfo && Date.now() - simpleObjectInfoAt < 15000) return simpleObjectInfo
-      const result = await comfyJson('/object_info')
-      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('ComfyUI /object_info 返回格式不正确')
-      simpleObjectInfo = result
-      simpleObjectInfoAt = Date.now()
-      return result
+    async function uploadComfyReference(reference, job, index) {
+      assertComfyEndpoint(job)
+      const image = await referenceStore.read(reference.image)
+      job.controller.signal.throwIfAborted()
+      const extension = ({ 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[image.mediaType] || 'png'
+      const form = new FormData()
+      form.append('image', new Blob([image.data], { type: image.mediaType }), `dsh-reference-${job.comfyId}-${index + 1}.${extension}`)
+      form.append('type', 'input')
+      form.append('overwrite', 'false')
+      const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(30000)])
+      let response
+      try {
+        response = await fetch(`${config.comfyUrl}/upload/image`, { method: 'POST', headers: comfyHeaders(config), body: form, signal })
+      } catch (error) {
+        if (job.controller.signal.aborted) throw job.controller.signal.reason ?? error
+        const wrapped = new Error(`ComfyUI 第 ${index + 1} 张参考图上传失败；未提交 workflow`)
+        wrapped.submissionNotStarted = true
+        throw wrapped
+      }
+      if (!response.ok) {
+        const error = new Error(`ComfyUI 第 ${index + 1} 张参考图上传失败（HTTP ${response.status}）；未提交 workflow`)
+        error.submissionNotStarted = true
+        throw error
+      }
+      let uploaded
+      try { uploaded = await response.json() } catch {}
+      const name = typeof uploaded?.name === 'string' ? uploaded.name : ''
+      const subfolder = typeof uploaded?.subfolder === 'string' ? uploaded.subfolder : ''
+      if (!name || name.includes('..') || name.startsWith('/') || subfolder.includes('..') || subfolder.startsWith('/')) {
+        const error = new Error(`ComfyUI 第 ${index + 1} 张参考图上传响应无效；未提交 workflow`)
+        error.submissionNotStarted = true
+        throw error
+      }
+      return subfolder ? `${subfolder.replace(/\\/g, '/')}/${name}` : name
     }
 
-    async function submitToComfy(compiled, job) {
+    function assertComfyEndpoint(job) {
+      if (!job?.comfyEndpoint || endpointOf(config.comfyUrl) !== job.comfyEndpoint) {
+        const error = new Error('ComfyUI 地址在提交期间发生变化；已停止发送，请确认服务器后重新提交')
+        error.submissionNotStarted = true
+        throw error
+      }
+    }
+
+    async function submitToComfy(compiled, job, onGenerationSubmit) {
       let result
+      let promptPostStarted = false
       try {
         const requestBody = JSON.stringify({ prompt: compiled.prompt, prompt_id: job.comfyId, client_id: randomUUID() })
         diag.recordJob(job?.id, 'comfy-request', { method: 'POST', path: '/prompt', body: diag.text(requestBody) })
+        job.controller.signal.throwIfAborted()
+        assertComfyEndpoint(job)
+        await onGenerationSubmit?.()
+        job.controller.signal.throwIfAborted()
+        assertComfyEndpoint(job)
+        promptPostStarted = true
         result = await comfyJson('/prompt', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1078,6 +1140,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         })
         diag.recordJob(job?.id, 'comfy-accepted', { promptId: result?.prompt_id ?? null, number: result?.number ?? null })
       } catch (error) {
+        if (!promptPostStarted) {
+          job.requestStarted = false
+          error.submissionNotStarted = true
+          error.requestMayHaveSucceeded = false
+        }
         diag.recordJob(job?.id, 'comfy-request-error', { message: String(error?.message ?? error), code: error?.cause?.code ?? null })
         // Node may report localhost's IPv4/IPv6 attempts as an AggregateError.
         // Treat the POST as unsent only when every underlying transport error
@@ -1097,7 +1164,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         visitCause(error?.cause)
         const definitelyPreConnect = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])
         const connectionDefinitelyNotEstablished = codes.length > 0 && !unknownLeaf && codes.every(code => definitelyPreConnect.has(code))
-        error.requestMayHaveSucceeded = connectionDefinitelyNotEstablished
+        error.requestMayHaveSucceeded = !promptPostStarted ? false : connectionDefinitelyNotEstablished
           ? false
           : error.statusCode === undefined || error.statusCode >= 500
         throw error
@@ -1123,7 +1190,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       // Only an explicit recovery may inspect a locally cancelled task. Keep
       // normal polling cancelled, and never create a new provider request.
       if (job.state === 'cancelled' && options.recoverCancelled === true) {
-        if (!(job.comfyId || (supportsImageTaskResume(job.backend) && job.providerTaskId))) {
+        if (!(job.comfyId || (resumableChannelForJob(job) && job.providerTaskId))) {
           throw new Error('这个渠道没有可查询的平台任务号；请到生图平台检查结果，未重新提交')
         }
         const snapshot = { ...job, state: 'uncertain', controller: new AbortController(), refreshing: null, queryAt: 0 }
@@ -1139,11 +1206,12 @@ function createRuntime(ctx, overrides, logger, deps) {
         return
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) return
-      if (supportsImageTaskResume(job.backend) && job.state === 'uncertain' && job.providerTaskId) {
+      if (resumableChannelForJob(job) && job.state === 'uncertain' && job.providerTaskId) {
         if (job.refreshing) return job.refreshing
-        const channel = config.imageChannels.find(item => item.id === job.channelId && item.provider === job.backend)
+        const channel = resumableChannelForJob(job)
         if (!channel || !job.channelEndpoint || channelEndpointOf(channel) !== job.channelEndpoint) {
-          job.error = '原 ' + (job.backend === 'atlascloud' ? 'atlas cloud' : 'Qwen') + ' 渠道地址已变化；请恢复原渠道配置后重查，或到平台手动检查'
+          const previousProvider = job.providerTaskProvider || job.backend
+          job.error = '原 ' + (previousProvider === 'atlascloud' ? 'atlas cloud 渠道地址已变化（AtlasCloud）' : 'Qwen 渠道地址已变化') + '；请恢复原渠道配置后重查，或到平台手动检查'
           persistJobs()
           return
         }
@@ -1310,7 +1378,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const timer = setInterval(() => {
         for (const job of jobs.values()) {
           if ((job.state === 'pending' || job.state === 'running' || job.state === 'uncertain')
-            && (job.comfyId || (supportsImageTaskResume(job.backend) && job.providerTaskId && job.providerTaskProvider === job.backend))) refresh(job).catch(() => {})
+            && (job.comfyId || (resumableChannelForJob(job) && job.providerTaskId))) refresh(job).catch(() => {})
         }
       }, 3000)
       return () => clearInterval(timer)
@@ -1338,7 +1406,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (job.controller.signal.aborted || !jobs.has(job.id)) continue
         imageRunning++
         job.state = 'running'
-        job.requestStarted = job.backend !== 'atlascloud'
+        job.requestStarted = false
         ;(async () => {
           let providerCompleted = false
           try {
@@ -1447,17 +1515,12 @@ function createRuntime(ctx, overrides, logger, deps) {
       const channel = forceWorkflow ? null : channelWithPresetParams(jobConfig)
       const generationMode = rawParams?.generationMode ?? jobConfig.generationMode ?? 'text'
       if (!['text', 'reference'].includes(generationMode)) throw Object.assign(new Error('生图模式无效'), { submissionNotStarted: true })
-      if (generationMode === 'reference' && channel?.provider !== 'atlascloud') throw Object.assign(new Error('参考图模式仅支持 atlas cloud；请切换渠道或明确改用文生图'), { submissionNotStarted: true })
+      const effectiveProvider = channel ? effectiveImageProvider(channel) : 'comfyui'
+      if (generationMode === 'reference' && channel && !supportsImageReferences(channel)) throw Object.assign(new Error('当前生图协议不支持参考图；请切换支持参考图的渠道，或明确改用文生图'), { submissionNotStarted: true })
+      if (!channel && jobConfig.comfyMode === 'simple') throw Object.assign(new Error('旧版 ComfyUI 简易模式已停用，原配置和简易模式数据已保留；请导入完整 ComfyUI API workflow 后再生成'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
       params.generationMode = generationMode
-      let workflow = forceWorkflow || (!channel && jobConfig.comfyMode === 'simple' ? null : (!channel ? pickWorkflow(usable(), jobConfig, params.model) : null))
-      let simpleBuild = null
-      if (!channel && !forceWorkflow && jobConfig.comfyMode === 'simple') {
-        simpleBuild = buildComfySimpleWorkflow(jobConfig.comfySimple, await getSimpleObjectInfo())
-        workflow = simpleBuild.workflow
-        // Simple mode owns its dimensions. Keep the old default size dropdown from rewriting them.
-        params.size = `${simpleBuild.config.width}x${simpleBuild.config.height}`
-      }
-      if (!channel && !workflow) throw new Error('没有可用的工作流（到 设置 → 配图 的「渠道」里选择工作流或简单模式）')
+      const workflow = forceWorkflow || (!channel ? pickWorkflow(usable(), jobConfig, params.model) : null)
+      if (!channel && !workflow) throw new Error('没有可用的 ComfyUI 工作流；请导入完整 workflow，或选择其他生图渠道')
       const defsForTurn = applyCharacterSnapshot(definitions, rawParams?.characterSnapshot)
       const card = await currentCard(rawParams?.sessionId || lastSessionId, rawParams?.turn)
       let scopedDefs = card
@@ -1480,12 +1543,10 @@ function createRuntime(ctx, overrides, logger, deps) {
         params.subjects = structuredClone(referenceState.subjects)
         if (sectioned) params.referenceText = buildStructuredReferenceText(referenceState.references)
         const style = rosterStyle(jobConfig, workflow)
-        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: 'atlascloud', style })
+        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: effectiveProvider, style, allowChinese: jobConfig.allowChinesePrompt })
       }
       // 这里可以打日志（runtime 里能拿到 logger）
-      const compileConfig = forceWorkflow
-        ? { ...jobConfig, imageBackend: 'comfyui', comfyMode: 'workflow' }
-        : (simpleBuild ? { ...jobConfig, overrideSteps: false } : jobConfig)
+      const compileConfig = forceWorkflow ? { ...jobConfig, imageBackend: 'comfyui' } : jobConfig
       const traceStages = diagTrace?.traceId ? [] : null
       const onStage = traceStages ? (name, data) => traceStages.push({ name, data }) : null
       const compiled = workflow ? compileJob({ workflow, params, config: compileConfig, definitions: scopedDefs, onStage })
@@ -1517,10 +1578,9 @@ function createRuntime(ctx, overrides, logger, deps) {
         params: { ...params }, key, size: compiled.size, hits: compiled.hits,
         generationMode, promptMode: compiled.promptMode, promptAssembly: compiled.promptAssembly ?? null,
         referenceSnapshot: referenceState,
-        submissionTracked: channel?.provider === 'atlascloud',
-        submittedPrompt: channel?.provider === 'atlascloud' ? (compiled.promptMode === 'structured' ? combineStructuredPrompt(compiled.positive, compiled.negative) : [compiled.positive, compiled.negative ? 'Avoid: ' + compiled.negative : ''].filter(Boolean).join('\n\n')) : compiled.positive,
+        submissionTracked: Boolean(channel),
+        submittedPrompt: channel && effectiveImageProvider(channel) === 'atlascloud' ? (compiled.promptMode === 'structured' ? combineStructuredPrompt(compiled.positive, compiled.negative) : [compiled.positive, compiled.negative ? 'Avoid: ' + compiled.negative : ''].filter(Boolean).join('\n\n')) : compiled.positive,
         characterSnapshot: rawParams?.characterSnapshot ? boundCharacterSnapshot(rawParams.characterSnapshot) : null,
-        comfySimple: channel ? null : structuredClone(jobConfig.comfySimple ?? null),
         gameId: String(rawParams?.sessionId ?? ''), turn: Number(rawParams?.turn) || null, textVersion: String(rawParams?.textVersion ?? ''),
         // 记住这张用了哪些 LoRA —— 事后在历史里能查
         loras: Array.isArray(compiled.loras) ? compiled.loras : [],
@@ -1538,10 +1598,25 @@ function createRuntime(ctx, overrides, logger, deps) {
       }
       try {
         job.submitting = true
-        job.requestStarted = true
+        job.requestStarted = false
         await persistJobs()
+        if (referenceState) {
+          assertComfyEndpoint(job)
+          applyComfyReferenceImages(workflow, referenceState.references.map((_, index) => `reference-${index + 1}.png`))
+          const imageNames = []
+          for (let index = 0; index < referenceState.references.length; index++) {
+            imageNames.push(await uploadComfyReference(referenceState.references[index], job, index))
+            job.controller.signal.throwIfAborted()
+          }
+          const patched = applyComfyReferenceImages({ ...workflow, prompt: compiled.prompt }, imageNames)
+          compiled.prompt = patched.prompt
+        }
         if (compiled?.prompt) blankRetry.set(job.id, { prompt: compiled.prompt, seedBindings: workflow?.bindings?.seed ?? [] })
-        job.comfyId = await submitToComfy(compiled, job)
+        job.comfyId = await submitToComfy(compiled, job, async () => {
+          job.requestStarted = true
+          try { await persistJobs({ required: true }) }
+          catch (error) { job.requestStarted = false; error.submissionNotStarted = true; throw error }
+        })
         if (job.controller.signal.aborted || job.state === 'cancelled') {
           job.state = 'cancelled'
           job.cancelMayHaveContinued = true
@@ -1682,24 +1757,15 @@ function createRuntime(ctx, overrides, logger, deps) {
       const defs = applyCharacterSnapshot(definitions, characterSnapshot)
       const scoped = card ? { ...defs, characters: (defs.characters ?? []).filter(character => usableOnCard(character, card)) } : defs
       const keepComfySource = source.backend === 'comfyui' && jobConfig.imageBackend === 'comfyui'
-      const simpleTemplate = source.comfySimple?.template
-      const isSimpleSource = ['checkpoint', 'flux', 'anima'].includes(simpleTemplate) && source.workflowId === `simple-${simpleTemplate}`
-      if (keepComfySource && isSimpleSource) {
-        jobConfig.comfyMode = 'simple'
-        jobConfig.comfySimple = structuredClone(source.comfySimple)
-      }
-      const workflow = keepComfySource && !isSimpleSource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
-      if (keepComfySource && source.workflowId?.startsWith('simple-') && !isSimpleSource) {
-        throw Object.assign(new Error('原简单工作流快照不可用；请检查原始 ComfyUI 模板配置'), { submissionNotStarted: true })
-      }
+      if (keepComfySource && source.workflowId?.startsWith('simple-')) throw Object.assign(new Error('该作业来自已停用的 ComfyUI 简易模式；原数据已保留，请导入完整 ComfyUI API workflow 后再重绘'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
+      const workflow = keepComfySource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
       if (keepComfySource && source.workflowId && !isSimpleSource && !workflow) {
         throw Object.assign(new Error('原 ComfyUI 工作流已不存在；请在控制台选择其他渠道后重绘'), { submissionNotStarted: true })
       }
-      if (keepComfySource && workflow) jobConfig.comfyMode = 'workflow'
       let fresh
       try {
         fresh = await startJob({
-          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
+          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: effectiveConfiguredProvider(jobConfig), style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
           rawTag, generationMode: mode,
           subjects: refreshReferences && submitted !== (source.params?.rawTag ?? source.params?.tag) ? undefined : (source.params?.subjects?.length ? source.params.subjects : undefined),
           characters: characterSource,
@@ -2011,7 +2077,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const body = String(text ?? '').trim()
       if (!body) throw new Error('正文是空的')
       const planningGenerationMode = config.generationMode === 'reference' ? 'reference' : 'text'
-      if (imageGeneration && planningGenerationMode === 'reference' && config.imageBackend !== 'atlascloud') throw new Error('参考图模式仅支持 atlas cloud；请切换渠道或明确改用文生图')
+      if (imageGeneration && planningGenerationMode === 'reference' && config.imageBackend !== 'comfyui' && !supportsImageReferences(activeChannel(config))) throw new Error('当前生图协议不支持参考图；请切换支持参考图的渠道，或明确改用文生图')
 
       const entries = await worldbook()
       const card = await currentCard(sessionId, turn)
@@ -2055,14 +2121,14 @@ function createRuntime(ctx, overrides, logger, deps) {
       const plannerMode = resolvePromptMode(config, promptBackendContext(config, plannerWorkflow))
       const plannerContext = selectPlannerContext({
         entries, selected: config.plannerEntries, text: body, definitions: scoped,
-        backend: config.imageBackend, promptMode: plannerMode, characterUpdates,
+        backend: effectiveConfiguredProvider(config), backendAliases: config.imageBackend === 'custom' ? ['custom'] : [], promptMode: plannerMode, characterUpdates,
       })
       const roster = characterRoster(plannerContext.definitions, { fullTraits: characterUpdates, text: body })
       const want = imageGeneration ? Math.max(1, Math.min(8, Number(count) || config.plannerCount || 3)) : 0
       const smart = Boolean(imageGeneration && smartSelection && !force)
       // 生图只依赖两样：正文本身，和「生成图片的世界书」+ 人物库。
       // 卡片自己的世界书是给叙事用的（NPC生成/宗门生成那类规则），掺进画面提示词只会带偏。
-      const guidanceWorkflow = config.imageBackend === 'comfyui' && config.comfyMode !== 'simple'
+      const guidanceWorkflow = config.imageBackend === 'comfyui'
         ? usable().find(item => item.id === config.defaultWorkflow)
         : null
       const guidanceBackend = promptBackendContext(config, guidanceWorkflow)
@@ -2076,7 +2142,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
       lastPlannerContext = {
         ...plannerContext.diagnostics, at: Date.now(), turn: Number(turn) || null,
-        messageId: String(messageId ?? ''), backend: config.imageBackend,
+        messageId: String(messageId ?? ''), backend: effectiveConfiguredProvider(config),
         staticChars: contextBoundary < 0 ? system.length : contextBoundary,
         dynamicChars: contextBoundary < 0 ? 0 : system.length - contextBoundary,
         bodyChars: body.length,
@@ -2085,7 +2151,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let traceImageIndex = 0
       if (traceId) {
         const T = diag.text
-        diag.record(traceId, 'planner-input', { body: T(body), card: card?.name ?? null, historySnapshotTurn: historySnapshot?.turn ?? null, config: { promptMode: config.promptMode, traitMode: config.traitMode, negativeMode: config.negativeMode, injectWeight: config.injectWeight, weightMode: config.weightMode, imageBackend: config.imageBackend, comfyMode: config.comfyMode, defaultWorkflow: config.defaultWorkflow, imageSize: config.imageSize, sizes: config.sizes, activePromptPreset: config.activePromptPreset, artistPosition: config.artistPosition } })
+        diag.record(traceId, 'planner-input', { body: T(body), card: card?.name ?? null, historySnapshotTurn: historySnapshot?.turn ?? null, config: { promptMode: config.promptMode, traitMode: config.traitMode, negativeMode: config.negativeMode, injectWeight: config.injectWeight, weightMode: config.weightMode, imageBackend: config.imageBackend, defaultWorkflow: config.defaultWorkflow, imageSize: config.imageSize, sizes: config.sizes, activePromptPreset: config.activePromptPreset, artistPosition: config.artistPosition } })
         diag.record(traceId, 'planner-context', { diagnostics: plannerContext.diagnostics, scopedCharacterIds: scoped.characters.map(c => String(c.id ?? '')), roster: T(roster), rosterIndex: T(plannerContext.rosterIndex) })
         diag.record(traceId, 'planner-request', { layer: 'llm.stream arguments (not provider HTTP body)', provider, model, reasoningEffort: plannerEffort ?? null, temperature: Number(config.plannerTemperature) || 1, maxTokens: 12000, system: T(system), user: T(body) })
       }
@@ -2170,7 +2236,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             const expandOne = (text, keep = false) => {
               const expanded = expandRosterCalls(text, scoped, config.traitMode, { style: rosterStyle(config, plannerWorkflow), onMacro: entry => { macros?.push(entry); noteMacro(entry) } })
               if (keep) expandedScene = expanded
-              return normalizePrompts(expanded, scoped, { backend: config.imageBackend, style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
+              return normalizePrompts(expanded, scoped, { backend: effectiveConfiguredProvider(config), style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
             }
             // Reference jobs must expand against the per-picture reference scope,
             // not the full library here (which would reintroduce conflicting traits).
@@ -2716,6 +2782,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         ok: true,
         base: BASE,
         imageProviders: IMAGE_PROVIDERS,
+        imageProvider: effectiveConfiguredProvider(config),
+        referenceSupported: referenceCapability(),
+        configurationWarning: config.imageBackend === 'comfyui' && config.comfyMode === 'simple'
+          ? '旧版 ComfyUI 简易模式已停用；原配置和数据已保留，请导入完整 ComfyUI API workflow 后再生成。'
+          : '',
         // 条目要带 enabled 和 content —— 前台要靠它们显示开关与编辑框
         worldbook: worldbookList.map(entry => ({
           index: entry.index,
@@ -2741,8 +2812,6 @@ function createRuntime(ctx, overrides, logger, deps) {
           imageChannels: publicChannels(config.imageChannels),
           imageConcurrency: config.imageConcurrency,
           comfyUrl: config.comfyUrl,
-          comfyMode: config.comfyMode === 'simple' ? 'simple' : 'workflow',
-          comfySimple: normalizeComfySimpleConfig(config.comfySimple),
           comfyAuthMode: String(config.comfyAuthMode ?? 'none'),
           comfyHasAuthToken: Boolean(config.comfyAuthToken),
           comfyAuthUser: String(config.comfyAuthUser ?? ''),
@@ -2765,7 +2834,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           allowChinesePrompt: config.allowChinesePrompt === true,
           promptEffectiveFormat: resolvePromptMode(config, promptBackendContext(config, styleWorkflow())),
           promptEffectiveName: effectivePromptPreset(config)?.name ?? '',
-          promptPreviewPositive: composePresetText(String(config.promptManualPositive ?? ''), config, config.imageBackend),
+          promptPreviewPositive: composePresetText(String(config.promptManualPositive ?? ''), config, promptBackendContext(config, styleWorkflow())),
           promptPreviewNegative: [activeArtistText(config).negative, promptPresetNegative(config), String(config.promptManualNegative ?? '')].filter(Boolean).join(', '),
           promptManualPositive: String(config.promptManualPositive ?? ''),
           promptManualNegative: String(config.promptManualNegative ?? ''),
@@ -3162,17 +3231,6 @@ function createRuntime(ctx, overrides, logger, deps) {
           return
         }
 
-        // ---- Read-only model/node inventory for the built-in simple mode ----
-        if (action === 'comfy-simple-info') {
-          try {
-            const objectInfo = await getSimpleObjectInfo(true)
-            sendJson(response, 200, { ok: true, ...inspectComfySimple(objectInfo) })
-          } catch (error) {
-            sendJson(response, 200, { ok: false, error: String(error?.message ?? error) })
-          }
-          return
-        }
-
         // ---- 简单编辑：直接读/写工作流里的参数值（正面/负面/宽高/步数/CFG/底模）----
         if (action === 'workflow-values') {
           try {
@@ -3253,6 +3311,11 @@ function createRuntime(ctx, overrides, logger, deps) {
             const wf = workflows.find(w => (file && String(w.file).endsWith(file)) || (id && String(w.id) === id))
             if (!wf) { sendJson(response, 404, { ok: false, error: '找不到这张工作流' }); return }
             if (wf.error) { sendJson(response, 400, { ok: false, error: '这张工作流不可用：' + wf.error }); return }
+            if (config.comfyMode === 'simple') {
+              config.comfyMode = 'workflow'
+              config.defaultWorkflow = wf.id
+              await saveConfig(config)
+            }
             const prompt = String(body?.prompt ?? '').trim() ||
               '1girl, solo, upper body, simple background, looking at viewer, best quality'
             const job = await startJob({
@@ -3283,6 +3346,10 @@ function createRuntime(ctx, overrides, logger, deps) {
             await writeJsonAtomic(file, norm)
             config.workflows = await scanWorkflows(config)
             await loadAllWorkflows()
+            const imported = workflows.find(item => item.file === safe + '.tavern-comfy-v1.json' && !item.error)
+            if (imported) config.defaultWorkflow = imported.id
+            config.comfyMode = 'workflow'
+            await saveConfig(config)
             logger.info?.('dsh-tavern-image: 已导入工作流《' + norm.name + '》节点 ' + Object.keys(norm.prompt).length + ' 个')
             sendJson(response, 200, {
               ok: true, name: norm.name, file: safe + '.tavern-comfy-v1.json',
@@ -3312,13 +3379,13 @@ function createRuntime(ctx, overrides, logger, deps) {
               // 改 LoRA 的启用与权重（按节点 id）
               // 改各类绑定：{ positive: [{node,input}], negative: [...], size/steps/cfg/model/seed 同理 }
               const patchBindings = body.patch.bindings && typeof body.patch.bindings === 'object' ? body.patch.bindings : null
-              if (patchBindings) {
-                for (const key of ['positive', 'negative', 'seed', 'batch', 'size', 'steps', 'cfg', 'guidance', 'model']) {
+        if (patchBindings) {
+                 for (const key of ['positive', 'negative', 'seed', 'batch', 'size', 'steps', 'cfg', 'guidance', 'model', 'referenceImages']) {
                   if (!Array.isArray(patchBindings[key])) continue
                   raw.bindings = raw.bindings ?? {}
                   raw.bindings[key] = patchBindings[key]
                     .filter(x => x && x.node !== undefined)
-                    .map(x => ({ node: String(x.node), input: String(x.input ?? 'text') }))
+                     .map(x => ({ node: String(x.node), input: String(x.input ?? (key === 'referenceImages' ? 'image' : 'text')) }))
                 }
               }
               const patchLoras = Array.isArray(body.patch.loras) ? body.patch.loras : null
@@ -3397,7 +3464,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             if (patch.activation !== undefined && !['always', 'keywords'].includes(patch.activation)) throw new Error('注入方式只能选常驻或关键词触发')
             if (patch.keywords !== undefined && (!Array.isArray(patch.keywords) || patch.keywords.length > 64 || patch.keywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('关键词最多 64 个，每个最多 200 字')
             if (patch.andKeywords !== undefined && (!Array.isArray(patch.andKeywords) || patch.andKeywords.length > 64 || patch.andKeywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('附加条件最多 64 个，每个最多 200 字')
-            const backendIds = new Set(['comfyui', 'tags', 'natural', 'mixed', 'structured', ...IMAGE_PROVIDERS.map(item => item.id)])
+            const backendIds = new Set(['comfyui', 'custom', ...PROMPT_FORMATS, ...IMAGE_API_PROTOCOLS, ...IMAGE_PROVIDERS.map(item => item.id)])
             if (patch.backends !== undefined && (!Array.isArray(patch.backends) || patch.backends.some(id => !backendIds.has(id)))) throw new Error('请选择支持的生图渠道类型')
             const bookKey = normalizeBookKey(body?.book)
             const format = worldbookFormat(body?.format)
@@ -3411,6 +3478,7 @@ function createRuntime(ctx, overrides, logger, deps) {
                 if (typeof patch.comment === 'string') e.comment = patch.comment
                 if (typeof patch.content === 'string') e.content = patch.content
                 if (typeof patch.enabled === 'boolean') e.enabled = patch.enabled
+                if (patch.backends !== undefined) e.backends = [...patch.backends]
                 Object.assign(e, normalizeEntryActivation({ ...e, ...patch }))
               }
               await saveOneBook(bookKey, wb, format)
@@ -3465,6 +3533,8 @@ function createRuntime(ctx, overrides, logger, deps) {
         for (const key of ['comfyUrl', 'defaultWorkflow', 'artistPosition', 'weightMode', 'negativeMode', 'styleArtists', 'imageSize', 'plannerProvider', 'plannerModel', 'plannerExtra', 'traitMode', 'visionProvider', 'visionModel', 'plannerEffort', 'visionEffort', 'comfyAuthMode', 'comfyAuthUser', 'promptManualPositive', 'promptManualNegative']) {
           if (typeof patch[key] === 'string') config[key] = key === 'comfyUrl' ? patch[key].replace(/\/+$/, '') : patch[key]
         }
+        if (patch.comfyMode === 'workflow') config.comfyMode = 'workflow'
+        if (typeof patch.defaultWorkflow === 'string' && patch.defaultWorkflow && workflows.some(item => item.id === patch.defaultWorkflow && !item.error)) config.comfyMode = 'workflow'
         // 正文图片显示大小：0 / 空 = 默认（保持原来的显示效果）；数字夹进 160–1200。
         // 非法输入（NaN、负数、乱填的字符串）一律退回默认，绝不让它进配置。
         if (patch.imageDisplayWidth !== undefined) config.imageDisplayWidth = normalizeImageDisplayWidth(patch.imageDisplayWidth)
@@ -3483,8 +3553,6 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (patch.jpegQuality !== undefined) config.jpegQuality = Math.max(50, Math.min(100, Math.round(Number(patch.jpegQuality) || 88)))
         if (typeof patch.jpegBackground === 'string') config.jpegBackground = /^#?[0-9a-f]{6}$/i.test(patch.jpegBackground.trim()) ? (patch.jpegBackground.trim().startsWith('#') ? patch.jpegBackground.trim() : '#' + patch.jpegBackground.trim()) : '#ffffff'
         for (const key of ['promptManualPositive', 'promptManualNegative']) if (typeof patch[key] === 'string') config[key] = patch[key].slice(0, 4000)
-        if (patch.comfyMode === 'simple' || patch.comfyMode === 'workflow') config.comfyMode = patch.comfyMode
-        if (patch.comfySimple && typeof patch.comfySimple === 'object' && !Array.isArray(patch.comfySimple)) config.comfySimple = normalizeComfySimpleConfig({ ...config.comfySimple, ...patch.comfySimple })
         if (typeof patch.traitMode === 'string' && ['auto', 'sfw', 'all'].includes(patch.traitMode)) config.traitMode = patch.traitMode
         // 兼容旧字段名（画师串多套）
         if (Array.isArray(patch.artistSets)) {
@@ -4635,10 +4703,8 @@ async function loadConfig(overrides) {
   const file = await readJson(CONFIG_PATH, {})
   const config = { ...DEFAULTS, ...file, ...(overrides ?? {}) }
   config.comfyUrl = String(config.comfyUrl || DEFAULTS.comfyUrl).replace(/\/+$/, '')
-  config.comfyMode = config.comfyMode === 'simple' ? 'simple' : 'workflow'
   // 这个开关主要在配置文件里手改，string "true" 一律当成 false，避免手误以为打开了
   config.allowChinesePrompt = config.allowChinesePrompt === true
-  config.comfySimple = normalizeComfySimpleConfig(config.comfySimple)
   config.generationMode = config.generationMode === 'reference' ? 'reference' : 'text'
   config.promptPresets = normalizePromptPresets(config.promptPresets)
   if (!['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode)) config.promptMode = 'auto'
@@ -4650,7 +4716,7 @@ async function loadConfig(overrides) {
   config.jpegBackground = /^#?[0-9a-f]{6}$/i.test(String(config.jpegBackground ?? '')) ? ('#' + String(config.jpegBackground).replace(/^#/, '')) : '#ffffff'
   config.injectWeight = Number(config.injectWeight) || 0
   config.imageGenCount = Math.max(1, Math.min(6, Number(config.imageGenCount) || 2))
-  config.imageChannels = normalizeChannels(config.imageChannels)
+  Object.assign(config, migrateLegacyImageConfig(config))
   config.imageConcurrency = Math.max(1, Math.min(4, Math.trunc(Number(config.imageConcurrency)) || 2))
   config.imageDisplayWidth = normalizeImageDisplayWidth(config.imageDisplayWidth)
   config.credentialRefs = Array.isArray(config.credentialRefs) ? config.credentialRefs.filter(item => typeof item === 'string') : []
@@ -4661,6 +4727,9 @@ async function loadConfig(overrides) {
 async function saveConfig(config) {
   const out = {}
   for (const key of Object.keys(DEFAULTS)) out[key] = config[key]
+  // Keep retired simple-mode data opaque and recoverable until the user edits it manually.
+  if (config.comfyMode === 'simple' || config.comfyMode === 'workflow') out.comfyMode = config.comfyMode
+  if (config.comfySimple !== undefined) out.comfySimple = structuredClone(config.comfySimple)
   out.workflows = (config.workflows ?? []).map(item => {
     const copy = { ...item }
     delete copy.discovered
@@ -5593,7 +5662,7 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
   const stage = (name, data) => { if (onStage) { try { onStage(name, data) } catch {} } }
   const tag = String(params.tag ?? '').trim()
   const artist = String(params.artist ?? '').trim()
-  const backend = promptBackendContext(config, workflow)
+  const backend = channel ? effectiveImageProvider(channel) : promptBackendContext(config, workflow)
   const mode = resolvePromptMode(config, backend)
 
   if (mode === 'structured') {
@@ -5621,7 +5690,7 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
   // 自然语言模型（LLM 文本编码器）不认 (tag:1.2) 这种权重，总是去掉；tag 模型按设置处理。
   // 画风词和按名字补上的外貌是在规划提示词清理之后才拼进来的，tag 写法再去一次重。
   const injectedText = mode === 'tags' ? dedupeTags(injected.text) : injected.text
-  const positive = formatPromptForBackend(applyWeights(injectedText, resolveWeightMode(config, channel?.provider ?? backend, mode)), backend, mode)
+  const positive = formatPromptForBackend(applyWeights(injectedText, resolveWeightMode(config, backend, mode)), backend, mode)
   stage('compile-positive', { mode, artistPosition: params.artistPosition ?? config.artistPosition, artist, rawBase, afterPreset: base, afterInjection: injected.text, final: positive, hits: injected.hits, provenance })
 
   const workflowNegative = String(
@@ -5648,11 +5717,12 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 }
 
 export function compileChannelJob({ params, config, definitions, channel = null, onStage = null }) {
+  const provider = channel ? effectiveImageProvider(channel) : effectiveImageProvider(config.imageBackend)
   const prepared = prepareImagePrompt({ params, config, definitions, channel, onStage })
-  const promptMode = resolvePromptMode(config, channel?.provider ?? config.imageBackend)
+  const promptMode = resolvePromptMode(config, provider)
   const separator = promptMode === 'structured' ? '\n\n' : ', '
-  const nativeNovelai = channel?.provider === 'novelai' && channel?.options?.protocol !== 'chat'
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend, { characterNegativePriority: nativeNovelai })
+  const nativeNovelai = provider === 'novelai' && !(channel?.provider === 'novelai' && channel?.options?.protocol === 'chat')
+  const characters = compileCharacterList(params.characters, definitions, config, promptMode, provider, { characterNegativePriority: nativeNovelai })
   if (!nativeNovelai && characters.length) {
     prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(separator)
     prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(separator)

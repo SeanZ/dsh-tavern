@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   PROMPT_FORMATS, BUILTIN_PROMPT_PRESETS, resolvePromptMode, normalizePromptPresets,
-  getPromptGuidance, formatPromptForBackend, composePresetText, promptPresetNegative,
+  getPromptGuidance, formatPromptForBackend, composePresetText, promptPresetNegative, promptBackendContext,
   appendStructuredSection, composeStructuredPrompt, combineStructuredPrompt,
 } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/prompt-presets.js'
 import {
@@ -19,6 +19,44 @@ test('structured is explicit fourth format; automatic choices remain backwards c
   assert.equal(resolvePromptMode({}, 'comfyui'), 'tags')
   assert.equal(resolvePromptMode({}, 'comfyui flux'), 'natural')
   assert.equal(resolvePromptMode({}, 'comfyui anima'), 'mixed')
+})
+
+test('custom prompt, weight and worldbook contexts follow the selected allowlisted protocol', () => {
+  const config = { imageBackend: 'custom', activeImageChannel: 'custom-image', imageChannels: [
+    { id: 'custom-image', provider: 'custom', options: { apiProtocol: 'qwen' } },
+  ] }
+  const backend = promptBackendContext(config)
+  assert.equal(backend, 'qwen')
+  assert.equal(resolvePromptMode({}, backend), 'natural')
+  assert.equal(formatPromptForBackend('(blue eyes:1.2)', backend, 'natural'), 'blue eyes')
+  const context = selectPlannerContext({ backend, entries: [
+    { index: 0, content: 'Qwen guidance', enabled: true, backends: ['qwen'] },
+    { index: 1, content: 'Atlas guidance', enabled: true, backends: ['atlascloud'] },
+  ] })
+  assert.match(context.staticRules, /Qwen guidance/)
+  assert.doesNotMatch(context.staticRules, /Atlas guidance/)
+
+  config.imageChannels[0].options.apiProtocol = 'novelai'
+  const novelai = promptBackendContext(config)
+  assert.equal(novelai, 'novelai')
+  assert.equal(formatPromptForBackend('(blue eyes:1.2)', novelai, 'tags'), '1.2::blue eyes::')
+  assert.equal(resolvePromptMode({}, novelai), 'tags')
+  const roleRules = selectPlannerContext({ backend: novelai, backendAliases: ['custom'], entries: [
+    { index: 2, content: 'custom NAI rule', enabled: true, backends: ['custom'] },
+    { index: 3, content: 'NAI role rule', enabled: true, backends: ['novelai'] },
+    { index: 4, content: 'Atlas-only rule', enabled: true, backends: ['atlascloud'] },
+  ] })
+  assert.match(roleRules.staticRules, /custom NAI rule/)
+  assert.match(roleRules.staticRules, /NAI role rule/)
+  assert.doesNotMatch(roleRules.staticRules, /Atlas-only rule/)
+})
+
+test('retired Comfy simple settings no longer affect full-workflow prompt detection', () => {
+  const config = { imageBackend: 'comfyui', comfyMode: 'simple', comfySimple: { template: 'anima' } }
+  assert.equal(promptBackendContext(config), 'comfyui')
+  assert.equal(resolvePromptMode(config, promptBackendContext(config)), 'tags')
+  assert.equal(promptBackendContext(config, { summary: { model: 'flux-dev' } }), 'comfyui flux-dev')
+  assert.equal(resolvePromptMode(config, promptBackendContext(config, { summary: { model: 'flux-dev' } })), 'natural')
 })
 
 test('structured normalization preserves Chinese, newlines, repeated traits, indentation and brackets on all backends', () => {

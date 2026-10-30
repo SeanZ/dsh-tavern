@@ -219,6 +219,7 @@ test('Atlas 恢复在转码或写盘期间取消/删除，不覆盖取消状态�
       const refresh = vm.runInNewContext(`(${source.slice(start, end)}\n)`, {
         AbortController, supportsImageTaskResume, structuredClone, jobs, join,
         config: { imageChannels: [channel], queryThrottleMs: 1 },
+        resumableChannelForJob: item => item?.channelId === channel.id && supportsImageTaskResume(channel) ? channel : null,
         channelEndpointOf: item => item.baseUrl,
         cacheRoot: () => 'virtual-cache', persistJobs: async () => {},
         generateImage: async () => ({ bytes: PNG, mediaType: 'image/png' }),

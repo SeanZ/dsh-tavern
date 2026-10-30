@@ -51,6 +51,19 @@ test('四种格式世界书独立读写；当前自动格式按工作流判定�
   assert.equal(backup.body.bundle.data.formatWorldbooks.natural.main.entries[0].content, 'old unique rule')
 })
 
+test('旧 Atlas 有效协议 ID 仍可保存，自定义 NAI 只匹配 NAI 与 custom 规则', async t => {
+  const fixture = await imagePluginFixture(t, { files: {
+    'worldbook.json': { name: 'legacy Atlas rule', entries: [{ comment: 'legacy', content: 'keep this rule', enabled: true, backends: ['atlascloud'] }] },
+  }, config: {
+    imageBackend: 'custom', activeImageChannel: 'custom-image',
+    imageChannels: [{ id: 'custom-image', provider: 'custom', name: 'NAI relay', baseUrl: 'https://nai.example.test', model: 'nai-diffusion-5-full', options: { apiProtocol: 'novelai' } }],
+  } })
+  const runtime = await fixture.start()
+  const saved = await runtime.request('worldbook-entry', { format: 'tags', book: 'main', index: 0, patch: { backends: ['atlascloud', 'custom', 'novelai'] } })
+  assert.equal(saved.status, 200, JSON.stringify(saved.body))
+  assert.deepEqual((await runtime.request('worldbook?format=tags')).body.worldbook.entries[0].backends, ['atlascloud', 'custom', 'novelai'])
+})
+
 test('结构化编译保留中文多行、标识和括号，补充画风/预设/正负词不变成标签串', () => {
   const text = '【人物】\n角色[c1]林月，站在窗边。\n\n【动作】\n抬手，[不要改变身份]。'
   const config = { imageBackend: 'atlascloud', promptMode: 'structured', activePromptPreset: 'story-cinematic', promptManualPositive: '保留书架细节', promptManualNegative: '不要水印', styleNegative: '不要模糊' }

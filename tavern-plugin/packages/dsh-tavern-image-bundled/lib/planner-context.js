@@ -59,7 +59,7 @@ function characterTerms(character) {
 /** Split resident/dynamic rules and scope character detail to names found in the story. */
 const PROMPT_MODES = new Set(PROMPT_FORMATS)
 
-export function selectPlannerContext({ entries = [], selected = [], text = '', definitions = {}, backend = '', promptMode = '', characterUpdates = false } = {}) {
+export function selectPlannerContext({ entries = [], selected = [], text = '', definitions = {}, backend = '', backendAliases = [], promptMode = '', characterUpdates = false } = {}) {
   const staticBlocks = [], dynamicBlocks = []
   const diagnostics = { includedEntries: [], omittedEntries: [], includedCharacters: [], omittedCharacters: [], characterFallback: false }
   const hasEnabled = entries.some(e => e && 'enabled' in e)
@@ -75,7 +75,8 @@ export function selectPlannerContext({ entries = [], selected = [], text = '', d
       // 只给 tag 模型或只给自然语言模型看的规则，换模型时自动切换。
       const modes = meta.backends.filter(b => PROMPT_MODES.has(b.toLowerCase())).map(b => b.toLowerCase())
       const names = meta.backends.filter(b => !PROMPT_MODES.has(b.toLowerCase()))
-      if (names.length && !names.includes(String(backend))) reason = { included: false, reason: 'backend-mismatch' }
+      const acceptedBackends = new Set([String(backend), ...(Array.isArray(backendAliases) ? backendAliases.map(String) : [])])
+      if (names.length && !names.some(name => acceptedBackends.has(name))) reason = { included: false, reason: 'backend-mismatch' }
       else if (modes.length && promptMode && !modes.includes(String(promptMode))) reason = { included: false, reason: 'prompt-mode-mismatch' }
       else if (!hasEnabled && !wanted.has(index)) reason = { included: false, reason: 'not-selected' }
       else reason = entryReason(entry, text)

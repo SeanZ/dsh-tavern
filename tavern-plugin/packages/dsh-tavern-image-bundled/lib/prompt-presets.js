@@ -1,3 +1,5 @@
+import { effectiveImageProvider } from './image-provider-capabilities.js'
+
 export const PROMPT_FORMATS = Object.freeze(['tags', 'natural', 'mixed', 'structured'])
 const MODES = new Set(['auto', ...PROMPT_FORMATS])
 export const STRUCTURED_PROMPT_SECTIONS = Object.freeze(['人物与表情', '服装', '动作', '环境', '镜头与光线', '风格', '约束'])
@@ -115,13 +117,11 @@ export function validPromptPresetId(config = {}, value = config.activePromptPres
 /** Prompt-mode context follows the image execution path, never stale Comfy settings on another provider. */
 export function promptBackendContext(config = {}, workflow = null) {
   const backend = String(config.imageBackend || 'comfyui').toLowerCase()
-  if (backend !== 'comfyui') return backend
-  return [
-    'comfyui',
-    config.comfyMode === 'simple' ? config.comfySimple?.template : '',
-    workflow?.summary?.model,
-    workflow?.label,
-  ].filter(Boolean).join(' ')
+  if (backend !== 'comfyui') {
+    const channel = (config.imageChannels ?? []).find(item => item.id === config.activeImageChannel && item.provider === backend)
+    try { return channel ? effectiveImageProvider(channel) : backend } catch { return backend }
+  }
+  return ['comfyui', workflow?.summary?.model, workflow?.label].filter(Boolean).join(' ')
 }
 
 export function resolvePromptMode(config = {}, backend = '') {
@@ -130,10 +130,10 @@ export function resolvePromptMode(config = {}, backend = '') {
   const name = String(backend ?? config.imageBackend ?? '').toLowerCase()
   const isComfy = /(?:^|\s)comfyui(?:$|\s)/.test(name)
   if (isComfy) {
-    if (name.includes('flux') || (config.comfyMode === 'simple' && config.comfySimple?.template === 'flux')) return 'natural'
+    if (name.includes('flux')) return 'natural'
     // Z-Image / Lumina / Qwen-Image / HiDream 用大语言模型做文本编码器，读整句自然语言；SDXL（如 Illustrious、Pony）读 tag。
     if (/z[\s_-]?image|lumina|qwen[\s_-]?image|hidream/.test(name)) return 'natural'
-    if (name.includes('anima') || (config.comfyMode === 'simple' && config.comfySimple?.template === 'anima')) return 'mixed'
+    if (name.includes('anima')) return 'mixed'
     return 'tags'
   }
   if ([...TAG_BACKENDS].some(item => item !== 'comfyui' && (name === item || name.startsWith(item + ' ')))) return 'tags'
