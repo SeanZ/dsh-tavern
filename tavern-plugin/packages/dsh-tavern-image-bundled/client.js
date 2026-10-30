@@ -4890,7 +4890,7 @@ function versionsOf(jobId) {
         const context = data.plannerContext || null
         const providers = [
           ['comfyui', 'ComfyUI'], ['novelai', 'NovelAI'], ['openai', 'OpenAI'], ['gemini', 'Gemini'],
-          ['gemini-chat', 'Gemini Chat'], ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['atlascloud', 'atlas cloud'], ['sdwebui', 'SD WebUI'],
+          ['gemini-chat', 'Gemini Chat'], ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['atlascloud', 'Atlas兼容（自定义）'], ['sdwebui', 'SD WebUI'],
         ]
 
         async function readWorldbook(format) {
@@ -5290,6 +5290,7 @@ function versionsOf(jobId) {
                       const backends = [...next]
                       patchEntry(entry.index, { backends }, false, '适用渠道')
                     } }), label))),
+                  h('div', { style: { fontSize: '10px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, 'Atlas兼容（自定义）适用于协议为 AtlasCloud 且后端支持的自定义渠道；它不是独立渠道。'),
                 ),
                 h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '改动即时保存。'),
               ) : null,

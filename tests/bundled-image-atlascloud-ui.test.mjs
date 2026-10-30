@@ -372,15 +372,16 @@ test('custom Atlas protocol dimension modes expose only the appropriate override
   assert.ok(h.calls.every(call => ['/config', '/image-channel-test'].includes(call.pathname)))
 })
 
-test('worldbook atlas cloud checkbox persists provider applicability through the generic entry-edit flow', async () => {
+test('worldbook Atlas compatibility checkbox persists applicability for custom channels', async () => {
   const h = harness({ worldbookBooks: [{ key: 'main', name: '生图规则', count: 1,
     entries: [{ index: 0, comment: '渠道规则', content: 'test rule', enabled: true, backends: ['openai'] }] }] })
   h.render('worldbook')
   await h.click('编辑')
   function atlasCheckbox() {
-    const label = only(h.tree, node => node.type === 'label' && text(node) === 'atlas cloud', 'worldbook atlas cloud label')
+    const label = only(h.tree, node => node.type === 'label' && text(node) === 'Atlas兼容（自定义）', 'worldbook Atlas compatibility label')
     return only(label, node => node.type === 'input' && node.props.type === 'checkbox', 'atlascloud applicability checkbox')
   }
+  assert.match(text(h.tree), /适用于协议为 AtlasCloud 且后端支持的自定义渠道；它不是独立渠道/)
   assert.equal(atlasCheckbox().props.checked, false)
   await h.act(() => atlasCheckbox().props.onChange({ target: { checked: true } }))
   assert.deepEqual(h.calls.map(call => [call.method, call.pathname]), [['POST', '/worldbook-entry'], ['GET', '/worldbook?format=tags']])
