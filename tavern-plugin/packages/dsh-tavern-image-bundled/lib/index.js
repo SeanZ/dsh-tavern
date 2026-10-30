@@ -207,12 +207,39 @@ const NSFW_HINT = /\b(nsfw|nude|naked|topless|nipples?|pussy|cum|sex|penetration
  */
 // 画面写着赤脚：服装里的鞋袜不再加进去（服装库的整套衣服常带鞋，会和 barefoot 打架，模型照样画鞋）。
 const BAREFOOT = /\b(barefoot|bare[- ]?feet|bare[- ]?foot|no shoes|shoeless|without shoes|shoes off|toes in (?:the )?(?:sand|water|grass|sea)|feet in (?:the )?(?:water|sand|sea)|(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals))\b/i
+const BAREFOOT_ZH = /赤脚|赤着脚|赤足|光脚|光着脚|赤着双脚|双脚赤着|脚赤着|没穿鞋|脱了鞋|鞋已经脱|踢掉了?鞋|拎着鞋|提着鞋/
+const isBarefoot = text => BAREFOOT.test(String(text ?? '')) || BAREFOOT_ZH.test(String(text ?? ''))
+// 画面自己交代了脚上的状态（脱了鞋、换了拖鞋、只穿袜子），或者写的鞋和这身衣服里的鞋不是同一种：
+// 服装里的鞋不再加进去，否则「脚上穿着白色帆布鞋」会和「趿着拖鞋」打架，模型照样画帆布鞋。
+const ZH_FOOTWEAR_NOUN = /人字拖|拖鞋|凉鞋|高跟鞋|雪地靴|马丁靴|雨靴|靴子?|木屐|帆布鞋|运动鞋|足球鞋|篮球鞋|钉鞋|跑鞋|球鞋|板鞋|乐福鞋|老爹鞋|平底鞋|舞鞋|溜冰鞋|冰鞋|旱冰鞋|登山鞋|皮鞋|布鞋|棉鞋|绣花鞋|球袜|袜子|丝袜|棉袜|短袜|长袜|薄袜|裤袜/g
+const ZH_SHOES_OFF = /脱(?:下|掉|去|了)?[^。，；,;]{0,8}?鞋|鞋[^。，；,;]{0,6}?(?:脱|退出来|蹬掉|踢掉|甩掉)|换上?[^。，；,;]{0,6}?拖鞋|趿着|只穿着?[^。，；,;]{0,6}?袜|袜底|穿着袜子/
+const EN_SHOES_OFF = /\b(?:in (?:her |his |their )?(?:socks|stockings|slippers)|socks only|stocking(?:ed)? feet|(?:wearing|in) (?:\w+ ){0,2}(?:slippers|flip[- ]flops)|took off (?:her |his |their )?(?:shoes|sneakers|boots)|kicked off (?:her |his |their )?(?:shoes|sneakers|boots))\b/i
+/** 画面写了脱鞋/换鞋，或写的鞋在这身衣服里找不到：服装里的鞋不再写进提示词。 */
+export function footwearOverridden(sceneText, outfitText) {
+  const scene = String(sceneText ?? '')
+  if (ZH_SHOES_OFF.test(scene) || EN_SHOES_OFF.test(scene)) return true
+  const nouns = [...new Set(scene.match(ZH_FOOTWEAR_NOUN) ?? [])]
+  return nouns.length > 0 && !nouns.some(noun => String(outfitText ?? '').includes(noun))
+}
+/** 这个人身上可能出现的所有衣服文字（服装库、当前穿着、外貌里的鞋袜），用来判断画面写的鞋是不是同一种。 */
+function personWearText(person, extra = '') {
+  return [extra, person?.current?.outfit, person?.current?.previous, ...Object.values(person?.traits ?? {}),
+    ...(person?.outfits ?? []).filter(o => o && o.enabled !== false).map(o => [o.upper, o.lower, o.shoes, o.full, o.accessory].join(' '))]
+    .map(v => String(v ?? '')).join(' ')
+}
 // 鞋本身拿在手里时，负面里不能写 shoes。
-const SHOES_IN_HAND = /\b(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals)\b/i
+const SHOES_IN_HAND = /\b(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals)\b|(?:拎|提|拿|捧|抱|握|摆|并)[^。，；,;]{0,8}鞋/i
 const FOOTWEAR = /\b(shoes?|sneakers?|boots?|heels|high[- ]heels|sandals?|slippers?|loafers?|flats|pumps|socks?|clogs|geta|footwear|mary janes)\b/i
 /** 去掉一段衣服描述里的鞋袜部分（按逗号分段）。 */
-function dropFootwear(text) {
-  return String(text ?? '').split(',').map(t => t.trim()).filter(t => t && !FOOTWEAR.test(t)).join(', ')
+// keepSocks：只是脱了鞋、换了拖鞋（不是赤脚）时，袜子、丝袜还穿在脚上，不能一起删。
+function dropFootwear(text, keepSocks = false) {
+  const value = String(text ?? '')
+  if (/[\u3400-\u9fff]/.test(value)) {
+    const shoe = keepSocks ? /鞋|靴|木屐/ : /鞋|靴|木屐|袜/
+    return value.split(/[,，、]/).map(t => t.trim()).filter(t => t && !shoe.test(t)).join('，')
+  }
+  const sock = /\b(?:socks?|stockings?|pantyhose|tights|thigh[- ]?highs|kneehighs?)\b/i
+  return value.split(',').map(t => t.trim()).filter(t => t && !(FOOTWEAR.test(t) && !(keepSocks && sock.test(t) && !/\b(?:shoes?|sneakers?|boots?|heels|sandals?|slippers?|loafers?|flats|pumps)\b/i.test(t)))).join(', ')
 }
 const GARMENT_WORDS = ['dress', 'gown', 'skirt', 'shirt', 'blouse', 'top', 'sweater', 'cardigan', 'hoodie', 'jacket', 'coat', 'vest', 'apron', 'kimono', 'yukata', 'robe', 'bathrobe', 'pajamas', 'uniform', 'suit', 'pants', 'trousers', 'jeans', 'shorts', 'leggings', 'swimsuit', 'bikini', 'towel', 'lingerie', 'bra', 'panties', 'underwear', 'stockings', 'pantyhose', 'socks', 'sneakers', 'boots', 'heels', 'sandals', 'slippers']
 const HELD_ITEM = /\b(?:holding|carrying|lifting|raising|showing|in (?:her |his |their |own )?hands?|on (?:the )?(?:bed|hanger|floor|chair))\b/i
@@ -288,7 +315,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       }).filter(Boolean))
       const bareScene = BARE_SCENE.test(stripMacros(text))
       const sceneText = stripMacros(text)
-      const barefoot = BAREFOOT.test(sceneText)
+      const barefoot = isBarefoot(sceneText)
       // 服装的「背面」字段只在背影画面里用：画面写着背影，或者同一段里刚调用的人物宏 angle 是背面。
       const backView = BACK_VIEW.test(sceneText)
       let lastBack = false
@@ -305,12 +332,14 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
         const key = norm(asked)
         const bits = []
         const pushOutfit = (outfit) => {
+          const shoesOff = !barefoot && footwearOverridden(sceneText, [outfit.upper, outfit.lower, outfit.shoes, outfit.full].join(' '))
+          const noShoes = barefoot || shoesOff
           for (const field of ['upper', 'lower', 'shoes', 'accessory', 'full', 'back']) {
             if (barefoot && field === 'shoes') continue
             // 「整体印象」(full) 是给自然语言模型的一句概括；tag 写法里已有上衣下装时它只是噪音。
             if (field === 'full' && !natural && (String(outfit.upper ?? '').trim() || String(outfit.lower ?? '').trim())) continue
             if (field === 'back' && !(backView || lastBack)) continue
-            const value = barefoot ? dropFootwear(outfit[field]) : String(outfit[field] ?? '').trim()
+            const value = noShoes ? dropFootwear(outfit[field], shoesOff) : String(outfit[field] ?? '').trim()
             if (value && !PLACEHOLDER_VALUE.test(value)) bits.push(value)
           }
         }
@@ -364,14 +393,17 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
               wearMoment = person.current.previous ? moment : ''
             }
           }
-          if (barefoot && wear) wear = dropFootwear(wear)
+          const shoesOff = !barefoot && footwearOverridden(sceneText, personWearText(person, wear))
+          const noShoes = barefoot || shoesOff
+          if (noShoes && wear) wear = dropFootwear(wear, shoesOff)
           const picked = characterTags(person, {
             nsfw,
             back,
             mode,
             upper,
             lower,
-            barefoot,
+            barefoot: noShoes,
+            keepSocks: shoesOff,
             outfitName: outfitName || undefined,
             noOutfit: Boolean(wear) || ownsStandalone || (!libraryHit && autoOff),
             tags: !natural,
@@ -525,9 +557,9 @@ function characterTags(character, options = {}) {
     else if (options.outfitName) { if (outfit.name !== options.outfitName) continue }
     else if (!isDefault && (character.outfits ?? []).some(o => o.default && o.enabled !== false)) continue
     for (const key of ['upper', 'lower', 'shoes', 'accessory', 'full']) {
-      if (options.barefoot && key === 'shoes') continue
+      if (options.barefoot && !options.keepSocks && key === 'shoes') continue
       if (key === 'full' && options.tags && (String(outfit.upper ?? '').trim() || String(outfit.lower ?? '').trim())) continue
-      const value = options.barefoot ? dropFootwear(outfit[key]) : String(outfit[key] ?? '').trim()
+      const value = options.barefoot ? dropFootwear(outfit[key], options.keepSocks) : String(outfit[key] ?? '').trim()
       if (value && !PLACEHOLDER_VALUE.test(value)) { tags.push(value); origins.push({ field: 'outfit.' + key, outfitId: outfit.id, text: value }) }
     }
     if (options.back === true && String(outfit.back ?? '').trim()) {
@@ -5524,7 +5556,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   // 这里的文字已经展开了人物外貌，外貌里的 medium breasts 之类会让每张图都被当成裸露画面。
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
   const footText = stripMacros(options?.raw ?? source)
-  const barefoot = BAREFOOT.test(footText)
+  const barefoot = isBarefoot(footText)
   // 规划里的人物宏已经展开过的人，不再按名字重复注入；他的其他形态也不注入
   // （否则同一个人的两种外貌会同时出现）。
   const label = c => (splitTags(c?.match)[0] || String(c?.name ?? '')) + ' is '
@@ -5565,8 +5597,10 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     // 两套衣服同时进提示词会打架（brown leather boots 对上 black leather boots）。
     const dressedByPlanner = !natural && PLANNER_GARMENT.test(footText)
     const recordedRaw = bare || dressedByPlanner ? '' : resolveWearText(character, character.current?.outfit)
-    const recorded = barefoot ? dropFootwear(recordedRaw) : recordedRaw
-    const picked = characterTags(character, { nsfw, back, full, mode: config.traitMode, barefoot, noOutfit: Boolean(recordedRaw) || bare || dressedByPlanner, tags: !natural })
+    const shoesOff = !barefoot && footwearOverridden(footText, personWearText(character, recordedRaw))
+    const noShoes = barefoot || shoesOff
+    const recorded = noShoes ? dropFootwear(recordedRaw, shoesOff) : recordedRaw
+    const picked = characterTags(character, { nsfw, back, full, mode: config.traitMode, barefoot: noShoes, keepSocks: shoesOff, noOutfit: Boolean(recordedRaw) || bare || dressedByPlanner, tags: !natural })
     // options.provenance：诊断用，记录每段注入文字来自哪个人物的哪个字段、作用于正向还是整图负向。
     if (Array.isArray(options?.provenance)) for (const origin of picked.origins ?? []) options.provenance.push({ stage: 'definition-injection', characterId: String(character.id ?? ''), characterName: String(character.name ?? ''), matchedBy: keys.find(key => key && source.includes(key)) ?? '', appliedScope: origin.channel === 'negative' ? 'whole-image-negative' : 'whole-image-positive', ...origin })
     if (natural) {
