@@ -309,7 +309,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
 export function cardImportFromCard({ card, resolve, name }) {
   const collected = collectCardAssets(card, resolve)
   const text = JSON.stringify(card)
-  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)$/i, '') || '人物卡'
+  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)(\.png)?$/i, '') || '人物卡'
   if (collected.cover && isPng(collected.cover.bytes)) {
     const png = pngWithCard(collected.cover.bytes, text)
     return { payload: { kind: 'png', name: base + '.png', b64: Buffer.from(text, 'utf8').toString('base64'), fileB64: png.toString('base64') }, collected: { ...collected, cover: null } }

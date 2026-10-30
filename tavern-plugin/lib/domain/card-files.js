@@ -18,7 +18,7 @@ export function createCardFiles({ cardPreparation, fileResources, castAssets, st
   }
   // A CHARX, DSH card or card bundle read from disk: its packs first, so a failure leaves no card behind.
   async function importCardArchiveFile(file, name) {
-    const label = /\.dshcard$/i.test(name) ? 'DSH 人物卡' : 'CHARX'
+    const label = /\.dshcard(\.png)?$/i.test(name) ? 'DSH 人物卡' : 'CHARX'
     // The very same file again: open the card already imported from it (if still unchanged).
     const archiveSha256 = await cardImportIdentity.fileSha256(file)
     const existing = await cardImportIdentity.find(archiveSha256)
@@ -152,14 +152,20 @@ export function createCardFiles({ cardPreparation, fileResources, castAssets, st
     return { name, bytes: pngWithTextChunks(image, [pngCardTextChunk('chara', text), pngCardTextChunk('ccv3', text)]) }
   }
   // One export, format chosen by content: character material only travels in CHARX,
-  // a cover makes the standard PNG card, and a bare card stays SillyTavern JSON.
+  // a cover makes the standard PNG card, and a bare card stays SillyTavern JSON. A CHARX with a cover goes
+  // behind that PNG card (.charx.png): systems show the cover as its icon, other tavern apps read the PNG card,
+  // and Tavern imports the whole CHARX.
   async function exportCardFile(input) {
     const cardPath = normalizeResourcePath(input, 'card')
     const stage = await stageMaterial.hasMaterial(cardPath, (await cardSummaries.read(cardPath).catch(() => null))?.name)
     const manifest = await castAssets.read(cardPath)
     const hasMaterial = stage || manifest.characters.some(character => character.avatar || Object.values(character.sprites || {}).some(Boolean) || character.voiceReferences?.length)
       || (manifest.extras || []).some(item => item.file)
-    if (hasMaterial) return { ...await exportCardCharx(cardPath), extension: 'charx', contentType: 'application/zip' }
+    if (hasMaterial) {
+      const charx = await exportCardCharx(cardPath)
+      if (!await fileResources.hasCardImage(cardPath)) return { ...charx, extension: 'charx', contentType: 'application/zip' }
+      return { name: charx.name, bytes: Buffer.concat([(await exportCardPng(cardPath)).bytes, charx.bytes]), extension: 'charx.png', contentType: 'image/png' }
+    }
     if (await fileResources.hasCardImage(cardPath)) return { ...await exportCardPng(cardPath), extension: 'png', contentType: 'image/png' }
     const { document } = await presentCardText(cardPath)
     return { name: str(document?.data?.name || '人物卡'), bytes: Buffer.from(JSON.stringify(document, null, 2)), extension: 'json', contentType: 'application/json; charset=utf-8' }

@@ -48,12 +48,27 @@ export async function openZipFile(file, { label = 'ZIP' } = {}) {
     for (let offset = tail.length - 22; offset >= 0; offset--) if (tail.readUInt32LE(offset) === 0x06054b50) { eocd = offset; break }
     if (eocd < 0) fail(label, '不是有效的 ZIP')
     let count = tail.readUInt16LE(eocd + 10), directorySize = tail.readUInt32LE(eocd + 12), directoryOffset = tail.readUInt32LE(eocd + 16)
+    // Bytes in front of the archive (a cover PNG before a DSH card or CHARX, as in 大肥鱼.dshcard.png): the
+    // archive's own offsets count from its first byte, so every offset moves by the length of what precedes it.
+    const eocdAt = fileSize - tail.length + eocd
+    let prefix = 0
     // ZIP64: the locator sits right before the end record and points at the ZIP64 end record.
     if (eocd >= 20 && tail.readUInt32LE(eocd - 20) === 0x07064b50) {
-      const record = await read(handle, Number(tail.readBigUInt64LE(eocd - 20 + 8)), 56)
-      if (record.length < 56 || record.readUInt32LE(0) !== 0x06064b50) fail(label, 'ZIP64 目录损坏')
+      const declared = Number(tail.readBigUInt64LE(eocd - 20 + 8))
+      let record = await read(handle, declared, 56)
+      if (record.length < 56 || record.readUInt32LE(0) !== 0x06064b50) {
+        // With bytes in front, the record is where it always is: right before the locator.
+        const at = eocdAt - 20 - 56
+        record = at >= 0 ? await read(handle, at, 56) : Buffer.alloc(0)
+        prefix = at - declared
+      }
+      if (record.length < 56 || record.readUInt32LE(0) !== 0x06064b50 || prefix < 0) fail(label, 'ZIP64 目录损坏')
       count = Number(record.readBigUInt64LE(32)); directorySize = Number(record.readBigUInt64LE(40)); directoryOffset = Number(record.readBigUInt64LE(48))
+    } else {
+      prefix = eocdAt - (directoryOffset + directorySize)
+      if (prefix < 0) fail(label, '中央目录越界')
     }
+    directoryOffset += prefix
     if (count > MAX_ENTRIES) fail(label, '文件数量过多')
     if (directorySize > MAX_DIRECTORY_BYTES || directoryOffset + directorySize > fileSize) fail(label, '中央目录越界')
     const directory = await read(handle, directoryOffset, directorySize)
@@ -82,7 +97,7 @@ export async function openZipFile(file, { label = 'ZIP' } = {}) {
       if (!entryPath) continue
       if (flags & 1) fail(label, '包含加密文件')
       if (method !== 0 && method !== 8) fail(label, '包含不支持的压缩格式：' + entryPath)
-      entries.set(entryPath, { path: entryPath, size, compressedSize, method, crc, localOffset })
+      entries.set(entryPath, { path: entryPath, size, compressedSize, method, crc, localOffset: localOffset + prefix })
     }
 
     async function dataRange(entry) {
@@ -126,7 +141,8 @@ export async function openZipFile(file, { label = 'ZIP' } = {}) {
       return source.pipe(check)
     }
 
-    return { entries, readBuffer, stream, size: fileSize, close: () => handle.close() }
+    // prefix: how many bytes come before the archive (0 for a plain ZIP).
+    return { entries, readBuffer, stream, size: fileSize, prefix, close: () => handle.close() }
   } catch (error) {
     await handle.close().catch(() => {})
     throw error
