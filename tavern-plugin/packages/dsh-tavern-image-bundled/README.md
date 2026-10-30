@@ -2,7 +2,7 @@
 
 给 DSH Tavern 用的剧情配图插件。它读取已经完成的正文，挑选适合画成插图的场景，再交给你配置的生图服务生成，按剧情位置插回消息里。
 
-可以用本地 ComfyUI、SD WebUI / Forge，也可以接 NovelAI、OpenAI Images、Gemini、atlas cloud 等在线服务。人物资料、画风、提示词规则和图片记录在同一个面板里管理，适合给长篇角色扮演和故事配图。
+可以用本地 ComfyUI、SD WebUI / Forge，也可以接 NovelAI、OpenAI Images、Gemini 等渠道，或新增自定义 API 渠道并选择 AtlasCloud 等协议使用在线服务。人物资料、画风、提示词规则和图片记录在同一个面板里管理，适合给长篇角色扮演和故事配图。
 
 ## 插件的长处
 
@@ -182,11 +182,10 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 | Grok Images | xAI 图片接口 |
 | Seedream / 火山方舟 | Ark 图片接口 |
 | 百炼 Qwen-Image | DashScope 图片接口 |
-| atlas cloud | 原生 `model/generateImage`，支持文生图或附带参考图，自动查询异步任务并下载图片 |
 | SD WebUI / Forge | `sdapi/v1/txt2img` |
-| 自定义 API | 选择 OpenAI Images、Gemini、Gemini Chat、AtlasCloud、Seedream、Grok、Qwen、SD WebUI 或 NovelAI 协议 |
+| 自定义 API | 选择 OpenAI Images、Gemini、Gemini Chat、AtlasCloud 原生异步接口、Seedream、Grok、Qwen、SD WebUI 或 NovelAI 协议 |
 
-同一个提供商可以配置多条渠道，分别保存名称、地址、模型和鉴权；自定义渠道可选择受支持的 API 协议。可以在自己的服务和不同中转之间切换，无需把原配置删掉再重新填写。复制渠道后，需要给副本填写自己的密钥。
+同一个提供商可以配置多条渠道，分别保存名称、地址、模型和鉴权；自定义 API 渠道可选择受支持的协议，包括 AtlasCloud。可以在自己的服务和不同中转之间切换，无需把原配置删掉再重新填写。复制渠道后，需要给副本填写自己的密钥。
 
 这里接的是平台 API，网页登录账号不能代替 API Key。第三方服务只有在兼容相应协议时才能使用；单有网址和密钥，并不代表所有平台都能接入。
 
@@ -194,9 +193,9 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 
 生图请求遇到网络错误时不会自动重发。如果服务端已接收任务但响应丢失，先查看任务记录，再决定是否手动重试，避免重复创建付费任务。
 
-### atlas cloud
+### 自定义渠道使用 AtlasCloud 协议
 
-在 **设置 → 配图 → 在线服务 → 服务商** 中选择 **atlas cloud**，填写 Atlas Cloud API Key 后点“保存并测试连接”，无需另行安装 MCP。
+在 **设置 → 配图 → 生图规划** 中新增「自定义 API」渠道，将「API 协议」设为 **AtlasCloud**，填写 API 根地址与 Atlas Cloud API Key 后点“保存并测试连接”。这使用 AtlasCloud 原生接口，无需另行安装 MCP。
 
 - 默认 API 根地址：`https://api.atlascloud.ai/api/v1`；默认文生图模型：`black-forest-labs/flux-schnell`。模型栏可填写自定义 ID，连接测试后提供当前公开目录中的文生图模型建议。
 - **尺寸参数格式**默认 `size`，将规划尺寸或手填的 `1024x1536` 转成 Atlas 所用的 `1024*1536`。Nano Banana 等模型应改选 `aspect_ratio`；也可选“不发送尺寸参数”，使用模型默认值。不同模型的尺寸、比例枚举不通用，更换模型时请核对平台文档（例如 Seedream 需要其支持的尺寸）。
