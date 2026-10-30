@@ -249,6 +249,21 @@ export function parsePlannerDecision(text) {
   return { decision, reason, characterUpdates, characterUpdatesPresent: Boolean(updateBlock), characterUpdatesValid }
 }
 
+/** 人物库备注（note）里写了「玩家」或 player：这个角色就是玩家本人（正文里的「我」「你」）。 */
+export function isPlayerCharacter(character) {
+  return /玩家|player/i.test(String(character?.note ?? ''))
+}
+
+/**
+ * 这张卡自己绑了玩家角色时，没绑卡的全局通用玩家让开（list 已经按卡筛过）。
+ * 否则清单里会同时出现两个玩家角色，规划不知道「我」该画成谁。
+ */
+export function hideGlobalPlayers(list) {
+  const usable = Array.isArray(list) ? list : []
+  const ownPlayer = usable.some(c => c && c.enabled !== false && isPlayerCharacter(c) && (c.cards ?? []).length)
+  return ownPlayer ? usable.filter(c => !(isPlayerCharacter(c) && !(c.cards ?? []).length)) : usable
+}
+
 /** 人物库 → 给规划模型的"可用角色"清单（按可见块列，模型好照抄）。 */
 const ROSTER_TRAITS = [
   ['feature', '性格气质（据此挑这一刻的表情、神态和动作，不要原样抄进提示词）'],
@@ -344,7 +359,9 @@ export function characterRoster(definitions, { fullTraits = false, text = '' } =
     if (String(character.formCues ?? '').trim()) lines.push('  形态线索（画面里有这些就是这个形态，宏里写这个形态的名字）：' + clip(character.formCues, 200))
     if (character.current?.outfit) lines.push('  当前穿着（之前的正文记录，宏里没写 outfit 时插件会自动用它）：' + clip(character.current.outfit, 400))
     if (!lines.length) lines.push('  （还没填外貌，请按通用描述处理）')
-    blocks.push('- ' + name + ' [stable_id=' + String(character.id ?? '') + ']' + (character.match && character.match !== name ? '（也写作 ' + character.match + '）' : '') + '\n' + lines.join('\n'))
+    // 人物库备注里写了「玩家」的角色：标成玩家角色。规划用第三人称画亲吻、拥抱、抱起时就调用他，不用自己从正文猜「我」是谁。
+    const player = isPlayerCharacter(character) ? '（玩家角色：正文里的「我」「你」就是他）' : ''
+    blocks.push('- ' + name + ' [stable_id=' + String(character.id ?? '') + ']' + player + (character.match && character.match !== name ? '（也写作 ' + character.match + '）' : '') + '\n' + lines.join('\n'))
   }
   return blocks.join('\n')
 }

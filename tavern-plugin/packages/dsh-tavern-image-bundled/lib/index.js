@@ -35,7 +35,7 @@ import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences } 
 import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch, migrateLegacyImageConfig } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
-import { parseImagePlan, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
+import { parseImagePlan, hideGlobalPlayers, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
 import { normalizeEntryActivation, selectPlannerContext } from './planner-context.js'
 import { createDownloadPackage, PLUGIN_DOWNLOADS } from './download-package.js'
 import { createMediaActions } from './media-actions.js'
@@ -1524,7 +1524,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const defsForTurn = applyCharacterSnapshot(definitions, rawParams?.characterSnapshot)
       const card = await currentCard(rawParams?.sessionId || lastSessionId, rawParams?.turn)
       let scopedDefs = card
-        ? { ...defsForTurn, characters: (defsForTurn.characters ?? []).filter(character => usableOnCard(character, card)) }
+        ? { ...defsForTurn, characters: scopeCharacters(defsForTurn.characters, card) }
         : defsForTurn
       let referenceState = null
       if (generationMode === 'reference') {
@@ -1755,7 +1755,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       try { card = await currentCard(session, turn) }
       catch (error) { error.submissionNotStarted = true; throw error }
       const defs = applyCharacterSnapshot(definitions, characterSnapshot)
-      const scoped = card ? { ...defs, characters: (defs.characters ?? []).filter(character => usableOnCard(character, card)) } : defs
+      const scoped = card ? { ...defs, characters: scopeCharacters(defs.characters, card) } : defs
       const keepComfySource = source.backend === 'comfyui' && jobConfig.imageBackend === 'comfyui'
       if (keepComfySource && source.workflowId?.startsWith('simple-')) throw Object.assign(new Error('该作业来自已停用的 ComfyUI 简易模式；原数据已保留，请导入完整 ComfyUI API workflow 后再重绘'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
       const workflow = keepComfySource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
@@ -1902,6 +1902,14 @@ function createRuntime(ctx, overrides, logger, deps) {
         } catch { /* 这一轮拿不到就退回缓存 */ }
       }
       return cardCache.get(id) ?? null
+    }
+
+    /**
+     * 这张卡能用的角色。没绑卡的全局角色一直可用；但这张卡自己绑了一个玩家角色（备注写「玩家」）时，
+     * 全局的通用玩家让开，免得清单里出现两个玩家角色、规划不知道「我」是谁。
+     */
+    function scopeCharacters(list, card) {
+      return hideGlobalPlayers((list ?? []).filter(character => usableOnCard(character, card)))
     }
 
     /** 这个角色在这张卡下可用吗（没绑卡的全局角色一直可用）。 */
@@ -2085,7 +2093,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let visualSnapshot = historySnapshot ?? emptyCharacterSnapshot()
       const scoped = {
         ...timelineDefinitions,
-        characters: (timelineDefinitions.characters ?? []).filter(character => usableOnCard(character, card)),
+        characters: scopeCharacters(timelineDefinitions.characters, card),
       }
       // 规划调用了、但人物库补不上外貌的角色：插件只能写个名字，长相每张都会不一样。
       // 以前这件事完全静默；现在收集起来，配图完成时提示用户。
@@ -2192,7 +2200,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             try { visualSnapshot = boundCharacterSnapshot({ ...visualSnapshot, gameId: String(sessionId ?? ''), turn: Number(turn) || 0, textVersion: String(textVersion ?? '') }) } catch {}
           }
           const updated = applyCharacterSnapshot(definitions, visualSnapshot)
-          scoped.characters = updated.characters.filter(character => usableOnCard(character, card))
+          scoped.characters = scopeCharacters(updated.characters, card)
         }
         return true
       }
