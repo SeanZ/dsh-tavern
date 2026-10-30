@@ -16,7 +16,15 @@ export function normalizeChannels(value, previous = []) {
     const legacyAtlas = sourceProvider === 'atlascloud'
     const provider = legacyAtlas ? 'custom' : sourceProvider
     if (!providerIds.has(provider)) throw new Error('不支持的生图渠道类型')
-    const prior = previous.find(item => item.id === id && (item.provider === provider || (legacyAtlas && item.provider === 'atlascloud')))
+    const requestedProtocol = provider === 'custom'
+      ? (legacyAtlas ? 'atlascloud' : String(raw.options?.apiProtocol || 'openai'))
+      : provider
+    const storedProtocol = item => item.provider === 'custom'
+      ? String(item.options?.apiProtocol || 'openai')
+      : item.provider
+    const prior = previous.find(item => item.id === id
+      && (item.provider === provider || (provider === 'custom' && item.provider === 'atlascloud'))
+      && storedProtocol(item) === requestedProtocol)
     const baseUrl = (text(raw.baseUrl, 2000) || (legacyAtlas ? 'https://api.atlascloud.ai/api/v1' : '')).replace(/\/+$/, '')
     if (baseUrl) {
       let url

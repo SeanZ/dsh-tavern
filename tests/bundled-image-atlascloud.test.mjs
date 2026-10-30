@@ -51,6 +51,25 @@ test('升级前已接单的 Atlas task 可通过迁移后的 custom channel 继�
   assert.deepEqual(calls, [[BASE + '/model/prediction/accepted-before-upgrade', 'GET']])
 })
 
+test('遮蔽后的 Atlas channel form 只从同协议旧配置恢复密钥，clear 标记和协议切换优先', () => {
+  const previous = channel({ sizeMode: 'none' }, { baseUrl: BASE, model: 'my-model' })
+  const hidden = publicChannels([previous])[0]
+  assert.equal(hidden.provider, 'custom')
+  assert.equal(hidden.options.apiProtocol, 'atlascloud')
+  assert.equal('apiKey' in hidden, false)
+  assert.equal(hidden.hasApiKey, true)
+
+  const retained = normalizeChannels([hidden], [previous])[0]
+  assert.equal(retained.apiKey, previous.apiKey)
+  assert.equal('apiKey' in publicChannels([retained])[0], false)
+
+  const cleared = normalizeChannels([{ ...hidden, clearApiKey: true }], [previous])[0]
+  assert.equal(cleared.apiKey, '')
+
+  const switched = normalizeChannels([{ ...hidden, options: { ...hidden.options, apiProtocol: 'qwen' } }], [previous])[0]
+  assert.equal(switched.apiKey, '', 'a key from Atlas must not carry over to another protocol')
+})
+
 test('Atlas 原生异步提交、持久化任务号、轮询、下载；图片服务器不收到密钥', async () => {
   const calls = [], tasks = []
   let polls = 0, taskSaved = false
