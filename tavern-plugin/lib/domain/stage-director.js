@@ -85,6 +85,17 @@ function musicNote(current, offered) {
     '玩家输入或正文让音乐停下（包括只剩环境声的安静）时 music:null，并保持安静直到音乐明确恢复。'
 }
 
+// A later window also reads the pages already directed and this turn's accepted one-shot performances, read-only, so the
+// remainder continues them instead of restarting; the first window and a single full window read only their own pages.
+const pageLine = page => '[' + page.at + '] ' + stagePageText(page)
+function windowText(pages, first, earlier = []) {
+  const own = pages.slice(first - 1).map(pageLine)
+  if (first === 1) return own.join('\n')
+  const played = earlier.map(({ at, op, ...target }) => '[' + at + '] ' + op + ' ' + Object.values(target).join(' '))
+  return ['已导演（只读，不再安排）：', ...pages.slice(0, first - 1).map(pageLine),
+    ...(played.length ? ['已演出（不重复）：' + played.join('；')] : []), '本窗口：', ...own].join('\n')
+}
+
 // The host passes a frozen round body; no DOM, settlement context or history is read here.
 // `judge` (舞台模式 › 判断模型, optional): `config()` is frozen with the turn, `judge(request, config)` answers a window's
 // green-entry questions (engine-judge.js).
@@ -172,7 +183,7 @@ export function createStageDirector({ enabled, turns, data, catalog, binding, co
         return { ok: false, retryable: error.retryable !== false, error: String(error.message || error), ...(error.didYouMean ? { didYouMean: error.didYouMean } : {}) }
       } finally { claimed = false }
     }
-    return { system, turnContext, tool, pages: pages.slice(first - 1), seal, model: frozen.model, call, context, done: () => done, close: () => { open = false } }
+    return { system, turnContext, tool, pages: pages.slice(first - 1), text: windowText(pages, first, window.earlier), seal, model: frozen.model, call, context, done: () => done, close: () => { open = false } }
   }
   async function run(body, signal, window) {
     if (!body) return
@@ -182,7 +193,7 @@ export function createStageDirector({ enabled, turns, data, catalog, binding, co
     try {
       await runAgent({ task: 'stage-director', persistent: false, sessionId: body.sessionId, turn: body.turn,
         selection: request.model, signal, webSearchEnabled: false, system: request.system, turnContext: request.turnContext,
-        messages: [{ role: 'assistant', content: [{ type: 'text', text: request.pages.map(page => '[' + page.at + '] ' + stagePageText(page)).join('\n') }] }], tools: [request.tool],
+        messages: [{ role: 'assistant', content: [{ type: 'text', text: request.text }] }], tools: [request.tool],
         stopToolsWhen: request.done, acceptWithoutText: request.done,
         onToolCall: async (call, execution) => JSON.stringify(await request.call(call.arguments, execution?.signal || signal)) })
       return request.done()
