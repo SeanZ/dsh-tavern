@@ -2733,9 +2733,27 @@ function createRuntime(ctx, overrides, logger, deps) {
         ].join('\n')
       }
 
+      // 画图模型读中文整句（MOSS，或手动打开了 allowChinesePrompt）时，外貌和服装都写中文整句；
+      // design-rules.md 里「全部英文 tag」「用权重强调」那几条是给 tag 模型的。
+      // 已有角色的外貌本来就是中文时也按中文写；已有角色还是英文 Tag 的，要整条改写成中文。
+      const hasCurrent = Boolean(current && typeof current === 'object' && current.name)
+      const chineseDesign = chineseAllowed(config, styleWorkflow()) || (hasCurrent && chinesePerson(current))
+      const rewriteEnglish = chineseDesign && hasCurrent && !chinesePerson(current)
+      const languageNote = chineseDesign ? [
+        '【语言要求（优先于设计规范里「全部使用英文 tag」「用权重强调」那几条）】',
+        '当前的画图模型读中文整句，不认英文 Tag：人物外貌各分块和服装各字段，全部用中文完整短句写，不写英文 Tag，不加 (( )) 权重括号。',
+        '- 人物外貌照人物库现有的写法，例如「她是一位二十二岁的年轻女子，身形纤细修长；脸是线条清晰的瓜子脸……」。',
+        '- 服装：上衣以「上身穿着」开头，下装以「下身是」开头，鞋袜以「脚上穿着」开头（光脚写「光着脚」）；每一件都写颜色、面料和款式，不写「素色」「深色」这种含糊的颜色。',
+        '- 旗袍、连衣裙、长袍这类连体的衣服：上衣写整件，下装写下摆的长度，不要把下装空着。不写开衩、裙摆分叉、「露出一截腿」：人一坐下，模型会从开衩里多画出一条腿。',
+        '- 发型不写进服装（发型属于人物外貌），发饰可以写在配饰里；不写否定句（「没有……」「不露……」），画图模型会把否定的东西画出来。',
+        '- 服装名称 4～10 个字，不带括号，不加「女装·常服」这类分类后缀。已有服装的名称原样保留。',
+        ...(rewriteEnglish ? ['- 这个角色现有的外貌和服装是英文 Tag：这次要把每一个分块、每一套服装都改写成中文整句（意思照原来的，不要丢细节），服装名称改成不带括号的中文短名。这一条优先于「没提到的字段原样保留」。'] : []),
+      ].join('\n') : ''
+
       const ask = [
         // 有参考图时它排第一：模型对靠前的内容权重更高
         photoNote,
+        languageNote,
         improveNote,
         brief ? '用户的要求：' + brief : '',
         photoNote
