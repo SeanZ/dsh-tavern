@@ -179,6 +179,50 @@ test('save snapshots invocation data, serializes same-file writes, and preserves
   assert.equal((await fs.readdir(join(root, 'format-worldbooks', 'tags'))).some(name => name.includes('.tmp-')), false)
 })
 
+test('transient Windows-style replace errors recover; persistent errors preserve the original', async t => {
+  const root = await fixture(t)
+  await seedLegacy(root)
+  let transientFailures = 1
+  let persistentlyFail = false
+  const store = createFormatWorldbooks({ root, io: { ...fs, rename: async (from, to) => {
+    if (transientFailures > 0) {
+      transientFailures--
+      throw Object.assign(new Error('file temporarily held by scanner'), { code: 'EPERM' })
+    }
+    if (persistentlyFail) throw Object.assign(new Error('replacement denied'), { code: 'EPERM' })
+    return fs.rename(from, to)
+  } } })
+  await store.ensure()
+  const recovered = await store.writeBook('tags', 'main', { name: 'recovered', entries: [] })
+  assert.equal(recovered.name, 'recovered')
+  assert.equal((await store.readBook('tags', 'main')).name, 'recovered')
+
+  const file = pathFor(root, 'tags')
+  const before = await fs.readFile(file, 'utf8')
+  persistentlyFail = true
+  await assert.rejects(store.writeBook('tags', 'main', { name: 'must remain unpublished', entries: [] }), { code: 'EPERM' })
+  assert.equal(await fs.readFile(file, 'utf8'), before)
+  assert.equal((await fs.readdir(join(root, 'format-worldbooks', 'tags'))).some(name => name.includes('.tmp-')), false)
+})
+
+test('upgrade retry rechecks the source and preserves a concurrent edit', async t => {
+  const { root } = await installedV1(t, books => { books.main.entries = [] })
+  let raceOnRename = true
+  const file = pathFor(root, 'structured')
+  const concurrent = JSON.stringify({ name: '并发编辑', entries: [] })
+  const store = createFormatWorldbooks({ root, io: { ...fs, rename: async (from, to) => {
+    if (raceOnRename && to === file) {
+      raceOnRename = false
+      await fs.writeFile(file, concurrent)
+      throw Object.assign(new Error('temporary sharing violation'), { code: 'EPERM' })
+    }
+    return fs.rename(from, to)
+  } } })
+  const status = await store.getUpgradeStatus('main')
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-prose'] }), { code: 'WORLDBOOK_UPGRADE_STALE' })
+  assert.equal(await fs.readFile(file, 'utf8'), concurrent)
+})
+
 test('book normalizer preserves metadata and accepts supported legacy import shapes', () => {
   const inputs = [
     { entries: { '4': { uid: 4, content: 'hello', disable: true, key: ['hello'], constant: false } } },

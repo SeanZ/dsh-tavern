@@ -280,12 +280,27 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
   // Both publication operations expose only complete files. A hard link provides
   // atomic create-if-absent (rename alone would overwrite another initializer's
   // winner). Temp files always live beside a validated internal target path.
-  async function publish(file, text, replace = false) {
+  async function publish(file, text, replace = false, beforeReplace = null) {
     await io.mkdir(dirname(file), { recursive: true })
     const temp = file + '.tmp-' + randomUUID()
     await io.writeFile(temp, text, { encoding: 'utf8', flag: 'wx' })
     try {
-      if (replace) await io.rename(temp, file)
+      if (replace) {
+        // Windows file scanners can briefly hold either path while a worldbook
+        // is being replaced. Keep the same-file rename atomic and retry only
+        // transient sharing/permission errors; never unlink the destination.
+        const retryDelays = [25, 50, 100, 200, 400, 800]
+        for (let attempt = 0; ; attempt++) {
+          if (beforeReplace) await beforeReplace()
+          try {
+            await io.rename(temp, file)
+            break
+          } catch (error) {
+            if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= retryDelays.length) throw error
+            await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]))
+          }
+        }
+      }
       else {
         try { await io.link(temp, file) }
         catch (error) { if (error.code === 'EEXIST') return false; throw error }
@@ -381,7 +396,9 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
       await publish(backupFile, old)
       // Reject an external edit observed while the backup was being written.
       if (await readText(file) !== old) throw Object.assign(new Error('世界书已变更，请刷新升级预览后重试'), { code: 'WORLDBOOK_UPGRADE_STALE' })
-      await publish(file, json(next), true)
+      await publish(file, json(next), true, async () => {
+        if (await readText(file) !== old) throw Object.assign(new Error('世界书已变更，请刷新升级预览后重试'), { code: 'WORLDBOOK_UPGRADE_STALE' })
+      })
       return { ...upgradeStatus(next, key), backupFile }
     })
   }
