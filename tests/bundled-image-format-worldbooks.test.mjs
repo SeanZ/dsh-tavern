@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   createFormatWorldbooks, normalizeFormatWorldbook, structuredWorldbookDefaults,
-  FORMAT_WORLDBOOK_MODES, FORMAT_WORLDBOOK_GROUPS,
+  FORMAT_WORLDBOOK_MODES, FORMAT_WORLDBOOK_GROUPS, STRUCTURED_WORLDBOOK_SEED_VERSION,
 } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/format-worldbooks.js'
 import { selectPlannerContext } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/planner-context.js'
 
@@ -208,19 +209,38 @@ test('validated mode/group cannot escape storage; structured seeds are fresh ind
   assert.deepEqual(FORMAT_WORLDBOOK_MODES, ['tags', 'natural', 'mixed', 'structured'])
 })
 
-async function installedV1(t, change = () => {}) {
+async function installedVersion(t, version, change = () => {}) {
   const root = await fixture(t)
   await createFormatWorldbooks({ root }).ensure()
-  const books = structuredWorldbookDefaults(1)
+  const books = structuredWorldbookDefaults(version)
   change(books)
-  for (const key of FORMAT_WORLDBOOK_GROUPS) await fs.writeFile(pathFor(root, 'structured', key), JSON.stringify(books[key]))
+  for (const key of FORMAT_WORLDBOOK_GROUPS) await fs.writeFile(pathFor(root, 'structured', key), JSON.stringify(books[key], null, 3) + '\n\n')
   return { root, books }
 }
+const installedV1 = (t, change) => installedVersion(t, 1, change)
 
-test('v2 fresh seeds contain semantic rules, short Chinese examples and version fingerprints', async t => {
+test('v1 and v2 baselines remain frozen including historical version fingerprints', () => {
+  const hashes = {
+    1: 'de5648545241a7fbb60db4b10b05bdcab41322f3e542cdae9d1591cee63c5d74',
+    2: '6c6e70f776e4caf0d65ee9c494771750d1eeee6edd2c38e827e1991ad5e57241',
+  }
+  for (const version of [1, 2]) {
+    const baseline = structuredWorldbookDefaults(version)
+    assert.equal(createHash('sha256').update(JSON.stringify(baseline)).digest('hex'), hashes[version])
+    baseline.main.entries[0].content = 'caller mutation'
+    structuredWorldbookDefaults().outfits.entries[0].content = 'latest mutation'
+    assert.equal(createHash('sha256').update(JSON.stringify(structuredWorldbookDefaults(version))).digest('hex'), hashes[version])
+  }
+  assert.equal(structuredWorldbookDefaults(2).main.defaultSeed.version, 2)
+  assert.throws(() => structuredWorldbookDefaults(0), /版本无效/)
+  assert.throws(() => structuredWorldbookDefaults(4), /版本无效/)
+})
+
+test('v3 fresh seeds contain semantic rules, short Chinese examples and version fingerprints', async t => {
   const store = createFormatWorldbooks({ root: await fixture(t) })
   const book = await store.readBook('structured', 'main')
-  assert.equal(book.defaultSeed.version, 2)
+  assert.equal(STRUCTURED_WORLDBOOK_SEED_VERSION, 3)
+  assert.equal(book.defaultSeed.version, 3)
   assert.equal(book.entries.length, 6)
   assert.equal(Object.keys(book.defaultSeed.fingerprints).length, 6)
   const text = book.entries.map(e => e.content).join('\n')
@@ -229,6 +249,122 @@ test('v2 fresh seeds contain semantic rules, short Chinese examples and version 
   const status = await store.getUpgradeStatus('main')
   assert.equal(status.available, false)
   assert.ok(status.entries.every(e => e.state === 'current'))
+})
+
+test('v3 rules separate reference identity from visible state and exclude unsupported prompt details', () => {
+  const books = structuredWorldbookDefaults()
+  const entries = Object.fromEntries(Object.values(books).flatMap(book => book.entries).map(entry => [entry.id, entry.content]))
+  const identity = entries['structured-identity']
+  assert.match(identity, /有身份参考图.*不再描述年龄、性别或固定外貌/)
+  assert.match(identity, /不要补写“年轻男性”/)
+  assert.match(identity, /身份引用、参考图编号与绑定说明由插件统一一次/)
+  assert.match(identity, /不另写“人物及参考图对应”段/)
+  assert.match(identity, /当前状态与身份分离/)
+  assert.match(identity, /身份图不提供当前服装、姿势、表情或背景/)
+  assert.match(identity, /无身份参考图时，才使用人物库文字与正文/)
+  assert.match(entries['structured-story'], /一个明确时间点、一个可同时成立的动作阶段/)
+  assert.match(entries['structured-story'], /“扫过”.*过程不能直接充当定格动作/)
+  assert.match(entries['structured-story'], /冲突阶段/)
+  assert.match(entries['structured-space'], /没有依据就不指定光路，不新增窗帘、开口、缝隙/)
+  assert.match(entries['structured-space'], /窗户遮光布不改写成窗帘/)
+  assert.match(entries['structured-prose'], /人物与表情/)
+  assert.match(entries['structured-prose'], /有身份参考图时人物节只写当前状态/)
+  assert.match(entries['structured-examples'], /有身份参考图时不追加年龄性别或固定外貌/)
+  assert.match(entries['structured-prose'], /不补无依据的服装、道具/)
+  assert.match(entries['structured-prose'], /没有明确风格要求就省略风格节/)
+  assert.match(entries['structured-prose'], /主导情绪.*可见表情、视线、姿态与身体张力/)
+  assert.match(entries['structured-prose'], /负向约束只针对本张已知的具体错误/)
+  assert.match(entries['structured-prose'], /不写“不存在的道具”等泛泛措辞/)
+  assert.match(entries['structured-clothes'], /没有衣着依据就不补造颜色、款式、配饰或随身道具/)
+  assert.match(entries['structured-clothes'], /最终提示词不附带与本张无关/)
+  assert.match(entries['structured-examples'], /主导情绪是否可见/)
+  assert.doesNotMatch(Object.values(entries).join('\n'), /湿衣|破损/)
+})
+
+test('untouched v2 groups upgrade to v3 with exact-byte backups and remain idempotent', async t => {
+  const { root } = await installedVersion(t, 2)
+  const before = Object.fromEntries(await Promise.all(FORMAT_WORLDBOOK_GROUPS.map(async key => [key, await fs.readFile(pathFor(root, 'structured', key), 'utf8')])))
+  const otherModes = await Promise.all(['tags', 'natural', 'mixed'].flatMap(mode => FORMAT_WORLDBOOK_GROUPS.map(async key => ({ mode, key, text: await fs.readFile(pathFor(root, mode, key), 'utf8') }))))
+  const store = createFormatWorldbooks({ root })
+  const result = await store.ensure()
+  for (const key of FORMAT_WORLDBOOK_GROUPS) {
+    const upgraded = result.upgrades.find(item => item.key === key)
+    assert.equal(await fs.readFile(upgraded.backupFile, 'utf8'), before[key])
+    assert.deepEqual(await store.readBook('structured', key), structuredWorldbookDefaults(3)[key])
+    assert.equal(upgraded.version, 3)
+    assert.equal(upgraded.available, false)
+  }
+  for (const { mode, key, text } of otherModes) assert.equal(await fs.readFile(pathFor(root, mode, key), 'utf8'), text)
+  const backups = await fs.readdir(join(root, 'backups', 'format-worldbooks-upgrades'))
+  assert.equal(backups.length, 2)
+  await createFormatWorldbooks({ root }).ensure()
+  assert.deepEqual(await fs.readdir(join(root, 'backups', 'format-worldbooks-upgrades')), backups)
+})
+
+test('v2 upgrade protects custom content, activation, metadata, disabled entries, deletions and ordering', async t => {
+  for (const key of FORMAT_WORLDBOOK_GROUPS) for (const scenario of ['edited', 'disabled', 'deleted', 'activation', 'metadata', 'reordered', 'extended', 'title', 'duplicate', 'forged-fingerprint']) {
+    await t.test(key + ': ' + scenario, async t => {
+      const { root, books } = await installedVersion(t, 2, books => {
+        const b = books[key]
+        if (scenario === 'edited' || scenario === 'forged-fingerprint') b.entries[0].content = '用户正文不可覆盖'
+        if (scenario === 'disabled') b.entries[0].enabled = false
+        if (scenario === 'deleted') b.entries.splice(0, 1)
+        if (scenario === 'activation') { b.entries[0].activation = 'keywords'; b.entries[0].keywords = ['触发词'] }
+        if (scenario === 'metadata') b.entries[0].customMetadata = { keep: true }
+        if (scenario === 'reordered') b.entries.reverse()
+        if (scenario === 'extended') b.entries.push({ id: 'mine', content: '用户规则' })
+        if (scenario === 'title') { b.name = '我的标题'; b.customMetadata = { keep: true } }
+        if (scenario === 'duplicate') b.entries.push({ ...b.entries[0], content: '同标识用户规则' })
+        if (scenario === 'forged-fingerprint') {
+          // A user-controlled stored fingerprint cannot authorize replacement.
+          const entry = b.entries[0]
+          b.defaultSeed.fingerprints[entry.id] = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.keys(entry).sort().map(k => [k, entry[k]])))).digest('hex')
+        }
+      })
+      const old = normalizeFormatWorldbook(books[key])
+      const store = createFormatWorldbooks({ root })
+      const result = await store.readBook('structured', key)
+      assert.deepEqual(result.entries.map(e => e.id), old.entries.map(e => e.id))
+      assert.equal(result.name, old.name)
+      assert.deepEqual(result.customMetadata, old.customMetadata)
+      const originalId = structuredWorldbookDefaults(2)[key].entries[0].id
+      if (['edited', 'disabled', 'activation', 'metadata', 'duplicate', 'forged-fingerprint'].includes(scenario)) {
+        assert.deepEqual(result.entries.filter(e => e.id === originalId), old.entries.filter(e => e.id === originalId))
+      }
+      const unchangedId = structuredWorldbookDefaults(2)[key].entries[1].id
+      assert.deepEqual(result.entries.find(e => e.id === unchangedId), structuredWorldbookDefaults()[key].entries.find(e => e.id === unchangedId))
+      if (scenario === 'extended') assert.deepEqual(result.entries.at(-1), old.entries.at(-1))
+      const restart = createFormatWorldbooks({ root })
+      assert.deepEqual(await restart.readBook('structured', key), result)
+    })
+  }
+})
+
+test('v2 empty or wholly customized groups retain exact bytes and old seed metadata', async t => {
+  for (const scenario of ['empty', 'custom', 'all-disabled']) await t.test(scenario, async t => {
+    const { root } = await installedVersion(t, 2, books => {
+      for (const book of Object.values(books)) {
+        if (scenario === 'empty') book.entries = []
+        if (scenario === 'custom') book.entries = [{ id: 'mine', content: '完全自定义' }]
+        if (scenario === 'all-disabled') book.entries.forEach(entry => { entry.enabled = false })
+      }
+    })
+    const before = await Promise.all(FORMAT_WORLDBOOK_GROUPS.map(key => fs.readFile(pathFor(root, 'structured', key), 'utf8')))
+    await createFormatWorldbooks({ root }).ensure()
+    await createFormatWorldbooks({ root }).ensure()
+    for (const [index, key] of FORMAT_WORLDBOOK_GROUPS.entries()) assert.equal(await fs.readFile(pathFor(root, 'structured', key), 'utf8'), before[index])
+    await assert.rejects(fs.readdir(join(root, 'backups', 'format-worldbooks-upgrades')), { code: 'ENOENT' })
+  })
+})
+
+test('mixed untouched v1/v2 entries upgrade without restoring deleted rules', async t => {
+  const { root } = await installedVersion(t, 2, books => {
+    books.main.entries[0] = structuredWorldbookDefaults(1).main.entries[0]
+    books.main.entries = books.main.entries.slice(0, 2)
+    delete books.main.defaultSeed
+  })
+  const result = await createFormatWorldbooks({ root }).readBook('structured', 'main')
+  assert.deepEqual(result.entries, structuredWorldbookDefaults().main.entries.slice(0, 2))
 })
 
 test('untouched v1 groups upgrade with exact-byte backups and restart is idempotent', async t => {

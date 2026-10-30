@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { normalizeEntryActivation } from './planner-context.js'
 import { PROMPT_FORMATS } from './prompt-presets.js'
 
-export const STRUCTURED_WORLDBOOK_SEED_VERSION = 2
+export const STRUCTURED_WORLDBOOK_SEED_VERSION = 3
 // Frozen v1 baseline: never import live guidance here. Changing prompt presets
 // must not change the fingerprint used to recognize an untouched old book.
 const LEGACY_STRUCTURED_GUIDANCE = [
@@ -113,15 +113,14 @@ function bookContent(book) {
   const { defaultSeed, ...content } = normalizeFormatWorldbook(book)
   return content
 }
-function seedMetadata(book) {
-  return { version: STRUCTURED_WORLDBOOK_SEED_VERSION, fingerprints: Object.fromEntries(book.entries.map(entry => [entry.id, fingerprint(entry)])) }
+function seedMetadata(book, version = STRUCTURED_WORLDBOOK_SEED_VERSION) {
+  return { version, fingerprints: Object.fromEntries(book.entries.map(entry => [entry.id, fingerprint(entry)])) }
 }
 
-/** Immutable historical baselines are also exposed for migrations/tests. */
-export function structuredWorldbookDefaults(version = STRUCTURED_WORLDBOOK_SEED_VERSION) {
+// Frozen v2 baseline, including its original seed metadata. Never use live rules
+// or the current version here: migrations must recognize exact historical entries.
+function structuredWorldbookDefaultsV2() {
   const books = structuredWorldbookDefaultsV1()
-  if (version === 1) return books
-  if (version !== STRUCTURED_WORLDBOOK_SEED_VERSION) throw new Error('结构化默认规则版本无效')
   const entry = (id, comment, lines) => ({ id, comment, content: lines.join('\n'), enabled: true, activation: 'always', keywords: [], andKeywords: [], backends: ['structured'] })
   books.main.entries = [
     entry('structured-prose', '中文分节与事实边界', [
@@ -161,6 +160,57 @@ export function structuredWorldbookDefaults(version = STRUCTURED_WORLDBOOK_SEED_
     '服装图只约束服饰设计，不继承模特身份、姿势或背景；没有服装图时用中文说明可见颜色、款式和状态，正文明确的湿衣、破损等变化优先。',
     '衣着记录与当前镜头可见性分别处理：画外部位不强求展示，不因没写服装参考就擅自补常穿。',
   ])
+  for (const book of Object.values(books)) book.defaultSeed = seedMetadata(book, 2)
+  return books
+}
+
+/** Immutable historical baselines are also exposed for migrations/tests. */
+export function structuredWorldbookDefaults(version = STRUCTURED_WORLDBOOK_SEED_VERSION) {
+  if (version === 1) return structuredWorldbookDefaultsV1()
+  if (version === 2) return structuredWorldbookDefaultsV2()
+  if (version !== STRUCTURED_WORLDBOOK_SEED_VERSION) throw new Error('结构化默认规则版本无效')
+  const books = structuredWorldbookDefaultsV2()
+  const revise = (key, id, lines) => { books[key].entries.find(entry => entry.id === id).content = lines.join('\n') }
+  revise('main', 'structured-prose', [
+    '使用结构化中文自然语言，以可见事实组织人物与表情、服装、动作、环境、镜头与光线、风格、约束；有身份参考图时人物节只写当前状态。标题、顺序和分节可调整，无内容的节省略。',
+    '正文与已确立的上下文是画面事实的依据。画风与构图只表现已有剧情，不补无依据的服装、道具、人物或事件；没有明确风格要求就省略风格节，不自行加电影感、写实或画师名。',
+    '先确定这一瞬间的主导情绪，再用正文支持的可见表情、视线、姿态与身体张力呈现；动作和构图服务于情绪，不以抽象心理词、内心独白或过程叙述替代可见表现。保留自然段及人物各自有意义的重复。',
+    '负向约束只针对本张已知的具体错误，指出对象与错误关系，例如遮挡物后方的细节不应透出；不写“不存在的道具”等泛泛措辞。没有依据或与本张无关的规则不输出，也不附加通用衣物状态规则、任务宣告或接口参数。',
+  ])
+  revise('main', 'structured-story', [
+    '单张图只取一个明确时间点、一个可同时成立的动作阶段，写清当前姿态、受力或接触点、朝向和视线；不把起身、站稳、巡视等冲突阶段揉进同一张图。',
+    '“扫过”“逐渐”“随后”等过程不能直接充当定格动作；按正文选定这一刻视线停留的对象或方向，不虚构巡视终点。只写此刻可见结果，不串联连续镜头。',
+    '多张图各有不同瞬间、景别或动作。即使按重要性而非时间先后输出，也必须沿用该画面正文时点之前最后明确的状态，不能按输出前一张继承服装、地点和外貌。',
+  ])
+  revise('main', 'structured-people', [
+    '每名入镜人物用稳定称呼分别说明站位、朝向、动作和交互对象，明确谁的手接触谁、谁持有什么，不用含混的“他们”代替动作归属。',
+    '两个人共有的当前状态可以分别描述；不要把人物甲的衣服、外貌或参考图约束套给人物乙。局部入镜仍使用稳定称呼；身份信息与此刻形态、表情和动作分开，不为区分人物补写固定外貌。',
+  ])
+  revise('main', 'structured-visible', [
+    '先确定景别、视角和裁切范围，再描述实际可见的当前状态、衣物与道具；无身份参考图时才按已有文字补充可见外貌。穿着事实不等于本镜头必须展示，不为了展示鞋脚强行扩大构图，也不把所有中景都当成看不到脚。',
+    '背影不强求瞳色或正脸，遮挡处不同时写清被遮住的细节。姿态、接触点和空间位置须能在同一画面成立；主导情绪应落实到镜头内看得到的表情或身体表现。',
+  ])
+  revise('main', 'structured-space', [
+    '空间、遮挡范围、光源和照射路径只使用正文或已确立上下文中的依据；窗户遮光布不改写成窗帘，遮挡物后方的细节不同时清晰可见。',
+    '正文说黑布遮窗又有光线时，只表达已有的光照结果或明确关系；没有依据就不指定光路，不新增窗帘、开口、缝隙、掀布动作或光源，也不移动已有物体来替文字补解释。',
+  ])
+  revise('main', 'structured-examples', [
+    '单人例：若正文明确江铭一手撑床沿回望并显露警觉，可写“江铭一手撑住床沿，上半身离开床面，头转向身后，肩背绷紧”；有身份参考图时不追加年龄性别或固定外貌，也不续写随后下床巡视。',
+    '双人例：正文写林月向陈安递伞，可写“林月握住伞柄递向陈安，陈安的手搭在同一伞柄上”；站位、手别与接触阶段须有正文或已确立构图依据，不把递出、接稳和收伞串成一张图。',
+    '输出前检查主导情绪是否可见、人数与动作归属、单一时点、可见衣着、遮挡光路和参考用途；身份绑定由插件统一一次，不重复写入各节。修正文句即可，不输出检查过程；示例人物、道具和布景不是必加内容，无关规则不进入最终提示词。',
+  ])
+  revise('outfits', 'structured-identity', [
+    '有身份参考图的人物，身份外观交给参考图，不再描述年龄、性别或固定外貌；不要补写“年轻男性”等概括，也不重述面部、发型、肤色和固有体型比例。',
+    '身份引用、参考图编号与绑定说明由插件统一一次；规划正文只用稳定人物称呼，不另写“人物及参考图对应”段，不在每节重复“保持参考图一致”或自行编造编号。仅收到文字清单时不能声称看过图片。',
+    '当前状态与身份分离：表情、视线、动作和本轮明确变化写入对应状态描述，不混入身份引用；身份图不提供当前服装、姿势、表情或背景。',
+    '无身份参考图时，才使用人物库文字与正文描述有依据且当前可见的外貌；未知人物照正文写，不编造人物库标识，也不补猜年龄性别。不同人物与形态的状态分别归属。',
+  ])
+  revise('outfits', 'structured-clothes', [
+    '按本张画面对应的剧情时点确定穿着，换装前后分别描述；未写变化时沿用此时点之前最后明确的状态，不沿用输出上一张图的衣服。没有衣着依据就不补造颜色、款式、配饰或随身道具。',
+    '引用库中服装使用准确服装名，不把标识或“常穿”备注当成服装名；纯文字衣着不必强套服装库。拿在手里、脱下或放在一旁不等于正在穿着。',
+    '服装图只约束服饰设计，不继承模特身份、姿势或背景；没有服装图时只说明已知、当前可见的衣物与状态。衣着记录与镜头可见性分别处理，不强求画外部位展示，也不因缺少服装参考而补常穿。',
+    '只在正文明确发生且本镜头可见时写具体衣物变化；最终提示词不附带与本张无关的服装状态提醒或通用负向规则。',
+  ])
   for (const book of Object.values(books)) book.defaultSeed = seedMetadata(book)
   return books
 }
@@ -168,16 +218,18 @@ export function structuredWorldbookDefaults(version = STRUCTURED_WORLDBOOK_SEED_
 function upgradeStatus(book, key) {
   const current = normalizeFormatWorldbook(book)
   const latest = structuredWorldbookDefaults()[key]
-  const legacy = normalizeFormatWorldbook(structuredWorldbookDefaults(1)[key])
-  const wholeLegacyUnchanged = fingerprint(bookContent(current)) === fingerprint(bookContent(legacy))
+  // Compare actual content with frozen versions, never trust editable defaultSeed
+  // fingerprints. Mixed-version books can safely update untouched entries too.
+  const legacy = [1, 2].map(version => normalizeFormatWorldbook(structuredWorldbookDefaults(version)[key]))
+  const wholeLegacyUnchanged = legacy.some(previous => fingerprint(bookContent(current)) === fingerprint(bookContent(previous)))
   const entries = latest.entries.map(proposed => {
     const matches = current.entries.filter(entry => entry.id === proposed.id)
-    const previous = legacy.entries.find(entry => entry.id === proposed.id)
+    const previous = legacy.flatMap(book => book.entries.filter(entry => entry.id === proposed.id))
     const item = matches[0] || null
     const state = matches.length > 1 ? 'ambiguous' : !item ? 'missing'
       : item.enabled === false ? 'disabled'
       : fingerprint(item) === fingerprint(proposed) ? 'current'
-      : previous && fingerprint(item) === fingerprint(previous) ? 'update' : 'customized'
+      : previous.some(entry => fingerprint(item) === fingerprint(entry)) ? 'update' : 'customized'
     return { id: proposed.id, state, current: item, proposed: clone(proposed), autoUpdate: state === 'update' || (state === 'missing' && wholeLegacyUnchanged) }
   })
   return { format: 'structured', key, version: STRUCTURED_WORLDBOOK_SEED_VERSION, fingerprint: fingerprint(current), wholeLegacyUnchanged, entries,

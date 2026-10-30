@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildStructuredReferenceText, referenceScopedDefinitions, resolveImageReferences } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/reference-images.js'
+import { buildStructuredReferenceText, referencePlannerGuidance, referenceScopedDefinitions, resolveImageReferences } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/reference-images.js'
 import { compileChannelJob, compileJob, expandRosterCalls } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js'
 import { imagePluginFixture, imageJson, IMAGE_PNG } from './fixtures/image-plugin-runtime.mjs'
 
@@ -35,6 +35,30 @@ test('结构化绑定按实际类型生成，不输出ID，不改用户的一致
   assert.ok(text.includes(selected.references[0].consistencyText))
   assert.equal(buildStructuredReferenceText([]), '')
   assert.throws(() => buildStructuredReferenceText([{ ...selected.references[0], index: 2 }]))
+})
+
+test('身份参考规划禁止复述年龄性别，仍保留无身份图人物和剧情变化', () => {
+  const guidance = referencePlannerGuidance(defs, { structured: true })
+  assert.match(guidance, /不再描述年龄、性别、面部、发型或固有体型等固定身份属性/)
+  assert.match(guidance, /不用“年轻男性”“青年男子”等概括词重新定义身份/)
+  assert.match(guidance, /剧情明确的外观变化与用户明确的一致性补充仍须保留/)
+  assert.match(guidance, /只有服装图或没有身份图的人物仍用库内文字与正文描述可见外貌/)
+  assert.match(guidance, /不另设人物及参考图对应分节/)
+  assert.doesNotMatch(referencePlannerGuidance(defs), /不用“年轻男性”/)
+})
+
+test('最终参考说明不携带无关状态示例，真实变化与用户补充保持原样', () => {
+  const selected = resolveImageReferences({ subjects: [{ characterId: 'jiang' }], definitions: defs })
+  const referenceText = buildStructuredReferenceText(selected.references)
+  assert.doesNotMatch(referenceText, /换装|湿衣|破损|优先于|年轻男性|青年男子/)
+  assert.match(referenceText, /服装、表情、姿态、镜头、环境及外观的当前状态以本张描述为准/)
+  const raw = '【人物与表情】\n江铭眉头微蹙。\n\n【服装】\n上衣湿透，左袖破损。'
+  const output = compileChannelJob({ params: { tag: raw, rawTag: raw, referenceText }, definitions: {},
+    config: { promptMode: 'structured', imageBackend: 'atlascloud' }, channel: { provider: 'atlascloud' } })
+  assert.ok(output.positive.includes(raw), 'actual scene changes must not be filtered as template words')
+  assert.equal((output.positive.match(/身份图仅约束/g) || []).length, 1)
+  selected.references[0].consistencyText = '用户指定：保留破损的耳饰。'
+  assert.match(buildStructuredReferenceText(selected.references), /用户指定：保留破损的耳饰。/)
 })
 
 test('旧快照占位标记经结构化编译清除，但保留姓名、无图人物资料和自定义分节', () => {
@@ -109,7 +133,8 @@ test('真实任务组装一次绑定；改词重画、重启仍使用快照，�
   assert.equal(calls.length, 2)
   for (const payload of calls) {
     assert.equal((payload.prompt.match(/参考图1 →/g) || []).length, 1)
-    assert.doesNotMatch(payload.prompt, /characterId|outfitId|人物“江铭”：|服装图/)
+    assert.doesNotMatch(payload.prompt, /characterId|outfitId|人物“江铭”：|服装图|换装|湿衣|破损/)
+    assert.ok(payload.prompt.includes(raw), 'manual/redraw text is not destructively rewritten by keyword removal')
   }
 })
 

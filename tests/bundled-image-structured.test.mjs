@@ -50,6 +50,25 @@ test('built-in structured profiles and their guidance are Chinese and allow worl
   }
 })
 
+test('结构化规划约束单张定格、事实来源、空间与情绪，不再要求重复参考图分节', () => {
+  const system = buildPlannerSystem({ promptMode: 'structured', count: 1 })
+  assert.match(system, /人物与表情、服装、动作、环境、镜头与光线、风格、约束/)
+  assert.doesNotMatch(getPromptGuidance({ promptMode: 'structured' }), /人物及参考图对应/)
+  for (const rule of [
+    /绑定及用途说明由插件统一追加一次/,
+    /一个可同时成立的定格姿态/,
+    /视线落点/,
+    /主导情绪和可见面部变化/,
+    /不为填满分节猜测衣物颜色、家具清单或物品位置/,
+    /覆盖范围、窗扇状态和入光路径/,
+    /不为解释光线新增窗帘、开口、掀布或光源/,
+    /不擅自改设画风/,
+    /约束只保留本张需要且可执行的限制/,
+    /示例不输出到画面提示词/,
+  ]) assert.match(system, rule)
+  assert.doesNotMatch(buildPlannerSystem({ promptMode: 'tags' }), /一个可同时成立的定格姿态/)
+})
+
 test('custom structured profile fields survive normalization without translating user-authored text', () => {
   const [preset] = normalizePromptPresets([{ id: 'custom-look', name: '木刻', positive: 'fallback', negative: 'fallback negative', structuredPositive: '保留木纹。\n克制留白。', structuredNegative: '不添加[背景文字]。' }])
   assert.equal(preset.structuredPositive, '保留木纹。\n克制留白。')
