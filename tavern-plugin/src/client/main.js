@@ -67,7 +67,10 @@ window.__ModuleLoader__.load({
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
 		async function importTavernCardFile(file, call) {
-			if (!/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""))) {
+			const archive = !/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""));
+			// A PNG ending like a ZIP may be a card archive with its cover in front (大肥鱼.dshcard.png): it goes up
+			// as a file too, and the host decides (a plain card PNG that only looked like one still imports).
+			if (archive || /\.png$/i.test(String(file.name || "")) && await tavernPngEndsLikeZip(file)) {
 				const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
 				let reply = null;
 				try { reply = await response.json(); } catch (_error) {}
@@ -75,6 +78,15 @@ window.__ModuleLoader__.load({
 				return call("importCardUpload", { uploadId: reply.uploadId, name: file.name });
 			}
 			return call("importCard", { payload: await parseCardFile(file) });
+		}
+
+		/** Whether a file's last 64 KB hold a ZIP end record. */
+		async function tavernPngEndsLikeZip(file) {
+			const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 65557)).arrayBuffer());
+			for (let index = tail.length - 22; index >= 0; index--) {
+				if (tail[index] === 0x50 && tail[index + 1] === 0x4b && tail[index + 2] === 0x05 && tail[index + 3] === 0x06) return true;
+			}
+			return false;
 		}
 
 		/** What a card file brought into its character material, for the import notice. */

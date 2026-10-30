@@ -362,7 +362,10 @@ window.__ModuleLoader__.load({
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
 		async function importTavernCardFile(file, call) {
-			if (!/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""))) {
+			const archive = !/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""));
+			// A PNG ending like a ZIP may be a card archive with its cover in front (大肥鱼.dshcard.png): it goes up
+			// as a file too, and the host decides (a plain card PNG that only looked like one still imports).
+			if (archive || /\.png$/i.test(String(file.name || "")) && await tavernPngEndsLikeZip(file)) {
 				const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
 				let reply = null;
 				try { reply = await response.json(); } catch (_error) {}
@@ -370,6 +373,15 @@ window.__ModuleLoader__.load({
 				return call("importCardUpload", { uploadId: reply.uploadId, name: file.name });
 			}
 			return call("importCard", { payload: await parseCardFile(file) });
+		}
+
+		/** Whether a file's last 64 KB hold a ZIP end record. */
+		async function tavernPngEndsLikeZip(file) {
+			const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 65557)).arrayBuffer());
+			for (let index = tail.length - 22; index >= 0; index--) {
+				if (tail[index] === 0x50 && tail[index + 1] === 0x4b && tail[index + 2] === 0x05 && tail[index + 3] === 0x06) return true;
+			}
+			return false;
 		}
 
 		/** What a card file brought into its character material, for the import notice. */
@@ -27383,6 +27395,14 @@ function TavernWorldbookInspector(props) {
 		}
 
 		function createWorldBookLibraryFeatureModule() {
+		// 触发词输入框：本地保留原文，否则每次按键都 parse→join 会吞掉末尾的逗号（#425）。
+		function WorldBookKeyInput(props) {
+			const joined = (props.value || []).join(", ");
+			const [text, setText] = React.useState(joined);
+			const parse = function (value) { return String(value || "").split(/[,，\n]/).map(function (item) { return item.trim(); }).filter(Boolean); };
+			const shown = parse(text).join(", ") === joined ? text : joined;
+			return h("input", { value: shown, placeholder: props.placeholder, onChange: function (event) { setText(event.target.value); props.onChange(parse(event.target.value)); } });
+		}
 		function WorldBookEditor(props) {
             const askConfirm = useTavernConfirm(props.sessionId || props.scope?.sessionId);
 			const initial = props.record && props.record.view ? props.record.view : { displayName: "", description: "", entries: [], diagnostics: [] };
@@ -27463,8 +27483,6 @@ function TavernWorldbookInspector(props) {
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
 			}
-			function textList(value) { return (value || []).join(", "); }
-			function parseList(value) { return String(value || "").split(/[,，\n]/).map(function (item) { return item.trim(); }).filter(Boolean); }
 			function numeric(value, fallback) { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
 			function entryRow(entry, index) {
 				const open = openRefs.has(entry.ref);
@@ -27479,8 +27497,8 @@ function TavernWorldbookInspector(props) {
 						h("div", { className: "dsh-tavern-card-field dsh-tavern-worldbook-content" }, h("label", null, "内容"), h("textarea", { className: "large", rows: 14, "aria-label": "条目内容", value: entry.content || "", onChange: function (event) { updateEntry(index, { content: event.target.value }); } })),
 						h("details", { className: "dsh-tavern-worldbook-entry-settings" }, h("summary", null, "条目设置"),
 						h("div", { className: "dsh-tavern-card-field" }, h("label", null, "标题 / 备注"), h("input", { value: entry.comment || "", onChange: function (event) { updateEntry(index, { comment: event.target.value, title: event.target.value }); } })),
-						entry.constant ? null : h("div", { className: "dsh-tavern-card-field" }, h("label", null, "主触发词"), h("input", { value: textList(entry.primaryKeys), placeholder: "逗号分隔；支持 /pattern/flags", onChange: function (event) { updateEntry(index, { primaryKeys: parseList(event.target.value) }); } })),
-							entry.constant ? null : h("div", { className: "dsh-tavern-card-field" }, h("label", null, "二级触发词"), h("input", { value: textList(entry.secondaryKeys), placeholder: "逗号分隔", onChange: function (event) { updateEntry(index, { secondaryKeys: parseList(event.target.value) }); } })),
+						entry.constant ? null : h("div", { className: "dsh-tavern-card-field" }, h("label", null, "主触发词"), h(WorldBookKeyInput, { value: entry.primaryKeys, placeholder: "逗号分隔；支持 /pattern/flags", onChange: function (keys) { updateEntry(index, { primaryKeys: keys }); } })),
+							entry.constant ? null : h("div", { className: "dsh-tavern-card-field" }, h("label", null, "二级触发词"), h(WorldBookKeyInput, { value: entry.secondaryKeys, placeholder: "逗号分隔", onChange: function (keys) { updateEntry(index, { secondaryKeys: keys }); } })),
 							h("div", { className: "dsh-tavern-worldbook-checks" },
 							h("label", null, h("input", { type: "checkbox", checked: entry.selective === true, onChange: function (event) { updateEntry(index, { selective: event.target.checked }); } }), "使用二级条件"),
 							h("label", null, h("input", { type: "checkbox", checked: entry.caseSensitive === true, onChange: function (event) { updateEntry(index, { caseSensitive: event.target.checked }); } }), "区分大小写"),
