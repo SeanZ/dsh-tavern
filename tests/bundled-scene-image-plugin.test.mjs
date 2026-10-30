@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { createPluginUpdater, REPOSITORY_URL } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/updater.js'
+import { createReleaseUpdater } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/release-updater.js'
+import { createDownloadPackage } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/download-package.js'
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, symlinkSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -44,6 +48,181 @@ function makeData(t) {
 }
 
 const quiet = { warn() {}, log() {} }
+const PRIVATE_REFERENCE_FILES = ['reference-images/' + 'a'.repeat(64), 'format-worldbooks/tags/worldbook.json', 'format-worldbooks/structured/worldbook-outfits.json', 'format-worldbooks/migration-v1.json']
+function privateData(directory, label) {
+  const entries = PRIVATE_REFERENCE_FILES.map(file => [file, label + ':' + file])
+  for (const [file, text] of entries) { mkdirSync(path.dirname(path.join(directory, file)), { recursive: true }); writeFileSync(path.join(directory, file), text) }
+  return entries
+}
+function storedZipEntries(bytes) {
+  const entries = new Map()
+  let offset = 0
+  while (bytes.readUInt32LE(offset) === 0x04034b50) {
+    assert.equal(bytes.readUInt16LE(offset + 8), 0, 'download package uses stored entries')
+    const length = bytes.readUInt32LE(offset + 18), nameLength = bytes.readUInt16LE(offset + 26), extraLength = bytes.readUInt16LE(offset + 28)
+    const name = bytes.subarray(offset + 30, offset + 30 + nameLength).toString('utf8')
+    const dataAt = offset + 30 + nameLength + extraLength
+    entries.set(name, bytes.subarray(dataAt, dataAt + length))
+    offset = dataAt + length
+  }
+  return entries
+}
+function releaseFixture(t, archive, sourceVersion = '3.1.5') {
+  const root = makeData(t)
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: '3.1.4', dsh: { compatibility: { tavernApiVersion: 1 } } }))
+  const original = privateData(root, 'local-private')
+  const zipUrl = `https://github.com/weixinlll/dsh-tavern-image/releases/download/v${sourceVersion}/dsh-tavern-image-source.zip`
+  const sumsUrl = `https://github.com/weixinlll/dsh-tavern-image/releases/download/v${sourceVersion}/SHA256SUMS`
+  const bodies = new Map([
+    ['https://api.github.com/repos/weixinlll/dsh-tavern-image/releases/latest', JSON.stringify({ tag_name: 'v' + sourceVersion, assets: [{ name: 'dsh-tavern-image-source.zip', browser_download_url: zipUrl }, { name: 'SHA256SUMS', browser_download_url: sumsUrl }] })],
+    [zipUrl, archive], [sumsUrl, createHash('sha256').update(archive).digest('hex') + '  dsh-tavern-image-source.zip\n'],
+  ])
+  const fetchImpl = async url => { assert.ok(bodies.has(url), 'unexpected network request: ' + url); return new Response(bodies.get(url), { status: 200 }) }
+  return { root, original, updater: createReleaseUpdater({ root, fetchImpl }) }
+}
+function gitUpdateFixture(t, changes) {
+  const root = makeData(t)
+  mkdirSync(path.join(root, '.git'))
+  const packageData = version => ({ name: SCENE_IMAGE_PACKAGE_NAME, version, dsh: { compatibility: { tavernApiVersion: 1 } } })
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify(packageData('3.1.4')))
+  const original = privateData(root, 'local-private'), calls = []
+  const base = 'a'.repeat(40), target = 'b'.repeat(40)
+  let head = base
+  const git = async args => {
+    calls.push(args)
+    const command = args.join(' ')
+    if (command === 'rev-parse --show-toplevel') return root
+    if (command === 'remote get-url origin') return REPOSITORY_URL
+    if (command === 'branch --show-current') return 'master'
+    if (command === 'rev-parse HEAD') return head
+    if (command === 'status --porcelain --untracked-files=no' || command === 'fetch --no-tags origin master') return ''
+    if (command === 'rev-parse FETCH_HEAD') return target
+    if (command === 'show ' + target + ':package.json') return JSON.stringify(packageData('3.1.5'))
+    if (command === 'merge-base HEAD ' + target) return base
+    if (args[0] === 'diff') { assert.ok(args.includes('-z')); assert.ok(args.includes('--no-renames')); return changes.join('\0') + '\0' }
+    if (command === 'merge --ff-only --no-edit ' + target) { head = target; return '' }
+    throw new Error('unexpected git invocation: ' + command)
+  }
+  return { root, original, calls, updater: createPluginUpdater({ root, git, getApiVersion: () => 5 }) }
+}
+
+test('首装不遍历或携带参考图、独立世界书及其他用户数据，仅保留代码和工作流占位', t => {
+  const source = makeSource(t), data = makeData(t)
+  privateData(source.dir, 'source-secret')
+  writeFileSync(path.join(source.dir, 'config.json'), '{"apiKey":"source-secret"}')
+  writeFileSync(path.join(source.dir, 'workflows', '.gitkeep'), '')
+  writeFileSync(path.join(source.dir, 'lib', 'reference-images.js'), '// reference helper code')
+  writeFileSync(path.join(source.dir, 'lib', 'format-worldbooks.js'), '// format helper code')
+  const result = installBundledSceneImagePlugin({ sourceRoot: source.root, dataRoot: data, logger: quiet })
+  assert.equal(result.action, 'installed')
+  const target = path.join(data, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER)
+  for (const directory of ['reference-images', 'format-worldbooks']) assert.equal(existsSync(path.join(target, directory)), false)
+  assert.equal(existsSync(path.join(target, 'config.json')), false)
+  assert.equal(existsSync(path.join(target, 'workflows', 'seed-deleted.json')), false)
+  assert.ok(existsSync(path.join(target, 'workflows', '.gitkeep')))
+  for (const file of ['reference-images.js', 'format-worldbooks.js']) assert.ok(existsSync(path.join(target, 'lib', file)))
+})
+
+test('首装忽略安装源中的私有参考图目录链接，不跟随也不阻断代码安装', t => {
+  const source = makeSource(t), data = makeData(t)
+  const outside = path.join(data, 'private-references')
+  mkdirSync(outside)
+  writeFileSync(path.join(outside, 'secret.txt'), 'do not copy')
+  for (const directory of ['reference-images', 'format-worldbooks']) symlinkSync(outside, path.join(source.dir, directory), process.platform === 'win32' ? 'junction' : 'dir')
+  const result = installBundledSceneImagePlugin({ sourceRoot: source.root, dataRoot: data, logger: quiet })
+  assert.equal(result.action, 'installed')
+  for (const directory of ['reference-images', 'format-worldbooks']) assert.equal(existsSync(path.join(data, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER, directory)), false)
+  assert.equal(readFileSync(path.join(outside, 'secret.txt'), 'utf8'), 'do not copy')
+})
+
+test('内置升级保留全部参考图和格式世界书，不覆盖、不补回用户删除的规则', t => {
+  const source = makeSource(t, '3.1.5'), data = makeData(t)
+  privateData(source.dir, 'must-not-overwrite')
+  mkdirSync(path.join(source.dir, 'format-worldbooks', 'natural'), { recursive: true })
+  writeFileSync(path.join(source.dir, 'format-worldbooks', 'natural', 'worldbook.json'), 'must-not-recreate')
+  const target = path.join(data, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER)
+  mkdirSync(target)
+  writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: '3.1.4', main: './lib/index.js', dsh: CONTRACT }))
+  const original = privateData(target, 'user-data')
+  const result = installBundledSceneImagePlugin({ sourceRoot: source.root, dataRoot: data, logger: quiet })
+  assert.equal(result.action, 'upgraded')
+  for (const [file, text] of original) assert.equal(readFileSync(path.join(target, file), 'utf8'), text)
+  assert.equal(existsSync(path.join(target, 'format-worldbooks', 'natural', 'worldbook.json')), false)
+  assert.equal(JSON.parse(readFileSync(path.join(target, 'package.json'), 'utf8')).version, '3.1.5')
+})
+
+test('下载源码包白名单不携带参考图和独立世界书，但包含对应实现代码', async t => {
+  const source = makeSource(t)
+  privateData(source.dir, 'source-secret-never-export')
+  writeFileSync(path.join(source.dir, 'lib', 'reference-images.js'), '// helper')
+  writeFileSync(path.join(source.dir, 'lib', 'format-worldbooks.js'), '// helper')
+  const archive = await createDownloadPackage(source.dir), entries = storedZipEntries(archive)
+  assert.ok(entries.has('dsh-tavern-image/lib/reference-images.js'))
+  assert.ok(entries.has('dsh-tavern-image/lib/format-worldbooks.js'))
+  assert.ok([...entries.keys()].every(name => !/^dsh-tavern-image\/(reference-images|format-worldbooks)(\/|$)/i.test(name)))
+  assert.equal(archive.includes(Buffer.from('source-secret-never-export')), false)
+  const packagePath = fileURLToPath(new URL('../tavern-plugin/packages/dsh-tavern-image-bundled/package.json', import.meta.url))
+  const metadata = JSON.parse(readFileSync(packagePath, 'utf8'))
+  assert.ok(Array.isArray(metadata.files))
+  assert.ok(metadata.files.every(name => !/^(reference-images|format-worldbooks)(\/|$)/i.test(name) && !['*', '**', '**/*', '.'].includes(name)), 'npm files 仍是静态代码白名单')
+})
+
+test('Git 更新拒绝新增、删除或重命名涉及新私有目录的任何路径', async t => {
+  for (const changed of ['reference-images', 'reference-images/' + 'a'.repeat(64), 'format-worldbooks/structured/worldbook.json', 'format-worldbooks/含引号"与\n换行.json', 'FORMAT-WORLDBOOKS/mixed/worldbook-outfits.json']) {
+    const { root, original, calls, updater } = gitUpdateFixture(t, [changed, 'lib/reference-images.js'])
+    const result = await updater.check()
+    assert.equal(result.available, true)
+    assert.equal(result.canUpdate, false, changed)
+    assert.match(result.reason, /用户数据路径/)
+    await assert.rejects(updater.apply(result.target), /先检查更新/)
+    assert.ok(!calls.some(args => args[0] === 'merge'))
+    for (const [file, text] of original) assert.equal(readFileSync(path.join(root, file), 'utf8'), text)
+  }
+})
+
+test('Git 更新允许两个 helper 的代码变更，且不触碰本地参考图和格式世界书', async t => {
+  const { root, original, calls, updater } = gitUpdateFixture(t, ['lib/reference-images.js', 'lib/format-worldbooks.js', 'README.md'])
+  const result = await updater.check()
+  assert.equal(result.canUpdate, true, result.reason)
+  assert.equal((await updater.apply(result.target)).restartRequired, true)
+  assert.equal(calls.filter(args => args[0] === 'merge').length, 1)
+  for (const [file, text] of original) assert.equal(readFileSync(path.join(root, file), 'utf8'), text)
+})
+
+test('Release 白名单升级保留本地参考图和独立世界书', async t => {
+  const source = makeSource(t, '3.1.5')
+  writeFileSync(path.join(source.dir, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: '3.1.5', dsh: { compatibility: { tavernApiVersion: 1 } } }))
+  privateData(source.dir, 'source-secret')
+  const { root, original, updater } = releaseFixture(t, await createDownloadPackage(source.dir))
+  const checked = await updater.check()
+  assert.equal(checked.canUpdate, true, checked.reason)
+  assert.equal((await updater.apply(checked.target)).restartRequired, true)
+  for (const [file, text] of original) assert.equal(readFileSync(path.join(root, file), 'utf8'), text)
+  assert.match(readFileSync(path.join(root, 'lib', 'index.js'), 'utf8'), /bundled/)
+})
+
+test('Release ZIP 即便含有效校验和也不能写入参考图或独立世界书目录', async t => {
+  for (const protectedPath of ['reference-images/never-overwrite', 'format-worldbooks/tags/worldbook.json']) {
+    const source = makeSource(t, '3.1.5')
+    writeFileSync(path.join(source.dir, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: '3.1.5', dsh: { compatibility: { tavernApiVersion: 1 } } }))
+    const innocentPath = 'lib/' + 'x'.repeat(protectedPath.length - 4)
+    writeFileSync(path.join(source.dir, innocentPath), 'malicious new user data')
+    const archive = Buffer.from(await createDownloadPackage(source.dir))
+    const before = Buffer.from('dsh-tavern-image/' + innocentPath), after = Buffer.from('dsh-tavern-image/' + protectedPath)
+    assert.equal(before.length, after.length)
+    // Rename both local and central-directory filenames without altering file
+    // content CRCs, so rejection must be the protected-path allowlist itself.
+    let count = 0, offset = 0
+    while ((offset = archive.indexOf(before, offset)) >= 0) { after.copy(archive, offset); offset += after.length; count++ }
+    assert.equal(count, 2)
+    const { root, original, updater } = releaseFixture(t, archive)
+    const result = await updater.check()
+    assert.equal(result.canUpdate, false)
+    assert.match(result.reason, /protected path/)
+    await assert.rejects(updater.apply(result.target), /请先检查/)
+    for (const [file, text] of original) assert.equal(readFileSync(path.join(root, file), 'utf8'), text)
+  }
+})
 
 test('comparePluginVersions 按段比较，忽略多余段', () => {
   assert.equal(comparePluginVersions('2.8.0', '2.8.0'), 0)
@@ -469,4 +648,55 @@ test('真实发行副本：完整安装、入口可加载且默认不创建私�
   const repeated = installBundledSceneImagePlugin({ sourceRoot, dataRoot: data, logger: quiet })
   assert.equal(repeated.action, 'skipped')
   assert.equal(readFileSync(configPath, 'utf8'), userConfig)
+})
+
+test('真实 3.3.0 发行副本升级 3.1.x 与 3.2.1：保留用户数据和删除状态，重复安装跳过', t => {
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const source = path.join(sourceRoot, 'tavern-plugin', 'packages', 'dsh-tavern-image-bundled')
+  const info = readBundledSceneImage(sourceRoot)
+  assert.equal(info.ok, true, info.reason)
+  assert.equal(info.version, '3.3.0')
+  for (const installedVersion of ['3.1.9', '3.2.1']) {
+    const dataRoot = makeData(t)
+    const target = path.join(dataRoot, 'plugins', BUNDLED_SCENE_IMAGE_FOLDER)
+    mkdirSync(path.join(target, 'lib'), { recursive: true })
+    writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: SCENE_IMAGE_PACKAGE_NAME, version: installedVersion, main: './lib/index.js', dsh: CONTRACT }))
+    writeFileSync(path.join(target, 'lib', 'index.js'), '// previous ' + installedVersion + ' code\n')
+    writeFileSync(path.join(target, 'client.js'), '// previous client\n')
+    const referenceId = 'b'.repeat(64), outfitReferenceId = 'c'.repeat(64)
+    const preserved = privateData(target, 'existing-private-' + installedVersion)
+    preserved.push(
+      ['config.json', '{"imageChannels":[{"id":"custom","provider":"custom","apiKey":"local-secret"}],"comfyAuthToken":"local-token"}\n'],
+      ['definitions.json', '{"characters":[{"id":"character","referenceImage":{"id":"' + referenceId + '"},"outfits":[{"id":"outfit","referenceImage":{"id":"' + outfitReferenceId + '"}}]}]}\n'],
+      ['reference-images/' + referenceId, 'immutable-reference-bytes-' + installedVersion],
+      ['reference-images/' + outfitReferenceId, 'immutable-outfit-reference-' + installedVersion],
+      ['jobs-store.json', '{"jobs":[{"referenceSnapshot":[{"image":{"id":"' + referenceId + '"}},{"image":{"id":"' + outfitReferenceId + '"}}]}]}\n'],
+      ['workflows/custom.json', '{"custom":true}\n'],
+    )
+    for (const [file, text] of preserved) {
+      mkdirSync(path.dirname(path.join(target, file)), { recursive: true })
+      writeFileSync(path.join(target, file), text)
+    }
+    const options = { sourceRoot, dataRoot, logger: quiet }
+    const result = installBundledSceneImagePlugin(options)
+    assert.equal(result.action, 'upgraded', installedVersion)
+    assert.equal(result.installedVersion, installedVersion)
+    assert.equal(result.version, '3.3.0')
+    assert.equal(JSON.parse(readFileSync(path.join(target, 'package.json'), 'utf8')).version, '3.3.0')
+    for (const file of [
+      'lib/index.js', 'lib/reference-images.js', 'lib/format-worldbooks.js',
+      'lib/image-channels.js', 'lib/image-provider-capabilities.js', 'lib/image-providers.js',
+      'lib/comfy-reference-images.js', 'client.js',
+    ]) {
+      assert.deepEqual(readFileSync(path.join(target, file)), readFileSync(path.join(source, file)), 'current release code: ' + file)
+    }
+    for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed: ' + file)
+    assert.equal(existsSync(path.join(target, 'workflows', 'seed-deleted.json')), false, 'a removed bundled workflow stays removed')
+    assert.equal(existsSync(path.join(target, 'BUNDLED-VERSION.json')), false)
+    const repeated = installBundledSceneImagePlugin(options)
+    assert.equal(repeated.action, 'skipped')
+    assert.equal(repeated.installedVersion, '3.3.0')
+    for (const [file, text] of preserved) assert.equal(readFileSync(path.join(target, file), 'utf8'), text, 'private data changed on repeat: ' + file)
+    assert.deepEqual(readdirSync(path.join(dataRoot, 'plugins')), [BUNDLED_SCENE_IMAGE_FOLDER])
+  }
 })

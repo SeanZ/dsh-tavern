@@ -47,3 +47,7 @@ docs/implementation/
 /examples/dafeiyu-card/*.dshcard.png
 /examples/dshcard-hello/*.dshcard
 *.bak-*
+
+# Bundled image plugin runtime data (never publish local reference assets/rules)
+/tavern-plugin/packages/dsh-tavern-image-bundled/reference-images/
+/tavern-plugin/packages/dsh-tavern-image-bundled/format-worldbooks/

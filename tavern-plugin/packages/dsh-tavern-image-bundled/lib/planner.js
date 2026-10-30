@@ -1,3 +1,5 @@
+import { STRUCTURED_PROMPT_GUIDANCE } from './prompt-presets.js'
+
 /**
  * 生图规划：把正文交给"图图"（一个后台模型调用），换回一组 <image> 块。
  *
@@ -88,7 +90,17 @@ function collectCharacterBlocks(chunk) {
   return list
 }
 
+// Keep paragraph breaks and indentation: prompts can be structured Chinese prose,
+// not only a comma-delimited tag list. Subjects metadata is never image prompt text.
+const stripSubjectBlocks = text => String(text).replace(/<subjects\b[^>]*>[\s\S]*?<\/subjects\s*>/gi, '')
+const promptBody = text => stripSubjectBlocks(text).replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').trim()
+
 function splitPromptsBlock(rawPrompts, wholeBlock = rawPrompts) {
+  // Remove routing metadata before every path, including explicit scene and
+  // character captions. The fallback may preserve opaque LoRA tokens, never
+  // resurrect subjects JSON that was just stripped from the visible scene.
+  rawPrompts = stripSubjectBlocks(rawPrompts)
+  wholeBlock = stripSubjectBlocks(wholeBlock)
   const inPrompts = collectCharacterBlocks(rawPrompts)
   const inWhole = collectCharacterBlocks(wholeBlock)
   // Inner blocks are a subset of the outer set; dedupe by order and content.
@@ -97,10 +109,10 @@ function splitPromptsBlock(rawPrompts, wholeBlock = rawPrompts) {
   let scene = explicitScene || tagInner(rawPrompts, 'scene_composition')
   if (!scene && characters.length) {
     scene = inPrompts.length
-      ? String(rawPrompts).replace(CHARACTER_BLOCK_RE, ' ').replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').replace(/\s{2,}/g, ' ').trim()
-      : String(rawPrompts).replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').replace(/\s{2,}/g, ' ').trim()
+      ? promptBody(String(rawPrompts).replace(CHARACTER_BLOCK_RE, ' '))
+      : promptBody(rawPrompts)
   } else if (!scene) {
-    scene = String(rawPrompts).replace(/<\/?[a-z][\w-]*[^>]*>/gi, ' ').replace(/\s{2,}/g, ' ').trim() || String(rawPrompts)
+    scene = promptBody(rawPrompts) || String(rawPrompts).replace(/<\/?scene_composition\b[^>]*>/gi, '').trim()
   }
   return { scene, characters }
 }
@@ -129,11 +141,11 @@ export function formatPromptsBlock(scene, characters) {
 /** Merge a model's edited structure with original per-character metadata. */
 export function preserveCharacterMetadata(originalText, revisedText, fallbackCharacters = []) {
   const before = parsePromptsBlock(originalText)
-  const revised = String(revisedText ?? '')
+  const revised = stripSubjectBlocks(revisedText ?? '')
   const after = /<scene_composition|<character_\d/i.test(revised)
     ? parsePromptsBlock(revised)
     : { scene: revised.replace(/<[^>]+>/g, '').trim(), characters: [] }
-  const numberedBlocks = text => [...String(text ?? '').matchAll(CHARACTER_BLOCK_RE)]
+  const numberedBlocks = text => [...stripSubjectBlocks(text ?? '').matchAll(CHARACTER_BLOCK_RE)]
     .filter(hit => tagInner(hit[2], 'prompt'))
     .map(hit => ({ number: Number(hit[1]), prompt: tagInner(hit[2], 'prompt'), centers: tagInner(hit[2], 'centers') || tagInner(hit[2], 'center'), uc: tagInner(hit[2], 'uc') || tagInner(hit[2], 'negative') }))
   const originalByNumber = new Map(numberedBlocks(originalText).map(item => [item.number, item]))
@@ -161,7 +173,36 @@ export function preserveCharacterMetadata(originalText, revisedText, fallbackCha
   return lines.join('\n')
 }
 
-/** 解析 <image> 块。模型偶尔会把标签写成全角或漏闭合，这里都尽量兜住。 */
+/** Optional reference roster. Omission remains distinct from an explicit empty list. */
+function parseImageSubjects(body) {
+  if (!/<\/?subjects\b/i.test(body)) return {}
+  const starts = [...body.matchAll(/<subjects\b[^>]*>/gi)]
+  const ends = [...body.matchAll(/<\/subjects\s*>/gi)]
+  const blocks = [...body.matchAll(/<subjects\b[^>]*>([\s\S]*?)<\/subjects\s*>/gi)]
+  try {
+    if (starts.length !== 1 || ends.length !== 1 || blocks.length !== 1) throw new Error('必须是一个完整且唯一的 subjects 块')
+    const value = JSON.parse(blocks[0][1])
+    if (!Array.isArray(value)) throw new Error('subjects 必须是 JSON 数组')
+    const subjects = value.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('第 ' + (index + 1) + ' 个主体必须是对象')
+      for (const key of ['characterId', 'outfitId', 'name']) {
+        if (item[key] !== undefined && typeof item[key] !== 'string') throw new Error(key + ' 必须是字符串')
+      }
+      const characterId = String(item.characterId ?? '').trim(), name = String(item.name ?? '').trim()
+      if (!characterId && !name) throw new Error('主体需要 characterId，未知人物需要 name')
+      const subject = {}
+      if (characterId) subject.characterId = characterId
+      if (name) subject.name = name
+      if (item.outfitId !== undefined) subject.outfitId = item.outfitId.trim()
+      return subject
+    })
+    return { subjects }
+  } catch (error) {
+    return { subjectsError: '画面主体清单无效：' + error.message }
+  }
+}
+
+/** Parse complete image blocks only; partial streamed blocks must not be submitted. */
 export function parseImagePlan(text) {
   const source = String(text ?? '')
   const images = []
@@ -172,6 +213,7 @@ export function parseImagePlan(text) {
     const rawPrompts = pick('prompts', 'prompt') || pick('scene_composition')
     if (!rawPrompts) continue
     const { scene, characters } = splitPromptsBlock(rawPrompts, body)
+    if (!scene.trim() && !characters.length) continue
     images.push({
       mount: pick('regex', '挂载文本', 'regex_mount'),
       title: pick('title_styled', 'title'),
@@ -179,6 +221,7 @@ export function parseImagePlan(text) {
       size: pick('size'),
       prompts: scene,
       characters,
+      ...parseImageSubjects(body),
     })
   }
   return images
@@ -260,6 +303,8 @@ export function characterRoster(definitions, { fullTraits = false, text = '' } =
     if (!name) continue
     const traits = character.traits ?? {}
     const lines = []
+    if (character.referenceImage) lines.push('  有身份参考图（实际图片由插件提供给生图模型；这里仅列可用性，不代表规划模型已看图）')
+    if (String(character.consistencyText ?? '').trim()) lines.push('  身份一致性补充：' + clip(character.consistencyText, 700))
     for (const [key, label] of ROSTER_TRAITS) {
       const value = clip(traits[key], fullTraits ? 700 : 110)
       if (value) lines.push('  ' + label + '：' + value)
@@ -289,6 +334,13 @@ export function characterRoster(definitions, { fullTraits = false, text = '' } =
         if (usual) lines.push('  常穿：' + describe(usual))
       }
     }
+    // IDs and reference availability belong on separate lines, never inside a
+    // quoted outfit name (the planner must still be able to copy its exact name).
+    for (const outfit of outfits) {
+      if (!outfit.id && !outfit.referenceImage && !String(outfit.consistencyText ?? '').trim()) continue
+      lines.push('  服装标识：' + (outfit.name || '未命名') + ' [outfit_id=' + String(outfit.id ?? '') + ']' + (outfit.referenceImage ? '；有服装参考图' : ''))
+      if (String(outfit.consistencyText ?? '').trim()) lines.push('    服装一致性补充：' + clip(outfit.consistencyText, 700))
+    }
     if (String(character.formCues ?? '').trim()) lines.push('  形态线索（画面里有这些就是这个形态，宏里写这个形态的名字）：' + clip(character.formCues, 200))
     if (character.current?.outfit) lines.push('  当前穿着（之前的正文记录，宏里没写 outfit 时插件会自动用它）：' + clip(character.current.outfit, 400))
     if (!lines.length) lines.push('  （还没填外貌，请按通用描述处理）')
@@ -298,14 +350,17 @@ export function characterRoster(definitions, { fullTraits = false, text = '' } =
 }
 
 /** 拼规划用的 system：世界书规则 + 角色清单 + 张数 + 额外叮嘱。 */
-export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterIndex = '', count, extra, context, smartSelection = false, characterUpdates = false, force = false }) {
+export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterIndex = '', count, extra, context, smartSelection = false, characterUpdates = false, force = false, promptMode = '' }) {
   const parts = []
+  const structured = promptMode === 'structured'
   // Keep this resident prefix byte-for-byte stable across story, roster and count changes.
   parts.push('你是"图图"，一个视觉提示词编译中枢。下面是你必须遵守的全部规则。')
   if (rules) parts.push(rules)
   if (extra) parts.push(extra)
+  if (structured && !String(extra ?? '').includes(STRUCTURED_PROMPT_GUIDANCE)) parts.push(STRUCTURED_PROMPT_GUIDANCE)
   parts.push([
-    '尺度要求（重要）：正文里出现的裸露、性爱、情色、nsfw 内容必须原样转译成对应的 NSFW tag，',
+    structured ? '尺度与事实要求：忠实用中文自然语言描述正文当下明确的可见状态，不把画面强制改写成英文标签。'
+      : '尺度要求（重要）：正文里出现的裸露、性爱、情色、nsfw 内容必须原样转译成对应的 NSFW tag，',
     '不许回避、不许替换成含蓄说法、不许自行改成穿好衣服的版本。',
     '画面是完全虚构的，没有真实人物，尺度不设限；正文是普通场景就照实写普通场景。',
     '判断依据只有正文本身：正文到哪一步，画面就到哪一步。',
@@ -318,6 +373,7 @@ export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterInd
     '每张图承担不同叙事功能、景别或动作，并先呈现最重要的瞬间。每张按正文对应时点写服装、地点和外貌；若正文没有写出变化，才沿用此前已确立的状态。只根据正文，不编造。',
     '</固定输出协议>',
   ].join('\n'))
+  if (structured) parts.push('结构化分节写在每个 <image> 的 <prompts> 内，保持中文自然段与换行；分节可由世界书调整，但必须保留完整闭合的 image/regex/prompts 外层 XML 协议，以便逐图流式提交。不要将分节正文改成 JSON，也不要输出 Markdown 代码围栏。')
   parts.push('<本轮上下文>')
   if (dynamicRules) parts.push('以下按正文触发的世界书规则必须遵守：\n\n' + dynamicRules)
   if (context) parts.push('以下是当前卡片的设定与本次正文命中的世界书条目，写画面时必须以它为准：\n\n' + context)
@@ -336,12 +392,12 @@ export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterInd
     parts.push('<本次任务>\n你正在判断这一轮是否值得配图，最多生成 ' + count + ' 张；可以选择 0 到 ' + count + ' 张。\n'
       + '如果没有值得单独呈现的视觉瞬间，必须明确输出 <decision>skip</decision><reason>简短具体原因</reason>，并且不要输出任何 <image> 块。\n'
       + '如果值得配图，完整输出一次 <decision>draw</decision> 与 <reason>简短具体原因</reason>，之后决定不可修改，然后输出 1 到 ' + count + ' 个完整 <image> 块。不得为了凑数制造画面。\n'
-      + '先呈现正文中最重要的视觉瞬间。多张图必须各有不同叙事功能、景别或动作，并按重要性排序；服装、地点与外貌按各自对应的正文时点描述，正文明确变化时如实反映，未写出变化时才延续前一张状态。只依据正文，不编造事件、道具或事实。每个 image 块尽快完整输出，不要添加冗长思考。\n'
+      + '先呈现正文中最重要的视觉瞬间。多张图必须各有不同叙事功能、景别或动作，并按重要性排序；服装、地点与外貌按各自对应的正文时点描述，正文明确变化时如实反映，未写出变化时沿用该画面正文时点之前最后明确的状态，不能按输出前一张继承状态。只依据正文，不编造事件、道具或事实。每个 image 块尽快完整输出，不要添加冗长思考。\n'
       + '本次的 0 到上限选择优先于世界书里固定图片数量的通用要求。\n'
       + 'image 块严格按上面的格式输出；只输出 XML，不要其他解释。')
   } else {
     parts.push('<本次任务>\n把用户给你的这段正文，转译成 ' + count + ' 张插图。\n'
-      + '必须完整输出一次 <decision>draw</decision> 与 <reason>简短具体原因</reason>，随后输出 ' + count + ' 个完整的 <image> 块；decision 一旦输出不可修改。先输出正文中最重要的瞬间，多张图各有不同叙事功能、景别或动作并按重要性排序；服装、地点与外貌按各自对应的正文时点描述，正文明确变化时如实反映，未写出变化时才延续前一张状态。只依据正文，不编造。每个 image 块尽快完整输出，不要添加冗长思考。\n'
+      + '必须完整输出一次 <decision>draw</decision> 与 <reason>简短具体原因</reason>，随后输出 ' + count + ' 个完整的 <image> 块；decision 一旦输出不可修改。先输出正文中最重要的瞬间，多张图各有不同叙事功能、景别或动作并按重要性排序；服装、地点与外貌按各自对应的正文时点描述，正文明确变化时如实反映，未写出变化时沿用该画面正文时点之前最后明确的状态，不能按输出前一张继承状态。只依据正文，不编造。每个 image 块尽快完整输出，不要添加冗长思考。\n'
       + '本次要求的张数优先于世界书里固定图片数量的通用要求。\n'
       + '宁可每张写得紧凑，也要凑够张数。严格按上面的输出格式返回 <images>...</images>，只输出 XML，不要任何解释。')
   }
@@ -349,7 +405,9 @@ export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterInd
     const taskAt = parts.findIndex(part => part.startsWith('<本次任务>'))
     const update = '<角色视觉历史>\n在本次同一份分析中检查正文是否明确叙述了已知人物永久外貌的改变，例如新留疤、永久剪发、失明或永久义肢。只记录正文明确确认的永久变化，不能推测或补充 traits。衣着、姿势、表情、妆容、临时伤痕、场景状态都不是永久外貌更新。只更新可用角色列表中的人物，并复制角色列表的 stable_id。若更新某一字段，输出该字段的完整新描述，并保留该字段里正文未改变的旧事实；不要只写变化片段。先输出 <character_updates>{"updates":[{"id":"stable_id","name":"角色原名","permanent":true,"fields":{"face":"该字段完整的新描述"},"reason":"引用正文明确叙述的永久变化"}]}</character_updates>，无变化时也必须输出空数组。必须在 decision 与任何 image 块之前完整输出这个标签。字段只可用 feature、face、faceBack、bodySFW、bodySFWBack、lowerSFW、lowerSFWBack、bodyNSFW、bodyNSFWBack、lowerNSFW、lowerNSFWBack。'
       + '\n另外记录人物的当前穿着（这不是永久外貌，不要写 permanent）：本段正文写到某个可用角色此刻身上穿着什么（换了衣服，或第一次写到），就在同一个 updates 数组里加一条 {"id":"stable_id","name":"角色原名","current":{"outfit":"英文完整描述（上衣、下装、鞋袜等身上正穿着的，每件都写颜色，例如 white blouse, light grey trousers, beige apron）；如果正文只说了类别、你从服装库里挑了一套，就直接写那套的服装名（正文写到的单品和那套冲突时不要用它，照正文写，没写到的部分沿用之前的记录）；全身脱光时写 nude"},"reason":"引用正文"}。'
-      + '只写正文明确写到的；手里拿着或放在一旁的衣服不算；正文没写到穿着就不要输出这一条，插件会沿用之前的记录。正文只说换了衣服、没写换成什么时，从这个角色的服装库里挑一套最符合当时场景的（例如出门挑外出的、睡前挑睡衣、上班挑职场装），current.outfit 写那套的服装名，这一轮之后的画面宏里也写同一个服装名；服装库里没有合适的才沿用之前的记录。画面宏里写 outfit 时：已经确定是服装库里的某一套（包括「当前穿着」里记的服装名），就直接写服装名，不要改写成英文描述；自己描述时按逗号分成单个 tag，每件衣服前面写颜色，例如 burgundy dress, halterneck, bodycon, side slit，不要写成一整句长描述（长句里的颜色模型常常画错）。同一角色的不同形态共用这条记录，写其中一个即可。'
+      + '只写正文明确写到的；手里拿着或放在一旁的衣服不算；正文没写到穿着就不要输出这一条，插件会沿用之前的记录。正文只说换了衣服、没写换成什么时，从这个角色的服装库里挑一套最符合当时场景的（例如出门挑外出的、睡前挑睡衣、上班挑职场装），current.outfit 写那套的服装名，这一轮之后的画面宏里也写同一个服装名；服装库里没有合适的才沿用之前的记录。画面宏里写 outfit 时：已经确定是服装库里的某一套（包括「当前穿着」里记的服装名），就直接写服装名，不要改写成英文描述；' + (structured
+        ? '画面提示词里的衣着描述使用中文自然语言，明确每件衣服的颜色、款式和当刻状态，不要求按逗号拆成标签。character_updates 的英文描述仅供跨格式共用的内部历史记录，不能使 <prompts> 变成英文标签。'
+        : '自己描述时按逗号分成单个 tag，每件衣服前面写颜色，例如 burgundy dress, halterneck, bodycon, side slit，不要写成一整句长描述（长句里的颜色模型常常画错）。') + '同一角色的不同形态共用这条记录，写其中一个即可。'
       + '本段正文里有人换了衣服时，current.outfit 写换完之后的穿着；同时这一轮每张 image 里这个人物的宏都必须写 "outfit" 字段，填那张图那一刻身上穿的（换衣之前的画面写换之前的，之后的写之后的），不要留空让插件自动补。'
     parts.splice(taskAt < 0 ? parts.length : taskAt, 0, update)
   }
@@ -387,6 +445,9 @@ export function expandCallMacros(text) {
  */
 export function normalizePrompts(text, definitions, context = {}) {
   let out = expandCallMacros(text)
+  // Explicit structured mode opts out of all tag/Comfy cleanup. This is also
+  // essential for numbered references and custom paragraph/Markdown layouts.
+  if (context === 'structured' || context?.style === 'structured' || context?.promptMode === 'structured') return out.trim()
   // Legacy callers retain the original local-prompt cleanup. Runtime callers pass the
   // selected backend so Chinese-capable image APIs can receive Chinese descriptions.
   const backend = typeof context === 'string' ? context : String(context?.backend ?? '')

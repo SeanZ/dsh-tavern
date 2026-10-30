@@ -30,8 +30,9 @@ import { fileURLToPath } from 'node:url'
 import { buildAutoImageGenPrompt } from './prompts.js'
 import { installTavernBridge, removeMountedPicture } from './tavern-bridge.js'
 import { createPluginUpdater } from './updater.js'
-import { IMAGE_PROVIDERS, generateImage, testImageChannel } from './image-providers.js'
-import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch } from './image-channels.js'
+import { IMAGE_PROVIDERS, generateImage, testImageChannel, supportsImageTaskResume } from './image-providers.js'
+import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences } from './image-provider-capabilities.js'
+import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch, migrateLegacyImageConfig } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
 import { parseImagePlan, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
@@ -40,11 +41,14 @@ import { createDownloadPackage, PLUGIN_DOWNLOADS } from './download-package.js'
 import { createMediaActions } from './media-actions.js'
 import { applyCharacterSnapshot, boundCharacterSnapshot, emptyCharacterSnapshot, mergeCharacterUpdates } from './character-history.js'
 import { getPromptGuidance } from './prompt-presets.js'
-import { BUILTIN_PROMPT_PRESETS, normalizePromptPresets, resolvePromptMode, composePresetText, promptPresetNegative, effectivePromptPreset, formatPromptForBackend, validPromptPresetId, promptBackendContext } from './prompt-presets.js'
+import { PROMPT_FORMATS, BUILTIN_PROMPT_PRESETS, normalizePromptPresets, resolvePromptMode, composePresetText, promptPresetNegative, effectivePromptPreset, formatPromptForBackend, validPromptPresetId, promptBackendContext } from './prompt-presets.js'
 import { transcodeImageOutputAsync, isBlankImage } from './image-output.js'
-import { buildComfySimpleWorkflow, inspectComfySimple, normalizeComfySimpleConfig } from './comfy-simple.js'
+import { comfyLoadImageBindings, applyComfyReferenceImages } from './comfy-reference-images.js'
 import { createDiagnostics } from './diagnostics.js'
 import { deleteWorkflow } from './workflow-delete.js'
+import { createFormatWorldbooks } from './format-worldbooks.js'
+import { composeStructuredPrompt, combineStructuredPrompt } from './prompt-presets.js'
+import { normalizeReferenceImage, normalizeConsistencyText, createReferenceImageStore, resolveImageReferences, buildReferenceText, buildStructuredReferenceText, referencePlannerGuidance, referenceScopedDefinitions } from './reference-images.js'
 
 export const name = 'dsh-tavern-image'
 export const inject = ['webServer']
@@ -67,12 +71,11 @@ const credentialStore = createCredentialStore({ save: config => saveConfig(confi
 
 const DEFAULTS = {
   imageBackend: 'comfyui',
+  generationMode: 'text',
   imageChannels: [],
   activeImageChannel: '',
   imageConcurrency: 2,
   comfyUrl: 'http://127.0.0.1:8188',
-  comfyMode: 'workflow',
-  comfySimple: normalizeComfySimpleConfig(),
   // 服务鉴权：none / bearer / basic
   comfyAuthMode: 'none',
   comfyAuthToken: '',
@@ -238,8 +241,16 @@ const NOTHING_WORN = /^(?:nude|naked|nothing|no clothes|completely (?:nude|naked
 /** 通用服装库的字段（跨角色复用的一套衣服）。 */
 const OUTFIT_FIELDS = ['body', 'full', 'bodyBack', 'fullBack', 'negative']
 
+function referenceFields(raw) {
+  const fields = {}
+  if (raw && Object.hasOwn(raw, 'referenceImage')) fields.referenceImage = normalizeReferenceImage(raw.referenceImage)
+  if (raw && Object.hasOwn(raw, 'consistencyText')) fields.consistencyText = normalizeConsistencyText(raw.consistencyText)
+  return fields
+}
+
 export function normalizeOutfit(raw, index) {
   const item = {
+    ...referenceFields(raw),
     id: String(raw?.id ?? `outfit-${index + 1}`),
     name: String(raw?.name ?? `通用服装 ${index + 1}`),
     enabled: raw?.enabled !== false,
@@ -268,7 +279,8 @@ const VISION_SYSTEM = [
 export function expandRosterCalls(text, scoped, mode, options = {}) {
       // options.onMacro(entry)：诊断用，报告每个宏解析成了谁、哪套衣服、丢掉了哪些负面词。
       const note = (entry) => { if (typeof options?.onMacro === 'function') { try { options.onMacro(entry) } catch {} } }
-      const natural = options?.style === 'natural'
+      const style = options?.style
+      const natural = style === 'natural' || style === 'structured'
       let lastPerson = null
       const nameKey = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
       const standaloneNames = new Set([...String(text ?? '').matchAll(/\$\{([\s\S]*?)\}\$/g)].flatMap((m) => {
@@ -333,7 +345,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const hiddenBody = /hidden/i.test(upper) && /hidden/i.test(lower)
           const ownsStandalone = (person.outfits ?? []).some((o) => o && o.enabled !== false && standaloneNames.has(nameKey(o.name)))
           const libraryHit = outfitName && (person.outfits ?? []).some((o) => o && o.enabled !== false && o.name === outfitName)
-          const macroText = outfitName && /^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName) && !PLACEHOLDER_VALUE.test(outfitName)
+          const macroText = outfitName && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName))) && !PLACEHOLDER_VALUE.test(outfitName)
           // 插件自动补的衣服（「当前穿着」记录、常穿）只在穿着衣服的画面里补：
           // 标了 nsfw、全身 hidden、画面写着洗澡/裸体/内衣，或者记录本身就是「没穿」时都不补。
           // 宏里明确写的衣服（例如半脱的内衣）不受影响，总是保留。
@@ -364,8 +376,8 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
             noOutfit: Boolean(wear) || ownsStandalone || (!libraryHit && autoOff),
             tags: !natural,
           })
-          const angleTag = angle && /front|back|side|behind|left|right|from/i.test(angle) ? angle : ''
-          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear))
+          const angleTag = angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle)) ? angle : ''
+          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style) || person.promptLabel || person.name || asked)
           else {
             if (picked.tags.length) bits.push(...picked.tags)
             if (wear) bits.push(wear)
@@ -399,14 +411,14 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           bits.push(asked)
           if (!person && !matches.length) {
             const outfitText = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
-            const freeText = outfitText && /^[\x20-\x7e]+$/.test(outfitText) && /[a-z]/i.test(outfitText) && !PLACEHOLDER_VALUE.test(outfitText)
+            const freeText = outfitText && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitText) && /[a-z]/i.test(outfitText))) && !PLACEHOLDER_VALUE.test(outfitText)
             const wear = freeText ? (barefoot ? dropFootwear(outfitText) : outfitText) : ''
             if (wear) bits.push(wear)
             const angle = String(parsed.angle ?? '').trim()
-            if (angle && /front|back|side|behind|left|right|from/i.test(angle)) bits.push(angle)
+            if (angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle))) bits.push(angle)
           }
         }
-        return bits.join(', ')
+        return bits.join(style === 'structured' ? '；' : ', ')
       })
     }
 
@@ -426,11 +438,16 @@ function sameCharacterFamily(a, b) {
  *   "<英文名> is the woman in this scene: <外貌>; she is wearing <衣服>"
  * 逗号堆在一起的特征没有主语，多人画面里模型会把一个人的发色、耳朵套到另一个人身上。
  */
-function boundCharacterPhrase(person, picked, extras = [], wear = '') {
+function boundCharacterPhrase(person, picked, extras = [], wear = '', style = 'natural') {
   const label = splitTags(person?.match)[0] || String(person?.name ?? '')
   const origins = (picked?.origins ?? []).filter(o => o.channel !== 'negative')
   const traits = origins.filter(o => !o.outfitId).map(o => o.text)
   const outfit = origins.filter(o => o.outfitId).map(o => o.text)
+  if (style === 'structured') {
+    const identity = String(person?.promptLabel || person?.name || label || person?.id || '')
+    const body = [traits.join('；'), outfit.length ? '穿着：' + outfit.join('；') : (wear ? '穿着：' + wear : ''), ...extras].filter(Boolean).join('；')
+    return body ? `人物“${identity}”：` + body : ''
+  }
   const look = [person?.traits?.face, person?.traits?.faceBack, person?.traits?.feature].map(v => String(v ?? '')).join(' ')
   const who = /\b(woman|girl|female|lady)\b/i.test(look) ? ['the woman', 'she']
     : /\b(man|boy|male|gentleman)\b/i.test(look) ? ['the man', 'he'] : ['a character', 'they']
@@ -468,7 +485,8 @@ function resolveWearText(person, text) {
 
 /** 人物宏展开 / 规范化用自然语言还是 tag 写法（与 prepareImagePrompt 的判断一致）。 */
 function rosterStyle(config, workflow = null) {
-  return resolvePromptMode(config, promptBackendContext(config, workflow)) === 'natural' ? 'natural' : 'tags'
+  const mode = resolvePromptMode(config, promptBackendContext(config, workflow))
+  return mode === 'structured' ? 'structured' : mode === 'natural' ? 'natural' : 'tags'
 }
 
 /** 服装字段里的占位值（如 "none"）不写进提示词。 */
@@ -652,6 +670,7 @@ export function apply(ctx, config = {}) {
   route(`${BASE}/config`, (request, response, url, engine) => engine.handleConsole('config', request, response, url))
   route(`${BASE}/workflow`, (request, response, url, engine) => engine.handleConsole('workflow', request, response, url))
   route(`${BASE}/reload`, (request, response, url, engine) => engine.handleConsole('reload', request, response, url))
+  route(`${BASE}/reference-image`, (request, response, url, engine) => engine.handleConsole('reference-image', request, response, url))
   route(`${BASE}/definitions`, (request, response, url, engine) => engine.handleConsole('definitions', request, response, url))
   route(`${BASE}/export-all`, (request, response, url, engine) => engine.handleConsole('export-all', request, response, url))
   route(`${BASE}/import-all`, (request, response, url, engine) => engine.handleConsole('import-all', request, response, url))
@@ -668,10 +687,12 @@ export function apply(ctx, config = {}) {
   route(`${BASE}/img`, (request, response, url, engine) => engine.handleConsole('img', request, response, url))
   route(`${BASE}/cards`, (request, response, url, engine) => engine.handleConsole('cards', request, response, url))
   route(`${BASE}/delete-job`, (request, response, url, engine) => engine.handleConsole('delete-job', request, response, url))
+  route(`${BASE}/worldbook`, (request, response, url, engine) => engine.handleConsole('worldbook', request, response, url))
   route(`${BASE}/worldbook-import`, (request, response, url, engine) => engine.handleConsole('worldbook-import', request, response, url))
   route(`${BASE}/worldbook-entry`, (request, response, url, engine) => engine.handleConsole('worldbook-entry', request, response, url))
   route(`${BASE}/worldbook-add`, (request, response, url, engine) => engine.handleConsole('worldbook-add', request, response, url))
   route(`${BASE}/worldbook-export`, (request, response, url, engine) => engine.handleConsole('worldbook-export', request, response, url))
+  route(`${BASE}/worldbook-upgrade`, (request, response, url, engine) => engine.handleConsole('worldbook-upgrade', request, response, url))
 route(`${BASE}/generate-outfits`, (request, response, url, engine) => engine.handleConsole('generate-outfits', request, response, url))
   route(`${BASE}/generate-outfits-bulk`, (request, response, url, engine) => engine.handleConsole('generate-outfits-bulk', request, response, url))
 route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => engine.handleConsole('generate-characters-minor', request, response, url))
@@ -685,7 +706,6 @@ route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => e
   route(`${BASE}/image-channel-test`, (request, response, url, engine) => engine.handleConsole('image-channel-test', request, response, url))
   route(`${BASE}/llm-models`, (request, response, url, engine) => engine.handleConsole('llm-models', request, response, url))
   route(`${BASE}/comfy-test`, (request, response, url, engine) => engine.handleConsole('comfy-test', request, response, url))
-  route(`${BASE}/comfy-simple-info`, (request, response, url, engine) => engine.handleConsole('comfy-simple-info', request, response, url))
   route(`${BASE}/loras-available`, (request, response, url, engine) => engine.handleConsole('loras-available', request, response, url))
   route(`${BASE}/job-detail`, (request, response, url, engine) => engine.handleConsole('job-detail', request, response, url))
   route(`${BASE}/redraw`, (request, response, url, engine) => engine.handleConsole('redraw', request, response, url))
@@ -728,8 +748,12 @@ async function handleAttachTurn(request, response, _url, engine) {
 
 async function handleJobs(request, response, url, engine) {
   if (request.method === 'POST') {
-    const body = await engine.readBody(request)
-    sendJson(response, 200, await engine.startJob(body, { label: String(body?.origin ?? '') }))
+    try {
+      const body = await engine.readBody(request)
+      sendJson(response, 200, await engine.startJob(body, { label: String(body?.origin ?? '') }))
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: String(error?.message ?? error), code: error?.code, submissionNotStarted: error?.submissionNotStarted === true })
+    }
     return
   }
   if (request.method !== 'GET') { sendJson(response, 405, { ok: false, error: 'method-not-allowed' }); return }
@@ -781,6 +805,7 @@ function createRuntime(ctx, overrides, logger, deps) {
     const diag = createDiagnostics({ root: ROOT, logger, secrets: () => collectSecretValues(config) })
     config.workflows = await scanWorkflows(config)
     let definitions = await loadDefinitions()
+    const referenceStore = createReferenceImageStore(join(ROOT, 'reference-images'), { maxBytes: 32 * 1024 * 1024 })
     let workflows = []
     const jobs = new Map()
     // 出全黑图时用来换种子重画：jobId → { prompt, seedBindings }（只在内存里，重启后不重画）。
@@ -792,6 +817,17 @@ function createRuntime(ctx, overrides, logger, deps) {
       catch { return '' }
     }
     const channelEndpointOf = channel => endpointOf(channel?.baseUrl || IMAGE_PROVIDERS.find(item => item.id === channel?.provider)?.baseUrl)
+    const channelForSavedJob = job => {
+      const channel = config.imageChannels.find(item => item.id === job?.channelId)
+      if (!channel) return null
+      let provider = ''
+      try { provider = effectiveImageProvider(channel) } catch { return null }
+      return [job.backend, job.providerTaskProvider].filter(Boolean).includes(provider) ? channel : null
+    }
+    const resumableChannelForJob = job => {
+      const channel = channelForSavedJob(job)
+      return channel && supportsImageTaskResume(channel) ? channel : null
+    }
 
     // ---- 作业落盘：图文件本来就在 cache/ 里，缺的是这份元数据 ----
     const JOBS_STORE = join(ROOT, 'jobs-store.json')
@@ -838,7 +874,7 @@ function createRuntime(ctx, overrides, logger, deps) {
                 catch { job.mediaType = 'image/png' }
               }
               if (job.backend && job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) {
-                job.requestMayHaveSucceeded = job.requestStarted === true || job.state === 'running'
+                job.requestMayHaveSucceeded = job.requestStarted === true || (job.state === 'running' && job.submissionTracked !== true)
                 job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
                 job.error = job.requestMayHaveSucceeded ? '插件重启后无法确认平台是否已接单；请先在平台检查任务，未自动重试' : '插件重启中断了尚未提交的排队任务，可以手动重试'
               }
@@ -884,19 +920,21 @@ function createRuntime(ctx, overrides, logger, deps) {
     }
     let jobsDirty = false
     let jobsWritePromise = Promise.resolve()
-    function persistJobs() {
+    function persistJobs({ required = false } = {}) {
       jobsDirty = true
-      jobsWritePromise = jobsWritePromise.then(async () => {
-        if (!jobsDirty) return
+      jobsWritePromise = jobsWritePromise.catch(() => {}).then(async () => {
+        if (!jobsDirty && !required) return
         jobsDirty = false
         try {
           // 只落盘真实作业，按时间保留最近 150 条。cache 兜底补回的占位记录每次启动都会从 cache 重建，
           // 不能占名额：按插入顺序截取时它们排在最后，会把带 key / 提示词的真实记录挤掉，
           // 重启后同一段正文就查不到已有的图。
-          const entries = [...jobs.entries()]
+          const ordered = [...jobs.entries()]
             .filter(([, job]) => !job.fromCache)
             .sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0))
-            .slice(-150)
+          const needsTracking = job => ['pending', 'running', 'uncertain'].includes(job.state) || job.requestMayHaveSucceeded === true || job.cancelMayHaveContinued === true || (job.state === 'cancelled' && job.requestStarted === true)
+          // Never evict a live/uncertain paid request in favor of newer history.
+          const entries = [...ordered.filter(([, job]) => needsTracking(job)), ...ordered.filter(([, job]) => !needsTracking(job)).slice(-150)]
           const plain = {}
           for (const [id, job] of entries) {
             plain[id] = {
@@ -918,12 +956,18 @@ function createRuntime(ctx, overrides, logger, deps) {
               channelEndpoint: job.channelEndpoint ?? '', comfyEndpoint: job.comfyEndpoint ?? '',
               providerTaskProvider: job.providerTaskProvider ?? '',
               characterSnapshot: job.characterSnapshot ?? null, comfySimple: job.comfySimple ?? null,
+              generationMode: job.generationMode ?? 'text', promptMode: job.promptMode,
+              referenceSnapshot: job.referenceSnapshot ?? null, submittedPrompt: job.submittedPrompt ?? '', promptAssembly: job.promptAssembly ?? null,
+              submissionTracked: job.submissionTracked === true,
               gameId: job.gameId ?? '', turn: job.turn ?? null, textVersion: job.textVersion ?? '',
               imageOutputWarning: job.imageOutputWarning ?? '',
             }
           }
           await writeJsonAtomic(JOBS_STORE, plain)
-        } catch { /* 落盘失败不影响生成 */ }
+        } catch (error) {
+          if (required) throw Object.assign(new Error('保存生图任务失败，请检查本地存储空间和权限'), { submissionNotStarted: true })
+          logger.warn?.('dsh-tavern-image: 保存生图任务失败：' + String(error?.message ?? error))
+        }
       })
       return jobsWritePromise
     }
@@ -993,13 +1037,26 @@ function createRuntime(ctx, overrides, logger, deps) {
     logger.info?.(`dsh-tavern-image: ${workflows.filter(wf => !wf.error).length} 份工作流可用，默认 ${config.defaultWorkflow || '（无）'}`)
 
     const usable = () => workflows.filter(wf => !wf.error && wf.enabled)
+    const effectiveConfiguredProvider = (cfg = config) => {
+      if (cfg.imageBackend === 'comfyui') return 'comfyui'
+      try { return effectiveImageProvider(activeChannel(cfg)) } catch { return String(cfg.imageBackend ?? '') }
+    }
+    const referenceCapability = () => {
+      if (config.imageBackend === 'comfyui') {
+        if (config.comfyMode === 'simple') return false
+        const workflow = styleWorkflow(config)
+        if (!workflow) return false
+        try { return comfyLoadImageBindings(workflow).length > 0 } catch { return false }
+      }
+      try { return supportsImageReferences(activeChannel(config)) } catch { return false }
+    }
     /**
      * 这次出图会用到的 ComfyUI 工作流：指定了就用指定的，否则用默认工作流。
      * 规划、人物宏展开和编译都按它的模型判断提示词写法；不传工作流时只看得到 "comfyui"，
      * 默认工作流是 Z-Image 这类自然语言模型时，人物宏会被展开成 tag，和编译时的写法对不上。
      */
     const styleWorkflow = (cfg = config, id = '') => {
-      if (cfg.imageBackend !== 'comfyui' || cfg.comfyMode === 'simple') return null
+      if (cfg.imageBackend !== 'comfyui') return null
       return id ? (workflows.find(wf => wf.id === id && !wf.error) ?? null) : (usable().find(wf => wf.id === cfg.defaultWorkflow) ?? null)
     }
 
@@ -1019,22 +1076,62 @@ function createRuntime(ctx, overrides, logger, deps) {
       return response.json()
     }
 
-    let simpleObjectInfo = null
-    let simpleObjectInfoAt = 0
-    async function getSimpleObjectInfo(force = false) {
-      if (!force && simpleObjectInfo && Date.now() - simpleObjectInfoAt < 15000) return simpleObjectInfo
-      const result = await comfyJson('/object_info')
-      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('ComfyUI /object_info 返回格式不正确')
-      simpleObjectInfo = result
-      simpleObjectInfoAt = Date.now()
-      return result
+    async function uploadComfyReference(reference, job, index) {
+      assertComfyEndpoint(job)
+      const image = await referenceStore.read(reference.image)
+      job.controller.signal.throwIfAborted()
+      const extension = ({ 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[image.mediaType] || 'png'
+      const form = new FormData()
+      form.append('image', new Blob([image.data], { type: image.mediaType }), `dsh-reference-${job.comfyId}-${index + 1}.${extension}`)
+      form.append('type', 'input')
+      form.append('overwrite', 'false')
+      const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(30000)])
+      let response
+      try {
+        response = await fetch(`${config.comfyUrl}/upload/image`, { method: 'POST', headers: comfyHeaders(config), body: form, signal })
+      } catch (error) {
+        if (job.controller.signal.aborted) throw job.controller.signal.reason ?? error
+        const wrapped = new Error(`ComfyUI 第 ${index + 1} 张参考图上传失败；未提交 workflow`)
+        wrapped.submissionNotStarted = true
+        throw wrapped
+      }
+      if (!response.ok) {
+        const error = new Error(`ComfyUI 第 ${index + 1} 张参考图上传失败（HTTP ${response.status}）；未提交 workflow`)
+        error.submissionNotStarted = true
+        throw error
+      }
+      let uploaded
+      try { uploaded = await response.json() } catch {}
+      const name = typeof uploaded?.name === 'string' ? uploaded.name : ''
+      const subfolder = typeof uploaded?.subfolder === 'string' ? uploaded.subfolder : ''
+      if (!name || name.includes('..') || name.startsWith('/') || subfolder.includes('..') || subfolder.startsWith('/')) {
+        const error = new Error(`ComfyUI 第 ${index + 1} 张参考图上传响应无效；未提交 workflow`)
+        error.submissionNotStarted = true
+        throw error
+      }
+      return subfolder ? `${subfolder.replace(/\\/g, '/')}/${name}` : name
     }
 
-    async function submitToComfy(compiled, job) {
+    function assertComfyEndpoint(job) {
+      if (!job?.comfyEndpoint || endpointOf(config.comfyUrl) !== job.comfyEndpoint) {
+        const error = new Error('ComfyUI 地址在提交期间发生变化；已停止发送，请确认服务器后重新提交')
+        error.submissionNotStarted = true
+        throw error
+      }
+    }
+
+    async function submitToComfy(compiled, job, onGenerationSubmit) {
       let result
+      let promptPostStarted = false
       try {
         const requestBody = JSON.stringify({ prompt: compiled.prompt, prompt_id: job.comfyId, client_id: randomUUID() })
         diag.recordJob(job?.id, 'comfy-request', { method: 'POST', path: '/prompt', body: diag.text(requestBody) })
+        job.controller.signal.throwIfAborted()
+        assertComfyEndpoint(job)
+        await onGenerationSubmit?.()
+        job.controller.signal.throwIfAborted()
+        assertComfyEndpoint(job)
+        promptPostStarted = true
         result = await comfyJson('/prompt', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1043,6 +1140,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         })
         diag.recordJob(job?.id, 'comfy-accepted', { promptId: result?.prompt_id ?? null, number: result?.number ?? null })
       } catch (error) {
+        if (!promptPostStarted) {
+          job.requestStarted = false
+          error.submissionNotStarted = true
+          error.requestMayHaveSucceeded = false
+        }
         diag.recordJob(job?.id, 'comfy-request-error', { message: String(error?.message ?? error), code: error?.cause?.code ?? null })
         // Node may report localhost's IPv4/IPv6 attempts as an AggregateError.
         // Treat the POST as unsent only when every underlying transport error
@@ -1062,7 +1164,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         visitCause(error?.cause)
         const definitelyPreConnect = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])
         const connectionDefinitelyNotEstablished = codes.length > 0 && !unknownLeaf && codes.every(code => definitelyPreConnect.has(code))
-        error.requestMayHaveSucceeded = connectionDefinitelyNotEstablished
+        error.requestMayHaveSucceeded = !promptPostStarted ? false : connectionDefinitelyNotEstablished
           ? false
           : error.statusCode === undefined || error.statusCode >= 500
         throw error
@@ -1088,7 +1190,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       // Only an explicit recovery may inspect a locally cancelled task. Keep
       // normal polling cancelled, and never create a new provider request.
       if (job.state === 'cancelled' && options.recoverCancelled === true) {
-        if (!(job.comfyId || (job.backend === 'qwen' && job.providerTaskId))) {
+        if (!(job.comfyId || (resumableChannelForJob(job) && job.providerTaskId))) {
           throw new Error('这个渠道没有可查询的平台任务号；请到生图平台检查结果，未重新提交')
         }
         const snapshot = { ...job, state: 'uncertain', controller: new AbortController(), refreshing: null, queryAt: 0 }
@@ -1104,11 +1206,12 @@ function createRuntime(ctx, overrides, logger, deps) {
         return
       }
       if (['done', 'failed', 'cancelled'].includes(job.state)) return
-      if (job.backend === 'qwen' && job.state === 'uncertain' && job.providerTaskId) {
+      if (resumableChannelForJob(job) && job.state === 'uncertain' && job.providerTaskId) {
         if (job.refreshing) return job.refreshing
-        const channel = config.imageChannels.find(item => item.id === job.channelId && item.provider === 'qwen')
+        const channel = resumableChannelForJob(job)
         if (!channel || !job.channelEndpoint || channelEndpointOf(channel) !== job.channelEndpoint) {
-          job.error = '原 Qwen 渠道地址已变化；请恢复原渠道配置后重查，或到平台手动检查'
+          const previousProvider = job.providerTaskProvider || job.backend
+          job.error = '原 ' + (previousProvider === 'atlascloud' ? 'atlas cloud 渠道地址已变化（AtlasCloud）' : 'Qwen 渠道地址已变化') + '；请恢复原渠道配置后重查，或到平台手动检查'
           persistJobs()
           return
         }
@@ -1116,6 +1219,8 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (now - job.queryAt < config.queryThrottleMs) return
         job.queryAt = now
         job.refreshing = (async () => {
+          const signal = (job.controller ||= new AbortController()).signal
+          const stopped = () => signal.aborted || job.state === 'cancelled' || !jobs.has(job.id)
           try {
             const result = await generateImage(structuredClone(channel), {
               positive: job.positive, negative: job.negative,
@@ -1123,13 +1228,16 @@ function createRuntime(ctx, overrides, logger, deps) {
               steps: job.params?.steps, cfg: job.params?.cfg,
             }, {
               resumeTaskId: job.providerTaskId,
+              signal,
               maxImageBytes: config.maxImageBytes,
-              onTask: info => { if (info?.taskId) { job.providerTaskId = String(info.taskId); job.providerTaskProvider = String(info.provider || 'qwen'); persistJobs() } },
+              onTask: info => { if (info?.taskId) { job.providerTaskId = String(info.taskId); job.providerTaskProvider = String(info.provider || job.backend); return persistJobs() } },
             })
-            if (job.state === 'cancelled') return
-            const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: config.maxImageBytes })
+            if (stopped()) return
+            const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: config.maxImageBytes, signal })
+            if (stopped()) return
             const file = join(cacheRoot(config), `${job.id}.img`)
             await writeFile(file, output.bytes)
+            if (stopped()) { await rm(file, { force: true }); return }
             Object.assign(job, { file, mediaType: output.mediaType, byteLength: output.bytes.length, imageOutputWarning: output.warning || '', percent: 100, state: 'done', requestMayHaveSucceeded: false, completedAt: Date.now(), error: '' })
           } catch (error) {
             if (job.state !== 'cancelled') {
@@ -1138,8 +1246,8 @@ function createRuntime(ctx, overrides, logger, deps) {
               job.error = (error?.message ?? String(error)) + (job.state === 'uncertain' ? '；平台任务仍待确认，未自动重发' : '')
             }
           } finally {
+            await persistJobs()
             job.refreshing = null
-            persistJobs()
           }
         })()
         return job.refreshing
@@ -1270,7 +1378,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const timer = setInterval(() => {
         for (const job of jobs.values()) {
           if ((job.state === 'pending' || job.state === 'running' || job.state === 'uncertain')
-            && (job.comfyId || (job.backend === 'qwen' && job.providerTaskId && job.providerTaskProvider === 'qwen'))) refresh(job).catch(() => {})
+            && (job.comfyId || (resumableChannelForJob(job) && job.providerTaskId))) refresh(job).catch(() => {})
         }
       }, 3000)
       return () => clearInterval(timer)
@@ -1289,7 +1397,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       imageDisposed = true
       for (const controller of settledTurnWaitControllers) controller.abort(new Error('插件已卸载'))
       settledTurnWaitControllers.clear()
-      for (const job of jobs.values()) if (job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) job.controller?.abort()
+      for (const job of jobs.values()) if (job.backend !== 'comfyui' && ['pending', 'running', 'uncertain'].includes(job.state)) job.controller?.abort()
     }, 'dsh-tavern-image: image channels')
 
     function drainImages() {
@@ -1298,20 +1406,38 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (job.controller.signal.aborted || !jobs.has(job.id)) continue
         imageRunning++
         job.state = 'running'
-        job.requestStarted = true
-        persistJobs()
+        job.requestStarted = false
         ;(async () => {
+          let providerCompleted = false
           try {
+            // Persist the submission marker before POST, not only after its ID
+            // arrives: a lost response must never look like an unsubmitted job.
+            await persistJobs({ required: true })
+            job.controller.signal.throwIfAborted()
+            if (!jobs.has(job.id)) return
+            const references = []
+            for (const ref of job.referenceSnapshot?.references ?? []) {
+              references.push(await referenceStore.read(ref.image))
+              job.controller.signal.throwIfAborted()
+            }
             const result = await generateImage(channel, {
-              positive: compiled.positive, negative: compiled.negative, seed: compiled.seed, characters: compiled.characters,
+              positive: compiled.positive, negative: compiled.negative, promptMode: compiled.promptMode, seed: compiled.seed, characters: compiled.characters, references,
               width: compiled.size.width, height: compiled.size.height, steps: job.params.steps, cfg: job.params.cfg,
-            }, { signal: job.controller.signal, maxImageBytes, onTask: info => {
+            }, { signal: job.controller.signal, maxImageBytes, onGenerationSubmit: async () => {
+              job.controller.signal.throwIfAborted()
+              if (!jobs.has(job.id)) throw new Error('生图任务已删除')
+              job.requestStarted = true
+              try { await persistJobs({ required: true }) }
+              catch (error) { job.requestStarted = false; throw error }
+              job.controller.signal.throwIfAborted()
+            }, onTask: info => {
               if (info?.provider && info?.taskId) {
                 job.providerTaskId = String(info.taskId)
                 job.providerTaskProvider = String(info.provider)
-                persistJobs()
+                return persistJobs({ required: true })
               }
             } })
+            providerCompleted = true
             job.controller.signal.throwIfAborted()
             if (!jobs.has(job.id)) return
             const output = await transcodeImageOutputAsync(result.bytes, result.mediaType, config, { maxOutputBytes: maxImageBytes, signal: job.controller.signal })
@@ -1322,11 +1448,20 @@ function createRuntime(ctx, overrides, logger, deps) {
             Object.assign(job, { file, mediaType: output.mediaType, byteLength: output.bytes.length, imageOutputWarning: output.warning || '', percent: 100, state: 'done', completedAt: Date.now() })
             if (output.warning) logger.warn?.(`dsh-tavern-image: 作业 ${job.id.slice(0, 8)} ${output.warning}`)
           } catch (error) {
-            job.requestMayHaveSucceeded = error.requestMayHaveSucceeded === true
+            if (error.submissionNotStarted === true && !providerCompleted) job.requestStarted = false
+            job.requestMayHaveSucceeded = providerCompleted || error.requestMayHaveSucceeded === true
             if (job.controller.signal.aborted) {
-              job.state = 'cancelled'
-              job.cancelMayHaveContinued = job.requestStarted === true
-              job.error = job.cancelMayHaveContinued ? '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用' : '已取消'
+              if (imageDisposed && job.state !== 'cancelled') {
+                // Host reload is not a user cancellation. Keep accepted tasks
+                // recoverable by their saved ID, without resubmitting the POST.
+                job.requestMayHaveSucceeded = job.requestStarted === true
+                job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
+                job.error = job.requestMayHaveSucceeded ? '插件已卸载；平台任务仍待确认，重启后可继续查询，未重新提交' : '插件卸载中断了尚未提交的任务'
+              } else {
+                job.state = 'cancelled'
+                job.cancelMayHaveContinued = job.requestStarted === true
+                job.error = job.cancelMayHaveContinued ? '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用' : '已取消'
+              }
             }
             else {
               job.state = job.requestMayHaveSucceeded ? 'uncertain' : 'failed'
@@ -1352,7 +1487,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       return pending
     }
 
-    async function createJob(rawParams, { label = '', forceWorkflow = null, jobConfig = config, diagTrace = null } = {}) {
+    async function createJob(rawParams, { label = '', forceWorkflow = null, jobConfig = config, diagTrace = null, referenceSnapshot = null } = {}) {
       // 浏览器半边只传 tag 和 key，其余（画师串、画幅）由控制台配置兜底。
       const params = {
         tag: String(rawParams?.tag ?? ''),
@@ -1372,34 +1507,51 @@ function createRuntime(ctx, overrides, logger, deps) {
       const key = typeof rawParams?.key === 'string' ? rawParams.key.slice(0, 4000) : ''
       if (key) {
         const existing = findJob(key)
-        if (existing?.state === 'uncertain' || (existing?.state === 'cancelled' && existing.requestMayHaveSucceeded)) {
+        if (existing?.state === 'uncertain' || (existing?.state === 'cancelled' && (existing.requestStarted || existing.cancelMayHaveContinued || existing.requestMayHaveSucceeded))) {
           throw new Error('同一请求的作业状态仍不确定；请先检查生图平台，未自动重试')
         }
         if (existing && (existing.state === 'pending' || existing.state === 'running' || existing.state === 'done')) return publicJob(existing)
       }
       const channel = forceWorkflow ? null : channelWithPresetParams(jobConfig)
-      let workflow = forceWorkflow || (!channel && jobConfig.comfyMode === 'simple' ? null : (!channel ? pickWorkflow(usable(), jobConfig, params.model) : null))
-      let simpleBuild = null
-      if (!channel && !forceWorkflow && jobConfig.comfyMode === 'simple') {
-        simpleBuild = buildComfySimpleWorkflow(jobConfig.comfySimple, await getSimpleObjectInfo())
-        workflow = simpleBuild.workflow
-        // Simple mode owns its dimensions. Keep the old default size dropdown from rewriting them.
-        params.size = `${simpleBuild.config.width}x${simpleBuild.config.height}`
-      }
-      if (!channel && !workflow) throw new Error('没有可用的工作流（到 设置 → 配图 的「渠道」里选择工作流或简单模式）')
+      const generationMode = rawParams?.generationMode ?? jobConfig.generationMode ?? 'text'
+      if (!['text', 'reference'].includes(generationMode)) throw Object.assign(new Error('生图模式无效'), { submissionNotStarted: true })
+      const effectiveProvider = channel ? effectiveImageProvider(channel) : 'comfyui'
+      if (generationMode === 'reference' && channel && !supportsImageReferences(channel)) throw Object.assign(new Error('当前生图协议不支持参考图；请切换支持参考图的渠道，或明确改用文生图'), { submissionNotStarted: true })
+      if (!channel && jobConfig.comfyMode === 'simple') throw Object.assign(new Error('旧版 ComfyUI 简易模式已停用，原配置和简易模式数据已保留；请导入完整 ComfyUI API workflow 后再生成'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
+      params.generationMode = generationMode
+      const workflow = forceWorkflow || (!channel ? pickWorkflow(usable(), jobConfig, params.model) : null)
+      if (!channel && !workflow) throw new Error('没有可用的 ComfyUI 工作流；请导入完整 workflow，或选择其他生图渠道')
       const defsForTurn = applyCharacterSnapshot(definitions, rawParams?.characterSnapshot)
       const card = await currentCard(rawParams?.sessionId || lastSessionId, rawParams?.turn)
-      const scopedDefs = card
+      let scopedDefs = card
         ? { ...defsForTurn, characters: (defsForTurn.characters ?? []).filter(character => usableOnCard(character, card)) }
         : defsForTurn
-        // 这里可以打日志（runtime 里能拿到 logger）
-      const compileConfig = forceWorkflow
-        ? { ...jobConfig, imageBackend: 'comfyui', comfyMode: 'workflow' }
-        : (simpleBuild ? { ...jobConfig, overrideSteps: false } : jobConfig)
+      let referenceState = null
+      if (generationMode === 'reference') {
+        const sectioned = rosterStyle(jobConfig, workflow) === 'structured'
+        if (referenceSnapshot) {
+          referenceState = structuredClone(referenceSnapshot)
+          scopedDefs = sectioned
+            ? referenceScopedDefinitions(referenceState.definitions, referenceState.references, { subjects: referenceState.subjects, markers: false })
+            : referenceState.definitions
+        } else {
+          const selected = resolveImageReferences({ text: params.rawTag, characters: params.characters, subjects: rawParams?.subjects, definitions: scopedDefs })
+          scopedDefs = referenceScopedDefinitions(scopedDefs, selected.references, { subjects: selected.subjects, markers: !sectioned })
+          referenceState = { version: sectioned ? 2 : 1, ...selected, definitions: structuredClone(scopedDefs) }
+        }
+        if (!referenceState.references?.length) throw Object.assign(new Error('本张图片没有可用的角色或服装参考图；请添加参考图，或明确切换为文生图'), { submissionNotStarted: true, code: 'REFERENCE_IMAGES_REQUIRED' })
+        params.subjects = structuredClone(referenceState.subjects)
+        if (sectioned) params.referenceText = buildStructuredReferenceText(referenceState.references)
+        const style = rosterStyle(jobConfig, workflow)
+        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: effectiveProvider, style, allowChinese: jobConfig.allowChinesePrompt })
+      }
+      // 这里可以打日志（runtime 里能拿到 logger）
+      const compileConfig = forceWorkflow ? { ...jobConfig, imageBackend: 'comfyui' } : jobConfig
       const traceStages = diagTrace?.traceId ? [] : null
       const onStage = traceStages ? (name, data) => traceStages.push({ name, data }) : null
       const compiled = workflow ? compileJob({ workflow, params, config: compileConfig, definitions: scopedDefs, onStage })
         : compileChannelJob({ params, config: jobConfig, definitions: scopedDefs, channel, onStage })
+      if (referenceState && compiled.promptMode !== 'structured') compiled.positive = [compiled.positive, buildReferenceText(referenceState.references)].filter(Boolean).join('\n\n')
       if (traceStages) {
         const T = diag.text
         const at = { imageIndex: diagTrace.imageIndex }
@@ -1424,8 +1576,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         channelEndpoint: channel ? channelEndpointOf(channel) : '', comfyEndpoint: endpointOf(jobConfig.comfyUrl),
         state: 'pending', percent: 0, seed: compiled.seed, createdAt: Date.now(), queryAt: 0, requestStarted: false,
         params: { ...params }, key, size: compiled.size, hits: compiled.hits,
+        generationMode, promptMode: compiled.promptMode, promptAssembly: compiled.promptAssembly ?? null,
+        referenceSnapshot: referenceState,
+        submissionTracked: Boolean(channel),
+        submittedPrompt: channel && effectiveImageProvider(channel) === 'atlascloud' ? (compiled.promptMode === 'structured' ? combineStructuredPrompt(compiled.positive, compiled.negative) : [compiled.positive, compiled.negative ? 'Avoid: ' + compiled.negative : ''].filter(Boolean).join('\n\n')) : compiled.positive,
         characterSnapshot: rawParams?.characterSnapshot ? boundCharacterSnapshot(rawParams.characterSnapshot) : null,
-        comfySimple: channel ? null : structuredClone(jobConfig.comfySimple ?? null),
         gameId: String(rawParams?.sessionId ?? ''), turn: Number(rawParams?.turn) || null, textVersion: String(rawParams?.textVersion ?? ''),
         // 记住这张用了哪些 LoRA —— 事后在历史里能查
         loras: Array.isArray(compiled.loras) ? compiled.loras : [],
@@ -1443,10 +1598,25 @@ function createRuntime(ctx, overrides, logger, deps) {
       }
       try {
         job.submitting = true
-        job.requestStarted = true
+        job.requestStarted = false
         await persistJobs()
+        if (referenceState) {
+          assertComfyEndpoint(job)
+          applyComfyReferenceImages(workflow, referenceState.references.map((_, index) => `reference-${index + 1}.png`))
+          const imageNames = []
+          for (let index = 0; index < referenceState.references.length; index++) {
+            imageNames.push(await uploadComfyReference(referenceState.references[index], job, index))
+            job.controller.signal.throwIfAborted()
+          }
+          const patched = applyComfyReferenceImages({ ...workflow, prompt: compiled.prompt }, imageNames)
+          compiled.prompt = patched.prompt
+        }
         if (compiled?.prompt) blankRetry.set(job.id, { prompt: compiled.prompt, seedBindings: workflow?.bindings?.seed ?? [] })
-        job.comfyId = await submitToComfy(compiled, job)
+        job.comfyId = await submitToComfy(compiled, job, async () => {
+          job.requestStarted = true
+          try { await persistJobs({ required: true }) }
+          catch (error) { job.requestStarted = false; error.submissionNotStarted = true; throw error }
+        })
         if (job.controller.signal.aborted || job.state === 'cancelled') {
           job.state = 'cancelled'
           job.cancelMayHaveContinued = true
@@ -1553,7 +1723,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       return revised.slice(0, 12000)
     }
 
-    async function startReplacement({ sourceJobId, prompt, characters = [], negative, channelId, sessionId, turn, textVersion, acceptUncertain = false } = {}) {
+    async function startReplacement({ sourceJobId, prompt, characters = [], negative, channelId, sessionId, turn, textVersion, generationMode, refreshReferences = false, acceptUncertain = false } = {}) {
       const source = getJob(String(sourceJobId || ''))
       if (!source) throw Object.assign(new Error('找不到这张图片的源作业'), { submissionNotStarted: true })
       if (!acceptUncertain && (source.state === 'uncertain' || source.cancelMayHaveContinued
@@ -1561,6 +1731,11 @@ function createRuntime(ctx, overrides, logger, deps) {
         throw Object.assign(new Error('原作业结果未知；请先检查生图平台，不能安全地重绘'), { code: 'UNCERTAIN', submissionNotStarted: true })
       }
       const jobConfig = replacementConfigFor(source, channelId)
+      const mode = generationMode ?? source.generationMode ?? source.params?.generationMode ?? 'text'
+      if (!['text', 'reference'].includes(mode)) throw Object.assign(new Error('生图模式无效'), { submissionNotStarted: true })
+      jobConfig.generationMode = mode
+      if (source.promptMode) jobConfig.promptMode = source.promptMode
+      const frozenReferences = mode === 'reference' && !refreshReferences ? source.referenceSnapshot : null
       const session = String(sessionId || '')
       const submitted = String(prompt ?? source.params?.rawTag ?? source.params?.tag ?? '')
       const hasStructuredPrompt = /<scene_composition|<character_\d/i.test(submitted)
@@ -1582,25 +1757,17 @@ function createRuntime(ctx, overrides, logger, deps) {
       const defs = applyCharacterSnapshot(definitions, characterSnapshot)
       const scoped = card ? { ...defs, characters: (defs.characters ?? []).filter(character => usableOnCard(character, card)) } : defs
       const keepComfySource = source.backend === 'comfyui' && jobConfig.imageBackend === 'comfyui'
-      const simpleTemplate = source.comfySimple?.template
-      const isSimpleSource = ['checkpoint', 'flux', 'anima'].includes(simpleTemplate) && source.workflowId === `simple-${simpleTemplate}`
-      if (keepComfySource && isSimpleSource) {
-        jobConfig.comfyMode = 'simple'
-        jobConfig.comfySimple = structuredClone(source.comfySimple)
-      }
-      const workflow = keepComfySource && !isSimpleSource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
-      if (keepComfySource && source.workflowId?.startsWith('simple-') && !isSimpleSource) {
-        throw Object.assign(new Error('原简单工作流快照不可用；请检查原始 ComfyUI 模板配置'), { submissionNotStarted: true })
-      }
+      if (keepComfySource && source.workflowId?.startsWith('simple-')) throw Object.assign(new Error('该作业来自已停用的 ComfyUI 简易模式；原数据已保留，请导入完整 ComfyUI API workflow 后再重绘'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
+      const workflow = keepComfySource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
       if (keepComfySource && source.workflowId && !isSimpleSource && !workflow) {
         throw Object.assign(new Error('原 ComfyUI 工作流已不存在；请在控制台选择其他渠道后重绘'), { submissionNotStarted: true })
       }
-      if (keepComfySource && workflow) jobConfig.comfyMode = 'workflow'
       let fresh
       try {
         fresh = await startJob({
-          tag: normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
-          rawTag,
+          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: effectiveConfiguredProvider(jobConfig), style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
+          rawTag, generationMode: mode,
+          subjects: refreshReferences && submitted !== (source.params?.rawTag ?? source.params?.tag) ? undefined : (source.params?.subjects?.length ? source.params.subjects : undefined),
           characters: characterSource,
           artist: source.params?.artist,
           artistPosition: source.params?.artistPosition,
@@ -1613,7 +1780,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           textVersion,
           sessionId: session, turn,
           key: 'media-replacement:' + randomUUID(),
-        }, { label: '单图重绘', jobConfig, forceWorkflow: workflow || null })
+        }, { label: '单图重绘', jobConfig, forceWorkflow: workflow || null, referenceSnapshot: frozenReferences })
       } catch (error) {
         if (error.requestMayHaveSucceeded !== true) error.submissionNotStarted = true
         throw error
@@ -1638,6 +1805,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       job.controller?.abort(new Error('用户停止此图片的本地等待'))
       job.state = 'cancelled'
       job.cancelMayHaveContinued = requestStarted || job.backend === 'comfyui'
+      job.requestMayHaveSucceeded = job.cancelMayHaveContinued
       job.error = job.cancelMayHaveContinued
         ? (job.backend === 'comfyui' ? '本地已停止追踪；ComfyUI 中已提交的任务仍可能继续生成' : '本地已停止等待；平台请求可能已提交，仍可能继续生成并产生费用')
         : '已取消'
@@ -1787,132 +1955,30 @@ function createRuntime(ctx, overrides, logger, deps) {
       return next
     }
 
-    /** 读世界书文件（保留 enabled 标记），返回 { name, entries }。 */
-    // 两本世界书并列，互不覆盖：
-//   1. 生图规则      worldbook.json         ← 种子 世界书-通用生图规则.json
-//   2. 角色与服装库  worldbook-outfits.json ← 种子 世界书-角色与服装库.json
-// 每本各自独立落盘、独立编辑；加载时按固定顺序合并进同一份提示词。
-const WORLD_BOOKS = [
-  { data: 'worldbook.json', seed: '世界书-通用生图规则.json', label: '生图规则', fallbackName: '生图世界书' },
-  { data: 'worldbook-outfits.json', seed: '世界书-角色与服装库.json', label: '角色与服装库', fallbackName: '角色与服装库' },
-]
-
-async function loadOneWorldbook(book) {
-  let raw = await readJson(join(ROOT, book.data), null)
-  // 首次运行：这两个文件都是使用者自己的数据，不进公开仓库。
-  // 仓库各带一份种子 —— 只在对应文件不存在时生成一次，之后永不覆盖。
-  if (!raw) {
-    const seed = await readJson(join(ROOT, book.seed), null)
-    const seeded = seed ? normalizeWorldbook(seed) : null
-    if (seeded && seeded.entries.length) {
-      raw = seeded
-      try {
-        await writeJsonSafe(join(ROOT, book.data), seeded, join(ROOT, 'backups'))
-        logger.info?.('dsh-tavern-image: 首次运行，已用种子生成「' + book.label + '」（' + seeded.entries.length + ' 条）')
-      } catch (error) {
-        logger.warn?.('dsh-tavern-image: 「' + book.label + '」落盘失败 ' + (error?.message ?? error))
-      }
+    // Each prompt format owns both rule books. Migration is atomic and leaves the
+    // original files untouched; edits never spill into another format.
+    const formatWorldbooks = createFormatWorldbooks({ root: ROOT })
+    const worldbookFormat = value => {
+      const mode = value || resolvePromptMode(config, promptBackendContext(config, styleWorkflow()))
+      if (!['tags', 'natural', 'mixed', 'structured'].includes(mode)) throw new Error('世界书格式无效')
+      return mode
     }
-  }
-  const norm = raw ? normalizeWorldbook(raw) : null
-  return norm ?? { name: book.fallbackName, entries: [] }
-}
-
-async function loadWorldbook() {
-  const loaded = []
-  for (const book of WORLD_BOOKS) {
-    try {
-      const one = await loadOneWorldbook(book)
-      loaded.push({ label: book.label, name: one.name, entries: one.entries })
-    } catch (error) {
-      // 单本坏掉不能连累另一本，也不能连累生图。
-      logger.warn?.('dsh-tavern-image: 世界书「' + book.label + '」加载失败：' + (error?.message ?? error))
+    const BOOK_KEYS = { main: 'worldbook.json', outfits: 'worldbook-outfits.json' }
+    const normalizeBookKey = key => {
+      if (key && !Object.hasOwn(BOOK_KEYS, key)) throw new Error('世界书分组无效')
+      return key || 'main'
     }
-  }
-  if (!loaded.length) return { name: '生图世界书', entries: [] }
-  const entries = []
-  for (const book of loaded) for (const entry of book.entries) entries.push(entry)
-  return {
-    name: loaded[0].name,
-    entries,
-    // 便于 /state 与前端区分两本，并显示各自条数
-    books: loaded.map(book => ({ label: book.label, name: book.name, count: book.entries.length })),
-  }
-}
-
-    /**
- * 按「本」读写（编辑用）。
- * loadWorldbook() 是给提示词用的合并视图；编辑必须落到某一本上，
- * 否则改第二本的条目时会把合并结果写回第一本，两本互相污染。
- */
-const BOOK_KEYS = { main: 'worldbook.json', outfits: 'worldbook-outfits.json' }
-const BOOK_SEEDS = { main: '世界书-通用生图规则.json', outfits: '世界书-角色与服装库.json' }
-
-function normalizeBookKey(key) {
-  const k = String(key ?? '').trim()
-  return Object.prototype.hasOwnProperty.call(BOOK_KEYS, k) ? k : 'main'
-}
-
-/** 读某一本（不含合并），文件不存在时用对应种子兜底。 */
-async function loadOneBook(key) {
-  const bookKey = normalizeBookKey(key)
-  const raw = await readJson(join(ROOT, BOOK_KEYS[bookKey]), null)
-  if (raw) return normalizeWorldbook(raw) ?? { name: BOOK_KEYS[bookKey], entries: [] }
-  const seed = await readJson(join(ROOT, BOOK_SEEDS[bookKey]), null)
-  const seeded = seed ? normalizeWorldbook(seed) : null
-  return seeded ?? { name: BOOK_KEYS[bookKey], entries: [] }
-}
-
-/** 写某一本，并清掉合并缓存。 */
-async function saveOneBook(key, doc) {
-  const bookKey = normalizeBookKey(key)
-  await writeJsonSafe(join(ROOT, BOOK_KEYS[bookKey]), doc, join(ROOT, 'backups'))
-  worldbookCache = null
-  return doc
-}
-
-/** 两本各自的摘要 + 条目正文，随 /state 给前端做书选择器与折叠列表。 */
-async function worldbookBookIndex() {
-  const out = []
-  for (const key of Object.keys(BOOK_KEYS)) {
-    try {
-      const one = await loadOneBook(key)
-      out.push({
-        key,
-        file: BOOK_KEYS[key],
-        seed: BOOK_SEEDS[key],
-        name: one.name,
-        count: one.entries.length,
-        enabled: one.entries.filter(entry => entry.enabled !== false).length,
-        entries: one.entries.map((entry, index) => ({
-          index,
-          comment: String(entry.comment ?? ''),
-          content: String(entry.content ?? ''),
-          enabled: entry.enabled !== false,
-          activation: entry.activation === 'keywords' ? 'keywords' : 'always',
-          keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
-        })),
-      })
-    } catch (error) {
-      out.push({ key, file: BOOK_KEYS[key], name: '', count: 0, enabled: 0, entries: [], error: String(error?.message ?? error) })
-    }
-  }
-  return out
-}
-
-let worldbookCache = null
+    const loadWorldbook = (format) => formatWorldbooks.readFormat(worldbookFormat(format))
+    const loadOneBook = (key, format) => formatWorldbooks.readBook(worldbookFormat(format), normalizeBookKey(key))
+    const saveOneBook = (key, doc, format) => formatWorldbooks.writeBook(worldbookFormat(format), normalizeBookKey(key), doc)
+    const worldbookBookIndex = (format) => formatWorldbooks.listBooks(worldbookFormat(format))
     let lastPlannerContext = null
-    async function worldbook() {
-      if (!worldbookCache) {
-        const wb = await loadWorldbook()
-        // 统一成 worldbookEntries 的形状（index / comment / content / length）
-        worldbookCache = wb.entries.map((e, index) => ({
-          index, comment: e.comment, content: e.content, length: e.content.length,
-          enabled: e.enabled !== false,
-          ...normalizeEntryActivation(e),
-        }))
-      }
-      return worldbookCache
+    async function worldbook(format) {
+      const wb = await loadWorldbook(format)
+      return wb.entries.map((e, index) => ({
+        index, comment: e.comment, content: e.content, length: e.content.length,
+        enabled: e.enabled !== false, ...normalizeEntryActivation(e),
+      }))
     }
 
     const plansByMessage = new Map()
@@ -2010,6 +2076,8 @@ let worldbookCache = null
       if (!provider || !model) throw new Error('规划用的模型没定：Tavern 设置里的「默认后台模型」是空的，或者在本插件设置里单独指定一个')
       const body = String(text ?? '').trim()
       if (!body) throw new Error('正文是空的')
+      const planningGenerationMode = config.generationMode === 'reference' ? 'reference' : 'text'
+      if (imageGeneration && planningGenerationMode === 'reference' && config.imageBackend !== 'comfyui' && !supportsImageReferences(activeChannel(config))) throw new Error('当前生图协议不支持参考图；请切换支持参考图的渠道，或明确改用文生图')
 
       const entries = await worldbook()
       const card = await currentCard(sessionId, turn)
@@ -2053,14 +2121,14 @@ let worldbookCache = null
       const plannerMode = resolvePromptMode(config, promptBackendContext(config, plannerWorkflow))
       const plannerContext = selectPlannerContext({
         entries, selected: config.plannerEntries, text: body, definitions: scoped,
-        backend: config.imageBackend, promptMode: plannerMode, characterUpdates,
+        backend: effectiveConfiguredProvider(config), backendAliases: config.imageBackend === 'custom' ? ['custom'] : [], promptMode: plannerMode, characterUpdates,
       })
       const roster = characterRoster(plannerContext.definitions, { fullTraits: characterUpdates, text: body })
       const want = imageGeneration ? Math.max(1, Math.min(8, Number(count) || config.plannerCount || 3)) : 0
       const smart = Boolean(imageGeneration && smartSelection && !force)
       // 生图只依赖两样：正文本身，和「生成图片的世界书」+ 人物库。
       // 卡片自己的世界书是给叙事用的（NPC生成/宗门生成那类规则），掺进画面提示词只会带偏。
-      const guidanceWorkflow = config.imageBackend === 'comfyui' && config.comfyMode !== 'simple'
+      const guidanceWorkflow = config.imageBackend === 'comfyui'
         ? usable().find(item => item.id === config.defaultWorkflow)
         : null
       const guidanceBackend = promptBackendContext(config, guidanceWorkflow)
@@ -2068,13 +2136,13 @@ let worldbookCache = null
       const system = buildPlannerSystem({
         rules: plannerContext.staticRules, dynamicRules: plannerContext.dynamicRules,
         roster, rosterIndex: plannerContext.rosterIndex, count: want,
-        extra: [config.plannerExtra, guidance].filter(Boolean).join('\n\n'),
-        smartSelection: smart, characterUpdates, force: Boolean(force || manual),
+        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped, { structured: plannerMode === 'structured' }) : ''].filter(Boolean).join('\n\n'),
+        smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode,
       })
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
       lastPlannerContext = {
         ...plannerContext.diagnostics, at: Date.now(), turn: Number(turn) || null,
-        messageId: String(messageId ?? ''), backend: config.imageBackend,
+        messageId: String(messageId ?? ''), backend: effectiveConfiguredProvider(config),
         staticChars: contextBoundary < 0 ? system.length : contextBoundary,
         dynamicChars: contextBoundary < 0 ? 0 : system.length - contextBoundary,
         bodyChars: body.length,
@@ -2083,7 +2151,7 @@ let worldbookCache = null
       let traceImageIndex = 0
       if (traceId) {
         const T = diag.text
-        diag.record(traceId, 'planner-input', { body: T(body), card: card?.name ?? null, historySnapshotTurn: historySnapshot?.turn ?? null, config: { promptMode: config.promptMode, traitMode: config.traitMode, negativeMode: config.negativeMode, injectWeight: config.injectWeight, weightMode: config.weightMode, imageBackend: config.imageBackend, comfyMode: config.comfyMode, defaultWorkflow: config.defaultWorkflow, imageSize: config.imageSize, sizes: config.sizes, activePromptPreset: config.activePromptPreset, artistPosition: config.artistPosition } })
+        diag.record(traceId, 'planner-input', { body: T(body), card: card?.name ?? null, historySnapshotTurn: historySnapshot?.turn ?? null, config: { promptMode: config.promptMode, traitMode: config.traitMode, negativeMode: config.negativeMode, injectWeight: config.injectWeight, weightMode: config.weightMode, imageBackend: config.imageBackend, defaultWorkflow: config.defaultWorkflow, imageSize: config.imageSize, sizes: config.sizes, activePromptPreset: config.activePromptPreset, artistPosition: config.artistPosition } })
         diag.record(traceId, 'planner-context', { diagnostics: plannerContext.diagnostics, scopedCharacterIds: scoped.characters.map(c => String(c.id ?? '')), roster: T(roster), rosterIndex: T(plannerContext.rosterIndex) })
         diag.record(traceId, 'planner-request', { layer: 'llm.stream arguments (not provider HTTP body)', provider, model, reasoningEffort: plannerEffort ?? null, temperature: Number(config.plannerTemperature) || 1, maxTokens: 12000, system: T(system), user: T(body) })
       }
@@ -2159,7 +2227,8 @@ let worldbookCache = null
           submitChain = submitChain.then(async () => {
             task.controller.signal.throwIfAborted()
             if (submissionStopped || !imageGeneration || (smart && (!decisionFrozen || streamDecision !== 'draw' || streamConflict))) return
-            const key = ('plan|' + (manualBatch ? 'manual:' + manualBatch + '|' : '') + (messageId ?? '') + '|' + image.mount + '|' + promptIdentity).slice(0, 3800)
+            if (image.subjectsError) throw new Error(image.subjectsError)
+            const key = ('plan|' + planningGenerationMode + '|' + (manualBatch ? 'manual:' + manualBatch + '|' : '') + (messageId ?? '') + '|' + image.mount + '|' + promptIdentity).slice(0, 3800)
             const imageIndex = ++traceImageIndex
             const macros = traceId ? [] : null
             // 诊断里记录的「展开后、清理前」的场景提示词（以前引用了不存在的 expanded，开着诊断时每张图都提交失败）。
@@ -2167,10 +2236,12 @@ let worldbookCache = null
             const expandOne = (text, keep = false) => {
               const expanded = expandRosterCalls(text, scoped, config.traitMode, { style: rosterStyle(config, plannerWorkflow), onMacro: entry => { macros?.push(entry); noteMacro(entry) } })
               if (keep) expandedScene = expanded
-              return normalizePrompts(expanded, scoped, { backend: config.imageBackend, style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
+              return normalizePrompts(expanded, scoped, { backend: effectiveConfiguredProvider(config), style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
             }
-            const normalizedTag = expandOne(sceneText, true)
-            const characters = planCharacters.map(item => ({ prompt: expandOne(item.prompt), centers: String(item.centers ?? '').trim(), uc: String(item.uc ?? '').trim() })).filter(item => item.prompt)
+            // Reference jobs must expand against the per-picture reference scope,
+            // not the full library here (which would reintroduce conflicting traits).
+            const normalizedTag = planningGenerationMode === 'reference' ? sceneText : expandOne(sceneText, true)
+            const characters = planCharacters.map(item => ({ prompt: planningGenerationMode === 'reference' ? item.prompt : expandOne(item.prompt), centers: String(item.centers ?? '').trim(), uc: String(item.uc ?? '').trim() })).filter(item => item.prompt)
             if (traceId) {
               const T = diag.text
               diag.record(traceId, 'image-adopted', { mount: T(image.mount), size: image.size ?? null, prompts: T(image.prompts), adoptedAtStreamChars: streamed.length }, { imageIndex })
@@ -2178,7 +2249,7 @@ let worldbookCache = null
             }
             const job = await startJob({
               tag: normalizedTag,
-              rawTag: sceneText, characters, size: image.size, key, sessionId, turn, textVersion, characterSnapshot: visualSnapshot,
+              rawTag: sceneText, characters, subjects: image.subjects, generationMode: planningGenerationMode, size: image.size, key, sessionId, turn, textVersion, characterSnapshot: visualSnapshot,
             }, { label: 'agent 规划', diagTrace: traceId ? { traceId, imageIndex } : null })
             if (traceId) diag.record(traceId, 'image-job', { jobId: job.id, status: job.status }, { imageIndex })
             // startJob 返回的是 publicJob，size 已经是 "896x1152" 这样的文字。
@@ -2193,7 +2264,7 @@ let worldbookCache = null
       let failure = null
       try {
         const cached = reusePlan && !smart && !characterUpdates && messageId ? plansByMessage.get(String(messageId)) : null
-        if (cached?.plans?.length && !cached.error) {
+        if (cached?.plans?.length && !cached.error && (cached.generationMode ?? 'text') === planningGenerationMode && (!cached.promptMode || cached.promptMode === plannerMode)) {
           submitImages(cached.plans)
         } else result = await runPlanner(deps.llm, {
           provider,
@@ -2301,7 +2372,7 @@ let worldbookCache = null
         + (result.usage ? '（token ' + result.usage.inputTokens + '+' + result.usage.outputTokens + '）' : ''))
 
       const characterSnapshot = characterUpdates ? visualSnapshot : null
-      const plan = { messageId: String(messageId ?? ''), turn, at: Date.now(), plans, skipped, reason: parsed.reason, characterSnapshot, historyWarning, raw: plans.length ? '' : String(result.text || streamed).slice(0, 4000), card: card?.name ?? null }
+      const plan = { messageId: String(messageId ?? ''), turn, generationMode: planningGenerationMode, promptMode: plannerMode, at: Date.now(), plans, skipped, reason: parsed.reason, characterSnapshot, historyWarning, raw: plans.length ? '' : String(result.text || streamed).slice(0, 4000), card: card?.name ?? null }
       const warnings = characterWarnings()
       if (warnings.length) plan.characterWarnings = warnings
       if (failure) plan.error = String(failure?.message ?? failure)
@@ -2520,7 +2591,7 @@ let worldbookCache = null
 
     function sweep() {
       if (jobs.size <= 200) return
-      const ordered = [...jobs.values()].filter(job => !['pending', 'running'].includes(job.state)).sort((a, b) => a.createdAt - b.createdAt)
+      const ordered = [...jobs.values()].filter(job => !['pending', 'running', 'uncertain'].includes(job.state) && !job.requestMayHaveSucceeded && !job.cancelMayHaveContinued && !(job.state === 'cancelled' && job.requestStarted === true)).sort((a, b) => a.createdAt - b.createdAt)
       for (const job of ordered.slice(0, jobs.size - 200)) {
         jobs.delete(job.id)
         if (job.key) byKey.delete(job.key)
@@ -2533,7 +2604,10 @@ let worldbookCache = null
         comfyId: job.comfyId || '',
         queuePosition: job.queuePosition ?? 0, queuedCount: job.queuedCount ?? 0,
         seed: job.seed, workflow: job.workflowId, error: job.error ?? undefined, createdAt: job.createdAt,
-        backend: job.backend ?? 'comfyui', channelName: job.channelName ?? '',
+        backend: job.backend ?? 'comfyui', channelId: job.channelId ?? '', channelName: job.channelName ?? '',
+        generationMode: job.generationMode ?? 'text', promptMode: job.promptMode ?? '',
+        references: structuredClone(job.referenceSnapshot?.references ?? []),
+        positive: job.positive ?? '', negative: job.negative ?? '', submittedPrompt: job.submittedPrompt ?? job.positive ?? '',
         mediaType: job.mediaType ?? '', imageOutputWarning: job.imageOutputWarning ?? '',
         requestStarted: job.requestStarted === true,
         requestMayHaveSucceeded: job.requestMayHaveSucceeded === true,
@@ -2551,6 +2625,9 @@ let worldbookCache = null
         ...publicJob(job),
         prompt: job.positive ?? '', negative: job.negative ?? '', tag: job.params?.tag ?? '',
         rawPrompt,
+        rawPromptSource: job.params?.rawTag ? 'rawTag' : job.params?.tag ? 'tag' : 'positive',
+        submittedPromptSource: job.submittedPrompt ? 'submittedPrompt' : 'positive',
+        promptAssembly: job.promptAssembly ?? null,
         characters,
         promptText: characters.length ? formatPromptsBlock(rawPrompt, characters) : '',
         artist: job.params?.artist ?? '', size: job.size ? `${job.size.width}x${job.size.height}` : '',
@@ -2705,6 +2782,11 @@ let worldbookCache = null
         ok: true,
         base: BASE,
         imageProviders: IMAGE_PROVIDERS,
+        imageProvider: effectiveConfiguredProvider(config),
+        referenceSupported: referenceCapability(),
+        configurationWarning: config.imageBackend === 'comfyui' && config.comfyMode === 'simple'
+          ? '旧版 ComfyUI 简易模式已停用；原配置和数据已保留，请导入完整 ComfyUI API workflow 后再生成。'
+          : '',
         // 条目要带 enabled 和 content —— 前台要靠它们显示开关与编辑框
         worldbook: worldbookList.map(entry => ({
           index: entry.index,
@@ -2715,6 +2797,7 @@ let worldbookCache = null
           ...normalizeEntryActivation(entry),
         })),
         // 顺手把当前世界书的名字也带上
+        worldbookFormat: worldbookFormat(),
         worldbookName: String((await loadWorldbook().catch(() => ({ name: '' }))).name ?? ''),
         // 启用条数：生图规划 tab 用它显示"几条第几条在生效"
         worldbookEnabledCount: worldbookList.filter(e => e.enabled !== false && String(e.content ?? '').trim()).length,
@@ -2724,12 +2807,11 @@ let worldbookCache = null
         pluginDownloads: { ...PLUGIN_DOWNLOADS, local: `${BASE}/plugin-download` },
         config: {
           imageBackend: config.imageBackend,
+          generationMode: config.generationMode === 'reference' ? 'reference' : 'text',
           activeImageChannel: config.activeImageChannel,
           imageChannels: publicChannels(config.imageChannels),
           imageConcurrency: config.imageConcurrency,
           comfyUrl: config.comfyUrl,
-          comfyMode: config.comfyMode === 'simple' ? 'simple' : 'workflow',
-          comfySimple: normalizeComfySimpleConfig(config.comfySimple),
           comfyAuthMode: String(config.comfyAuthMode ?? 'none'),
           comfyHasAuthToken: Boolean(config.comfyAuthToken),
           comfyAuthUser: String(config.comfyAuthUser ?? ''),
@@ -2748,10 +2830,11 @@ let worldbookCache = null
           promptPresets: normalizePromptPresets(config.promptPresets),
           promptPresetLibrary: BUILTIN_PROMPT_PRESETS,
           activePromptPreset: String(config.activePromptPreset ?? ''),
-          promptMode: ['auto', 'tags', 'natural', 'mixed'].includes(config.promptMode) ? config.promptMode : 'auto',
-          promptEffectiveFormat: resolvePromptMode(config, config.imageBackend),
+          promptMode: ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode) ? config.promptMode : 'auto',
+          allowChinesePrompt: config.allowChinesePrompt === true,
+          promptEffectiveFormat: resolvePromptMode(config, promptBackendContext(config, styleWorkflow())),
           promptEffectiveName: effectivePromptPreset(config)?.name ?? '',
-          promptPreviewPositive: composePresetText(String(config.promptManualPositive ?? ''), config, config.imageBackend),
+          promptPreviewPositive: composePresetText(String(config.promptManualPositive ?? ''), config, promptBackendContext(config, styleWorkflow())),
           promptPreviewNegative: [activeArtistText(config).negative, promptPresetNegative(config), String(config.promptManualNegative ?? '')].filter(Boolean).join(', '),
           promptManualPositive: String(config.promptManualPositive ?? ''),
           promptManualNegative: String(config.promptManualNegative ?? ''),
@@ -2922,6 +3005,37 @@ let worldbookCache = null
         } catch (error) { sendJson(response, 400, { ok: false, error: error.message }) }
         return
       }
+      if (action === 'reference-image') {
+        try {
+          if (request.method === 'GET') {
+            const image = await referenceStore.readById(String(_url?.searchParams?.get('id') ?? ''))
+            response.writeHead(200, { 'content-type': image.mediaType, 'content-length': image.data.length, 'cache-control': 'private, max-age=1800', 'x-content-type-options': 'nosniff' })
+            response.end(image.data)
+          } else if (request.method === 'POST') {
+            const origin = request.headers.origin
+            if ((origin && origin !== _url.origin) || !String(request.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
+              sendJson(response, 403, { ok: false, error: '请从配图设置上传参考图' }); return
+            }
+            const input = await readBody(request, 44 * 1024 * 1024)
+            const referenceImage = await referenceStore.put({ data: input.data, mediaType: input.mediaType, name: input.name })
+            sendJson(response, 200, { ok: true, referenceImage })
+          } else sendJson(response, 405, { ok: false, error: 'method-not-allowed' })
+        } catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
+        return
+      }
+      if (action === 'worldbook-upgrade') {
+        try {
+          if (request.method === 'GET') {
+            const upgrade = await formatWorldbooks.getUpgradeStatus(normalizeBookKey(_url?.searchParams?.get('book')))
+            sendJson(response, 200, { ok: true, upgrade })
+          } else if (request.method === 'POST') {
+            const input = await readBody(request)
+            const upgrade = await formatWorldbooks.applyDefaultUpgrade(normalizeBookKey(input.book), { expectedFingerprint: input.expectedFingerprint, entryIds: input.entryIds })
+            sendJson(response, 200, { ok: true, upgrade })
+          } else sendJson(response, 405, { ok: false, error: 'method-not-allowed' })
+        } catch (error) { sendJson(response, error?.code === 'WORLDBOOK_UPGRADE_STALE' ? 409 : 400, { ok: false, error: String(error?.message ?? error) }) }
+        return
+      }
       if (request.method === 'GET') {
         if (action === 'plugin-download') {
           try {
@@ -2936,8 +3050,13 @@ let worldbookCache = null
           } catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
           return
         }
-        if (action === 'worldbook-export') {
-          try { sendJson(response, 200, { ok: true, worldbook: await loadWorldbook() }) }
+        if (action === 'worldbook' || action === 'worldbook-export') {
+          try {
+            const format = worldbookFormat(_url?.searchParams?.get('format'))
+            const book = _url?.searchParams?.get('book')
+            const wb = action === 'worldbook-export' && book ? await loadOneBook(book, format) : await loadWorldbook(format)
+            sendJson(response, 200, { ok: true, worldbookFormat: format, worldbookName: wb.name, worldbook: wb, worldbookBooks: await worldbookBookIndex(format) })
+          }
           catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
           return
         }
@@ -3112,17 +3231,6 @@ let worldbookCache = null
           return
         }
 
-        // ---- Read-only model/node inventory for the built-in simple mode ----
-        if (action === 'comfy-simple-info') {
-          try {
-            const objectInfo = await getSimpleObjectInfo(true)
-            sendJson(response, 200, { ok: true, ...inspectComfySimple(objectInfo) })
-          } catch (error) {
-            sendJson(response, 200, { ok: false, error: String(error?.message ?? error) })
-          }
-          return
-        }
-
         // ---- 简单编辑：直接读/写工作流里的参数值（正面/负面/宽高/步数/CFG/底模）----
         if (action === 'workflow-values') {
           try {
@@ -3203,6 +3311,11 @@ let worldbookCache = null
             const wf = workflows.find(w => (file && String(w.file).endsWith(file)) || (id && String(w.id) === id))
             if (!wf) { sendJson(response, 404, { ok: false, error: '找不到这张工作流' }); return }
             if (wf.error) { sendJson(response, 400, { ok: false, error: '这张工作流不可用：' + wf.error }); return }
+            if (config.comfyMode === 'simple') {
+              config.comfyMode = 'workflow'
+              config.defaultWorkflow = wf.id
+              await saveConfig(config)
+            }
             const prompt = String(body?.prompt ?? '').trim() ||
               '1girl, solo, upper body, simple background, looking at viewer, best quality'
             const job = await startJob({
@@ -3233,6 +3346,10 @@ let worldbookCache = null
             await writeJsonAtomic(file, norm)
             config.workflows = await scanWorkflows(config)
             await loadAllWorkflows()
+            const imported = workflows.find(item => item.file === safe + '.tavern-comfy-v1.json' && !item.error)
+            if (imported) config.defaultWorkflow = imported.id
+            config.comfyMode = 'workflow'
+            await saveConfig(config)
             logger.info?.('dsh-tavern-image: 已导入工作流《' + norm.name + '》节点 ' + Object.keys(norm.prompt).length + ' 个')
             sendJson(response, 200, {
               ok: true, name: norm.name, file: safe + '.tavern-comfy-v1.json',
@@ -3262,13 +3379,13 @@ let worldbookCache = null
               // 改 LoRA 的启用与权重（按节点 id）
               // 改各类绑定：{ positive: [{node,input}], negative: [...], size/steps/cfg/model/seed 同理 }
               const patchBindings = body.patch.bindings && typeof body.patch.bindings === 'object' ? body.patch.bindings : null
-              if (patchBindings) {
-                for (const key of ['positive', 'negative', 'seed', 'batch', 'size', 'steps', 'cfg', 'guidance', 'model']) {
+        if (patchBindings) {
+                 for (const key of ['positive', 'negative', 'seed', 'batch', 'size', 'steps', 'cfg', 'guidance', 'model', 'referenceImages']) {
                   if (!Array.isArray(patchBindings[key])) continue
                   raw.bindings = raw.bindings ?? {}
                   raw.bindings[key] = patchBindings[key]
                     .filter(x => x && x.node !== undefined)
-                    .map(x => ({ node: String(x.node), input: String(x.input ?? 'text') }))
+                     .map(x => ({ node: String(x.node), input: String(x.input ?? (key === 'referenceImages' ? 'image' : 'text')) }))
                 }
               }
               const patchLoras = Array.isArray(body.patch.loras) ? body.patch.loras : null
@@ -3322,22 +3439,15 @@ let worldbookCache = null
         if (action === 'worldbook-import') {
           try {
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
             let src = body?.worldbook
             if (typeof src === 'string') {
               try { src = JSON.parse(src) } catch { /* 当纯文本处理 */ }
             }
             const norm = normalizeWorldbook(src)
             if (!norm || !norm.entries.length) { sendJson(response, 400, { ok: false, error: '没能从这份内容里读出任何条目' }); return }
-            // 导入前备份旧的
-            try {
-              const old = await readJson(join(ROOT, BOOK_KEYS[bookKey]), null)
-              if (old) {
-                const dir = join(ROOT, 'backups'); await mkdir(dir, { recursive: true })
-                await copyFile(join(ROOT, BOOK_KEYS[bookKey]), join(dir, BOOK_KEYS[bookKey].replace(/\.json$/, '') + '-' + Date.now() + '.json'))
-              }
-            } catch {}
-            await queueWorldbookWrite(() => saveOneBook(bookKey, norm))
-            worldbookCache = null
+            // The per-format store backs up the exact destination before replacing it.
+            await queueWorldbookWrite(() => saveOneBook(bookKey, norm, format))
             logger.info?.('dsh-tavern-image: 已导入世界书《' + norm.name + '》' + norm.entries.length + ' 条')
             sendJson(response, 200, { ok: true, book: bookKey, name: norm.name, count: norm.entries.length })
           } catch (error) {
@@ -3354,12 +3464,13 @@ let worldbookCache = null
             if (patch.activation !== undefined && !['always', 'keywords'].includes(patch.activation)) throw new Error('注入方式只能选常驻或关键词触发')
             if (patch.keywords !== undefined && (!Array.isArray(patch.keywords) || patch.keywords.length > 64 || patch.keywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('关键词最多 64 个，每个最多 200 字')
             if (patch.andKeywords !== undefined && (!Array.isArray(patch.andKeywords) || patch.andKeywords.length > 64 || patch.andKeywords.some(key => typeof key !== 'string' || key.length > 200))) throw new Error('附加条件最多 64 个，每个最多 200 字')
-            const backendIds = new Set(['comfyui', ...IMAGE_PROVIDERS.map(item => item.id)])
+            const backendIds = new Set(['comfyui', 'custom', ...PROMPT_FORMATS, ...IMAGE_API_PROTOCOLS, ...IMAGE_PROVIDERS.map(item => item.id)])
             if (patch.backends !== undefined && (!Array.isArray(patch.backends) || patch.backends.some(id => !backendIds.has(id)))) throw new Error('请选择支持的生图渠道类型')
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
     const count = await queueWorldbookWrite(async () => {
       // 编辑必须落在单本上：用合并视图会把第二本的内容写回第一本。
-      const wb = await loadOneBook(bookKey)
+      const wb = await loadOneBook(bookKey, format)
               if (!Number.isInteger(index) || index < 0 || index >= wb.entries.length) throw new Error('条目不存在')
               if (body?.remove === true) wb.entries.splice(index, 1)
               else {
@@ -3367,9 +3478,10 @@ let worldbookCache = null
                 if (typeof patch.comment === 'string') e.comment = patch.comment
                 if (typeof patch.content === 'string') e.content = patch.content
                 if (typeof patch.enabled === 'boolean') e.enabled = patch.enabled
+                if (patch.backends !== undefined) e.backends = [...patch.backends]
                 Object.assign(e, normalizeEntryActivation({ ...e, ...patch }))
               }
-              await saveOneBook(bookKey, wb)
+              await saveOneBook(bookKey, wb, format)
               return wb.entries.length
             })
             sendJson(response, 200, { ok: true, book: bookKey, count })
@@ -3383,10 +3495,11 @@ let worldbookCache = null
         if (action === 'worldbook-add') {
           try {
             const bookKey = normalizeBookKey(body?.book)
+            const format = worldbookFormat(body?.format)
     const count = await queueWorldbookWrite(async () => {
-      const wb = await loadOneBook(bookKey)
+      const wb = await loadOneBook(bookKey, format)
               wb.entries.push({ comment: String(body?.comment ?? '新条目'), content: String(body?.content ?? ''), enabled: true, ...normalizeEntryActivation({}) })
-              await saveOneBook(bookKey, wb)
+              await saveOneBook(bookKey, wb, format)
               return wb.entries.length
             })
             sendJson(response, 200, { ok: true, book: bookKey, count, index: count - 1 })
@@ -3399,8 +3512,9 @@ let worldbookCache = null
         // ---- 导出当前世界书 ----
         if (action === 'worldbook-export') {
           try {
-            const wb = await loadWorldbook()
-            sendJson(response, 200, { ok: true, worldbook: wb })
+            const format = worldbookFormat(body?.format)
+            const wb = body?.book ? await loadOneBook(body.book, format) : await loadWorldbook(format)
+            sendJson(response, 200, { ok: true, worldbookFormat: format, worldbook: wb })
           } catch (error) {
             sendJson(response, 400, { ok: false, error: String(error?.message ?? error) })
           }
@@ -3411,10 +3525,16 @@ let worldbookCache = null
         const patch = body?.config ?? body ?? {}
         try { Object.assign(config, channelConfigPatch(config, patch)) }
         catch (error) { sendJson(response, 400, { ok: false, error: error.message }); return }
+        if (patch.generationMode !== undefined) {
+          if (!['text', 'reference'].includes(patch.generationMode)) { sendJson(response, 400, { ok: false, error: '生图模式无效' }); return }
+          config.generationMode = patch.generationMode
+        }
         if (patch.imageConcurrency !== undefined) config.imageConcurrency = Math.max(1, Math.min(4, Math.trunc(Number(patch.imageConcurrency)) || 2))
         for (const key of ['comfyUrl', 'defaultWorkflow', 'artistPosition', 'weightMode', 'negativeMode', 'styleArtists', 'imageSize', 'plannerProvider', 'plannerModel', 'plannerExtra', 'traitMode', 'visionProvider', 'visionModel', 'plannerEffort', 'visionEffort', 'comfyAuthMode', 'comfyAuthUser', 'promptManualPositive', 'promptManualNegative']) {
           if (typeof patch[key] === 'string') config[key] = key === 'comfyUrl' ? patch[key].replace(/\/+$/, '') : patch[key]
         }
+        if (patch.comfyMode === 'workflow') config.comfyMode = 'workflow'
+        if (typeof patch.defaultWorkflow === 'string' && patch.defaultWorkflow && workflows.some(item => item.id === patch.defaultWorkflow && !item.error)) config.comfyMode = 'workflow'
         // 正文图片显示大小：0 / 空 = 默认（保持原来的显示效果）；数字夹进 160–1200。
         // 非法输入（NaN、负数、乱填的字符串）一律退回默认，绝不让它进配置。
         if (patch.imageDisplayWidth !== undefined) config.imageDisplayWidth = normalizeImageDisplayWidth(patch.imageDisplayWidth)
@@ -3425,7 +3545,7 @@ let worldbookCache = null
         if (patch.clearComfyAuthToken === true) config.comfyAuthToken = ''
         if (patch.clearComfyAuthPass === true) config.comfyAuthPass = ''
         for (const key of ['lockWorkflow', 'overrideSteps', 'autoImageGen', 'imageEnabled', 'plannerEnabled', 'jpegOutput', 'smartImageSelection', 'characterAutoUpdate']) if (typeof patch[key] === 'boolean') config[key] = patch[key]
-        if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed'].includes(patch.promptMode)) config.promptMode = patch.promptMode
+        if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(patch.promptMode)) config.promptMode = patch.promptMode
         if (typeof patch.allowChinesePrompt === 'boolean') config.allowChinesePrompt = patch.allowChinesePrompt
         if (typeof patch.activePromptPreset === 'string') config.activePromptPreset = patch.activePromptPreset.slice(0, 80)
         if (Array.isArray(patch.promptPresets)) config.promptPresets = normalizePromptPresets(patch.promptPresets)
@@ -3433,8 +3553,6 @@ let worldbookCache = null
         if (patch.jpegQuality !== undefined) config.jpegQuality = Math.max(50, Math.min(100, Math.round(Number(patch.jpegQuality) || 88)))
         if (typeof patch.jpegBackground === 'string') config.jpegBackground = /^#?[0-9a-f]{6}$/i.test(patch.jpegBackground.trim()) ? (patch.jpegBackground.trim().startsWith('#') ? patch.jpegBackground.trim() : '#' + patch.jpegBackground.trim()) : '#ffffff'
         for (const key of ['promptManualPositive', 'promptManualNegative']) if (typeof patch[key] === 'string') config[key] = patch[key].slice(0, 4000)
-        if (patch.comfyMode === 'simple' || patch.comfyMode === 'workflow') config.comfyMode = patch.comfyMode
-        if (patch.comfySimple && typeof patch.comfySimple === 'object' && !Array.isArray(patch.comfySimple)) config.comfySimple = normalizeComfySimpleConfig({ ...config.comfySimple, ...patch.comfySimple })
         if (typeof patch.traitMode === 'string' && ['auto', 'sfw', 'all'].includes(patch.traitMode)) config.traitMode = patch.traitMode
         // 兼容旧字段名（画师串多套）
         if (Array.isArray(patch.artistSets)) {
@@ -3750,12 +3868,16 @@ let worldbookCache = null
   if (action === 'export-all') {
     const [defs, wbMain, wbOutfits, cfg] = await Promise.all([
       readJson(DEFS_PATH, null),
-      readJson(join(ROOT, BOOK_KEYS.main), null),
-      readJson(join(ROOT, BOOK_KEYS.outfits), null),
+      loadOneBook('main'),
+      loadOneBook('outfits'),
       readJson(CONFIG_PATH, null),
     ])
     const jobs = await readJson(join(ROOT, 'jobs-store.json'), null)
     const plans = await readJson(join(ROOT, 'plans-store.json'), null)
+    const formatBooks = {}
+    for (const mode of ['tags', 'natural', 'mixed', 'structured']) {
+      formatBooks[mode] = { main: await loadOneBook('main', mode), outfits: await loadOneBook('outfits', mode) }
+    }
     const pkg = await readJson(join(ROOT, 'package.json'), {}).catch(() => ({}))
     const bundle = {
       kind: 'dsh-tavern-image/backup',
@@ -3769,7 +3891,7 @@ let worldbookCache = null
         worldbookOutfits: Array.isArray(wbOutfits?.entries) ? wbOutfits.entries.length : 0,
         jobs: Array.isArray(jobs?.jobs) ? jobs.jobs.length : (Array.isArray(jobs) ? jobs.length : 0),
       },
-      data: { definitions: defs, worldbook: wbMain, worldbookOutfits: wbOutfits, config: cfg, jobsStore: jobs, plansStore: plans },
+      data: { definitions: defs, worldbook: wbMain, worldbookOutfits: wbOutfits, formatWorldbooks: formatBooks, config: cfg, jobsStore: jobs, plansStore: plans },
     }
     sendJson(response, 200, { ok: true, bundle })
     return
@@ -3801,14 +3923,16 @@ let worldbookCache = null
         await writeJsonSafe(DEFS_PATH, data.definitions, backupDir)
         written.push('角色库')
       } else skipped.push('角色库')
-      if (data.worldbook && typeof data.worldbook === 'object') {
-        await writeJsonSafe(join(ROOT, BOOK_KEYS.main), data.worldbook, backupDir)
-        written.push('生图规则世界书')
-      } else skipped.push('生图规则世界书')
-      if (data.worldbookOutfits && typeof data.worldbookOutfits === 'object') {
-        await writeJsonSafe(join(ROOT, BOOK_KEYS.outfits), data.worldbookOutfits, backupDir)
-        written.push('角色与服装库世界书')
-      } else skipped.push('角色与服装库世界书')
+      await queueWorldbookWrite(async () => {
+        for (const mode of ['tags', 'natural', 'mixed', 'structured']) {
+          const books = data.formatWorldbooks?.[mode] ?? (mode !== 'structured' ? { main: data.worldbook, outfits: data.worldbookOutfits } : {})
+          for (const key of ['main', 'outfits']) {
+            const doc = normalizeWorldbook(books[key])
+            if (doc) { await saveOneBook(key, doc, mode); written.push(mode + '/' + key + ' 世界书') }
+            else skipped.push(mode + '/' + key + ' 世界书')
+          }
+        }
+      })
       if (data.config && typeof data.config === 'object') {
         await writeJsonSafe(CONFIG_PATH, data.config, backupDir)
         written.push('渠道配置')
@@ -3821,7 +3945,7 @@ let worldbookCache = null
         await writeJsonSafe(join(ROOT, 'plans-store.json'), data.plansStore, backupDir)
         written.push('规划记录')
       } else skipped.push('规划记录')
-      worldbookCache = null
+
     } catch (error) {
       return sendJson(response, 500, { ok: false, error: '写入失败：' + String(error?.message ?? error) })
     }
@@ -4227,30 +4351,13 @@ let worldbookCache = null
           // 按原图所属的那局判断人物可用性，并沿用原图那一轮的人物状态（当前穿着、永久外貌变化）；
           // 尺寸、步数、CFG、画师串位置也跟原图一致。以前只带提示词和工作流：横图重画成竖图，
           // 宏里没写衣服的图按人物库默认穿着重画。
-          const session = String(src.gameId || body?.sessionId || lastSessionId || '')
-          const card = await currentCard(session)
-          const timeline = applyCharacterSnapshot(definitions, src.characterSnapshot)
-          const defs = { ...timeline, characters: (timeline.characters ?? []).filter(character => usableOnCard(character, card)) }
-          const askedRaw = String(body?.prompt ?? src.params?.rawTag ?? src.params?.tag ?? '')
-          const submitted = /<scene_composition|<character_\d/i.test(askedRaw) ? parsePromptsBlock(askedRaw) : null
-          const sceneRaw = submitted ? submitted.scene : askedRaw
-          const characterSource = submitted ? submitted.characters : src.params?.characters
-          const fresh = await startJob({
-            tag: normalizePrompts(expandRosterCalls(sceneRaw, defs, config.traitMode, { style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }), defs, { backend: config.imageBackend, style: rosterStyle(config, styleWorkflow(config, src.workflowId)), allowChinese: config.allowChinesePrompt }),
-            rawTag: sceneRaw,
-            characters: characterSource,
-            artist: src.params?.artist,
-            artistPosition: src.params?.artistPosition,
-            negative: String(body?.negative ?? src.params?.negative ?? ''),
-            size: src.params?.size,
-            steps: src.params?.steps,
-            cfg: src.params?.cfg,
-            model: src.workflowId,
-            ...(src.characterSnapshot ? { characterSnapshot: src.characterSnapshot } : {}),
-            ...(src.textVersion ? { textVersion: src.textVersion } : {}),
-            ...(session ? { sessionId: session } : {}),
-            ...(src.turn != null ? { turn: src.turn } : {}),
-          }, { label: '重画' })
+          const replacement = await startReplacement({
+            sourceJobId: src.id, prompt: body?.prompt, negative: body?.negative, channelId: body?.channelId,
+            generationMode: body?.generationMode, refreshReferences: body?.refreshReferences === true,
+            sessionId: String(src.gameId || body?.sessionId || lastSessionId || ''), turn: src.turn, textVersion: src.textVersion,
+            acceptUncertain: body?.confirmUncertain === true,
+          })
+          const fresh = getJob(replacement.jobId)
           logger.info?.('dsh-tavern-image: 重画 ' + src.id.slice(0, 8) + ' → ' + fresh.id.slice(0, 8))
           sendJson(response, 200, { ok: true, jobId: fresh.id, job: consoleJob(fresh) })
         } catch (error) {
@@ -4269,9 +4376,10 @@ let worldbookCache = null
           const provider = String(config.plannerProvider || fallback?.provider || '')
           const model = String(config.plannerModel || fallback?.model || '')
           if (!provider || !model) { sendJson(response, 400, { ok: false, error: '还没选规划用的模型，且 Tavern 设置里也没有「默认后台模型」（设置页 → 规划）' }); return }
+          const sectioned = (src?.promptMode || resolvePromptMode(config, promptBackendContext(config, styleWorkflow()))) === 'structured'
           const system = [
             '你是绘图提示词编辑。',
-            '只输出修改后的英文 Tag 串，一行，不要解释、不要加引号、不要换行。',
+            sectioned ? '保留中文分节结构、角色标识和参考图对应关系；只输出修改后的完整提示词，不要解释，不要添加画面任务节。' : '只输出修改后的英文 Tag 串，一行，不要解释、不要加引号、不要换行。',
             '保留原有的人物身份与画风 Tag，只按用户要求增删调整。',
           ].join('\n')
           const ask = [
@@ -4283,7 +4391,7 @@ let worldbookCache = null
             '只输出修改后的提示词。',
           ].join('\n')
           const out = await runPlanner(deps.llm, { provider, model, reasoningEffort: plannerEffortFor(fallback), system, text: ask, maxTokens: 1200, temperature: 0.7 })
-          let next = String(out?.text ?? '').split('\n').map(l => l.trim()).filter(Boolean)[0] ?? ''
+          let next = sectioned ? String(out?.text ?? '').trim() : String(out?.text ?? '').split('\n').map(l => l.trim()).filter(Boolean)[0] ?? ''
           if (!next) { sendJson(response, 400, { ok: false, error: '模型没返回内容' }); return }
           const structured = /<scene_composition|<character_\d/i.test(current)
           if (structured) next = preserveCharacterMetadata(current, next, src?.params?.characters)
@@ -4308,8 +4416,15 @@ let worldbookCache = null
 
       if (action === 'cancel') {
         const id = String(body?.id ?? '')
-        if (getJob(id)) sendJson(response, 200, { ok: true, job: cancelJob(id) })
-        else sendJson(response, 200, { ok: cancelTask(id) })
+        if (getJob(id)) {
+          const job = cancelJob(id)
+          try {
+            await persistJobs({ required: true })
+            sendJson(response, 200, { ok: true, job })
+          } catch (error) {
+            sendJson(response, 500, { ok: false, error: String(error?.message ?? error) })
+          }
+        } else sendJson(response, 200, { ok: cancelTask(id) })
         return
       }
 
@@ -4462,9 +4577,21 @@ async function readJson(path, fallback) {
 }
 
 async function writeJsonAtomic(path, value) {
-  const tmp = `${path}.tmp`
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  await rename(tmp, path)
+  const tmp = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmp, path)
+        break
+      } catch (error) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 4) throw error
+        await new Promise(resolve => setTimeout(resolve, Math.min(20 * (2 ** attempt), 100)))
+      }
+    }
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {})
+  }
 }
 
 function cacheRoot(config) { return join(ROOT, String(config.cacheDir || DEFAULTS.cacheDir)) }
@@ -4595,12 +4722,11 @@ async function loadConfig(overrides) {
   const file = await readJson(CONFIG_PATH, {})
   const config = { ...DEFAULTS, ...file, ...(overrides ?? {}) }
   config.comfyUrl = String(config.comfyUrl || DEFAULTS.comfyUrl).replace(/\/+$/, '')
-  config.comfyMode = config.comfyMode === 'simple' ? 'simple' : 'workflow'
   // 这个开关主要在配置文件里手改，string "true" 一律当成 false，避免手误以为打开了
   config.allowChinesePrompt = config.allowChinesePrompt === true
-  config.comfySimple = normalizeComfySimpleConfig(config.comfySimple)
+  config.generationMode = config.generationMode === 'reference' ? 'reference' : 'text'
   config.promptPresets = normalizePromptPresets(config.promptPresets)
-  if (!['auto', 'tags', 'natural', 'mixed'].includes(config.promptMode)) config.promptMode = 'auto'
+  if (!['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode)) config.promptMode = 'auto'
   config.activePromptPreset = validPromptPresetId(config, String(config.activePromptPreset ?? '').slice(0, 80))
   config.promptManualPositive = String(config.promptManualPositive ?? '').slice(0, 4000)
   config.promptManualNegative = String(config.promptManualNegative ?? '').slice(0, 4000)
@@ -4609,7 +4735,7 @@ async function loadConfig(overrides) {
   config.jpegBackground = /^#?[0-9a-f]{6}$/i.test(String(config.jpegBackground ?? '')) ? ('#' + String(config.jpegBackground).replace(/^#/, '')) : '#ffffff'
   config.injectWeight = Number(config.injectWeight) || 0
   config.imageGenCount = Math.max(1, Math.min(6, Number(config.imageGenCount) || 2))
-  config.imageChannels = normalizeChannels(config.imageChannels)
+  Object.assign(config, migrateLegacyImageConfig(config))
   config.imageConcurrency = Math.max(1, Math.min(4, Math.trunc(Number(config.imageConcurrency)) || 2))
   config.imageDisplayWidth = normalizeImageDisplayWidth(config.imageDisplayWidth)
   config.credentialRefs = Array.isArray(config.credentialRefs) ? config.credentialRefs.filter(item => typeof item === 'string') : []
@@ -4620,6 +4746,9 @@ async function loadConfig(overrides) {
 async function saveConfig(config) {
   const out = {}
   for (const key of Object.keys(DEFAULTS)) out[key] = config[key]
+  // Keep retired simple-mode data opaque and recoverable until the user edits it manually.
+  if (config.comfyMode === 'simple' || config.comfyMode === 'workflow') out.comfyMode = config.comfyMode
+  if (config.comfySimple !== undefined) out.comfySimple = structuredClone(config.comfySimple)
   out.workflows = (config.workflows ?? []).map(item => {
     const copy = { ...item }
     delete copy.discovered
@@ -4637,6 +4766,7 @@ async function saveConfig(config) {
 
 function normalizeCharacter(raw, index) {
   const item = {
+    ...referenceFields(raw),
     id: String(raw?.id ?? `characters-${index + 1}`),
     enabled: raw?.enabled !== false,
     name: String(raw?.name ?? ''),
@@ -4663,6 +4793,7 @@ function normalizeCharacter(raw, index) {
   const outfits = Array.isArray(raw?.outfits) ? raw.outfits.slice() : []
   if (!outfits.length && raw?.outfit) outfits.push({ id: 'o1', name: '常服', body: String(raw.outfit), default: true })
   item.outfits = outfits.map((outfit, j) => ({
+    ...referenceFields(outfit),
     id: String(outfit?.id ?? `outfit-${index + 1}-${j + 1}`),
     name: String(outfit?.name ?? `服装 ${j + 1}`),
     upper: String(outfit?.upper ?? outfit?.body ?? ''),
@@ -5334,11 +5465,11 @@ function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBacke
     const raw = String(item?.prompt ?? '')
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
     const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
-    const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
-    const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
-    const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
+    const prompt = normalizePrompts(style === 'structured' ? injected.text : applyWeights(injected.text, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
+    const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(style === 'structured' ? '\n' : ', ')
+    const normalizedUc = normalizePrompts(style === 'structured' ? uc : applyWeights(uc, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
     if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
-    const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
+    const cleaned = style === 'structured' ? { prompt, uc: normalizedUc } : dedupeCharacterNegativePriority(prompt, normalizedUc)
     return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }
   }).filter(item => item.prompt)
 }
@@ -5387,7 +5518,8 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const nsfw = NSFW_HINT.test(source)
   const back = BACK_VIEW.test(source)
   const full = FULL_FRAME.test(source)
-  const natural = options?.style === 'natural'
+  const structured = options?.style === 'structured'
+  const natural = options?.style === 'natural' || structured
   // 规划原文（options.raw，带宏）去掉宏后判断是不是裸露画面。没有原文时只看 nsfw：
   // 这里的文字已经展开了人物外貌，外貌里的 medium breasts 之类会让每张图都被当成裸露画面。
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
@@ -5399,6 +5531,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const fingerprint = c => [c?.traits?.face, c?.traits?.faceBack].map(v => String(v ?? '').trim()).filter(v => v.length >= 12)
   const expanded = (definitions.characters ?? []).filter(c => c && c.enabled !== false && (
     ['the woman', 'the man', 'a character'].some(who => source.includes(label(c) + who + ' in this scene')) ||
+    (structured && source.includes(`人物“${c.promptLabel || c.name || splitTags(c.match)[0] || c.id}”：`)) ||
     fingerprint(c).some(f => source.includes(f))))
   // 人物的负面词作用于整张图：多人画面里 A 的「不要短发」会压掉 B 的短发。
   // 所以先按人收集，最后只在画面里只有一个库中人物时才用上。
@@ -5423,7 +5556,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
       continue
     }
     if (expanded.some(other => sameCharacterFamily(character, other))) continue
-    const keys = splitTags(character.match).length ? splitTags(character.match) : [character.name].filter(Boolean)
+    const keys = structured ? [character.name, character.id, ...splitTags(character.match)].filter(Boolean) : (splitTags(character.match).length ? splitTags(character.match) : [character.name].filter(Boolean))
     if (!keys.some(key => containsNameToken(source, key))) continue
     hits.push(character.name || character.id)
     // 露的画面（nsfw 或写着洗澡/裸体/内衣）不自动补衣服：既不补「当前穿着」，也不补常穿。
@@ -5437,7 +5570,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     // options.provenance：诊断用，记录每段注入文字来自哪个人物的哪个字段、作用于正向还是整图负向。
     if (Array.isArray(options?.provenance)) for (const origin of picked.origins ?? []) options.provenance.push({ stage: 'definition-injection', characterId: String(character.id ?? ''), characterName: String(character.name ?? ''), matchedBy: keys.find(key => key && source.includes(key)) ?? '', appliedScope: origin.channel === 'negative' ? 'whole-image-negative' : 'whole-image-positive', ...origin })
     if (natural) {
-      const phrase = boundCharacterPhrase(character, picked, [], recorded)
+      const phrase = boundCharacterPhrase(character, picked, [], recorded, options?.style)
       if (phrase && !source.includes(phrase)) added.push(phrase)
     } else {
       // tag 写法：这个人的外貌紧跟在她的名字后面插入，而不是堆到整段末尾。
@@ -5467,6 +5600,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const shown = tag => { const words = tag.toLowerCase().split(/\s+/).filter(Boolean); return words.length > 0 && chunks.some(chunk => words.every(w => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(chunk))) }
   if (personNegatives.length === 1 && families.length <= 1) {
     for (const raw of personNegatives[0]) {
+      if (structured) { negatives.push(raw); continue }
       for (const tag of splitTags(raw)) {
         const key = tag.toLowerCase()
         if (!key || negatives.includes(tag) || (!keepNegative && shown(tag))) continue
@@ -5477,7 +5611,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   for (const kind of ['settings', 'props']) {
     for (const def of definitions[kind] ?? []) {
       if (!def || def.enabled === false) continue
-      const keys = splitTags(def.match).length ? splitTags(def.match) : [def.name].filter(Boolean)
+      const keys = structured ? [def.name, def.id, ...splitTags(def.match)].filter(Boolean) : (splitTags(def.match).length ? splitTags(def.match) : [def.name].filter(Boolean))
       if (!keys.some(key => containsNameToken(source, key))) continue
       hits.push(def.name || def.id)
       for (const field of DEFINITION_KINDS[kind].fields) {
@@ -5487,6 +5621,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
         if (DEFAULT_OFF_FIELDS.has(field) && enabled !== true) continue
         const value = String(def[field] ?? '').trim()
         if (!value) continue
+        if (structured) { added.push(value); continue }
         for (const tag of splitTags(value)) {
           const key = tag.toLowerCase()
           if (!key || have.has(key)) continue
@@ -5506,6 +5641,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     else segments.splice(at + 1, 0, ' ' + tags.join(', '))
   }
   const placedText = segments.join(',')
+  if (structured) return { text: [source, ...added].filter(Boolean).join('\n\n'), hits, negatives, additions: added }
   return { text: added.length ? `${placedText}, ${added.join(', ')}` : placedText, hits, negatives }
 }
 
@@ -5545,8 +5681,24 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
   const stage = (name, data) => { if (onStage) { try { onStage(name, data) } catch {} } }
   const tag = String(params.tag ?? '').trim()
   const artist = String(params.artist ?? '').trim()
-  const backend = promptBackendContext(config, workflow)
+  const backend = channel ? effectiveImageProvider(channel) : promptBackendContext(config, workflow)
   const mode = resolvePromptMode(config, backend)
+
+  if (mode === 'structured') {
+    const injected = injectDefinitions(tag, definitions, config, { style: 'structured', raw: params.rawTag })
+    const prepared = composeStructuredPrompt({ text: injected.text, config, artist, artistPosition: params.artistPosition ?? config.artistPosition, referenceText: params.referenceText || '',
+      negative: [activeArtistText(config).negative, params.negative, ...(injected.negatives ?? [])].filter(Boolean).join('\n') })
+    if (workflow) {
+      const binding = workflow.bindings.negative?.[0]
+      const workflowNegative = binding ? String(workflow.prompt[binding.node]?.inputs?.[binding.input] ?? '') : ''
+      if (config.negativeMode === 'workflow') prepared.negative = [workflowNegative, ...(injected.negatives ?? [])].filter(Boolean).join('\n')
+      else if (config.negativeMode === 'merge') prepared.negative = [workflowNegative, prepared.negative].filter(Boolean).join('\n')
+    }
+    stage('compile-positive', { mode, final: prepared.positive, hits: injected.hits })
+    stage('compile-negative', { negativeMode: config.negativeMode, final: prepared.negative })
+    return { positive: prepared.positive, negative: prepared.negative, hits: injected.hits,
+      promptAssembly: { version: 2, definitionAdditions: injected.additions || [], referenceText: params.referenceText || '' } }
+  }
 
   const rawBase = (params.artistPosition ?? config.artistPosition) === 'suffix'
     ? [tag, artist].filter(Boolean).join(', ')
@@ -5557,7 +5709,7 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
   // 自然语言模型（LLM 文本编码器）不认 (tag:1.2) 这种权重，总是去掉；tag 模型按设置处理。
   // 画风词和按名字补上的外貌是在规划提示词清理之后才拼进来的，tag 写法再去一次重。
   const injectedText = mode === 'tags' ? dedupeTags(injected.text) : injected.text
-  const positive = formatPromptForBackend(applyWeights(injectedText, resolveWeightMode(config, channel?.provider ?? backend, mode)), backend, mode)
+  const positive = formatPromptForBackend(applyWeights(injectedText, resolveWeightMode(config, backend, mode)), backend, mode)
   stage('compile-positive', { mode, artistPosition: params.artistPosition ?? config.artistPosition, artist, rawBase, afterPreset: base, afterInjection: injected.text, final: positive, hits: injected.hits, provenance })
 
   const workflowNegative = String(
@@ -5584,30 +5736,36 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 }
 
 export function compileChannelJob({ params, config, definitions, channel = null, onStage = null }) {
+  const provider = channel ? effectiveImageProvider(channel) : effectiveImageProvider(config.imageBackend)
   const prepared = prepareImagePrompt({ params, config, definitions, channel, onStage })
-  const nativeNovelai = channel?.provider === 'novelai' && channel?.options?.protocol !== 'chat'
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, channel?.provider ?? config.imageBackend), channel?.provider ?? config.imageBackend, { characterNegativePriority: nativeNovelai })
+  const promptMode = resolvePromptMode(config, provider)
+  const separator = promptMode === 'structured' ? '\n\n' : ', '
+  const nativeNovelai = provider === 'novelai' && !(channel?.provider === 'novelai' && channel?.options?.protocol === 'chat')
+  const characters = compileCharacterList(params.characters, definitions, config, promptMode, provider, { characterNegativePriority: nativeNovelai })
   if (!nativeNovelai && characters.length) {
-    prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
-    prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(', ')
+    prepared.positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(separator)
+    prepared.negative = [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join(separator)
   }
   const dimensions = config.sizes?.[params.size]
   const pixels = /^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i.exec(String(params.size ?? ''))
   const size = pixels ? { width: Number(pixels[1]), height: Number(pixels[2]) } : dimensions || { width: 832, height: 1216 }
   if (![size.width, size.height].every(value => Number.isInteger(value) && value >= 64 && value <= 8192)) throw new Error('图片尺寸需在 64–8192 像素之间')
-  return { ...prepared, characters: nativeNovelai ? characters : [], seed: randomInt(0, 2 ** 32), size, loras: [] }
+  return { ...prepared, promptMode, characters: nativeNovelai ? characters : [], seed: randomInt(0, 2 ** 32), size, loras: [] }
 }
 
 export function compileJob({ workflow, params, config, definitions, onStage = null }) {
   const prompt = structuredClone(workflow.prompt)
   const prepared = prepareImagePrompt({ workflow, params, config, definitions, onStage })
-  const characters = compileCharacterList(params.characters, definitions, config, resolvePromptMode(config, 'comfyui'), 'comfyui')
-  const positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(', ')
-  const negative = [...new Set([prepared.negative, ...characters.map(item => item.uc)].flatMap(value => String(value || '').split(',').map(part => part.trim())).filter(Boolean))].join(', ')
+  const promptMode = resolvePromptMode(config, promptBackendContext(config, workflow))
+  const characters = compileCharacterList(params.characters, definitions, config, promptMode, 'comfyui')
+  const positive = [prepared.positive, ...characters.map(item => item.prompt)].filter(Boolean).join(promptMode === 'structured' ? '\n\n' : ', ')
+  const negative = promptMode === 'structured'
+    ? [prepared.negative, ...characters.map(item => item.uc)].filter(Boolean).join('\n\n')
+    : [...new Set([prepared.negative, ...characters.map(item => item.uc)].flatMap(value => String(value || '').split(',').map(part => part.trim())).filter(Boolean))].join(', ')
   const { hits } = prepared
 
   setBinding(prompt, workflow.bindings.positive, positive)
-  if (workflow.bindings.negative?.length) setBinding(prompt, workflow.bindings.negative, applyWeights(negative, config.weightMode))
+  if (workflow.bindings.negative?.length) setBinding(prompt, workflow.bindings.negative, promptMode === 'structured' ? negative : applyWeights(negative, config.weightMode))
 
   const seed = Number.isSafeInteger(workflow.fixedSeed) && workflow.fixedSeed >= 0
     ? workflow.fixedSeed
@@ -5650,7 +5808,7 @@ export function compileJob({ workflow, params, config, definitions, onStage = nu
   }
 
   const size = applySize(prompt, params.size, workflow.sizes ?? config.sizes ?? null, workflow.bindings?.size)
-  return { prompt, seed, positive, negative, size, hits, workflowId: workflow.id, loras: loraApplied }
+  return { prompt, seed, positive, negative, promptMode, size, hits, workflowId: workflow.id, loras: loraApplied, ...(prepared.promptAssembly ? { promptAssembly: prepared.promptAssembly } : {}) }
 }
 
 /** 挑工作流：先看锁定 / 默认，再按外部传来的 model 匹配 id / label / match。 */

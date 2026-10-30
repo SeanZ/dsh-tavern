@@ -23,8 +23,8 @@ export const SCENE_IMAGE_PACKAGE_NAME = 'dsh-tavern-image'
 /** 旧版 profile 包名：识别既有来源，避免新旧包并存。 */
 export const LEGACY_SCENE_IMAGE_PACKAGE_NAME = 'dsh-tavern-comfy'
 
-/** 插件自己的数据，升级时绝不覆盖。workflows 整目录属于用户，删除或修改都必须保留。 */
-const PRIVATE = /^(config(\.json)?|definitions(\.json)?|worldbook(-outfits)?(\.json)?|jobs(-store)?\.json|plans(-store)?\.json|cache|backups|workflows|node_modules|\.git)(\/|$)/i
+/** 插件自己的数据：不随安装源复制，升级时绝不覆盖。工作流仅发行 .gitkeep 占位。 */
+const PRIVATE = /^(config(\.json)?|definitions(\.json)?|worldbook(-outfits)?(\.json)?|jobs(-store)?\.json|plans(-store)?\.json|cache|backups|reference-images|format-worldbooks|workflows|node_modules|\.git)(\/|$)/i
 
 /** 内置副本必须齐备的文件；缺一个就当"这份发行版没内置插件"，不去猜。 */
 const REQUIRED = ['package.json', 'lib/index.js', 'client.js', 'cordis.patch.yml']
@@ -106,6 +106,13 @@ function copyTree(from, to, copied, root = to) {
     if (entry.name === 'node_modules' || entry.name === 'BUNDLED-VERSION.json') continue
     const source = path.join(from, entry.name)
     const target = path.join(to, entry.name)
+    const relative = path.relative(root, target).split(path.sep).join('/')
+    // Filter before traversal, not only at upgrade promotion: an accidentally
+    // populated source tree must not leak reference images or authored books
+    // into a fresh install. Private symlinks are never followed either.
+    const workflowPlaceholder = relative === 'workflows/.gitkeep'
+      || (relative === 'workflows' && entry.isDirectory() && !entry.isSymbolicLink())
+    if (PRIVATE.test(relative) && !workflowPlaceholder) continue
     if (entry.isSymbolicLink()) throw new Error('内置插件副本包含不支持的符号链接：' + source)
     if (entry.isDirectory()) { mkdirSync(target); copyTree(source, target, copied, root); continue }
     if (!entry.isFile()) continue

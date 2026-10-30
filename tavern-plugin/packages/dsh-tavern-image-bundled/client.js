@@ -39,6 +39,14 @@ const absoluteBase = (() => {
   return (origin || '') + '/plugins/dsh-tavern-image'
 })()
 const BASE = absoluteBase
+const IMAGE_REFERENCE_PROTOCOLS = new Set(['openai', 'gemini', 'gemini-chat', 'atlascloud', 'seedream', 'grok', 'qwen', 'sdwebui'])
+function uiSupportsImageReferences(channel, state) {
+  if (!channel) return state?.referenceSupported === true
+  const provider = String(channel.provider || '')
+  if (provider === 'comfyui') return state?.referenceSupported === true && state?.config?.imageBackend === 'comfyui'
+  const protocol = provider === 'custom' ? String(channel.options?.apiProtocol || 'openai') : provider
+  return IMAGE_REFERENCE_PROTOCOLS.has(protocol)
+}
 
 function createHistoryRequestEpoch() {
   let activeGameId = ''
@@ -856,21 +864,27 @@ let openImageOverlay = null
     function openEditorFor(jobId, title, mediaContext) {
       try {
         if (!jobId || typeof openPromptEditor !== 'function') return
-        openPromptEditor({ open: true, jobId: String(jobId), prompt: '', negative: '', instruction: '', note: '正在读取提示词…', busy: '', submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '' })
+        const requestId = openEditorFor.requestId = (openEditorFor.requestId || 0) + 1
+        openPromptEditor({ open: true, openRequestId: requestId, jobId: String(jobId), prompt: '', negative: '', rawPrompt: '', originalPrompt: '', rawPromptSource: '', submittedPromptSource: '', promptAssembly: null, finalPrompt: '', instruction: '', note: '正在读取提示词…', busy: '', loading: true, submitted: false, uncertain: false, mediaContext: validMediaContext(mediaContext) ? mediaContext : null, channelId: '', generationMode: 'text', refreshReferences: false, references: [], submittedPrompt: '', actualPositive: '', actualNegative: '', sourceBackend: '', providerError: '', inputsLoading: true, inputsError: '', inputsReload: 0, showInputs: false, channels: [], channelLoadFailed: false })
         jsonFetch(BASE + '/job-detail?id=' + encodeURIComponent(String(jobId)), { cache: 'no-store' })
           .then(r => {
-            if (!r?.ok || !r.job) { openPromptEditor({ note: '读不到提示词：' + (r?.error || '') }); return }
+            if (!r?.ok || !r.job) { openPromptEditor({ forJobId: String(jobId), forRequestId: requestId, loading: false, note: '读不到提示词：' + (r?.error || '') }); return }
             const sceneText = String(r.job.rawPrompt || r.job.tag || r.job.prompt || '')
             const blocksText = String(r.job.promptText || '')
             openPromptEditor({
+              forJobId: String(jobId), forRequestId: requestId, loading: false,
               prompt: blocksText || sceneText,
               negative: String(r.job.negative || ''),
               note: blocksText ? '场景与角色块一起显示；改完重画会按角色分区重新发送' : '',
               rawPrompt: String(r.job.rawPrompt || ''),
+               originalPrompt: String(r.job.promptText || r.job.rawPrompt || ''),
+               rawPromptSource: String(r.job.rawPromptSource || ''),
+               submittedPromptSource: String(r.job.submittedPromptSource || ''),
+               promptAssembly: r.job.promptAssembly?.version === 2 ? r.job.promptAssembly : null,
               finalPrompt: String(r.job.prompt || ''),
             })
           })
-          .catch(error => openPromptEditor({ note: '读取失败：' + (error?.message ?? error) }))
+          .catch(error => openPromptEditor({ forJobId: String(jobId), forRequestId: requestId, loading: false, note: '读取失败：' + (error?.message ?? error) }))
       } catch (error) {
         reportHost('editor-open-failed', { message: String(error?.message ?? error).slice(0, 200) })
       }
@@ -1163,22 +1177,60 @@ function versionsOf(jobId) {
      */
     function PromptEditor() {
       const [view, setView] = React.useState({ open: false, jobId: '', prompt: '', negative: '', instruction: '', note: '', busy: '', loading: false })
-      openPromptEditor = (next) => setView(cur => Object.assign({}, cur, next))
+      openPromptEditor = (next) => setView(cur => {
+        if (next.forJobId && (!cur.open || cur.jobId !== next.forJobId)) return cur
+        if (next.forRequestId && cur.openRequestId !== next.forRequestId) return cur
+        const { forJobId, forRequestId, ...patch } = next
+        return Object.assign({}, cur, patch)
+      })
       useEffect(() => {
-        if (!view.open || !view.mediaContext) return undefined
+        if (!view.open || !view.jobId) return undefined
+        let live = true
+        openPromptEditor({ inputsLoading: true, inputsError: '' })
+        jsonFetch(BASE + '/jobs?id=' + encodeURIComponent(view.jobId), { cache: 'no-store' }).then(result => {
+          if (!live) return
+          if (!result?.ok || !result.job) throw new Error(result?.error || '无法读取作业输入')
+          const job = result.job
+          openPromptEditor({ forJobId: view.jobId, inputsLoading: false, inputsError: '',
+            generationMode: job.generationMode === 'reference' ? 'reference' : 'text',
+            sourceBackend: String(job.backend || ''), sourceChannelId: String(job.channelId || ''),
+            references: Array.isArray(job.references) ? job.references : [],
+            submittedPrompt: typeof job.submittedPrompt === 'string' ? job.submittedPrompt : '',
+            actualPositive: String(job.positive || ''), actualNegative: String(job.negative || ''), providerError: String(job.error || ''),
+          })
+        }).catch(error => { if (live) openPromptEditor({ forJobId: view.jobId, inputsLoading: false, inputsError: '读取实际输入失败：' + (error?.message || error) }) })
+        return () => { live = false }
+      }, [view.open, view.jobId, view.openRequestId, view.inputsReload])
+      useEffect(() => {
+        if (!view.open) return undefined
         let live = true
         jsonFetch(BASE + '/state', { cache: 'no-store' }).then(result => {
           if (!live) return
           const config = result?.config || {}
-          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || '') })).filter(channel => channel.id)
-          openPromptEditor({ channels, comfyAvailable: Boolean(config.comfyUrl || config.comfyHost || config.comfyEnabled) })
+          const channels = (Array.isArray(config.imageChannels) ? config.imageChannels : []).map(channel => ({ id: String(channel.id || ''), name: String(channel.name || channel.id || ''), provider: String(channel.provider || ''), options: channel.options || {}, referenceSupported: uiSupportsImageReferences(channel, result) })).filter(channel => channel.id)
+          const sourceChannel = channels.find(channel => channel.id === view.sourceChannelId)
+          openPromptEditor({ channels, referenceSupported: sourceChannel?.referenceSupported ?? (result?.referenceSupported === true), comfyAvailable: Boolean(config.comfyUrl || config.comfyHost || config.comfyEnabled) })
         }).catch(() => { if (live) openPromptEditor({ channels: [], channelLoadFailed: true }) })
         return () => { live = false }
       }, [view.open, view.mediaContext])
       if (!view.open) return null
 
       const close = () => openPromptEditor({ open: false, busy: '', note: '', instruction: '' })
-      const say = (text) => openPromptEditor({ note: text })
+      const say = (text) => openPromptEditor({ forJobId: view.jobId, note: text })
+      const backend = view.channelId === 'comfyui' ? 'comfyui' : view.channelId ? (view.channels || []).find(channel => channel.id === view.channelId)?.provider : view.sourceBackend
+      const selectedReferenceChannel = (view.channels || []).find(channel => channel.id === (view.channelId || view.sourceChannelId))
+      const referenceAvailable = selectedReferenceChannel ? selectedReferenceChannel.referenceSupported === true : (backend === 'comfyui' ? view.referenceSupported === true : IMAGE_REFERENCE_PROTOCOLS.has(backend))
+      const referenceUnavailable = view.generationMode === 'reference' && !referenceAvailable
+      const controlsDisabled = Boolean(view.loading || view.inputsLoading || view.busy || view.submitted || view.uncertain)
+      // Strip only known legacy metadata decorations from captions, never alter recorded prompts.
+      const referenceLabel = reference => String(reference.label || '').replace(/\s*\[(?:characterId|outfitId)=[^\]]*\]/g, '').trim() || '未记录名称（详见调试信息）'
+      const referenceOwner = reference => {
+        const label = referenceLabel(reference)
+        if (reference.kind === 'character') return '所属人物：' + label
+        if (!reference.characterId) return '所属：公共服装；' + (label.includes('本图穿着者：') ? label : '原记录未标明穿着者')
+        const slash = label.indexOf('／')
+        return slash > 0 ? '所属人物：' + label.slice(0, slash) : '所属人物：原记录未提供可读姓名（详见调试信息）'
+      }
 
       async function improve() {
         openPromptEditor({ busy: 'improve', note: '后台正在改…' })
@@ -1197,6 +1249,8 @@ function versionsOf(jobId) {
       }
 
       async function redraw() {
+        if (controlsDisabled || view.inputsError) return
+        if (referenceUnavailable) { say('当前渠道不支持参考图输入；请明确选择支持参考图的渠道或改为文生图，不会自动降级。'); return }
         const lock = String(view.mediaContext && view.mediaContext.mediaId || '')
         if (view.mediaContext && (mediaPostLocks.has(lock) || mediaUncertainActions.has(lock) || !validMediaContext(view.mediaContext))) return
         if (view.mediaContext) mediaPostLocks.add(lock)
@@ -1204,7 +1258,8 @@ function versionsOf(jobId) {
         try {
           if (view.mediaContext) {
             if (!validMediaContext(view.mediaContext)) { say('当前图片上下文不完整，无法提交单图重画'); return }
-            const body = { operation: 'redraw', ...view.mediaContext, jobId: view.mediaContext.jobId, prompt: view.prompt, negative: view.negative }
+            const body = { operation: 'redraw', ...view.mediaContext, jobId: view.mediaContext.jobId, prompt: view.prompt, negative: view.negative,
+              generationMode: view.generationMode === 'reference' ? 'reference' : 'text', refreshReferences: view.generationMode === 'reference' && view.refreshReferences === true }
             if (view.channelId) body.channelId = view.channelId
             const result = await jsonFetch(BASE + '/media-action', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -1216,7 +1271,8 @@ function versionsOf(jobId) {
           }
           const r = await jsonFetch(BASE + '/redraw', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ jobId: view.jobId, prompt: view.prompt, negative: view.negative }),
+            body: JSON.stringify({ jobId: view.jobId, prompt: view.prompt, negative: view.negative,
+              generationMode: view.generationMode === 'reference' ? 'reference' : 'text', refreshReferences: view.generationMode === 'reference' && view.refreshReferences === true }),
           })
           if (!r?.ok || !r.jobId) { say('重画失败：' + (r?.error || '没拿到新作业')); return }
           redrawnJobs.set(view.jobId, r.jobId)
@@ -1228,12 +1284,13 @@ function versionsOf(jobId) {
                   openImageOverlay({ open: true, jobIds: chain, versions: chain, versionAt: chain.length - 1, note: '重画完成（下方可对比历史版本）', working: false, index: chain.length - 1 })
                 })()
         } catch (error) {
-          if (view.mediaContext) mediaUncertainActions.add(lock)
-          openPromptEditor({ uncertain: Boolean(view.mediaContext) })
-          say(view.mediaContext ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。' : '失败：' + (error?.message ?? error))
+          const uncertain = Boolean(view.mediaContext) && error?.submissionNotStarted !== true
+          if (uncertain) mediaUncertainActions.add(lock)
+          openPromptEditor({ forJobId: view.jobId, uncertain })
+          say(uncertain ? '状态待确认（来源任务 ' + view.mediaContext.jobId + '）；请求可能已提交，请检查生图平台，暂不自动重试。原因：' + (error?.message ?? error) : '失败：' + (error?.message ?? error))
         } finally {
           if (view.mediaContext) mediaPostLocks.delete(lock)
-          openPromptEditor({ busy: '' })
+          openPromptEditor({ forJobId: view.jobId, busy: '' })
         }
       }
 
@@ -1244,7 +1301,7 @@ function versionsOf(jobId) {
         fontFamily: 'inherit', resize: 'vertical',
       }
       const btn = (label, onClick, primary) => React.createElement('button', {
-        type: 'button', onClick, disabled: Boolean(view.busy || view.submitted || view.uncertain) || Boolean(view.mediaContext && mediaUncertainActions.has(String(view.mediaContext.mediaId || ''))),
+        type: 'button', onClick, disabled: controlsDisabled || Boolean(primary && (referenceUnavailable || view.inputsError)) || Boolean(view.mediaContext && mediaUncertainActions.has(String(view.mediaContext.mediaId || ''))),
         style: {
           padding: '6px 16px', fontSize: '13px', borderRadius: '9px', cursor: view.busy ? 'default' : 'pointer',
           border: '1px solid ' + (primary ? 'rgba(106,168,255,.6)' : 'rgba(120,140,170,.45)'),
@@ -1265,7 +1322,7 @@ function versionsOf(jobId) {
           React.createElement('button', { type: 'button', onClick: close, style: { padding: '5px 14px', fontSize: '13px', borderRadius: '8px', border: '1px solid rgba(160,180,210,.5)', background: 'transparent', color: '#dbe3ee', cursor: 'pointer' } }, '关闭'),
         ),
         React.createElement('img', { src: BASE + '/jobs?id=' + encodeURIComponent(view.jobId) + '&image=1', style: { display: 'block', maxWidth: '260px', borderRadius: '10px', margin: '0 auto 16px', background: '#1a1d24' } }),
-        React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2', marginBottom: '6px' } }, '正向提示词（可直接改，然后重画）'),
+        React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2', marginBottom: '6px' } }, '本次重画草稿（可编辑；不会改动下方原任务记录）'),
         React.createElement('textarea', {
           value: view.prompt,
           style: area,
@@ -1293,12 +1350,53 @@ function versionsOf(jobId) {
             React.createElement('option', { value: '' }, '沿用原渠道'),
             ...(view.channels || []).map(channel => React.createElement('option', { key: channel.id, value: channel.id }, channel.name)),
             view.comfyAvailable ? React.createElement('option', { value: 'comfyui' }, '当前 ComfyUI 设置') : null)) : null,
+        React.createElement('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', color: '#9aa3b2', marginTop: '12px' } },
+          '本次生图模式', React.createElement('select', { 'aria-label': '本次生图模式', value: view.generationMode || 'text', disabled: controlsDisabled || Boolean(view.inputsError),
+            onChange: event => openPromptEditor({ generationMode: event.target.value, refreshReferences: false }), style: { background: '#12151b', color: '#dbe3ee', padding: '5px', borderRadius: '7px' } },
+          React.createElement('option', { value: 'text' }, '文生图'),
+          React.createElement('option', { value: 'reference', disabled: !referenceAvailable }, '参考图生图'))),
+        referenceUnavailable ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '6px' } }, '当前渠道不支持参考图输入；请明确选择支持参考图的渠道或改为文生图，不会自动降级。') : null,
+        React.createElement('label', { style: { display: 'flex', gap: '8px', color: '#9aa3b2', fontSize: '12px', marginTop: '10px' } },
+          React.createElement('input', { type: 'checkbox', 'aria-label': '使用最新人物库参考图快照', checked: view.refreshReferences === true,
+            disabled: controlsDisabled || Boolean(view.inputsError) || view.generationMode !== 'reference', onChange: event => openPromptEditor({ refreshReferences: event.target.checked }) }),
+          '明确改用最新人物库的参考图与一致性文本（不勾选则保留原任务快照）'),
+        React.createElement('div', { style: { color: '#9aa3b2', fontSize: '11px', marginTop: '5px' } }, '切换模式不更换模型 ID。参考图在人物库中管理，本张不能临时换图；参考图仅本机保存，不随导出迁移。'),
+        React.createElement('details', { open: Boolean(view.showInputs), onToggle: event => { const open = event.currentTarget.open; if (open !== Boolean(view.showInputs)) openPromptEditor({ showInputs: open }) }, style: { marginTop: '14px', color: '#dbe3ee', borderTop: '1px solid #3a4150', paddingTop: '10px' } },
+          React.createElement('summary', { style: { cursor: 'pointer', fontSize: '13px' } }, '实际提交输入（原任务，只读）'),
+          view.inputsLoading ? React.createElement('div', { role: 'status' }, '正在读取实际输入…') : null,
+          view.inputsError ? React.createElement('div', { role: 'alert', style: { fontSize: '12px', color: '#f0bf76' } }, view.inputsError,
+            React.createElement('button', { type: 'button', disabled: Boolean(view.inputsLoading || view.busy), onClick: () => openPromptEditor({ inputsReload: (view.inputsReload || 0) + 1 }) }, '重新读取输入')) : null,
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2', marginTop: '8px' } }, '下列为原任务记录，不会随上方编辑或模式切换而改写。'),
+          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.rawPromptSource && view.rawPromptSource !== 'rawTag' ? '原始输入回退记录（原文缺失）' : '规划原文／原始输入（原任务）'),
+          React.createElement('pre', { 'aria-label': '规划原文', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto', fontSize: '12px' } }, view.loading ? '正在读取原文…' : view.originalPrompt || view.rawPrompt || '未记录原始输入'),
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2' } }, '这里展示原任务保存的场景与角色块，不是完整规划会话；手动任务可能是用户输入，旧任务可能由后端回退为已处理文本。'),
+          view.promptAssembly?.version === 2 ? React.createElement('div', { 'aria-label': '提示词组装来源' },
+            React.createElement('details', null, React.createElement('summary', null, '人物／服装／场景库自动补充'),
+              React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto' } }, Array.isArray(view.promptAssembly.definitionAdditions) && view.promptAssembly.definitionAdditions.length ? view.promptAssembly.definitionAdditions.join('\n\n') : '本张没有自动补充')),
+            React.createElement('details', null, React.createElement('summary', null, '插件生成的参考图绑定文本'),
+              React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '220px', overflowY: 'auto' } }, String(view.promptAssembly.referenceText || '本张没有参考图绑定文本'))))
+            : React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2' } }, '原任务未记录分层组装来源；不从最终文本反推资料补充或参考图绑定。'),
+          React.createElement('div', { style: { fontSize: '12px', marginTop: '8px' } }, view.submittedPrompt && view.submittedPromptSource !== 'positive' ? '最终提交文本（原任务记录）' : '记录的最终正向提示词（旧任务可能没有完整提交文本）'),
+          React.createElement('pre', { 'aria-label': '实际提交提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '260px', overflowY: 'auto', fontSize: '12px' } }, view.submittedPrompt || view.actualPositive || view.finalPrompt || '暂无记录'),
+          view.actualNegative ? React.createElement('pre', { 'aria-label': '实际负向提示词', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px' } }, '负向：' + view.actualNegative) : null,
+          React.createElement('div', { style: { fontSize: '11px', color: '#9aa3b2', margin: '8px 0' } }, '参考图按原任务上传顺序展示，不按图库顺序；用途与归属取自原任务快照。旧任务的最终文本可能只有正向记录；此处不推测或重建。'),
+          (view.references || []).length ? React.createElement('div', { 'aria-label': '原任务参考图', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' } },
+            view.references.map((reference, position) => React.createElement('figure', { key: String(position), style: { margin: 0, padding: '8px', border: '1px solid #3a4150', borderRadius: '7px' } },
+              /^[a-f0-9]{64}$/i.test(String(reference.image?.id || '')) ? React.createElement('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(reference.image.id), alt: '参考图 ' + (reference.index ?? position + 1) + ' ' + referenceLabel(reference), style: { maxWidth: '100%', height: '120px', objectFit: 'contain' } }) : null,
+              React.createElement('figcaption', { style: { fontSize: '12px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
+                '上传顺序 ' + (position + 1) + ' · 参考图 ' + (reference.index ?? position + 1) + ' · ' + referenceLabel(reference),
+                '\n用途：' + (reference.kind === 'character' ? '身份参考（面部、发型、固有体型比例；不继承服装和姿势）' : reference.kind === 'outfit' ? '服装参考（服饰设计；不继承模特身份）' : '未记录'),
+                '\n' + referenceOwner(reference),
+                reference.consistencyText ? '\n一致性补充：' + String(reference.consistencyText) : ''),
+              React.createElement('details', { 'aria-label': '参考图调试信息' },
+                React.createElement('summary', { style: { fontSize: '11px', cursor: 'pointer' } }, '调试信息（内部 ID）'),
+                React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '11px' } }, JSON.stringify({ characterId: reference.characterId, outfitId: reference.outfitId, imageId: reference.image?.id, originalLabel: reference.label }, null, 2))))))
+            : React.createElement('div', { style: { fontSize: '12px', color: '#9aa3b2' } }, '原任务未记录参考图。'),
+          view.providerError ? React.createElement('div', { role: 'alert', 'aria-label': '平台错误', style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '12px', color: '#f0bf76', marginTop: '8px' } }, '平台／任务错误：' + view.providerError) : null),
+        view.inputsError && !view.showInputs ? React.createElement('div', { role: 'alert', style: { color: '#f0bf76', fontSize: '12px', marginTop: '8px' } }, view.inputsError + '，请展开实际提交输入重试。') : null,
         React.createElement('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '16px', flexWrap: 'wrap' } },
           btn('🤖 让后台改', improve),
-          btn('👁 看展开结果', () => {
-            if (!view.finalPrompt) { say('这张图没有记录展开结果'); return }
-            openPromptEditor({ prompt: view.finalPrompt, rawPrompt: view.prompt, note: '这是展开后的最终提示词（点关闭后回到原始）' })
-          }),
+          btn('👁 看展开结果', () => openPromptEditor({ showInputs: true })),
           btn(view.busy === 'redraw' ? '🎨 提交中…' : '🎨 用这段重画', redraw, true),
           view.note ? React.createElement('span', { style: { fontSize: '12px', color: '#9aa3b2' } }, view.note) : null,
         ),
@@ -2236,6 +2334,103 @@ function versionsOf(jobId) {
       )
     }
 
+    /** One local reference per library object; binding is saved with the existing draft. */
+    function ReferenceImageEditor({ value = {}, label, onChange }) {
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState('')
+      const epoch = React.useRef(0)
+      React.useEffect(() => () => { epoch.current += 1 }, [])
+      const image = value.referenceImage
+      const imageId = /^[a-f0-9]{64}$/i.test(String(image?.id || '')) ? image.id : ''
+      const inputStyle = { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: '7px', background: 'var(--dsw-specific-input-major)', color: 'var(--dsw-alias-label-primary)', border: '1px solid var(--dsw-alias-border-l2)', fontFamily: 'inherit', fontSize: '12px' }
+      async function upload(event) {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        const request = ++epoch.current
+        const mediaType = file.type || ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' })[String(file.name).split('.').pop().toLowerCase()]
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(mediaType)) { setBusy(false); setNote('请选择 PNG、JPEG 或 WebP 图片'); return }
+        if (!file.size || file.size > 32 * 1024 * 1024) { setBusy(false); setNote('参考图不能为空，且每张不能超过 32 MiB'); return }
+        setBusy(true)
+        setNote('正在上传参考图…')
+        try {
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.onerror = () => reject(new Error('无法读取这张图片'))
+            reader.readAsDataURL(file)
+          })
+          if (request !== epoch.current) return
+          const result = await jsonFetch(BASE + '/reference-image', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ data, mediaType, name: file.name }),
+          })
+          if (request !== epoch.current) return
+          if (!result?.ok || !/^[a-f0-9]{64}$/i.test(String(result.referenceImage?.id || ''))) throw new Error(result?.error || '服务器没有返回有效的参考图')
+          onChange({ referenceImage: result.referenceImage })
+          setNote('参考图已加入草稿，请保存人物库／服装库')
+        } catch (error) {
+          if (request === epoch.current) setNote('上传失败：' + (error?.message || error))
+        } finally { if (request === epoch.current) setBusy(false) }
+      }
+      return h('section', { 'aria-label': label + '参考图设置', style: { padding: '10px', margin: '10px 0', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '9px' } },
+        h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '6px' } }, label + '参考图（每个对象一张）'),
+        imageId ? h('img', { src: BASE + '/reference-image?id=' + encodeURIComponent(imageId), alt: label + '参考图', style: { display: 'block', maxWidth: '180px', maxHeight: '160px', objectFit: 'contain', borderRadius: '7px', marginBottom: '7px' } }) : null,
+        imageId ? h('div', { style: { fontSize: '11px', overflowWrap: 'anywhere', marginBottom: '6px' } }, image.name || '已上传参考图') : null,
+        h('label', { style: { display: 'inline-flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', fontSize: '12px' } }, busy ? '上传中…' : imageId ? '替换参考图' : '上传参考图',
+          h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', 'aria-label': label + '上传参考图', disabled: busy, onChange: upload, style: { maxWidth: '100%' } })),
+        imageId || busy ? h('button', { type: 'button', 'aria-label': label + '移除参考图', style: { marginLeft: '8px', fontSize: '12px' }, onClick: () => {
+          epoch.current += 1
+          setBusy(false)
+          onChange({ referenceImage: null })
+          setNote('已从草稿解绑，保存后生效；历史参考图不会删除')
+        } }, '移除') : null,
+        h('label', { style: { display: 'block', fontSize: '12px', marginTop: '8px' } }, '一致性补充（可选）',
+          h('textarea', { 'aria-label': label + '一致性补充', value: value.consistencyText || '', rows: 2, placeholder: '补充需要保持的特征；动作、背景及正文明确的变化仍以剧情为准', style: inputStyle, onChange: event => onChange({ consistencyText: event.target.value }) })),
+        h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '5px' } }, '参考图仅本机保存，不随导出迁移。上传和移除后请保存人物库／服装库。'),
+        note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '5px', overflowWrap: 'anywhere' } }, note) : null)
+    }
+
+    function WorldbookUpgradePanel({ book, request, onApplied }) {
+      const [status, setStatus] = React.useState(null)
+      const [selected, setSelected] = React.useState([])
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState('')
+      const live = React.useRef(true), running = React.useRef(false)
+      React.useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+      const selectable = entry => ['update', 'customized', 'missing'].includes(entry.state)
+      const labels = { current: '已是新版', update: '旧版默认，可更新', customized: '已自定义，更新会替换内容', missing: '当前不存在，勾选后重新加入', disabled: '已禁用，保持不变', ambiguous: '条目有歧义，请手动处理' }
+      async function load(apply = false) {
+        if (running.current || (apply && (!status || !selected.length))) return
+        if (apply && !confirm('只更新勾选条目；其中自定义内容将被新版替换，缺失条目将重新加入。确认继续？')) return
+        running.current = true; setBusy(true); setNote('')
+        try {
+          const result = await request(apply ? '/worldbook-upgrade' : '/worldbook-upgrade?book=' + encodeURIComponent(book),
+            apply ? { book, expectedFingerprint: status.fingerprint, entryIds: selected } : undefined)
+          if (!result?.ok || result.upgrade?.format !== 'structured' || result.upgrade?.key !== book || !Array.isArray(result.upgrade?.entries) || typeof result.upgrade?.fingerprint !== 'string') throw new Error(result?.error || '未收到有效升级预览')
+          if (!live.current) return
+          setStatus(result.upgrade); setSelected([])
+          setNote(apply ? '所选规则已更新；其他条目保持不变。' : '请展开对比并勾选需要更新的条目；默认不选择任何条目。')
+          if (apply) {
+            try { await onApplied() } catch { if (live.current) setNote('规则已更新，但列表刷新失败；请手动刷新世界书。') }
+          }
+        } catch (error) { if (live.current) { setNote('未完成：' + (error?.message || error) + '。请重新读取预览后再试。'); setSelected([]); setStatus(null) } }
+        finally { running.current = false; if (live.current) setBusy(false) }
+      }
+      return h('details', { 'aria-label': '结构化默认规则升级', style: { margin: '12px 0', padding: '8px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '7px' } },
+        h('summary', { style: { cursor: 'pointer' } }, '检查结构化默认规则更新（保留用户选择）'),
+        h('p', { style: { fontSize: '12px' } }, '先保存当前编辑并读取差异，再显式选择要更新的条目。禁用条目不启用；删除过的条目不会自动恢复。'),
+        h('button', { type: 'button', disabled: busy, onClick: () => load() }, busy ? '处理中…' : '读取／刷新升级预览'),
+        status ? h('div', null,
+          status.entries.map(entry => h('details', { key: entry.id, style: { marginTop: '8px' } },
+            h('summary', null, (entry.proposed?.comment || entry.current?.comment || '未命名条目') + ' · ' + (labels[entry.state] || '未知状态')),
+            h('label', null, h('input', { type: 'checkbox', 'aria-label': '更新规则 ' + entry.id, disabled: busy || !selectable(entry), checked: selected.includes(entry.id), onChange: event => setSelected(old => event.target.checked ? [...new Set([...old, entry.id])] : old.filter(id => id !== entry.id)) }), '应用此条新版规则'),
+            h('div', null, '当前内容'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '180px', overflowY: 'auto' } }, entry.current?.content ?? '（当前不存在）'),
+            h('div', null, '新版内容'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '180px', overflowY: 'auto' } }, entry.proposed?.content ?? '（没有新版内容）'))),
+          h('button', { type: 'button', disabled: busy || !selected.length, onClick: () => load(true) }, '确认更新所选 ' + selected.length + ' 条')) : null,
+        note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '8px' } }, note) : null)
+    }
+
     function SettingsPanel() {
       const [data, setDataState] = React.useState(null)
       // 让定时器/异步回调读到"最新的" data，而不用把它写进 effect 依赖
@@ -2264,6 +2459,7 @@ function versionsOf(jobId) {
         setSaveState('')
       }
       const [tab, setTab] = React.useState('plan')
+      const promptFormatFocus = React.useRef(false)
       const [updateOpen, setUpdateOpen] = React.useState(false)
       const [pluginUpdateLocal, setPluginUpdateLocal] = React.useState(null)
       const [pluginUpdateCheck, setPluginUpdateCheck] = React.useState(null)
@@ -2387,6 +2583,18 @@ function versionsOf(jobId) {
       const [wbPaste, setWbPaste] = React.useState('')
       const [wbNote, setWbNote] = React.useState('')
       const [wbDrafts, setWbDrafts] = React.useState({})
+      const [wbFormat, setWbFormat] = React.useState('')
+      const [wbView, setWbView] = React.useState(null)
+      const [wbLoading, setWbLoading] = React.useState(false)
+      const wbTransition = React.useRef(false)
+      const wbReadEpoch = React.useRef(0)
+      const wbScope = React.useRef('')
+      const wbFlushing = React.useRef(null)
+      const wbActions = React.useRef(new Set())
+      React.useEffect(() => {
+        const effective = data?.worldbookFormat || data?.config?.promptEffectiveFormat
+        if (tab === 'worldbook' && ['tags', 'natural', 'mixed', 'structured'].includes(effective)) setWbFormat(current => current || effective)
+      }, [tab, data?.worldbookFormat, data?.config?.promptEffectiveFormat])
       // 工作流：展开哪张 / 它的详情 / 导入面板 / ComfyUI 已装的 LoRA
       const [wfOpen, setWfOpen] = React.useState('')
       const [wfGraphFile, setWfGraphFile] = React.useState('')
@@ -2395,10 +2603,6 @@ function versionsOf(jobId) {
       const [wfPaste, setWfPaste] = React.useState('')
       const [wfNote, setWfNote] = React.useState('')
       const [loraList, setLoraList] = React.useState([])
-      const [simpleInfo, setSimpleInfo] = React.useState(null)
-      const [simpleLoading, setSimpleLoading] = React.useState(false)
-      const [simpleNote, setSimpleNote] = React.useState('')
-      const [simpleConfigDraft, setSimpleConfigDraft] = React.useState(null)
       // 可选的 provider / model（从 DSH 的 llm 服务拉）
       const [llmProviders, setLlmProviders] = React.useState([])
       const [llmModels, setLlmModels] = React.useState({})     // provider → [{id,name,vision}]
@@ -2682,10 +2886,10 @@ function versionsOf(jobId) {
       /** 生图后端（ComfyUI 地址与鉴权）—— 标签在上、控件全宽。 */
       function ComfyBackendCard() {
         const optStyle = {}
-        const providerOptions = providers.length ? providers : [
+        const providerOptions = (providers.length ? providers : [
           ['novelai', 'NovelAI'], ['openai', 'OpenAI 兼容'], ['gemini', 'Gemini'], ['gemini-chat', 'Gemini Chat'],
-          ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['sdwebui', 'Stable Diffusion WebUI'],
-        ].map(([id, label]) => ({ id, label }))
+          ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['custom', '自定义 API'], ['sdwebui', 'Stable Diffusion WebUI'],
+        ].map(([id, label]) => ({ id, label }))).filter(item => item.id !== 'atlascloud')
         const backend = imageBackend
         const channels = Array.isArray(config.imageChannels) ? config.imageChannels : []
         const channel = selectedChannel
@@ -2698,7 +2902,7 @@ function versionsOf(jobId) {
         const nextId = (provider) => provider + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
         const defaultChannel = provider => {
           const preset = providerOptions.find(item => item.id === provider) || {}
-          return { id: nextId(provider), name: (preset.label || provider) + ' 渠道', provider, baseUrl: preset.baseUrl || '', model: preset.model || '', authMode: 'bearer', username: '', options: {}, hasApiKey: false, hasPassword: false }
+          return { id: nextId(provider), name: (preset.label || provider) + ' 渠道', provider, baseUrl: preset.baseUrl || '', model: preset.model || '', authMode: 'bearer', username: '', options: provider === 'custom' ? { apiProtocol: 'openai' } : {}, hasApiKey: false, hasPassword: false }
         }
         const persistChannelSelection = (nextChannels, provider, activeId) => {
           setCfg({ imageChannels: nextChannels, imageBackend: provider, activeImageChannel: activeId })
@@ -2805,8 +3009,10 @@ function versionsOf(jobId) {
               h('option', { key: '__custom__', value: '__custom__', style: optStyle }, '自定义 / 未列出的模型 ID…')),
             known ? null : h('input', { 'aria-label': '自定义模型 ID', type: 'text', value: current, placeholder: '填 NovelAI 模型 ID，例如 nai-diffusion-4-5-full；留空 = 用默认 V4.5 Full', style: Object.assign({}, full(), { marginTop: '6px' }), onChange: e => editChannel({ model: e.target.value }) }))
         })() : null
-        const naiChat = backend === 'novelai' && storedOption('protocol') === 'chat'
-        const generatePathPlaceholder = ({ novelai: naiChat ? '/v1/chat/completions' : '/ai/generate-image', openai: '/images/generations', 'gemini-chat': '/chat/completions', grok: '/images/generations', seedream: '/images/generations', qwen: '/services/aigc/multimodal-generation/generation', sdwebui: '/sdapi/v1/txt2img' })[backend]
+        const apiProtocol = String((localFields.options || {}).apiProtocol || 'openai').toLowerCase()
+        const protocolBackend = backend === 'custom' ? (apiProtocol === 'nai' ? 'novelai' : apiProtocol) : backend
+        const naiChat = protocolBackend === 'novelai' && storedOption('protocol') === 'chat'
+        const generatePathPlaceholder = ({ novelai: naiChat ? '/v1/chat/completions' : '/ai/generate-image', openai: '/images/generations', 'gemini-chat': '/chat/completions', grok: '/images/generations', seedream: '/images/generations', qwen: '/services/aigc/multimodal-generation/generation', atlascloud: '/model/generateImage', sdwebui: '/sdapi/v1/txt2img' })[protocolBackend]
         const authMode = String(config.comfyAuthMode ?? 'none')
         const saveComfy = async () => {
           const patch = {
@@ -2900,8 +3106,9 @@ function versionsOf(jobId) {
             ),
             field('name', '渠道名称', '例如：个人 API / 公司中转'),
             field('baseUrl', 'API 根地址', 'https://api.example.com/v1'),
-            backend === 'novelai' ? selectOptionField('protocol', '接口格式', [['native', '官方格式（NovelAI 官方或同协议中转）'], ['chat', '对话格式（chat/completions 中转站）']], 'native') : null,
-            backend === 'novelai' ? naiModelField : modelInput,
+            backend === 'custom' ? selectOptionField('apiProtocol', 'API 协议', [['openai', 'OpenAI 图片 API'], ['atlascloud', 'AtlasCloud'], ['gemini', 'Gemini'], ['gemini-chat', 'Gemini Chat'], ['sdwebui', 'Stable Diffusion WebUI'], ['seedream', 'Seedream'], ['grok', 'Grok'], ['qwen', 'Qwen'], ['novelai', 'NovelAI（NAI）']], 'openai') : null,
+            protocolBackend === 'novelai' ? selectOptionField('protocol', '接口格式', [['native', '官方格式（NovelAI 官方或同协议中转）'], ['chat', '对话格式（chat/completions 中转站）']], 'native') : null,
+            protocolBackend === 'novelai' ? naiModelField : modelInput,
             h('div', { style: { marginBottom: '10px' } }, label('鉴权方式'), h('select', { 'aria-label': '鉴权方式', value: localFields.authMode || 'bearer', style: full(), onChange: e => editChannel({ authMode: e.target.value }) },
               h('option', { value: 'bearer', style: optStyle }, 'Bearer API Key'), h('option', { value: 'none', style: optStyle }, '无需鉴权'), h('option', { value: 'basic', style: optStyle }, 'Basic 用户名 / 密码'))),
             localFields.authMode === 'basic' ? h('div', null,
@@ -2913,18 +3120,18 @@ function versionsOf(jobId) {
               label('API Key', channel.hasApiKey ? '已保存；留空保留原 Key' : ''),
               h('input', { 'aria-label': '渠道 API Key', type: 'password', value: channelDraft.apiKey || '', placeholder: channel.hasApiKey ? '已保存，留空可保留' : '粘贴 API Key', style: full(), onChange: e => { setChannelSecretDrafts(current => Object.assign({}, current, { [channel.id]: Object.assign({}, current[channel.id], { apiKey: e.target.value, clearApiKey: false }) })); markSecretEdited(channel.id) } }),
               channel.hasApiKey ? h('button', { style: buttonStyle, onClick: () => { setChannelSecretDrafts(current => Object.assign({}, current, { [channel.id]: Object.assign({}, current[channel.id], { clearApiKey: true, apiKey: '' }) })); markSecretEdited(channel.id) } }, '清除已保存 Key') : null) : null,
-            backend === 'sdwebui' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
+            protocolBackend === 'sdwebui' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '8px' } },
               optionField('steps', '步数', '20', 'number'), optionField('cfg', 'CFG', '7', 'number'), optionField('sampler', '采样器', 'Euler a')) : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px 12px' } },
               selectOptionField('sampler', '采样器', NAI_SAMPLER_OPTIONS, 'k_euler_ancestral'),
               selectOptionField('noiseSchedule', '噪点表（Noise Schedule）', NAI_NOISE_OPTIONS, 'karras')) : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(128px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(128px,1fr))', gap: '10px 12px' } },
               naiChat ? null : optionField('steps', '步数', '28', 'number'),
               optionField('cfg', 'CFG', '5', 'number'),
               h('div', { style: { marginBottom: '10px' } }, label('CFG Rescale'), h('input', { 'aria-label': 'CFG Rescale', type: 'number', step: '0.01', min: '0', max: '1', value: String((localFields.options || {}).cfgRescale ?? 0), placeholder: '0 ~ 1，0 = 关', style: full(), onChange: e => updateOption('cfgRescale', Number(e.target.value)) })),
               naiChat ? null : h('div', { style: { marginBottom: '10px' } }, label('Uncond Scale'), h('input', { 'aria-label': 'Uncond Scale', type: 'number', step: '0.1', min: '0', value: String((localFields.options || {}).uncondScale ?? 0), placeholder: '0 = 不改动', style: full(), onChange: e => updateOption('uncondScale', Number(e.target.value)) })),
               naiChat ? null : h('div', { style: { marginBottom: '10px' } }, label('Skip CFG Sigma'), h('input', { 'aria-label': 'Skip CFG Above Sigma', type: 'number', step: '0.1', min: '0', value: String((localFields.options || {}).skipCfgAboveSigma ?? 0), placeholder: '0 = 不改动，常用 19', style: full(), onChange: e => updateOption('skipCfgAboveSigma', Number(e.target.value)) }))) : null,
-            backend === 'novelai' && !naiChat ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'novelai' && !naiChat ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px 12px' } },
               h('div', { style: { marginBottom: '10px' } }, label('官方负面预设（ucPreset）'),
                 h('select', { 'aria-label': '官方负面预设', value: String((localFields.options || {}).ucPreset ?? 3), style: full(), onChange: e => updateOption('ucPreset', Number(e.target.value)) },
                   h('option', { value: '0', style: optStyle }, '0 · 强（Heavy）'),
@@ -2940,16 +3147,20 @@ function versionsOf(jobId) {
                 h('select', { 'aria-label': '多样性', value: String((localFields.options || {}).varietyBoost ?? false), style: full(), onChange: e => updateOption('varietyBoost', e.target.value === 'true') },
                   h('option', { value: 'false', style: optStyle }, '关（默认）'),
                   h('option', { value: 'true', style: optStyle }, '开（Variety Boost）')))) : null,
-            backend === 'openai' ? optionField('quality', '质量', 'auto') : null,
-            backend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: '10px 12px' } },
+            protocolBackend === 'openai' ? optionField('quality', '质量', 'auto') : null,
+            protocolBackend === 'novelai' ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: '10px 12px' } },
               sizeField('sizeWidth', '宽（像素）', '如 832', legacySize.width),
               sizeField('sizeHeight', '高（像素）', '如 1216', legacySize.height),
               (sizeValue('sizeWidth', legacySize.width) && sizeValue('sizeHeight', legacySize.height)) ? null
                 : h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px', alignSelf: 'end', paddingBottom: '8px' } }, '宽高都填才覆盖；留空跟随规划给的分辨率')) : null,
-            ['openai', 'sdwebui', 'qwen'].includes(backend) ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536') : null,
-            backend === 'seedream' ? optionField('size', '输出尺寸（可选）', '1K、1.5K、2K 或 2048x2048') : null,
-            backend === 'gemini' ? optionField('imageSize', '输出分辨率（可选）', '1K、2K 或 4K') : null,
-            ['gemini', 'novelai', 'sdwebui', 'qwen'].includes(backend) ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3') : null,
+            protocolBackend === 'atlascloud' ? h('div', null,
+              selectOptionField('sizeMode', '尺寸参数格式', [['size', 'size（宽×高，Flux / Seedream）'], ['aspect_ratio', 'aspect_ratio（比例，Nano Banana）'], ['none', '不发送尺寸参数（使用模型默认值）']], 'size'),
+              !storedOption('sizeMode') || storedOption('sizeMode') === 'size' ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536；留空跟随规划') : null,
+              storedOption('sizeMode') === 'aspect_ratio' ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3；留空跟随规划') : null) : null,
+            ['openai', 'sdwebui', 'qwen'].includes(protocolBackend) ? optionField('size', '尺寸覆盖（可选）', '例如：1024x1536') : null,
+            protocolBackend === 'seedream' ? optionField('size', '输出尺寸（可选）', '1K、1.5K、2K 或 2048x2048') : null,
+            protocolBackend === 'gemini' ? optionField('imageSize', '输出分辨率（可选）', '1K、2K 或 4K') : null,
+            ['gemini', 'novelai', 'sdwebui', 'qwen'].includes(protocolBackend) ? optionField('aspectRatio', '画面比例覆盖（可选）', '例如：2:3') : null,
             generatePathPlaceholder ? optionField('generatePath', '生成接口路径（高级）', generatePathPlaceholder) : null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '12px' } },
               h('button', { style: Object.assign({}, buttonStyle, { fontWeight: 600 }), disabled: Boolean(channelTestsInFlight.current[channel.id]), onClick: async () => {
@@ -2983,7 +3194,7 @@ function versionsOf(jobId) {
                 channelTestStatuses[channel.id]?.checking ? '正在探测渠道…' : channelTestStatuses[channel.id]?.status === 'reachable' && channelTestStatuses[channel.id]?.ok ? ('连接可用' + (channelTestStatuses[channel.id].message ? '：' + channelTestStatuses[channel.id].message : '')) : channelTestStatuses[channel.id]?.status === 'configured' ? ('已配置，尚未验证：' + (channelTestStatuses[channel.id].message || '此服务没有可安全探测的接口。')) : channelTestStatuses[channel.id] ? ('无法连接：' + (channelTestStatuses[channel.id].message || channelTestStatuses[channel.id].error || '检查地址与鉴权')) : (channel.hasApiKey || channel.hasPassword ? '已配置，尚未验证' : '填写地址和鉴权后保存并测试')),
             ),
             h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '8px', lineHeight: 1.55 } },
-              backend === 'novelai' ? (naiChat ? '对话格式用于把 NovelAI 包成 chat/completions 的中转站：地址填中转站根地址，模型选 NovelAI 模型，采样器会自动拼进模型名。' : 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。') : backend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : backend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : backend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
+              protocolBackend === 'novelai' ? (naiChat ? '对话格式用于把 NovelAI 包成 chat/completions 的中转站：地址填中转站根地址，模型选 NovelAI 模型，采样器会自动拼进模型名。' : 'NovelAI 使用 API Key，不需要账户 OAuth 登录；密钥可从官方账户获取。') : protocolBackend === 'openai' ? '支持 OpenAI 图片 API 和兼容中转；建议模型 ID 来自服务端模型列表，兼容中转可修改生成路径。' : protocolBackend === 'grok' ? 'Grok 当前由服务端模型决定尺寸和比例；插件不会发送尺寸覆盖参数。' : protocolBackend === 'qwen' ? '百炼 API 根地址必须匹配账号所在地域和控制台提供的工作空间地址；请从平台控制台复制完整区域端点。' : protocolBackend === 'atlascloud' ? 'atlas cloud 使用原生异步接口，不需要安装 MCP。默认 Flux Schnell；更换文生图模型时请按模型文档选择尺寸参数格式和有效尺寸，或使用模型默认值。负面词以 Avoid 描述合入提示词，不发送原生 negative_prompt。测试只读取任务历史和模型目录，不会生成图片。' : '可填写服务商或自建中转的完整 API 根地址；测试只检查连接与模型信息，不会付费生成图片。复制渠道会复制参数，但需要重新填写密钥。'),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' } },
               h('label', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, '同时生成', h('input', { 'aria-label': '同时生成', type: 'number', min: 1, max: 4, value: Number(config.imageConcurrency || 2), style: Object.assign({}, S.input, { width: '70px', marginLeft: '8px' }), onChange: e => setCfg({ imageConcurrency: Math.max(1, Math.min(4, Number(e.target.value) || 1)) }) })),
               h('button', { style: buttonStyle, onClick: () => save({ imageConcurrency: Math.max(1, Math.min(4, Number(config.imageConcurrency || 2))) }) }, '保存并发设置'),
@@ -3076,6 +3287,23 @@ function versionsOf(jobId) {
             '可填 ' + IMAGE_WIDTH_LIMIT.min + '–' + IMAGE_WIDTH_LIMIT.max + ' 像素；留空 = 默认。超出范围会自动收窄到区间内。',
             '保存后刷新或重启依然有效。拖完可以直接切回正文看效果，不满意点「取消预览」。'),
         )
+      }
+
+      function generationModeCard() {
+        const mode = config.generationMode === 'reference' ? 'reference' : 'text'
+        const activeChannel = (Array.isArray(config.imageChannels) ? config.imageChannels : []).find(channel => channel.id === config.activeImageChannel)
+        const activeDraft = activeChannel ? channelSecretDrafts[activeChannel.id]?.fields : null
+        const effectiveChannel = activeChannel ? Object.assign({}, activeChannel, activeDraft || {}, { options: activeDraft?.options || activeChannel.options || {} }) : null
+        const available = uiSupportsImageReferences(effectiveChannel || (imageBackend === 'comfyui' ? { provider: 'comfyui' } : { provider: imageBackend }), data)
+        return h('div', { style: S.card },
+          h('label', { style: S.row }, h('span', { style: S.label }, '默认生图模式'),
+            h('select', { 'aria-label': '默认生图模式', value: mode, style: S.input, onChange: event => save({ generationMode: event.target.value }) },
+              h('option', { value: 'text' }, '文生图'),
+              h('option', { value: 'reference', disabled: !available }, '参考图生图'))),
+          !available ? h('div', { role: mode === 'reference' ? 'alert' : 'status', style: { fontSize: '12px', color: mode === 'reference' ? 'var(--dsw-alias-state-warning-primary)' : 'var(--dsw-alias-label-tertiary)' } },
+            mode === 'reference' ? '当前渠道不支持参考图输入；请明确切换到支持参考图的渠道或改为文生图，不会自动降级。' : '当前渠道不支持参考图输入；可在支持参考图的渠道中启用此模式。') : null,
+          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '6px' } }, '参考图模式使用人物库中的角色／服装参考图；有图用图、缺图用文字，整张无图时暂停提示。单张重绘可覆盖模式。', imageBackend === 'comfyui' ? ' ComfyUI 工作流需要接入 LoadImage 节点；图片按本张参考图上传顺序对应节点。' : ''),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '切换模式不会更换模型 ID，也不会自动删减参考图；不支持的协议会在提交前明确阻止，不会静默降级。'))
       }
 
       function planTab() {
@@ -3794,6 +4022,7 @@ function versionsOf(jobId) {
               h('label', { style: S.row }, h('input', { type: 'checkbox', checked: c.enabled !== false, onChange: e => patch(i, { enabled: e.target.checked }) }), h('span', { style: { fontSize: '12px' } }, '启用')),
               h('button', { style: buttonStyle, onClick: () => { if (!confirm('删掉「' + (c.name || '未命名') + '」？')) return; setCharacters(current => current.filter(character => character.id !== c.id)) } }, '删除角色'),
             ),
+            h(ReferenceImageEditor, { key: 'character-reference-' + c.id, value: c, label: '角色「' + (c.name || '未命名') + '」', onChange: changes => patch(i, changes) }),
             // 常驻的改进行：直接写要求 → 点改进，不用先展开面板
             h('div', { style: S.row },
               h('span', { style: S.label }, '改这个角色'),
@@ -3897,6 +4126,7 @@ function versionsOf(jobId) {
                 ),
                 h('div', { style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
                   h('input', { type: 'text', placeholder: '服装名（常服 / 居家 / 内衣…）', value: o.name || '', style: Object.assign({}, S.input, { width: '220px' }), onChange: e => patchOutfit(i, j, { name: e.target.value }) }),
+                  h(ReferenceImageEditor, { key: 'outfit-reference-' + c.id + '-' + o.id, value: o, label: '服装「' + (o.name || '未命名') + '」', onChange: changes => patchOutfit(i, j, changes) }),
                   area('上衣', '', o.upper, v => patchOutfit(i, j, { upper: v }), 2),
                   area('下装', '', o.lower, v => patchOutfit(i, j, { lower: v }), 2),
                   h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' } },
@@ -4142,9 +4372,9 @@ function versionsOf(jobId) {
               const idx = list.findIndex((o, j) => String(o.id || j) === activeId)
               const o = list[idx] || list[0]
               const patchLib = (changes) => {
-                const next = list.slice()
-                next[idx] = Object.assign({}, o, changes)
-                setLibraryData(Object.assign({}, dataRef.current, { outfits: next }))
+                const current = dataRef.current
+                const next = (current.outfits || []).map(item => item.id === o.id ? Object.assign({}, item, changes) : item)
+                setLibraryData(Object.assign({}, current, { outfits: next }))
               }
               return h('div', null,
                 h('div', { style: Object.assign({}, S.row, { marginTop: '8px' }) },
@@ -4161,6 +4391,7 @@ function versionsOf(jobId) {
                 ),
                 h('div', { style: { marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--dsw-alias-border-l2)' } },
                   h('input', { type: 'text', placeholder: '套装名（办公室职业装 / 居家睡衣…）', value: o.name || '', style: Object.assign({}, S.input, { width: '240px' }), onChange: e => patchLib({ name: e.target.value }) }),
+                  h(ReferenceImageEditor, { key: 'shared-reference-' + o.id, value: o, label: '通用服装「' + (o.name || '未命名') + '」', onChange: patchLib }),
                   h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '6px' } },
                     h('input', { type: 'text', placeholder: '上衣', value: o.upper || o.body || '', style: S.input, onChange: e => patchLib({ upper: e.target.value }) }),
                     h('input', { type: 'text', placeholder: '下装', value: o.lower || '', style: S.input, onChange: e => patchLib({ lower: e.target.value }) }),
@@ -4271,52 +4502,6 @@ function versionsOf(jobId) {
       /** 工作流：导入、查看、LoRA 管理。 */
       function workflowCard() {
         const list = data.workflows || []
-        const simple = Object.assign({ template: 'checkpoint', checkpoint: '', unet: '', clip1: '', clip2: '', vae: '', loras: [], steps: 24, cfg: 7, sampler: 'euler', scheduler: 'normal', width: 832, height: 1216, seed: '' }, config.comfySimple || {})
-        function updateSimple(patch) {
-          const next = Object.assign({}, simpleDraft || simple, patch)
-          if (patch.template === 'flux' && simpleInfo) {
-            if (!simpleInfo.fluxUnets?.includes(next.unet)) next.unet = simpleInfo.fluxUnets?.[0] || ''
-            next.clip1 = next.clip1 || simpleInfo.dualClips1?.find(name => /t5/i.test(name)) || ''
-            next.clip2 = next.clip2 || simpleInfo.dualClips2?.find(name => /clip[_ -]?l/i.test(name)) || ''
-            if (!next.vae) next.vae = simpleInfo.vaes?.find(name => /(?:^|[\\/])ae(?:[._-]|$)/i.test(name)) || ''
-          }
-          if (patch.template === 'anima' && simpleInfo) {
-            if (!simpleInfo.animaUnets?.includes(next.unet)) next.unet = simpleInfo.animaUnets?.[0] || ''
-            next.clip1 = next.clip1 || simpleInfo.clips?.find(name => /qwen/i.test(name)) || ''
-            if (!next.vae) next.vae = simpleInfo.vaes?.find(name => /qwen[_ -]?image[_ -]?vae/i.test(name)) || ''
-          }
-          setSimpleConfigDraft(next)
-        }
-        async function refreshSimpleInfo() {
-          setSimpleLoading(true); setSimpleNote('正在读取 ComfyUI 节点和模型列表…')
-          try {
-            const info = await post('/comfy-simple-info', {})
-            if (!info?.ok) throw new Error(info?.error || 'ComfyUI 没有返回节点信息')
-            setSimpleInfo(info)
-            const draft = simpleConfigDraft || simple
-            const next = Object.assign({}, draft)
-            if (!next.checkpoint && info.checkpoints?.length) next.checkpoint = info.checkpoints[0]
-            if (draft.template === 'anima') {
-              if (!info.animaUnets?.includes(next.unet)) next.unet = info.animaUnets?.[0] || ''
-            } else if (draft.template === 'flux') {
-              if (!info.fluxUnets?.includes(next.unet)) next.unet = info.fluxUnets?.[0] || ''
-            } else if (!next.unet && info.unets?.length) next.unet = info.unets[0]
-            if (!next.clip1 && draft.template === 'flux') next.clip1 = info.dualClips1?.find(name => /t5/i.test(name)) || ''
-            if (!next.clip2 && draft.template === 'flux') next.clip2 = info.dualClips2?.find(name => /clip[_ -]?l/i.test(name)) || ''
-            if (!next.clip1 && draft.template === 'anima') next.clip1 = info.clips?.find(name => /qwen/i.test(name)) || ''
-            if (!next.vae && draft.template === 'flux') next.vae = info.vaes?.find(name => /(?:^|[\\/])ae(?:[._-]|$)/i.test(name)) || ''
-            if (!next.vae && draft.template === 'anima') next.vae = info.vaes?.find(name => /qwen[_ -]?image[_ -]?vae/i.test(name)) || ''
-            setSimpleConfigDraft(next); setSimpleNote('已读取；模型列表来自当前 ComfyUI')
-            setLoraList(Array.isArray(info.loras) ? info.loras : [])
-          } catch (e) { setSimpleNote('读取失败：' + (e?.message ?? e)) }
-          finally { setSimpleLoading(false) }
-        }
-        const simpleDraft = simpleConfigDraft || simple
-        const setTemplate = value => { updateSimple({ template: value }); save({ comfyMode: 'simple', comfySimple: Object.assign({}, simpleDraft, { template: value }) }) }
-        const simpleSupport = simpleInfo?.templates?.[simpleDraft.template]
-        const options = (values, value, onChange, placeholder) => h('select', { value: value || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => onChange(e.target.value) },
-          !values?.length ? h('option', { value: '' }, placeholder || '先刷新模型列表') : null,
-          (values || []).map(item => h('option', { key: item, value: item }, item)))
         // 判定"读到的详情是不是当前这张"：file 或 id 任一匹配即可（file 由前端补进来）
         const detail = (wfDetail && (String(wfDetail.file ?? '') === String(wfOpen) || String(wfDetail.__id ?? '') === String(wfOpen))) ? wfDetail : null
 
@@ -4417,6 +4602,16 @@ function versionsOf(jobId) {
           } catch (e) { setWfNote('保存失败：' + (e?.message ?? e)) }
         }
 
+        async function patchReferenceBindings(bindings) {
+          if (!detail) return
+          const next = Object.assign({}, detail.bindings || {}, { referenceImages: bindings })
+          setWfDetail(Object.assign({}, detail, { bindings: next }))
+          try {
+            const r = await post('/workflow-bindings', { file: detail.file ?? wfOpen, patch: { bindings: { referenceImages: bindings } } })
+            setWfNote(r?.ok ? '参考图接入顺序已保存' : ('保存失败：' + (r?.error || '')))
+          } catch (e) { setWfNote('保存失败：' + (e?.message ?? e)) }
+        }
+
         async function loadLoraNames() {
           const r = await jsonFetch(BASE + '/loras-available', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null)
           if (r?.ok) { setLoraList(r.loras ?? []); setWfNote(r.loras?.length ? ('读到 ' + r.loras.length + ' 个已安装的 LoRA') : '没读到 LoRA 列表（ComfyUI 开了吗）') }
@@ -4447,69 +4642,14 @@ function versionsOf(jobId) {
         const ta = Object.assign({}, S.input, { width: '100%', minHeight: '110px', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '11px', lineHeight: '1.5', resize: 'vertical', boxSizing: 'border-box' })
 
         return h('div', { style: S.card },
-          h('div', { style: { padding: '12px', marginBottom: '12px', borderRadius: '10px', background: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 35%, transparent)' } },
-            h('div', { style: { fontSize: '14px', fontWeight: 700, marginBottom: '8px' } }, 'ComfyUI 生成方式'),
-            h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-              h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '模式'),
-              h('select', { value: config.comfyMode === 'simple' ? 'simple' : 'workflow', style: Object.assign({}, S.input, { minWidth: '220px', flex: 1 }), onChange: e => save({ comfyMode: e.target.value }) },
-                h('option', { value: 'workflow' }, '工作流模式（当前默认）'), h('option', { value: 'simple' }, '简单模式（不需要 JSON）'))),
-            config.comfyMode === 'simple' ? h('div', { style: { marginTop: '10px' } },
-              h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-primary)', marginBottom: '8px' } }, '从 ComfyUI 读取实际可用的模型与节点；此操作只读取信息，不会提交生成任务。'),
-              h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '模板'),
-                h('select', { value: simpleDraft.template || 'checkpoint', style: Object.assign({}, S.input, { minWidth: '220px', flex: 1 }), onChange: e => updateSimple({ template: e.target.value }) },
-                  h('option', { value: 'checkpoint' }, 'Checkpoint（SD / SDXL）'), h('option', { value: 'flux' }, 'Flux'), h('option', { value: 'anima' }, 'Anima')),
-                h('button', { style: buttonStyle, onClick: refreshSimpleInfo, disabled: simpleLoading }, simpleLoading ? '读取中…' : '刷新模型列表'),
-                h('button', { style: Object.assign({}, buttonStyle, { borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 65%, transparent)', color: 'var(--dsw-alias-state-success-primary)', fontWeight: 600 }), onClick: async () => { const r = await save({ comfyMode: 'simple', comfySimple: simpleDraft }); if (r) { setSimpleConfigDraft(null); setSimpleNote('简单模式设置已保存') } } }, '保存简单模式设置')),
-              simpleNote ? h('div', { style: { fontSize: '12px', color: /失败|不可用/.test(simpleNote) ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-brand-primary)', marginTop: '7px' } }, simpleNote) : null,
-              simpleSupport?.reason ? h('div', { role: 'status', style: { marginTop: '8px', padding: '9px 10px', color: 'var(--dsw-alias-state-warning-primary)', background: 'color-mix(in srgb, var(--dsw-alias-state-warning-primary) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warning-primary) 35%, transparent)', borderRadius: '8px', fontSize: '12px', lineHeight: 1.5 } }, simpleSupport.reason) : null,
-              ['checkpoint', 'flux', 'anima'].includes(simpleDraft.template) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' } },
-                simpleDraft.template === 'checkpoint'
-                  ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) }, h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'Checkpoint'),
-                      simpleInfo?.checkpoints?.length ? options(simpleInfo.checkpoints, simpleDraft.checkpoint, value => updateSimple({ checkpoint: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.checkpoint || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ checkpoint: e.target.value }) }))
-                  : h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) }, h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, simpleDraft.template === 'anima' ? 'Anima 扩散模型' : 'Flux UNet'),
-                      (simpleDraft.template === 'anima' ? simpleInfo?.animaUnets : (simpleDraft.template === 'flux' ? simpleInfo?.fluxUnets : simpleInfo?.unets))?.length ? options(simpleDraft.template === 'anima' ? simpleInfo.animaUnets : (simpleDraft.template === 'flux' ? simpleInfo.fluxUnets : simpleInfo.unets), simpleDraft.unet, value => updateSimple({ unet: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.unet || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ unet: e.target.value }) })),
-                simpleDraft.template === 'flux' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '双 CLIP（T5 / CLIP-L）'),
-                  options(simpleInfo?.dualClips1, simpleDraft.clip1, value => updateSimple({ clip1: value }), '选择 T5-XXL'),
-                  options(simpleInfo?.dualClips2, simpleDraft.clip2, value => updateSimple({ clip2: value }), '选择 CLIP-L')) : null,
-                simpleDraft.template === 'checkpoint' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '外置 VAE（可选）'),
-                  h('select', { value: simpleDraft.vae || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => updateSimple({ vae: e.target.value }) },
-                    h('option', { value: '' }, '使用 Checkpoint 内置 VAE'), (simpleInfo?.vaes || []).map(item => h('option', { key: item, value: item }, item)))) : null,
-                simpleDraft.template === 'anima' ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'Anima Qwen CLIP'),
-                  simpleInfo?.clips?.length ? options(simpleInfo.clips, simpleDraft.clip1, value => updateSimple({ clip1: value })) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.clip1 || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ clip1: e.target.value }) })) : null,
-                ['flux', 'anima'].includes(simpleDraft.template) ? h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, 'VAE'),
-                  simpleInfo?.vaes?.length ? h('select', { value: simpleDraft.vae || '', style: Object.assign({}, S.input, { minWidth: '180px', flex: 1 }), onChange: e => updateSimple({ vae: e.target.value }) },
-                    h('option', { value: '' }, simpleDraft.template === 'anima' ? '自动选择 qwen_image_vae' : '自动选择 ae.safetensors'), simpleInfo.vaes.map(item => h('option', { key: item, value: item }, item))) : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: simpleDraft.vae || '', placeholder: '刷新列表后选择', onChange: e => updateSimple({ vae: e.target.value }) })) : null,
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '步数 / CFG'),
-                  h('input', { type: 'number', min: 1, max: 200, value: simpleDraft.steps ?? 24, style: Object.assign({}, S.input, { width: '90px' }), onChange: e => updateSimple({ steps: e.target.value }) }),
-                  h('input', { type: 'number', step: '0.1', min: 0, max: 100, value: simpleDraft.cfg ?? (simpleDraft.template === 'flux' ? 3.5 : 7), style: Object.assign({}, S.input, { width: '90px' }), onChange: e => updateSimple({ cfg: e.target.value }) }),
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, paddingTop: '7px' } }, '采样器'), options(simpleInfo?.samplers, simpleDraft.sampler, value => updateSimple({ sampler: value }))),
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '调度器 / 尺寸'), options(simpleInfo?.schedulers, simpleDraft.scheduler, value => updateSimple({ scheduler: value })),
-                  h('input', { type: 'number', min: 64, max: 8192, step: 8, value: simpleDraft.width ?? 832, 'aria-label': '宽度', style: Object.assign({}, S.input, { width: '82px' }), onChange: e => updateSimple({ width: e.target.value }) }),
-                  h('span', { style: { paddingTop: '7px' } }, '×'),
-                  h('input', { type: 'number', min: 64, max: 8192, step: 8, value: simpleDraft.height ?? 1216, 'aria-label': '高度', style: Object.assign({}, S.input, { width: '82px' }), onChange: e => updateSimple({ height: e.target.value }) })),
-                h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', paddingLeft: '92px' } }, '宽高按 8 像素倍数生效（其他数值自动取最近值）；简单模式固定输出 ' + (simpleDraft.width || 832) + ' × ' + (simpleDraft.height || 1216) + ' 像素，工作流模式的画幅设置不会覆盖它。'),
-                h('div', { style: Object.assign({}, S.row, { alignItems: 'stretch' }) },
-                  h('label', { style: { fontSize: '12px', fontWeight: 600, minWidth: '92px', paddingTop: '7px' } }, '固定种子'),
-                  h('input', { type: 'number', min: 0, max: 140737488355327, value: simpleDraft.seed ?? '', placeholder: '留空则每张随机', style: Object.assign({}, S.input, { width: '220px' }), onChange: e => updateSimple({ seed: e.target.value }) }),
-                  h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', paddingTop: '7px' } }, '只读取已保存的固定种子；默认每张随机')),
-                h('div', { style: { padding: '9px', border: '1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 30%, transparent)', borderRadius: '8px' } },
-                  h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '7px' } }, 'LoRA（按当前模板的模型路径连接）'),
-                  (simpleDraft.loras || []).map((lora, index) => h('div', { key: index, style: Object.assign({}, S.row, { marginBottom: '6px' }) },
-                    h('input', { type: 'checkbox', checked: lora.enabled !== false, 'aria-label': '启用 LoRA', onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { enabled: e.target.checked }) : item) }) }),
-                    simpleInfo?.loras?.length ? options(simpleInfo.loras, lora.name, value => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { name: value }) : item) }), '刷新列表后选择') : h('input', { style: Object.assign({}, S.input, { flex: 1 }), value: lora.name || '', placeholder: 'LoRA 名称', onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { name: e.target.value }) : item) }) }),
-                    h('input', { type: 'number', step: '0.05', value: lora.strengthModel ?? 1, 'aria-label': 'LoRA 模型权重', style: Object.assign({}, S.input, { width: '80px' }), onChange: e => updateSimple({ loras: simpleDraft.loras.map((item, i) => i === index ? Object.assign({}, item, { strengthModel: Number(e.target.value), strengthClip: Number(e.target.value) }) : item) }) }),
-                    h('button', { style: buttonStyle, onClick: () => updateSimple({ loras: simpleDraft.loras.filter((_, i) => i !== index) }) }, '移除'))),
-                  h('button', { style: buttonStyle, onClick: () => updateSimple({ loras: [...(simpleDraft.loras || []), { name: '', strengthModel: 1, strengthClip: 1, enabled: true }] }) }, '＋ 添加 LoRA'))
-              ) : null,
-            ) : null,
-          ),
+          (config.comfyMode === 'simple' || data.configurationWarning) ? h('div', { role: 'status', style: { padding: '10px 12px', marginBottom: '12px', borderRadius: '9px', border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warning-primary) 45%, transparent)', color: 'var(--dsw-alias-state-warning-primary)' } },
+            h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, data.configurationWarning || '旧版简易模式已停止；原设置数据仍保留。'),
+            h('div', { style: { fontSize: '12px', marginBottom: '8px' } }, '导入完整 ComfyUI API 工作流或先选择一张可用工作流，再启用工作流模式。旧的简易模式参数不会删除。'),
+            h('button', { type: 'button', disabled: !list.some(wf => !wf.error && wf.enabled !== false), onClick: async () => {
+              const chosen = list.find(wf => wf.id === config.defaultWorkflow && !wf.error && wf.enabled !== false) || list.find(wf => !wf.error && wf.enabled !== false)
+              if (!chosen) return
+              await save({ comfyMode: 'workflow', defaultWorkflow: chosen.id })
+            } }, '启用选定的完整工作流')) : null,
           h('div', { style: { fontSize: '13px', marginBottom: '4px' } }, '工作流（' + list.length + ' 张）'),
           h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px' } },
             '从 ComfyUI 导出「API 格式」的 JSON 就能导进来，插件会自动认出正负面提示词、尺寸、步数、底模和 LoRA。',
@@ -4678,6 +4818,33 @@ function versionsOf(jobId) {
                               '读参数失败：' + wfValues.__error + '　（多半是宿主没重启，重启 DSH 后再试）')
                           : h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px' } }, '读取参数中…'),
 
+                        (() => {
+                          const loadImageNodes = Object.entries(detail.prompt || {}).filter(([, node]) => node?.class_type === 'LoadImage')
+                          if (!loadImageNodes.length) return null
+                          const selected = Array.isArray(detail.bindings?.referenceImages) ? detail.bindings.referenceImages : []
+                          const rows = selected.length ? selected : (loadImageNodes.length === 1 ? [{ node: loadImageNodes[0][0], input: 'image' }] : [])
+                          const nodeLabel = (id, node) => String(node?._meta?.title || node?.title || ('LoadImage ' + id))
+                          return h('div', { style: { margin: '12px 0', padding: '10px 12px', border: '1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 28%, transparent)', borderRadius: '9px' } },
+                            h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '4px' } }, '参考图接入顺序'),
+                            h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '8px', lineHeight: 1.5 } }, loadImageNodes.length === 1
+                              ? '本工作流只有一个 LoadImage 接图节点，参考图 1 会自动接入。'
+                              : '本工作流有多个 LoadImage 节点，可能用于姿势、蒙版或背景。请明确选择角色／服装参考图对应的节点；参考图按下方顺序逐张对应。'),
+                            rows.map((binding, index) => h('div', { key: index, style: Object.assign({}, S.row, { marginBottom: '6px' }) },
+                              h('span', { style: { minWidth: '82px', fontSize: '12px' } }, '参考图 ' + (index + 1)),
+                              h('select', { 'aria-label': '参考图 ' + (index + 1) + ' 接入节点', value: String(binding.node || ''), style: Object.assign({}, S.input, { flex: 1, minWidth: '180px' }), onChange: e => {
+                                if (!e.target.value) return
+                                const next = rows.map((item, i) => i === index ? { node: e.target.value, input: 'image' } : item)
+                                void patchReferenceBindings(next)
+                              } },
+                                !binding.node ? h('option', { value: '' }, '选择接图节点') : null,
+                                loadImageNodes.map(([id, node]) => h('option', { key: id, value: id, disabled: rows.some((item, i) => i !== index && String(item.node) === String(id)) }, nodeLabel(id, node)))),
+                              rows.length > 1 ? h('button', { type: 'button', 'aria-label': '移除参考图 ' + (index + 1) + ' 接入', onClick: () => void patchReferenceBindings(rows.filter((_, i) => i !== index)) }, '移除') : null)),
+                            loadImageNodes.length > 1 && rows.length < loadImageNodes.length ? h('button', { type: 'button', onClick: () => {
+                              const next = rows.concat({ node: '', input: 'image' })
+                              setWfDetail(Object.assign({}, detail, { bindings: Object.assign({}, detail.bindings || {}, { referenceImages: next }) }))
+                            } }, '＋ 添加接入节点') : null,
+                            loadImageNodes.length > 1 && !selected.length ? h('div', { role: 'note', style: { color: 'var(--dsw-alias-state-warning-primary)', fontSize: '11px', marginTop: '6px' } }, '尚未保存明确映射；存在多个接图节点时不会猜测参考图用途。') : null)
+                        })(),
                         h('div', { style: { fontSize: '12px', fontWeight: 600, marginBottom: '6px' } },
                           'LoRA（' + (detail.bindings?.loras?.length ?? 0) + ' 个）'),
                         (detail.bindings?.loras ?? []).length
@@ -4704,23 +4871,72 @@ function versionsOf(jobId) {
 
       // ---- 世界书 ----
       function worldbookTab() {
-        // 两本世界书：生图规则（main）与角色与服装库（outfits），各自独立编辑
-        const books = Array.isArray(data.worldbookBooks) && data.worldbookBooks.length
-          ? data.worldbookBooks
-          : [{ key: 'main', name: String(data.worldbookName || '生图世界书'), count: (data.worldbook || []).length, entries: data.worldbook || [] }]
+        // 每种提示词格式有独立的两本书；浏览其他格式不改全局 promptMode。
+        const formats = [['tags', '标签'], ['natural', '自然语言'], ['mixed', '混合'], ['structured', '结构化自然语言']]
+        const activeFormat = wbFormat || data.worldbookFormat || config.promptEffectiveFormat || 'tags'
+        const formatLabel = value => formats.find(([key]) => key === value)?.[1] || '尚未解析'
+        const effectiveFormat = config.promptEffectiveFormat || (formats.some(([key]) => key === config.promptMode) ? config.promptMode : '')
+        const bookData = wbView?.worldbookFormat === activeFormat ? wbView
+          : !data.worldbookFormat || data.worldbookFormat === activeFormat ? data : { worldbook: [], worldbookBooks: [] }
+        const books = Array.isArray(bookData.worldbookBooks) && bookData.worldbookBooks.length
+          ? bookData.worldbookBooks
+          : [{ key: 'main', name: String(bookData.worldbookName || '生图世界书'), count: (bookData.worldbook || []).length, entries: bookData.worldbook || [] }]
         const activeBook = books.find(book => book.key === wbBook) || books[0]
         const activeKey = activeBook?.key || 'main'
-        const list = Array.isArray(activeBook?.entries) ? activeBook.entries : (data.worldbook || [])
+        const scope = activeFormat + '|' + activeKey
+        wbScope.current = scope
+        const list = Array.isArray(activeBook?.entries) ? activeBook.entries : (bookData.worldbook || [])
         const onCount = list.filter(e => e.enabled !== false).length
         const context = data.plannerContext || null
         const providers = [
           ['comfyui', 'ComfyUI'], ['novelai', 'NovelAI'], ['openai', 'OpenAI'], ['gemini', 'Gemini'],
-          ['gemini-chat', 'Gemini Chat'], ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['sdwebui', 'SD WebUI'],
+          ['gemini-chat', 'Gemini Chat'], ['grok', 'Grok'], ['seedream', 'Seedream'], ['qwen', 'Qwen'], ['atlascloud', 'Atlas兼容（自定义）'], ['sdwebui', 'SD WebUI'],
         ]
 
+        async function readWorldbook(format) {
+          const r = await jsonFetch(BASE + '/worldbook?format=' + encodeURIComponent(format), { cache: 'no-store' })
+          if (!r || r.ok === false) throw new Error(r?.error || '无法读取世界书')
+          if (r.worldbookFormat && r.worldbookFormat !== format) throw new Error('服务器返回了其他格式的世界书，未覆盖当前编辑内容')
+          const doc = r.worldbook || {}
+          const entries = Array.isArray(doc) ? doc : Array.isArray(doc.entries) ? doc.entries : []
+          return { worldbookFormat: format, worldbook: entries, worldbookName: r.worldbookName || doc.name || '', worldbookBooks: Array.isArray(r.worldbookBooks) ? r.worldbookBooks : [] }
+        }
         async function refreshWb() {
-          const r = await jsonFetch(BASE + '/state', { cache: 'no-store' }).catch(() => null)
-          if (r) receiveState(r)
+          const request = ++wbReadEpoch.current
+          const next = await readWorldbook(activeFormat)
+          if (request === wbReadEpoch.current && wbScope.current === scope) setWbView(next)
+        }
+        async function changeWorldbook(format, book) {
+          if (wbTransition.current) return
+          wbTransition.current = true
+          setWbLoading(true)
+          try {
+            if (!await flushWbPending()) { setWbNote('有未保存的输入，切换已取消；请重试保存'); return }
+            await Promise.all([...wbActions.current])
+            await wbWriteQueue.current
+            if (Object.keys(wbPending.current).length) { setWbNote('有未保存的输入，切换已取消'); return }
+            const request = ++wbReadEpoch.current
+            const next = format !== activeFormat ? await readWorldbook(format) : null
+            if (request !== wbReadEpoch.current) return
+            wbScope.current = format + '|' + book
+            if (next) setWbView(next)
+            setWbFormat(format)
+            setWbBook(book)
+            setWbEditing(-1)
+            setWbOpen({})
+            setWbDrafts({})
+            wbDraftRevisions.current = {}
+            setWbImportOpen(false)
+            setWbPaste('')
+            setWbNote('')
+          } catch (error) { setWbNote('切换失败，已保留当前内容：' + (error?.message || error)) }
+          finally { wbTransition.current = false; setWbLoading(false) }
+        }
+        function trackWbAction(action) {
+          const task = action()
+          wbActions.current.add(task)
+          task.finally(() => wbActions.current.delete(task)).catch(() => {})
+          return task
         }
         function queueWbWrite(write) {
           const task = wbWriteQueue.current.then(write, write)
@@ -4729,7 +4945,7 @@ function versionsOf(jobId) {
         }
         async function sendEntryPatch(index, patch, remove, tip) {
           return queueWbWrite(async () => {
-            const r = await post('/worldbook-entry', remove ? { book: activeKey, index, remove: true } : { book: activeKey, index, patch })
+            const r = await post('/worldbook-entry', remove ? { format: activeFormat, book: activeKey, index, remove: true } : { format: activeFormat, book: activeKey, index, patch })
             if (!r?.ok) { setWbNote((tip || '改') + '失败：' + (r?.error || '')); return false }
             setWbNote(tip ? (tip + '已保存') : '')
             await refreshWb()
@@ -4744,6 +4960,7 @@ function versionsOf(jobId) {
           return Object.fromEntries(Object.keys(displayPatch).map(field => [field, revisions[field]]))
         }
         function clearSavedDrafts(index, fields, sentRevisions) {
+          if (wbScope.current !== scope) return
           setWbDrafts(current => {
             const next = { ...current }
             const entry = { ...(next[index] || {}) }
@@ -4761,46 +4978,58 @@ function versionsOf(jobId) {
           }
           wbPending.current = restored
         }
-        async function flushWbPending() {
+        function flushWbPending() {
           if (wbTimer.current) { clearTimeout(wbTimer.current); wbTimer.current = null }
-          const batch = wbPending.current
-          wbPending.current = {}
-          const entries = Object.entries(batch)
-          for (let i = 0; i < entries.length; i++) {
-            const [rawIndex, patch] = entries[i]
-            const index = Number(rawIndex)
-            const sentRevisions = Object.fromEntries(Object.keys(patch).map(field => [field, wbDraftRevisions.current[index]?.[field]]))
-            let saved
-            try { saved = await sendEntryPatch(index, patch, false, '条目') }
-            catch (error) {
-              restorePending(entries, i)
-              setWbNote('保存失败：' + (error?.message ?? error))
-              return false
+          if (wbFlushing.current) return wbFlushing.current
+          const flush = async () => {
+            while (Object.keys(wbPending.current).length) {
+              const batch = wbPending.current
+              wbPending.current = {}
+              const entries = Object.entries(batch)
+              for (let i = 0; i < entries.length; i++) {
+                const [rawIndex, patch] = entries[i]
+                const index = Number(rawIndex)
+                const sentRevisions = Object.fromEntries(Object.keys(patch).map(field => [field, wbDraftRevisions.current[index]?.[field]]))
+                let saved
+                try { saved = await sendEntryPatch(index, patch, false, '条目') }
+                catch (error) {
+                  restorePending(entries, i)
+                  setWbNote('保存失败：' + (error?.message ?? error))
+                  return false
+                }
+                if (!saved) { restorePending(entries, i); return false }
+                clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+              }
             }
-            if (!saved) {
-              restorePending(entries, i)
-              return false
-            }
-            clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+            return true
           }
-          return true
+          const task = flush().finally(() => { if (wbFlushing.current === task) wbFlushing.current = null })
+          wbFlushing.current = task
+          return task
         }
-        async function patchEntry(index, patch, remove, tip) {
-          try {
-            const sentRevisions = patch ? setWbDraft(index, patch) : {}
-            const flushed = await flushWbPending()
-            if (!flushed) {
+        function patchEntry(index, patch, remove, tip) {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
+            try {
+              const sentRevisions = patch ? setWbDraft(index, patch) : {}
+              const flushed = await flushWbPending()
+              if (!flushed) {
+                if (patch) restorePending([[String(index), patch]], 0)
+                setWbNote('有未保存的输入，请检查网络后重试')
+                return
+              }
+              const saved = await sendEntryPatch(index, patch, remove, tip)
+              if (saved && patch) clearSavedDrafts(index, Object.keys(patch), sentRevisions)
+              else if (!saved && patch) restorePending([[String(index), patch]], 0)
+            } catch (e) {
               if (patch) restorePending([[String(index), patch]], 0)
-              setWbNote('有未保存的输入，请检查网络后重试')
-              return
+              setWbNote((tip || '改') + '失败：' + (e?.message ?? e))
             }
-            const saved = await sendEntryPatch(index, patch, remove, tip)
-            if (saved && patch) clearSavedDrafts(index, Object.keys(patch), sentRevisions)
-            else if (!saved && patch) restorePending([[String(index), patch]], 0)
-          } catch (e) { setWbNote((tip || '改') + '失败：' + (e?.message ?? e)) }
+          })
         }
         /** 打字时保留本地值；停 700ms 后合并提交，避免丢掉相邻字段的改动。 */
         function patchEntrySoon(index, patch, tip, displayPatch = patch) {
+          if (wbTransition.current || wbScope.current !== scope) return
           setWbDraft(index, displayPatch)
           wbPending.current[index] = { ...(wbPending.current[index] || {}), ...patch }
           setWbNote('输入中…')
@@ -4843,26 +5072,41 @@ function versionsOf(jobId) {
           }
           return String(value ?? '')
         }
-        async function addEntry() {
+        function addEntry() {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
           try {
-            const r = await post('/worldbook-add', { book: activeKey, comment: '新条目', content: '' })
-            if (!r?.ok) { setWbNote('加失败：' + (r?.error || '')); return }
-            await refreshWb()
-            setWbEditing(typeof r.index === 'number' ? r.index : -1)
+            if (!await flushWbPending()) return
+            await queueWbWrite(async () => {
+              const r = await post('/worldbook-add', { format: activeFormat, book: activeKey, comment: '新条目', content: '' })
+              if (!r?.ok) { setWbNote('加失败：' + (r?.error || '')); return }
+              await refreshWb()
+              if (wbScope.current === scope) setWbEditing(typeof r.index === 'number' ? r.index : -1)
+            })
           } catch (e) { setWbNote('加失败：' + (e?.message ?? e)) }
+          })
         }
-        async function importFrom(text, label) {
+        function importFrom(text, label) {
+          if (wbTransition.current || wbScope.current !== scope) return
+          return trackWbAction(async () => {
           try {
+            if (!await flushWbPending()) return
             let payload = text
             try { payload = JSON.parse(text) } catch { /* 当纯文本 */ }
-            const r = await post('/worldbook-import', { book: activeKey, worldbook: payload })
-            if (!r?.ok) { setWbNote('导入失败：' + (r?.error || '没读出条目')); return }
-            setWbNote('✓ 已导入《' + r.name + '》' + r.count + ' 条')
-            setWbImportOpen(false)
-            setWbPaste('')
-            await refreshWb()
-            if (typeof showToast === 'function') showToast('已导入 ' + r.count + ' 条世界书条目')
+            await queueWbWrite(async () => {
+              const r = await post('/worldbook-import', { format: activeFormat, book: activeKey, worldbook: payload })
+              if (!r?.ok) { setWbNote('导入失败：' + (r?.error || '没读出条目')); return }
+              setWbNote('✓ 已导入《' + r.name + '》' + r.count + ' 条')
+              setWbImportOpen(false)
+              setWbPaste('')
+              setWbEditing(-1)
+              setWbDrafts({})
+              wbDraftRevisions.current = {}
+              await refreshWb()
+              if (typeof showToast === 'function') showToast('已导入 ' + r.count + ' 条世界书条目')
+            })
           } catch (e) { setWbNote('导入失败：' + (e?.message ?? e)) }
+          })
         }
         function pickWbFile(event) {
           const file = event?.target?.files && event.target.files[0]
@@ -4873,7 +5117,8 @@ function versionsOf(jobId) {
           reader.readAsText(file)
         }
         async function exportWb() {
-          const r = await jsonFetch(BASE + '/worldbook-export', { cache: 'no-store' }).catch(error => ({ ok: false, error: String(error?.message ?? error) }))
+          if (wbTransition.current || wbScope.current !== scope || !await flushWbPending()) return
+          const r = await jsonFetch(BASE + '/worldbook-export?format=' + encodeURIComponent(activeFormat) + '&book=' + encodeURIComponent(activeKey), { cache: 'no-store' }).catch(error => ({ ok: false, error: String(error?.message ?? error) }))
           if (!r?.ok) { setWbNote('导出失败：' + (r?.error || '无法从服务器读取世界书，请检查插件连接后重试')); return }
           const text = JSON.stringify(r.worldbook, null, 2)
           try {
@@ -4889,7 +5134,7 @@ function versionsOf(jobId) {
               const url = URL.createObjectURL(blob)
               const link = document.createElement('a')
               link.href = url
-              link.download = 'worldbook-export.json'
+              link.download = 'worldbook-' + activeFormat + '-' + activeKey + '.json'
               document.body.appendChild(link)
               link.click()
               link.remove()
@@ -4904,7 +5149,26 @@ function versionsOf(jobId) {
 
         const ta = Object.assign({}, S.input, { width: '100%', minHeight: '130px', fontFamily: 'inherit', lineHeight: '1.6', resize: 'vertical', boxSizing: 'border-box' })
 
-        return h('div', { style: S.card },
+        return h('fieldset', { disabled: wbLoading, 'aria-busy': wbLoading, style: Object.assign({}, S.card, { minWidth: 0 }) },
+          h('label', { style: S.row }, h('span', { style: S.label }, '世界书格式'),
+            h('select', { 'aria-label': '世界书格式', value: activeFormat, style: S.input, onChange: event => changeWorldbook(event.target.value, 'main') },
+              formats.map(([value, label]) => h('option', { key: value, value }, label)))),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '8px' } }, '只编辑所选格式的独立世界书，不改变当前生图格式。切换前会保存未完成的输入；失败时留在原格式。'),
+          h('div', { 'aria-label': '世界书格式状态', style: { fontSize: '12px', marginBottom: '8px' } },
+            '正在编辑：' + formatLabel(activeFormat) + '；实际生图：' + formatLabel(effectiveFormat) + ((config.promptMode || 'auto') === 'auto' ? '（自动选择）' : ''),
+            effectiveFormat && effectiveFormat !== activeFormat ? '。当前编辑的规则不会用于实际生图，除非切换提示词格式。' : ''),
+          h('button', { type: 'button', style: buttonStyle, onClick: async () => {
+            if (!await flushWbPending()) { setWbNote('有未保存的输入，请重试保存后再前往设置'); return }
+            await Promise.all([...wbActions.current]); await wbWriteQueue.current
+            if (Object.keys(wbPending.current).length) { setWbNote('有未保存的输入，请重试保存后再前往设置'); return }
+            promptFormatFocus.current = true; setTab('plan')
+          } }, '前往提示词格式设置'),
+          activeFormat === 'structured' ? h(WorldbookUpgradePanel, { key: scope, book: activeKey,
+            request: (path, body) => trackWbAction(async () => {
+              if (!await flushWbPending()) throw new Error('请先保存当前世界书输入')
+              return queueWbWrite(() => body === undefined ? jsonFetch(BASE + path, { cache: 'no-store' }) : post(path, body))
+            }), onApplied: refreshWb }) : null,
+          wbLoading ? h('div', { role: 'status' }, '正在保存并切换世界书…') : null,
           h('div', { style: { fontSize: '13px', marginBottom: '8px' } },
             '世界书：' + (activeBook?.name ? '《' + activeBook.name + '》' : '') + '（' + onCount + ' / ' + list.length + ' 条启用）'),
           // 书选择器：两本并列，切换后下方列表与所有编辑动作都作用在选中的那一本
@@ -4921,12 +5185,7 @@ function versionsOf(jobId) {
                   background: on ? 'color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent)' : 'transparent',
                   color: on ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-tertiary)',
                 }),
-                onClick: () => {
-                  setWbBook(book.key)
-                  setWbEditing(-1)
-                  setWbOpen({})
-                  setWbNote('')
-                },
+                onClick: () => changeWorldbook(activeFormat, book.key),
               }, '📖 ' + (book.name || book.key) + '（' + (book.count ?? 0) + ' 条）')
             }),
           ),
@@ -4938,7 +5197,7 @@ function versionsOf(jobId) {
             h('button', { style: buttonStyle, onClick: () => setWbImportOpen(v => !v) }, wbImportOpen ? '✖ 收起导入' : '📥 导入世界书'),
             h('button', { style: buttonStyle, onClick: addEntry }, '➕ 新条目'),
             h('button', { style: buttonStyle, onClick: exportWb }, '📤 导出（复制 JSON）'),
-            h('button', { style: buttonStyle, onClick: refreshWb }, '🔄 刷新'),
+            h('button', { style: buttonStyle, onClick: async () => { try { if (await flushWbPending()) await refreshWb() } catch (error) { setWbNote('刷新失败：' + (error?.message || error)) } } }, '🔄 刷新'),
             wbNote ? h('span', { style: { fontSize: '12px', color: /失败/.test(wbNote) ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' } }, wbNote) : null,
           ),
 
@@ -5031,6 +5290,7 @@ function versionsOf(jobId) {
                       const backends = [...next]
                       patchEntry(entry.index, { backends }, false, '适用渠道')
                     } }), label))),
+                  h('div', { style: { fontSize: '10px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, 'Atlas兼容（自定义）适用于协议为 AtlasCloud 且后端支持的自定义渠道；它不是独立渠道。'),
                 ),
                 h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '4px' } }, '改动即时保存。'),
               ) : null,
@@ -5491,11 +5751,11 @@ function versionsOf(jobId) {
         const area = height => Object.assign({}, S.input, { width: '100%', minHeight: height, boxSizing: 'border-box', fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '12px', lineHeight: '1.5', resize: 'vertical' })
         return h('div', { style: S.card },
           h('div', { style: { fontSize: '14px', fontWeight: 600, marginBottom: '5px' } }, '专业提示词预设'),
-          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '9px' } }, '按后端使用标签、自然语言或混合格式；预设包含构图、光线、材质与风格指导。脸部一致性需要参考图，预设本身不保证跨图一致。'),
+          h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '9px' } }, '可选标签、自然语言、混合或结构化自然语言；各格式使用独立世界书。结构化格式默认中文分节，文生图与参考图模式均可用。预设本身不保证跨图一致。'),
           h('div', { style: S.row },
             h('label', { style: S.label }, '提示词格式'),
-            h('select', { value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
-              h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合')),
+            h('select', { 'aria-label': '提示词格式', ref: node => { if (node && promptFormatFocus.current) { promptFormatFocus.current = false; node.focus(); node.scrollIntoView?.({ block: 'center' }) } }, value: config.promptMode || 'auto', style: S.input, onChange: e => save({ promptMode: e.target.value }) },
+              h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合'), h('option', { value: 'structured', style: optStyle }, '结构化自然语言')),
             h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, '当前：' + (config.promptEffectiveFormat || 'mixed')),
           ),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' } }, library.map(profile => h('button', { key: profile.id, style: Object.assign({}, buttonStyle, { borderColor: activeId === profile.id ? 'var(--dsw-alias-brand-primary)' : undefined }), onClick: () => save({ activePromptPreset: profile.id }) }, (activeId === profile.id ? '● ' : '○ ') + profile.name))),
@@ -5645,6 +5905,7 @@ function versionsOf(jobId) {
           ComfyBackendCard(),
           imageBackend === 'comfyui' ? workflowCard() : null,
           section('配图规则'),
+          generationModeCard(),
           planTab(),
           section('画风'),
           stylePresetCard(),
