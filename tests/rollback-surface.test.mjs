@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { rollbackAvailability, pendingFailedSurfaceTurns, abortedRegenerationTurns, hasRollbackMessages, locateRollbackSurface, regenerationAttemptTurns, replayableFailedTurn } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { rollbackAvailability, pendingFailedSurfaceTurns, abortedRegenerationTurns, locateRollbackSurface, regenerationAttemptTurns, replayableFailedTurn } from '../tavern-plugin/lib/domain/rollback-surface.js'
 
 function modelSource() {
   return { kind: 'model', provider: 'test', model: 'test-model' }
@@ -57,16 +57,6 @@ test('失败重生成的模型轮次可从尝试区间和持久清理墓碑重�
   assert.deepEqual(abortedRegenerationTurns({ events }), [3])
 })
 
-test('回退按钮只在权威消息尾部存在用户输入与正文组合时显示', () => {
-  const opening = { role: 'assistant', greeting: true, text: '开场白' }
-  const user = { role: 'user', text: '本轮输入' }
-  const assistant = { role: 'assistant', text: '本轮输出' }
-
-  assert.equal(hasRollbackMessages([opening]), false)
-  assert.equal(hasRollbackMessages([opening, user]), false)
-  assert.equal(hasRollbackMessages([opening, user, assistant]), true)
-})
-
 function failedThenRolledBack() {
   return [
     { seq: 0, type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '保留输入' }] } },
@@ -120,30 +110,4 @@ test('失败尾部重放认领用户输入与历史重放输入，且只认领�
   // 尾部已完成、或失败之后又有新回合开始，都不再有可重放的失败尾部。
   assert.equal(replayableFailedTurn({ events: events.map(event => event.seq === 5 ? { ...event, data: { turn: 3, reason: { kind: 'completed' } } } : event) }), null)
   assert.equal(replayableFailedTurn({ events: [...events, { seq: 6, type: 'turn/start', data: { turn: 4 } }, { seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: '第三次' }], source: { kind: 'user' } } }] }), null)
-})
-
-test('重生成合成输入的失败尾部不提供重放，避免把补充要求当成玩家原文提交', () => {
-  const events = [
-    { seq: 0, type: 'turn/start', data: { turn: 3 } },
-    { seq: 1, type: 'user/message', data: {
-      content: [{ type: 'text', text: '推门\n\n【本轮补充要求】\n写短一些' }],
-      source: { kind: 'plugin', plugin: 'dsh-tavern-regen', regenerationId: 'op-1' }
-    } },
-    { seq: 2, type: 'turn/end', data: { turn: 3, reason: { kind: 'error', message: 'HTTP 500' } } }
-  ]
-  assert.equal(replayableFailedTurn({ events }), null)
-})
-
-test('上一轮变量变化提示不冒充本轮用户输入，回退从玩家原文开始', () => {
-  const events = []
-  events[41] = { seq: 41, type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '同去后山' }], source: { kind: 'user' } }, surfaceOp: 'append' }
-  events[42] = { seq: 42, type: 'user/message', data: { role: 'user', content: [], source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'foreground-frame' } }, surfaceOp: 'append' }
-  events[43] = { seq: 43, type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '上一轮变量变化' }], source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'variable-changes' } }, surfaceOp: 'append' }
-  events[44] = { seq: 44, type: 'assistant/message', data: { turn: 5, step: 1, message: { role: 'assistant', source: modelSource() } }, surfaceOp: 'append' }
-
-  const located = locateRollbackSurface({ events, nodes: [41, 42, 43, 44] })
-
-  assert.equal(located.userSeq, 41)
-  assert.equal(located.assistantSeq, 44)
-  assert.deepEqual(located.shadowedSeqs, [41, 42, 43, 44])
 })

@@ -15,10 +15,15 @@ test('panels use the flow interface and candidate selection preserves user edits
   t.after(() => { Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act }); dom.window.close() })
   const { createRoot } = await import('react-dom/client')
   const calls = [], errors = []
+  let finishPolish
   dom.window.addEventListener('error', event => errors.push(event.error))
   const interactions = createPlayInteractionFlow({ rpc: async (...args) => { calls.push(args); return { task: {}, view: {} } },
     coordinationView: v => v, coordination: { setView() {}, invalidate() {} }, applyBodyResult() {}, reportError: (...args) => errors.push(args) })
-  const context = vm.createContext({ React, window: dom.window, document: dom.window.document,
+  const context = vm.createContext({ React, setInterval, clearInterval,
+    rpc: async method => {
+      if (method === 'polishBody') return new Promise(resolve => { finishPolish = resolve })
+      if (method === 'polishProgress') return { progress: { edits: [{ reason: '更具体', find: '原句', replace: '改句' }] } }
+    }, window: dom.window, document: dom.window.document,
     useCandidatePreferences: () => 'after-send', useTavernSessionMode: () => 'story',
     latestTavernAssistantMessageId: () => 'm', isPlayMode: () => true, TAVERN_MOBILE_QUERY: '(max-width: 1023px)',
     useLiveTavernView: () => ({ view: {} }) })
@@ -49,6 +54,14 @@ test('panels use the flow interface and candidate selection preserves user edits
   assert.equal(dom.window.document.querySelectorAll(".dsh-tavern-regen-submit").length, 1)
   await act(async () => dom.window.document.querySelector('.dsh-tavern-regen-submit').click())
   assert.deepEqual(calls[1], ['regenBody', { guidance: '' }, 'a'])
+  await act(async () => interactions.regeneration.set({ sessionId: 'a', phase: 'input' }))
+  await act(async () => [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === '精修').click())
+  assert.match(dom.window.document.querySelector('.dsh-tavern-regen-loading').textContent, /已修 1 处/)
+  assert.match(dom.window.document.querySelector('summary').textContent, /更具体/)
+  assert.equal(dom.window.document.querySelector('del').textContent, '原句')
+  assert.equal(dom.window.document.querySelector('ins').textContent, '改句')
+  await act(async () => finishPolish({ edits: [], view: null }))
+  assert.match(dom.window.document.querySelector('.dsh-tavern-choice-error').textContent, /没有发现需要修改/)
   assert.deepEqual(errors, [])
   await act(async () => root.unmount())
 })

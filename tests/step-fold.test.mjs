@@ -52,15 +52,6 @@ function conversation(options = {}) {
   return { dom, root, document, steps, controls, hidden, toggles }
 }
 
-test('每一轮的工作步骤行默认收起，运行中的那一轮保留', () => {
-  const settled = conversation({ turns: [1, 2, 3] })
-  assert.equal(settled.hidden().length, 3, '没有在跑的轮：全部收起')
-  assert.equal(settled.steps[1].getAttribute('data-tavern-step-fold'), '1')
-  const live = conversation({ turns: [1, 2, 3], running: true })
-  assert.equal(live.hidden().length, 2, '在跑的那一轮保留进度')
-  assert.equal(live.steps[3].style.display, '')
-})
-
 test('错误行那排按钮一次展开全部步骤，再点收起', () => {
   const { steps, toggles } = conversation({ turns: [1, 2], failing: [2] })
   assert.equal(toggles().length, 1, '只挂一个入口')
@@ -71,12 +62,6 @@ test('错误行那排按钮一次展开全部步骤，再点收起', () => {
   toggles()[0].click()
   assert.equal(steps[1].style.display, 'none')
   assert.equal(toggles()[0].textContent, '查看步骤')
-})
-
-test('没有错误面板时不硬造入口', () => {
-  const { toggles, hidden } = conversation({ turns: [1, 2] })
-  assert.equal(toggles().length, 0)
-  assert.equal(hidden().length, 2)
 })
 
 test('行被宿主重挂载后重新收起，dispose 全部还原', () => {

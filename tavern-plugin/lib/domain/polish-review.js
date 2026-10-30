@@ -1,12 +1,7 @@
 // 精修: an editor reads the latest reply against the principles and returns edits, exact
-// replacements of a phrase, sentence or whole paragraphs that the player ticks and applies
-// through the body editor.
-
-const CARD_LIMIT = 6000, PREVIOUS_LIMIT = 3000, INPUT_LIMIT = 2000, GUIDANCE_LIMIT = 1000
+// replacements of a phrase, sentence or whole paragraphs, applied through the body editor.
 
 function str(value) { return typeof value === 'string' ? value : value == null ? '' : String(value) }
-function head(text, limit) { const value = str(text).trim(); return value.length > limit ? value.slice(0, limit) + '……' : value }
-function tail(text, limit) { const value = str(text).trim(); return value.length > limit ? '……' + value.slice(-limit) : value }
 function replyText(message) { return str(message && (message.projectionText ?? message.sourceText ?? message.text)) }
 
 /** The player input and the reply before the latest one, read from the Chat tail. */
@@ -20,38 +15,6 @@ export function polishReviewContext(messages) {
     if (seenUser && message.role === 'assistant') { previous = replyText(message); break }
   }
   return { input, previous }
-}
-
-// The card, the player, the reply before and this turn's input: what a review or a guided edit reads.
-function materialSections({ card, playerName, input, previous, reply }) {
-  const body = str(reply).trim()
-  if (body === '') throw new Error('这轮没有可精修的正文')
-  const setting = ['description', 'personality', 'scenario'].map(key => str(card?.[key]).trim()).filter(Boolean).join('\n\n')
-  return [
-    '【人物卡：' + (str(card?.name).trim() || '未命名') + '】\n' + (head(setting, CARD_LIMIT) || '（无）'),
-    '【玩家角色】' + (str(playerName).trim() || '你'),
-    str(previous).trim() ? '【上一轮正文】\n' + tail(previous, PREVIOUS_LIMIT) : '',
-    str(input).trim() ? '【本轮玩家输入】\n' + head(input, INPUT_LIMIT) : '',
-    '【本轮正文】\n' + body
-  ].filter(Boolean)
-}
-
-function request(system, sections) {
-  return { system, messages: [{ role: 'user', content: [{ type: 'text', text: sections.join('\n\n') }] }] }
-}
-
-export function buildPolishReviewRequest({ principles, ...material }) {
-  const rules = str(principles).trim()
-  if (rules === '') throw new Error('正文精修原则为空，请在系统提示词里填写')
-  return request(rules, [...materialSections(material), '请按审稿标准写出修改清单。'])
-}
-
-/** The player's guidance on an already reviewed reply: only that guidance, without the principles. */
-export function buildPolishGuidanceRequest({ instructions, guidance, ...material }) {
-  const rules = str(instructions).trim()
-  if (rules === '') throw new Error('精修按意见修改的提示词为空，请在系统提示词里填写')
-  if (!str(guidance).trim()) throw new Error('没有修改意见')
-  return request(rules, [...materialSections(material), '【玩家的修改意见】\n' + head(guidance, GUIDANCE_LIMIT), '请按这条意见写出修改清单。'])
 }
 
 function occurrences(texts, find) {
@@ -86,13 +49,18 @@ export function parsePolishReview(output, texts) {
 
 /** Apply chosen edits to the reply's text parts; each must still match exactly once. */
 export function applyPolishEdits(texts, edits) {
-  const next = texts.slice()
+  const next = texts.slice(), placed = []
   for (const edit of edits) {
     const find = str(edit?.find)
-    const hits = find ? occurrences(next, find) : []
+    const hits = find ? occurrences(texts, find) : []
     if (hits.length !== 1) throw new Error('正文里找不到要改的原句，可能已经改过，请重新审稿：' + find.slice(0, 30))
-    const { part, at } = hits[0]
-    next[part] = next[part].slice(0, at) + str(edit.replace) + next[part].slice(at + find.length)
+    const { part, at } = hits[0], end = at + find.length
+    if (placed.some(item => item.part === part && item.at < end && at < item.end)) throw new Error('精修修改范围重叠，请重新审稿')
+    placed.push({ part, at, end, replace: str(edit.replace) })
+  }
+  // Apply against immutable source offsets; a replacement may contain another edit's find.
+  for (const edit of placed.sort((a, b) => b.at - a.at)) {
+    next[edit.part] = next[edit.part].slice(0, edit.at) + edit.replace + next[edit.part].slice(edit.end)
   }
   return next
 }

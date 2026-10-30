@@ -1,4 +1,4 @@
-// The stage's CONFIG screen, visual-novel style (docs/design/cast-presentation.md「舞台 core（23/N）：CONFIG」) - the one home of
+// The stage's CONFIG screen, visual-novel style (Wiki「设计：cast-presentation」「舞台 core（23/N）：CONFIG」) - the one home of
 // the player's lasting stage preferences on this machine. The control bar's 「声音」 opens it over the dimmed stage with left
 // tabs: 声音 (every audio layer, features/stage-mixer.js, and 配音倍速) and 文字 (文字速度 and the auto mode's pace). The stage owns the open
 // state: auto paging waits while it is open and the stage's keys are its own. Drawn only in the stage's UI tokens (--gal-ui-*).

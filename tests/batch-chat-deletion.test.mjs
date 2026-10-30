@@ -14,12 +14,12 @@ function setup() {
     deferSessionDeletion: async items => { events.push('defer:' + items.map(item => item.path).join(',')) }
   }
   const backgroundAgentRunner = { releaseFor: async id => { events.push('release:' + id) } }
-  const api = new Function('readChat', 'str', 'storyTimeline', 'agentRegistry', 'cancelSettlement', 'conversationRegistry', 'deletedChatIds', 'gameFootprint', 'backgroundAgentRunner', 'deletedSessionIds', 'apiDiagnostics', 'pluginMedia', 'pluginData', 'pluginApi', 'displayRuntimeStore', 'sceneWorldbookArchive', 'floorSnapshots', section + '; return { deleteChats };')(
+  const api = new Function('readChat', 'str', 'storyTimeline', 'agentRegistry', 'cancelSettlement', 'conversationRegistry', 'deletedChatIds', 'gameFootprint', 'backgroundAgentRunner', 'deletedSessionIds', 'apiDiagnostics', 'pluginMedia', 'pluginData', 'pluginApi', 'displayRuntimeStore', 'sceneWorldbookArchive', 'floorSnapshots', 'worldbookSkillProvider', section + '; return { deleteChats };')(
     async id => ({ id, sessionId: id }), String,
     { inspect: () => ({ participants: { worker: { sessionId: 'background' } } }) }, workers,
     async id => { events.push('settlement:' + id) },
     { remove: async id => { events.push('remove:' + id); if (id === 'bad') throw new Error('disk error') } }, deletedChatIds, gameFootprint, backgroundAgentRunner, new Set(), { forget: async id => { events.push('forget:' + id) } },
-    { removeChat: async id => { events.push('media:' + id) } }, { removeChat: async () => {} }, { gameRemoved: id => events.push('removed:' + id) }, { remove: async () => {} }, { forgetChat: async () => {} }, { removeChat: async id => events.push('snapshots:' + id) })
+    { removeChat: async id => { events.push('media:' + id) } }, { removeChat: async () => {} }, { gameRemoved: id => events.push('removed:' + id) }, { remove: async () => {} }, { forgetChat: async () => {} }, { removeChat: async id => events.push('snapshots:' + id) }, { removeChat: async chat => events.push('worldbook:' + chat.id) })
   return { ...api, events, deletedChatIds }
 }
 test('batch deletion stops foreground and background before removing, deduplicates, and continues after a failure', async () => {
@@ -37,6 +37,8 @@ test('batch deletion stops foreground and background before removing, deduplicat
   assert.ok(api.events.includes('media:a') && api.events.includes('removed:a'), '清理插件媒体并通知插件')
   assert.ok(api.events.includes('snapshots:a') && api.events.includes('snapshots:c'), '成功删除同时回收楼层快照')
   assert.ok(!api.events.includes('snapshots:bad'), '删除失败保留楼层快照')
+  assert.ok(api.events.includes('worldbook:a') && api.events.includes('worldbook:c'), '成功删除同时回收世界书文件')
+  assert.ok(!api.events.includes('worldbook:bad'), '删除失败保留世界书文件')
   assert.ok(!api.events.includes('removed:bad'), '删除失败的局不通知')
   assert.ok(!api.events.some(event => event.startsWith('cleanup:log-bad')))
 })

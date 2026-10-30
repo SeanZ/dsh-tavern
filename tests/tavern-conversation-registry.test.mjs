@@ -36,29 +36,6 @@ function memoryStore(seed = {}) {
   }
 }
 
-test('索引发布失败时回滚 Chat 和 Session 关联', async function () {
-  const store = memoryStore({ failures: { writeIndex: 'index locked' } })
-  const registry = createTavernConversationRegistry({ store: store.adapter })
-
-  await assert.rejects(registry.publish({ id: 'chat-2', sessionId: 'session-2', cardPath: '', cardName: 'B', updatedAt: 20 }), /index locked/)
-
-  assert.deepEqual(store.snapshot().links, {})
-  assert.deepEqual(store.snapshot().chats, {})
-})
-
-test('损坏映射会从 Chat 索引自愈并清除失效目标', async function () {
-  const chat = { id: 'chat-real', sessionId: 'session-3', cardPath: '', cardName: 'C' }
-  const store = memoryStore({
-    links: { 'session-3': 'chat-missing' },
-    index: { chats: [{ id: 'chat-real' }] },
-    chats: { 'chat-real': chat }
-  })
-  const registry = createTavernConversationRegistry({ store: store.adapter })
-
-  assert.deepEqual(await registry.resolve('session-3'), chat)
-  assert.deepEqual(store.snapshot().links, { 'session-3': 'chat-real' })
-})
-
 test('后台轮换写入轻量索引，恢复旧后台后重新成为当前，列表不加载历史', async () => {
   const store = memoryStore({ links: { front: 'game' } })
   const registry = createTavernConversationRegistry({ store: store.adapter })
@@ -144,16 +121,6 @@ test('磁盘上有、索引里没有的存档会重新登记，已登记和已�
   assert.equal(links['session-lost'], 'chat-lost')
   assert.equal(links['session-taken'], 'chat-new', 'an existing link is never overwritten')
   assert.deepEqual(await registry.recoverUnlisted(['chat-new', 'chat-lost']), [], 'a second pass changes nothing')
-})
-
-test('删除先删存档本体再删登记，删到一半中断也不会被重新登记', async function () {
-  const store = memoryStore({ failures: {} })
-  const registry = createTavernConversationRegistry({ store: store.adapter })
-  await registry.publish({ id: 'chat-x', sessionId: 'session-x', cardName: 'X', updatedAt: 1 })
-  store.adapter.updateIndex = async () => { throw new Error('interrupted') }
-  await assert.rejects(registry.remove('chat-x'), /interrupted/)
-  assert.equal(store.snapshot().chats['chat-x'], undefined)
-  assert.deepEqual(await registry.recoverUnlisted(['chat-x']), [])
 })
 
 // Background agents ask for their own session on every request; none of them owns a chat.

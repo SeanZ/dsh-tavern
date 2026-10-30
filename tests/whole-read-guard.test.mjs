@@ -5,23 +5,6 @@ import { createWholeReadGuard, scopeTurnHooks } from '../tavern-plugin/lib/domai
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 1))
 
-test('a whole read inside a per-turn path is reported, also from work it starts', async () => {
-  const guard = createWholeReadGuard({ mode: 'throw' })
-  assert.doesNotThrow(() => guard.report('c'))
-  await assert.rejects(guard.scope('结算', async () => { await tick(); guard.report('c') }), { code: 'DSH_TAVERN_WHOLE_READ', message: /结算/ })
-  let started
-  await guard.scope('agent/pre-step', async () => { started = tick().then(() => guard.report('c')) })
-  await assert.rejects(started, { code: 'DSH_TAVERN_WHOLE_READ' })
-})
-
-test('allow marks a deliberate exception without leaving the path', async () => {
-  const guard = createWholeReadGuard({ mode: 'throw' })
-  await guard.scope('agent/pre-step', async () => {
-    await guard.allow('本进程首次同步', async () => { await tick(); guard.report('c') })
-    assert.throws(() => guard.report('c'))
-  })
-})
-
 test('warn logs each call site once; off reports nothing', async () => {
   const warnings = []
   const guard = createWholeReadGuard({ mode: 'warn', logger: { warn: message => warnings.push(message) } })

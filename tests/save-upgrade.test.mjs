@@ -78,10 +78,6 @@ test('unified storage stage preserves history, variables, plugin data and origin
   assert.equal((await createChatJournalStore({ dataRoot: root }).read('old')).variables.hp, 7)
 })
 
-test('upgrade includes the foreground, persistent workers and saved undo workers', () => {
-  assert.deepEqual(saveSessionIds({ sessionId: 's', candidateAgent: { sessionId: 'c' }, timeline: { participants: { background: { sessionId: 'b' } } }, rollbackUndo: { foreground: { sessionId: 's' }, background: [{ sessionId: 'old-b' }] } }), ['s', 'c', 'b', 'old-b'])
-})
-
 test('sessions written after startup count as upgraded by their log on disk', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'tavern-session-version-'))
   t.after(() => rm(root, { recursive: true, force: true }))

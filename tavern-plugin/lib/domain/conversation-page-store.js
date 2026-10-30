@@ -3,6 +3,33 @@ import {mkdir, open, readFile, readdir, rename, rm, link, stat} from 'node:fs/pr
 import path from 'node:path'
 import {createDurableFilePromotion} from '../durable-file-promotion.js'
 
+// Syncing every touched directory on every commit costs tens of milliseconds each on a phone.
+// Inside a relaxed window the store only remembers them; the window's end syncs each once,
+// before whatever makes the imported conversation visible. Durability is unchanged: nothing
+// references a block whose directory entry has not been made durable.
+let relaxedDepth=0
+const relaxedDirectories=new Set()
+async function fsyncDirectoryRaw(dir){
+ if(process.platform==='win32')return
+ const handle=await open(dir,'r')
+ try{await handle.sync()}catch(error){if(!['EINVAL','ENOTSUP','EISDIR'].includes(error.code))throw error}finally{await handle.close()}
+}
+export function beginRelaxedSync(){relaxedDepth+=1}
+export function relaxedSyncPending(){return relaxedDirectories.size}
+export async function endRelaxedSync(){
+ if(relaxedDepth>0)relaxedDepth-=1
+ if(relaxedDepth>0)return
+ const dirs=[...relaxedDirectories].sort((left,right)=>right.length-left.length)
+ relaxedDirectories.clear()
+ if(!dirs.length)return
+ let index=0
+ const results=await Promise.allSettled(Array.from({length:Math.min(8,dirs.length)},async()=>{
+  while(index<dirs.length)await fsyncDirectoryRaw(dirs[index++])
+ }))
+ const failed=results.find(result=>result.status==='rejected')
+ if(failed)throw failed.reason
+}
+
 // New-format foundation, deliberately not an automatic legacy Chat migration.
 // Only the small head pointer is mutable. Readers pin immutable snapshots;
 // append/point edits copy a bounded page and its radix-tree path.
@@ -78,9 +105,8 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   return path.join(dir,'blocks',id.slice(0,2),id+'.json')
  }
  async function syncDirectory(dir){
-  if(process.platform==='win32')return
-  const handle=await open(dir,'r')
-  try{await handle.sync()}catch(error){if(!['EINVAL','ENOTSUP','EISDIR'].includes(error.code))throw error}finally{await handle.close()}
+  if(relaxedDepth>0){relaxedDirectories.add(dir);return}
+  await fsyncDirectoryRaw(dir)
  }
  async function writeBlock(dir,value,directories){
   const bytes=JSON.stringify(value),id=hash(bytes),target=blobPath(dir,id),parent=path.dirname(target)
@@ -342,13 +368,15 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   for(const entry of entries.values()){
    let existing
    try{existing=await readFile(blobPath(dir,entry.ref),'utf8')}catch(error){if(error.code!=='ENOENT')throw error}
-   const parent=path.dirname(blobPath(dir,entry.ref))
-   directories.add(parent);directories.add(path.join(dir,'blocks'));directories.add(dir)
    if(existing!==undefined){
     if(JSON.stringify(decodeBlock(dir,entry.ref,existing))!==entry.bytes)throw Error('Immutable block corruption')
     onIO({kind:'read',type:entry.block.kind,bytes:Buffer.byteLength(existing),reason:'deduplication'})
     continue
    }
+   // Blocks are addressed by content, so a revision that changed one page still offers every
+   // page again. Only the blocks that actually land create directory entries: syncing the
+   // untouched directories too turned one game import into a thousand fsyncs on a phone.
+   directories.add(path.dirname(blobPath(dir,entry.ref)))
    const size=Buffer.byteLength(entry.bytes)+70
    if(group.length&&(groupBytes+size>PACK_BYTES||group.length>=PACK_ENTRIES)){groups.push(group);group=[];groupBytes=64}
    group.push(entry);groupBytes+=size

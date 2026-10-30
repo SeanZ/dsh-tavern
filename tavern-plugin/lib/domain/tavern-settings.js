@@ -1,5 +1,4 @@
 import { compactionPolicy } from './auto-compaction.js'
-import { readWebAccess, validateWebAccess } from './web-access-settings.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
 import { readJudgeConfig, validateJudgeConfig } from './engine-judge.js'
@@ -92,7 +91,7 @@ export function readHeaderItems(value) {
 
 // 顶部视图标签：{ items }，标题下方那排已注册的 conversation.view 页签。
 // 对话由宿主提供，始终在首位且不能移除；其余是有序的可见清单。
-// 未设置时由客户端按已注册页签派生：对话首位，其余按 order 升序。
+// 未设置时由客户端按已注册页签派生：对话首位，其余按 order 升序；完整上下文默认隐藏，可手动添加。
 export const VIEW_TAB_RESIDENT = 'chat'
 
 export function viewTabs(value) {
@@ -215,30 +214,34 @@ export function normalizeBackgroundTasks(value) {
 }
 
 
+// User preferences no longer control MVU settlement; internal task masks still can.
+export function normalizeConfiguredBackgroundTasks(value) {
+  return normalizeBackgroundTasks({ ...object(value), variables: true })
+}
+
+
 export function normalizePlayDefaults(value) {
   const input = object(value)
   return { playerName: typeof input.playerName === 'string' ? input.playerName.trim().slice(0, 80) || '你' : '你',
-    worldbookStrategy: input.worldbookStrategy === 'legacy' ? 'legacy' : 'native-skills',
+    worldbookStrategy: 'native-skills',
     statusBarPlacement: input.statusBarPlacement === 'body' ? 'body' : 'sidebar',
     // New games get 文风联想 unless the defaults turn it off; an existing game without the key stays off.
-    backgroundTasks: { ...normalizeBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
+    backgroundTasks: { ...normalizeConfiguredBackgroundTasks(input.backgroundTasks), styleReference: object(input.backgroundTasks).styleReference !== false },
     webSearchEnabled: input.webSearchEnabled === true }
 }
 
 export function applyTavernSettingsPatch(current, patch) {
   const next = Object.assign({}, object(current))
   const input = object(patch)
-  if (Object.hasOwn(input, 'webAccess')) {
-    if (!input.webAccess || typeof input.webAccess !== 'object' || Array.isArray(input.webAccess)) throw new Error('联网资料设置无效')
-    next.webAccess = validateWebAccess({ ...readWebAccess(next.webAccess), ...input.webAccess })
-  }
+  delete next.webAccess // Retired Tavern search settings never affect the host.
+
   if (Object.hasOwn(input, 'defaultPlaySettings')) {
     const patch = object(input.defaultPlaySettings)
     if (Object.hasOwn(patch, 'worldbookStrategy') && !['legacy', 'native-skills'].includes(patch.worldbookStrategy)) throw new Error('默认世界书策略无效')
     if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['variables', 'posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -254,12 +257,8 @@ export function applyTavernSettingsPatch(current, patch) {
     if (input[name] !== null && !selection) throw new Error('默认模型配置无效')
     next[name] = selection
   }
-  if (Object.hasOwn(input, 'hideContextAndReasoning')) {
-    if (typeof input.hideContextAndReasoning !== 'boolean') throw new Error('无效的对话显示设置')
-    next.hideContextAndReasoning = input.hideContextAndReasoning
-  }
   if (Object.hasOwn(input, 'polishPrereview')) {
-    if (typeof input.polishPrereview !== 'boolean') throw new Error('无效的精修预审设置')
+    if (typeof input.polishPrereview !== 'boolean') throw new Error('无效的自动精修设置')
     next.polishPrereview = input.polishPrereview
   }
   if (Object.hasOwn(input, 'candidateDismissMode')) {
@@ -319,7 +318,7 @@ export function applyTavernSettingsPatch(current, patch) {
     next.storyViewMode = input.storyViewMode
   }
   if (Object.hasOwn(input, 'viewTabs')) {
-    // null 恢复派生的默认清单（全部已注册页签，对话首位）。
+    // null 恢复派生的默认清单（已注册页签，对话首位，完整上下文按需添加）。
     if (input.viewTabs === null) delete next.viewTabs
     else next.viewTabs = viewTabs(input.viewTabs)
   }
@@ -363,7 +362,7 @@ export function applyTavernSettingsPatch(current, patch) {
   }
   if (Object.hasOwn(input, 'contextCompaction')) next.contextCompaction = { ...compactionPolicy(input.contextCompaction), revision: Date.now() }
   if (Object.prototype.hasOwnProperty.call(input, 'backgroundTasks')) {
-    next.backgroundTasks = normalizeBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
+    next.backgroundTasks = normalizeConfiguredBackgroundTasks({ ...normalizeBackgroundTasks(next.backgroundTasks), ...object(input.backgroundTasks) })
   }
   if (input.sillyModeEnabled === true || input.compatibilityMode === true) throw new Error('silly 模式已停用')
   delete next.sillyModeEnabled
@@ -426,28 +425,26 @@ export function presentTavernSettings(document, defaults) {
   const storyToolCalls = storyToolCallSettings(document)
   return {
     defaultPlaySettings: normalizePlayDefaults(object(document).defaultPlaySettings),
-    webAccess: readWebAccess(object(document).webAccess),
     defaultDisabledWritingSkills: Array.isArray(object(document).defaultDisabledWritingSkills) ? object(document).defaultDisabledWritingSkills.filter(name => typeof name === 'string') : [],
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
     defaultWorkbenchModel: normalizeBackgroundModel(object(document).defaultWorkbenchModel),
     contextCompaction: compactionPolicy(object(document).contextCompaction),
-    hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
     showSystemNavigation: object(document).showSystemNavigation === true,
     headerItems: readHeaderItems(object(document).headerItems),
     viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
     // 自动生成候选项: off by default, since it adds a background request after every reply.
     candidateAutoGenerate: object(document).candidateAutoGenerate === true,
-    // 精修预审: off by default, since it reviews every reply whether or not 精修 is pressed.
+    // 自动精修: off by default, since it reviews and rewords every reply.
     polishPrereview: object(document).polishPrereview === true,
     storyInputToolCall: storyToolCalls.input,
     storyOutputToolCall: storyToolCalls.output,
     castPresentation: object(document).castPresentation === true,
-    // Story view (fork contract): off keeps the upstream chat and failed-turn behaviour.
+    // 故事视图契约：关闭时保留上游聊天与失败回合行为。
     storyViewMode: object(document).storyViewMode === true,
-    // 舞台模式, BGM, 音效, 环境音, 物品 and 入场演出: one switch each for every card, on by default; the stage also needs 对话气泡 (castPresentation).
-    stageToggles: Object.fromEntries(STAGE_TOGGLES.map(key => [key, object(object(document).stageToggles)[key] !== false])),
+    // 舞台各项能力跟随上游默认关闭；舞台运行还需要对话气泡（castPresentation）。
+    stageToggles: Object.fromEntries(STAGE_TOGGLES.map(key => [key, object(object(document).stageToggles)[key] === true])),
     stageDimensions: stageDimensions(document),
     stageActionCaps: stageActionCaps(document),
     // Unset by default: no judge stage, green entries follow their triggers.
@@ -463,7 +460,7 @@ export function presentTavernSettings(document, defaults) {
     webSearchEnabled: object(document).webSearchEnabled === true,
     systemAppendEnabled: object(document).systemAppendEnabled !== false,
     backgroundModel: normalizeBackgroundModel(object(document).backgroundModel),
-    backgroundTasks: normalizeBackgroundTasks(object(document).backgroundTasks),
+    backgroundTasks: normalizeConfiguredBackgroundTasks(object(document).backgroundTasks),
     // Card rendering uses a fixed trusted policy; legacy preferences are no longer applied.
     trustedCardMode: true,
     systemPrompts: prompts,

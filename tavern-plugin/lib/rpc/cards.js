@@ -1,5 +1,8 @@
 import { waitForWritableSession } from '../domain/agent-readiness.js'
 import { normalizeResourcePath } from '../domain/file-resources.js'
+import { pngCarriesCardArchive } from '../domain/card-archive.js'
+import { pngPayload } from '../domain/mobile-card-import.js'
+import { readFile } from 'node:fs/promises'
 
 // Card library, card workspace and card import requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
@@ -69,6 +72,9 @@ export function createCardHandlers(deps) {
       const name = str(args && args.name) || '人物卡.dshcard'
       try {
         if (/\.(charx|dshcard)$/i.test(name)) return { card: await importCardArchiveFile(upload.file, name) }
+        // The page uploads a PNG whole when its end looks like an archive: a card archive with its cover in front
+        // imports as the archive; a plain card PNG that only looked like one imports as a PNG card.
+        if (/\.png$/i.test(name)) return { card: await pngCarriesCardArchive(upload.file) ? await importCardArchiveFile(upload.file, name) : await importCard(pngPayload(await readFile(upload.file), name)) }
         if (await pluginApi.cardImporterFor(name)) return { card: await importPluginCardFile(upload.file, name) }
         throw new Error('无法识别的人物卡文件（需要 PNG、JSON、CHARX、DSH 人物卡 .dshcard，或装上能导入这种文件的插件）')
       }

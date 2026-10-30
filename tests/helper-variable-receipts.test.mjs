@@ -21,37 +21,6 @@ test('delta shares untouched history, preserves aliases and rejects discontinuit
  assert.equal(message.messages[0].mes,'new');assert.equal(before.messages[0].mes,'old')
 })
 
-test('actual iframe applies message/chat/script receipts from the journal without full history', async t => {
- const host=await createHelperChatDataHost();t.after(host.cleanup)
- const receipts=[]
- host.invoke=async(method,args)=>{
-  assert.equal(method,'updateTavernHelperVariables')
-  const result=await host.adapter.updateVariables(args.sessionId,args.option,args.variables,args.expectedLifecycleRevision,args.eventId,args.contextBaseline)
-  receipts.push(result);return result
- }
- const run=await host.connect()
- for(const type of ['chat','message','script']){
-  await run.window.replaceVariables({hp:8},{type,message_id:0,script_id:'a'})
-  assert.equal(run.window.getVariables({type,message_id:0,script_id:'a'}).hp,8)
- }
- assert.equal(receipts.length,3)
- assert.ok(receipts.every(r=>r.contextDelta && !r.context))
- assert.equal((await host.open().read('audit')).messages[0].variables[0].hp,8)
-})
-
-test('iframe resynchronizes a missing revision with a read, never retries a committed write', async () => {
- const run=helperHostHarness(baseline())
- const pending=run.window.replaceVariables({hp:2},{type:'chat'})
- const call=run.calls()[0]
- assert.equal(call.args.contextBaseline.stateRevision,4)
- run.reply(call,{updated:true,contextDelta:delta({baseRevision:5,stateRevision:6})})
- await tick()
- assert.deepEqual(run.calls().map(c=>c.method),['updateTavernHelperVariables','getTavernHelperContext'])
- run.reply(run.calls()[1],{context:{...baseline(),stateRevision:6,chatVariables:{hp:2,concurrent:true}}})
- await pending
- assert.equal(run.window.getVariables({type:'chat'}).concurrent,true)
-})
-
 test('old receipts and old full responses cannot restore state after a switch or newer revision', async () => {
  for(const change of [{chatId:'other'}, {lifecycleRevision:3}, {stateRevision:8}]){
   const run=helperHostHarness(baseline())

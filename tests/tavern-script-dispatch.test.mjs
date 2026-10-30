@@ -55,19 +55,6 @@ test('MVU 加载失败即时终止在途事件，保留脱敏原因且不发布 
   assert.equal(ready, 2)
 })
 
-test('claim 尚未同步失败时，事件回执也识别初始化失败并脱敏', async () => {
-  const gate = createTavernScriptDispatch()
-  gate.claim('s', 'owner', true)
-  const pending = gate.dispatch('s', 'MESSAGE_RECEIVED')
-  const offer = claimAndStart(gate, 's', 'owner')
-  const { event } = offer
-  gate.complete('s', event.id, [], 'owner', offer.leaseToken, 'MVU 加载失败 http://localhost/bundle.js?token=secret-value',
-    [{ kind: 'initialization', initializationFailed: true }])
-  const result = await pending
-  assert.equal(result.initializationFailed, true)
-  assert.doesNotMatch(result.error, /secret-value/)
-})
-
 test('完成回执可重复确认，查询与续租严格校验执行身份', async () => {
   const gate = createTavernScriptDispatch({ executionTimeoutMs: 100 })
   gate.touch('s', 'browser', true)

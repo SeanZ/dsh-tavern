@@ -3,6 +3,7 @@
 // the status marker at the end of every opening, the two worldbook entries and
 // the two regex scripts. Opening prose and everything else is left untouched.
 import { inspectCardExtensions } from './card-extension-reading.js'
+import { plainKeys, plainPath } from './encoded-keys.js'
 
 export const STATUS_VIEW_ID = 'dsh-mvu-status-view'
 export const HIDE_MARKER_ID = 'dsh-mvu-hide-marker'
@@ -121,7 +122,20 @@ ${body}
  * request: { variables, openings, rules, panel, remove }. Omitted parts keep what the
  * card already has. Returns ordinary Tavern saves plus a summary.
  */
-export function planMvuApply(raw, request = {}) {
+// The converting Agent may write a key percent-encoded (encoded-keys.js); the card gets its
+// plain name, in the variables and in the panel's field paths alike.
+function plainRequest(request) {
+  const panel = object(request.panel) && Array.isArray(request.panel.sections) ? { ...request.panel, sections: request.panel.sections.map(section => object(section) && Array.isArray(section.fields)
+    ? { ...section, fields: section.fields.map(field => typeof field === 'string' ? plainPath(field) : object(field) && typeof field.path === 'string' ? { ...field, path: plainPath(field.path) } : field) }
+    : section) } : request.panel
+  return { ...request,
+    ...(object(request.variables) ? { variables: plainKeys(request.variables) } : {}),
+    ...(Array.isArray(request.openings) ? { openings: request.openings.map(item => object(item) ? plainKeys(item) : item) } : {}),
+    ...(panel === undefined ? {} : { panel }) }
+}
+
+export function planMvuApply(raw, input = {}) {
+  const request = plainRequest(input)
   const base = cardBase(raw)
   const data = base ? raw.data : raw
   const greetings = [str(data.first_mes), ...(Array.isArray(data.alternate_greetings) ? data.alternate_greetings.map(str) : [])]

@@ -31,6 +31,7 @@ export async function createPluginHost({ withTools = false } = {}) {
       get: name => services.get(name),
       inject(names, callback) { if (names.every(name => services.has(name))) return callback(this) },
       llm: services.get('llm'),
+      settings: services.get('settings'),
       effect(callback) { const stop = callback(); if (typeof stop === 'function') disposers.push(stop) },
       on: name => events.add(name),
       provide: (name, value) => services.set(name, value)
@@ -44,7 +45,7 @@ export async function createPluginHost({ withTools = false } = {}) {
       Object.assign(req, { method: 'POST', url: '/api/dsh-tavern/' + method, headers: { host: 'fixture.test' } })
       let status, body
       await routes.get('/api/dsh-tavern')(req, { writeHead(code) { status = code }, end(value) { body = value } })
-      assert.equal(status, 200)
+      assert.equal(status, 200, body)
       const result = JSON.parse(body)
       assert.equal(result.ok, true, result.error)
       return result

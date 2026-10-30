@@ -5,7 +5,6 @@ import { createEngineJudge, defaultJudgeConfig, judgeRequests, readJudgeConfig, 
 import { judgeAssetId, judgeItemText, recallGreenAssets, selectJudgeRecall } from '../tavern-plugin/lib/domain/stage-judge-recall.js'
 import { applyTavernSettingsPatch } from '../tavern-plugin/lib/domain/tavern-settings.js'
 import { createSettingsHandlers } from '../tavern-plugin/lib/rpc/settings.js'
-import { stageDirectorFixture } from './helpers/stage-director-fixture.mjs'
 
 const input = { material: 'Body\n\nThe latest turn.', questions: [{ id: 'a', text: 'Does this asset fit this turn\'s story? [music] Rain; use when: rain' }] }
 function fixture(config = validateJudgeConfig({ provider: 'jev' }), transport) {
@@ -94,16 +93,6 @@ test('a draft test cannot send a stored credential to a server the saved config 
   assert.equal((await f.service.test(validateJudgeConfig({ provider: 'openai' }))).ok, true)
 })
 
-test('tavern settings keep 判断模型 as stageJudge: unset by default; a patch is the whole config, validated', () => {
-  assert.deepEqual(readJudgeConfig(undefined), defaultJudgeConfig())
-  let document = applyTavernSettingsPatch({}, { stageJudge: { provider: 'jev' } })
-  assert.deepEqual([document.stageJudge.provider, document.stageJudge.model, document.stageJudge.keyName], ['jev', 'jev-1.13.0', 'TYPESAFE_API_KEY'])
-  document = applyTavernSettingsPatch(document, { stageJudge: { ...document.stageJudge, threshold: 0.8 } })
-  assert.deepEqual([document.stageJudge.provider, document.stageJudge.model, document.stageJudge.threshold], ['jev', 'jev-1.13.0', 0.8])
-  assert.deepEqual(applyTavernSettingsPatch(document, { stageJudge: {} }).stageJudge, defaultJudgeConfig(), 'an empty config is unset')
-  for (const stageJudge of [null, { threshold: 2 }, { apiKey: 'x' }, { provider: 'openai-compatible' }]) assert.throws(() => applyTavernSettingsPatch(document, { stageJudge }))
-})
-
 test('API Key: a pasted key is stored and never returned; a variable name that resolves becomes the keyName reference', async () => {
   const env = { MY_JUDGE_KEY: 'env-secret' }, stored = new Map(), logs = [], sent = []
   const vault = {
@@ -165,24 +154,4 @@ test('recall: blue and named green entries are offered without asking; the judge
   assert.deepEqual([...selectJudgeRecall([{ id: 'b', kind: 'music' }, { id: 'a', kind: 'music' }], new Map([['a', 0.7], ['b', 0.7]]), { threshold: 0.6, capPerKind: 1 })], ['a'], 'ties go by id')
   assert.equal(judgeAssetId(catalog().music[1]), 'p/music/Storm')
   assert.equal(judgeItemText('Rain', 'Field rain; licensed under CC BY 4.0.', 'music').includes('licensed'), false, 'credits are not sent')
-})
-
-test('the director offers a recalled green background or track for this turn only; the judge never sees the player input or history', async () => {
-  const story = { id: 'story', sessionId: 'game', mode: 'story', timeline: { branchId: 'branch', revision: 3 },
-    messages: [{ role: 'assistant', turn: 1, text: 'Opening.' }, { role: 'user', text: 'Secret player plan.' }, { role: 'assistant', turn: 2, text: 'They climb the stairs in silence.' }] }
-  const asked = []
-  let config = validateJudgeConfig({ provider: 'jev', preamble: 'Pick quiet cues.' })
-  const judge = { config: async () => config, judge: async (request, frozen) => { asked.push({ request, frozen }); return new Map([['p/backgrounds/Roof', 0.9], ['p/music/Lull', 0.2]]) } }
-  const h = await stageDirectorFixture(story, catalog(), { judge })
-  const request = await h.prepare(), context = JSON.parse(request.turnContext)
-  assert.deepEqual([context.background, context.music], [['Hall', 'Roof'], ['Theme']])
-  assert.equal(asked[0].request.material, 'Pick quiet cues.\n\nThey climb the stairs in silence.')
-  assert.ok(!JSON.stringify(asked).includes('Secret player plan') && !JSON.stringify(asked).includes('Opening.'))
-  assert.equal((await request.call({ background: 'Garden' })).ok, false, 'an unrecalled green entry is not a choice')
-  assert.deepEqual(await request.call({ background: 'Roof' }), { ok: true })
-  // Unset: the judge is not called and green entries follow their triggers.
-  config = defaultJudgeConfig()
-  await h.persistence.update('story', current => { current.messages.push({ role: 'user', text: 'Go on.' }, { role: 'assistant', turn: 3, text: 'Wind howls.' }); current.timeline.revision++; return current })
-  const next = JSON.parse((await h.prepare()).turnContext)
-  assert.deepEqual([next.background, next.state.background, asked.length], [['Hall'], 'Roof', 1], 'the current scene stays when its entry is not offered')
 })

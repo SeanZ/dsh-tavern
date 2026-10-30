@@ -1,3 +1,18 @@
+import { realpath } from 'node:fs/promises'
+
+async function sameSkillFile(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false
+  if (left === right) return true
+  try {
+    // The host canonicalizes paths; the library may retain a junction/root alias.
+    const [a, b] = await Promise.all([realpath(left), realpath(right)])
+    return a === b
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false
+    throw error
+  }
+}
+
 // The native registry retains its catalog, scope cache, watchers and skill loader.
 // This provider narrows filesystem candidates to the calling Tavern Agent's role.
 export function createTavernSkillProvider({ providers, library, roleFor, enabledFor = async () => true }) {
@@ -6,7 +21,7 @@ export function createTavernSkillProvider({ providers, library, roleFor, enabled
     const role = await roleFor(lookup.scope)
     if (!role) return false
     const skill = await library.read(candidate.name)
-    return skill?.path === candidate.path && skill.agents.includes(role) && await enabledFor(skill, lookup.scope)
+    return Boolean(skill) && skill.agents.includes(role) && await sameSkillFile(skill.path, candidate.path) && await enabledFor(skill, lookup.scope)
   }
   async function effective(skill) {
     const current = await library.read(skill.name)

@@ -1,5 +1,5 @@
 // Who speaks each quoted line of a turn and how they feel, as settlement annotated it before the story model wrote
-// its lines as dialogue bubbles (docs/design/cast-presentation.md). Earlier turns keep the annotation they have.
+// its lines as dialogue bubbles (Wiki「设计：cast-presentation」). Earlier turns keep the annotation they have.
 import { CAST_EMOTIONS } from './dialogue-bubbles.js'
 
 export { CAST_EMOTIONS }

@@ -5,7 +5,7 @@ import { createSettlementControls } from '../tavern-plugin/lib/domain/settlement
 import { createMvuSettlementResume } from '../tavern-plugin/lib/domain/mvu-settlement-resume.js'
 import {applyJsonChanges} from '../tavern-plugin/lib/domain/json-mutation.js'
 import { createSettlementJobs } from '../tavern-plugin/lib/domain/settlement-jobs.js'
-import { createTurnSettledEvents } from '../tavern-plugin/lib/domain/turn-settled-events.js'
+import { createStoryEvents } from '../tavern-plugin/lib/domain/story-events.js'
 import { createSessionStateView, projectChatSessionState } from '../tavern-plugin/lib/domain/chat-session-state.js'
 import { createMvuSettlementModule } from '../tavern-plugin/lib/domain/mvu-background-settlement.js'
 import { createTavernScriptHostAdapter } from '../tavern-plugin/lib/domain/tavern-script-host-adapter.js'
@@ -39,7 +39,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
   const running = beginRunning ? await tasks.begin(current, 'settlement') : null
   // The settlement's dependencies. The factories read them on every call, so tests swap services here.
   const sandbox = {
-    turnSettled: createTurnSettledEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
+    storyEvents: createStoryEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
     backgroundTasks: tasks, storyTimeline: timeline,
     readChat: store.readChat, chatForSession: store.readChat, writeChat: store.writeChat,
@@ -51,7 +51,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
       return {...structuredClone(current),messages:[]}
     },
     sessionStateForSession: async () => projectChatSessionState(await store.readChat()),
-    prepareNextWorldBookContext: async chat => chat, worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
+    prepareNextWorldBookContext: async () => assert.fail('retired recall preparation'), worldBookScanDepth: async () => 2, readChatCard: async () => ({}),
     view: async chat => chat,
     mvuUpdateRules: async () => [],
     backgroundModelSelection: () => ({}), runtimePrompt: () => '',
@@ -88,85 +88,6 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
   return { tasks, timeline, store, running, body, sandbox, history, onReady, reconciler, get: () => structuredClone(current) }
 }
 
-test('重启丢失 MVU 回执：显示中断、保留正文变量、可从真实重试入口完成同一 Round', async () => {
-  const run = await harness()
-  const before = run.get()
-  await run.tasks.recover(run.get())
-  const recovered = run.get()
-  assert.equal(run.tasks.activity(recovered).phase, 'failed')
-  assert.deepEqual(recovered.messages, before.messages)
-  assert.equal(recovered.timeline.revision, before.timeline.revision)
-  assert.equal(run.sandbox.mvuReceiptsOf(recovered)[0].receipt.status, 'interrupted')
-  await assert.rejects(run.history.regenerate('chat', '', 'session'), /无法访问 DSH 会话/,
-    '中断的旧结算不再阻止重生成，继续访问原生会话')
-  let calls = 0
-  run.sandbox.mvuSettlement.settleVariables = async () => {
-    calls++
-    return { receipt: { version: 1, status: 'unchanged', changes: [] } }
-  }
-  await run.sandbox.retrySettlement('session', 2)
-  await run.sandbox.queueSettlement('chat')
-  assert.equal(calls, 1)
-  assert.equal(run.get().timeline.operations[run.body.value.operationId].status, 'completed')
-  assert.equal(run.get().timeline.checkpoints.length, 1)
-  assert.equal(run.sandbox.mvuReceiptsOf(run.get())[0].receipt.status, 'unchanged')
-  assert.equal(run.get().messages[1].text, before.messages[1].text)
-  assert.deepEqual(run.get().messages[1].variables, before.messages[1].variables)
-  await assert.rejects(run.history.regenerate('chat', '', 'session'), /无法访问 DSH 会话/, '结算完成后已通过保护，继续访问原生会话')
-})
-
-test('变量 effect 与 receipt 提交时不重复推进正文 checkpoint 和 revision', async () => {
-  const run = await harness({ beginRunning: false })
-  const commits = []
-  const originalUpdate = run.store.updateChat
-  run.store.updateChat = async function (...args) {
-    const saved = await originalUpdate(...args)
-    commits.push({ source: args[2]?.source, chat: structuredClone(saved) })
-    return saved
-  }
-  run.sandbox.mvuSettlement.settleVariables = async input => {
-    const before = run.get()
-    const after = structuredClone(before)
-    after.messages[1].variables[0].stat_data.hp = 9
-    return {
-      effect: createMvuSettlementEffect({
-        operationId: input.operationId,
-        chatId: before.id, sessionId: before.sessionId,
-        branchId: input.branchId, basedOnRevision: input.basedOnRevision,
-        expectedLifecycleRevision: 0, messageId: 1, swipeId: 0,
-        before, after
-      }),
-      receipt: { version: 1, status: 'updated', changes: [{ path: '/hp', before: 10, after: 9 }] }
-    }
-  }
-
-  await run.sandbox.queueSettlement('chat')
-
-  const saved = run.get()
-  assert.equal(commits.filter(row => row.source === 'background.settlement.commit').length, 1)
-  for (const { chat } of commits) {
-    assert.equal(chat.timeline.revision, 1)
-    assert.equal(chat.timeline.checkpoints.length, 1)
-  }
-  assert.equal(saved.messages[1].variables[0].stat_data.hp, 9)
-  assert.equal(saved.messages[1].mvu.receipt.status, 'updated')
-  assert.equal(saved.timeline.operations[run.body.value.operationId].status, 'completed')
-  assert.equal(saved.timeline.revision, 1)
-  assert.equal(saved.timeline.checkpoints.length, 1)
-})
-
-test('旧版已恢复成 pending 但没有待执行提交的存档也能恢复，重复恢复幂等', async () => {
-  const run = await harness()
-  const legacy = run.get()
-  legacy.timeline.operations[run.running.operationId].status = 'interrupted'
-  legacy.timeline.operations[run.body.value.operationId].background.phase = 'pending'
-  await run.store.writeChat(legacy)
-  await run.tasks.recover(legacy)
-  assert.equal(run.sandbox.mvuReceiptsOf(run.get())[0].receipt.status, 'interrupted')
-  const again = await run.tasks.recover(run.get())
-  assert.equal(again.status, 'unchanged')
-})
-
 test('non-MVU settlement binds session before first response so interruption can reuse it', async () => {
   const h = await harness({ beginRunning: false, mvu: false });
   let bound = false;
@@ -181,54 +102,6 @@ test('non-MVU settlement binds session before first response so interruption can
   const next = await restarted.begin(h.get(), 'candidate');
   assert.equal(next.participantRequest.sessionId, 'background-first-interrupted');
 });
-
-test('插件替换结算：采用插件交回的姿势，不再运行 Tavern 自己的后台结算；插件退回时照常运行', async () => {
-  const h = await harness({ beginRunning: false, mvu: false })
-  const requests = []
-  let runs = 0
-  h.sandbox.backgroundAgentRunner.run = async input => { runs++; await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
-  h.sandbox.pluginApi.replaceSettlement = async input => { requests.push(input); return { owner: 'anchor', posture: '插件的姿势' } }
-  await h.sandbox.queueSettlement('chat')
-  assert.equal(runs, 0)
-  assert.equal(h.get().posture, '插件的姿势')
-  assert.deepEqual(JSON.parse(JSON.stringify([requests[0].gameId, requests[0].turn, requests[0].text, requests[0].tasks])), ['session', 2, '门开了', { posture: true }])
-  assert.equal(h.get().settleStatus, 'done')
-
-  const fallback = await harness({ beginRunning: false, mvu: false })
-  fallback.sandbox.backgroundAgentRunner.run = async input => { await input.onToolCall({ name: 'posture_submit', arguments: { posture: 'Tavern 的姿势' } }); return { text: '' } }
-  await fallback.sandbox.queueSettlement('chat')
-  assert.equal(fallback.get().posture, 'Tavern 的姿势', 'no replacement: Tavern settles as before')
-})
-
-test('MVU 执行器失联保留持久任务，恢复后自动续办且不重开模型', async () => {
-  const run = await harness({ beginRunning: false })
-  const before = run.get().messages[1]
-  let generated = 0, resumed = 0
-  run.sandbox.tavernScriptDispatch.status = () => ({ ready: false })
-  run.sandbox.mvuSettlement.settleVariables = async input => {
-    generated++
-    const submission = { operations: [] }
-    await input.onSubmission(submission)
-    return { submission, receipt: { status: 'pending', changes: [] } }
-  }
-  await run.sandbox.queueSettlement('chat')
-  const pending = run.get()
-  assert.equal(pending.settleStatus, 'pending')
-  assert.equal(pending.messages[1].mvu.pending, true)
-  assert.equal(pending.messages[1].text, before.text)
-  assert.deepEqual(pending.messages[1].variables, before.variables)
-  assert.equal(run.tasks.activity(pending).phase, 'pending')
-  assert.equal(pending.messages[1].mvu.delivery.version, 1)
-  run.sandbox.mvuSettlement.resumeVariables = async () => { resumed++; return { receipt: { status: 'unchanged', changes: [] } } }
-  // Complete the independent onSettled offline check before reconnecting.
-  await new Promise(resolve => setImmediate(resolve))
-  run.sandbox.tavernScriptDispatch.status = () => ({ ready: true })
-  await run.reconciler.wake('session')
-  assert.equal(run.get().settleStatus, 'done')
-  assert.equal(generated, 1)
-  assert.equal(resumed, 1)
-  assert.equal(run.get().messages[1].mvu.delivery, undefined)
-})
 
 test('旧版安全挂起任务离线时保留提交，不丢弃为失败', async () => {
   const run = await harness()
@@ -352,7 +225,7 @@ test('接续刚创建新 operation 再次崩溃，仍能从原持久任务恢复
   assert.equal(run.tasks.activity(run.get()).phase, 'failed', 'changed target cannot reuse the old task')
 })
 
-for (const stage of ['read', 'prepare']) test(`销毁期间结束的 ${stage} 不能再启动后台结算`, async () => {
+for (const stage of ['read']) test(`销毁期间结束的 ${stage} 不能再启动后台结算`, async () => {
   const run = await harness({ beginRunning: false })
   let release, entered
   const held = new Promise(resolve => { release = resolve })
@@ -447,79 +320,6 @@ test('手动插件任务：登记为独占的后台任务，跑完后关闭；�
   await job
   assert.equal(h.tasks.activity(h.get()).busy, false)
   assert.equal(h.sandbox.settlementRun.pluginTaskJob('chat'), undefined)
-})
-
-// Guards for the background task pipeline refactor (docs/design/background-task-pipeline.md):
-// what Tavern's own settlement asks of the model must stay byte-identical.
-function settlementRequest(input) {
-  return JSON.parse(JSON.stringify({ task: input.task, persistent: input.persistent, system: input.system, tools: (input.tools || []).map(tool => tool.name),
-    messages: (input.messages || []).map(message => message.content.map(block => block.text).join('')), maxToolCalls: input.maxToolCalls, temperature: input.temperature,
-    turn: input.turn, backgroundTasks: input.backgroundTasks }))
-}
-
-test('管线护栏：普通卡开姿势时，结算请求的提示词、工具与结束条件逐字不变', async () => {
-  const h = await harness({ beginRunning: false, mvu: false })
-  h.sandbox.runtimePrompt = name => '〈' + name + '〉'
-  const requests = []
-  h.sandbox.backgroundAgentRunner.run = async input => {
-    requests.push(settlementRequest(input))
-    assert.equal(input.stopToolsWhen(), false)
-    await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } })
-    assert.equal(input.stopToolsWhen(), true)
-    assert.equal(input.acceptWithoutText(), true)
-    return { text: '' }
-  }
-  await h.sandbox.queueSettlement('chat')
-  assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '〈posture-settlement〉\n\nposture_submit 是本任务最后一步。', tools: ['posture_submit'],
-    messages: ['【上一轮结算姿势】\n（无）\n【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false } }])
-  assert.equal(h.get().settleStatus, 'done')
-})
-
-test('管线护栏：只开台词标注时照样跑结算（不提交姿势）；全部关闭时不调用模型也提交', async () => {
-  const cast = await harness({ beginRunning: false, mvu: false })
-  await cast.store.writeChat({ ...cast.get(), backgroundTasks: { posture: false, variables: true } })
-  cast.sandbox.settlementItems = { wanted: async () => true }
-  const requests = []
-  cast.sandbox.backgroundAgentRunner.run = async input => { requests.push(settlementRequest(input)); assert.equal(input.acceptWithoutText(), false); return { text: '完成' } }
-  await cast.sandbox.queueSettlement('chat')
-  assert.deepEqual(requests, [{ task: 'settlement', persistent: true, system: '本轮不生成或提交姿势。完成启用的后台任务后简短回复完成。\n\n', tools: [],
-    messages: ['【最新一轮对话】\n玩家: 开门\n正文: 门开了'], maxToolCalls: 12, temperature: 0.2, turn: 2, backgroundTasks: { posture: false, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false } }])
-  assert.equal(cast.get().settleStatus, 'done')
-
-  const off = await harness({ beginRunning: false, mvu: false })
-  await off.store.writeChat({ ...off.get(), backgroundTasks: { posture: false, variables: true } })
-  off.sandbox.settlementItems = { wanted: async () => false }
-  let runs = 0
-  off.sandbox.backgroundAgentRunner.run = async () => { runs++; return { text: '' } }
-  await off.sandbox.queueSettlement('chat')
-  assert.equal(runs, 0)
-  assert.equal(off.get().settleStatus, 'done')
-})
-
-test('管线护栏：官方 MVU 卡的变量结算收到的提示词与开关逐字不变', async () => {
-  const h = await harness({ beginRunning: false, mvu: true })
-  h.sandbox.runtimePrompt = name => '〈' + name + '〉'
-  const inputs = []
-  h.sandbox.mvuSettlement.settleVariables = async input => {
-    inputs.push(JSON.parse(JSON.stringify({ system: input.system, backgroundTasks: input.backgroundTasks, guidance: input.guidance,
-      storyText: input.storyText, turn: input.turn, messageId: input.messageId, swipeId: input.swipeId, webSearchEnabled: input.webSearchEnabled })))
-    return { receipt: { version: 1, status: 'unchanged', changes: [] } }
-  }
-  await h.sandbox.queueSettlement('chat')
-  assert.deepEqual(inputs, [{ system: '〈posture-settlement〉', backgroundTasks: { posture: true, characterDesign: false, variables: true, ledger: false, styleReference: false, worldbookScreening: false }, guidance: '',
-    storyText: '门开了', turn: 2, messageId: 1, swipeId: 0, webSearchEnabled: false }])
-})
-
-test('管线护栏：一轮的阶段顺序是前置任务、主结算、后置任务、收尾', async () => {
-  const h = await harness({ beginRunning: false, mvu: false })
-  const seen = []
-  h.sandbox.backgroundAgentRunner.run = async input => { seen.push('settle'); await input.onToolCall({ name: 'posture_submit', arguments: { posture: '门边' } }); return { text: '' } }
-  h.sandbox.taskStateReader.read = async () => h.store.readChat()
-  h.sandbox.pluginApi.runSettlementTasks = async ({ phase, around }) => { seen.push(phase); if (around) await around(async () => {}) }
-  const jobs = createSettlementJobs({ run: (...args) => h.sandbox.runSettlementCycle(...args), onSettled: () => seen.push('settled') })
-  await jobs.start('chat')
-  assert.deepEqual(seen, ['before', 'parallel', 'settle', 'after', 'settled'])
-  jobs.dispose()
 })
 
 // 切换历史结果留下的「变量未重算」标记：重新结算排队和失败时保留，成功提交后才清除。

@@ -17,8 +17,6 @@ node tavern-plugin/lib/vendor/st-prompt-template/host-build/audit.mjs
 
 Requires the project's Node 22 runtime with stripTypeScriptTypes support. The audit checks inventory and content hashes before parsing TypeScript without executing it. It lists static imports, including imports that upstream did not explicitly label as types. The inventory is deliberately not a compatibility score: globals, dynamic loading, DOM selectors, event ordering, and persistence behavior require separate runtime tests. `runtimeReady` remains false.
 
-See docs/implementation/st-prompt-template-full-port.md for integration and acceptance boundaries.
-
 ## Host build and browser verification
 
 The host build now includes all five upstream modules, Faker, xxhash and Monaco with its workers. It resolves SillyTavern imports to `host-build/host.js`; unsupported callback operations throw `PROMPT_TEMPLATE_HOST_UNSUPPORTED`. No host operation is silently acknowledged. The adapter is a per-frame singleton and must never be reused for another session, even after disposal.

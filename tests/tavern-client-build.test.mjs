@@ -28,7 +28,6 @@ for (const check of [false, true]) {
   test(`客户端 ${check ? '--check' : 'build'} 拒绝非法语法且保留现有产物`, async t => {
     const root = await realpath(await mkdtemp(path.join(tmpdir(), 'tavern-client-build-')))
     t.after(() => rm(root, { recursive: true, force: true }))
-    await symlink(new URL("../node_modules", import.meta.url), path.join(root, "node_modules"), "dir");
     const builder = path.join(root, 'bin/build-tavern-client.mjs')
     const template = path.join(root, 'tavern-plugin/src/client/main.js')
     const output = path.join(root, 'tavern-plugin/lib/client.js')
@@ -37,6 +36,8 @@ for (const check of [false, true]) {
     }
     await copyFile(new URL('../bin/build-tavern-client.mjs', import.meta.url), builder)
     await copyFile(new URL('../bin/lib/client-export-guard.mjs', import.meta.url), path.join(root, 'bin/lib/client-export-guard.mjs'))
+    // The copied builder imports its dependencies (acorn) by package name.
+    await symlink(new URL('../node_modules', import.meta.url).pathname, path.join(root, 'node_modules'), 'dir')
     await writeFile(path.join(root, 'tavern-plugin/lib/client-assets/tavern.css'), '')
     for (const name of ['logo', 'lockup', 'lockup-dark']) await writeFile(path.join(root, `tavern-plugin/lib/client-assets/${name}.svg`), '<svg/>')
     const valid = 'const fixture = 1;\n'

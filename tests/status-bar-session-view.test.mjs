@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 test('saved status bar placement survives real full, dirty, and cached session RPC projections', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tavern-status-view-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tavern-status-view-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/status-bar-session-view.mjs', import.meta.url))], {
     env: { ...process.env, DSH_HOME: root }, encoding: 'utf8', timeout: 20000

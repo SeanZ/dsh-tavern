@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { CAST_EMOTIONS } from './cast-annotation.js'
 
-// Voiced dialogue (docs/design/cast-presentation.md): one speech channel for all games, a voice
+// Voiced dialogue (Wiki「设计：cast-presentation」): one speech channel for all games, a voice
 // per character per channel (kept with the card's character material), audio cached by content.
 // Channels: the browser's own voices, a few common services, and any a plugin adds.
 

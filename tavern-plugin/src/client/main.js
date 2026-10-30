@@ -67,7 +67,10 @@ window.__ModuleLoader__.load({
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
 		async function importTavernCardFile(file, call) {
-			if (!/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""))) {
+			const archive = !/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""));
+			// A PNG ending like a ZIP may be a card archive with its cover in front (大肥鱼.dshcard.png): it goes up
+			// as a file too, and the host decides (a plain card PNG that only looked like one still imports).
+			if (archive || /\.png$/i.test(String(file.name || "")) && await tavernPngEndsLikeZip(file)) {
 				const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
 				let reply = null;
 				try { reply = await response.json(); } catch (_error) {}
@@ -75,6 +78,15 @@ window.__ModuleLoader__.load({
 				return call("importCardUpload", { uploadId: reply.uploadId, name: file.name });
 			}
 			return call("importCard", { payload: await parseCardFile(file) });
+		}
+
+		/** Whether a file's last 64 KB hold a ZIP end record. */
+		async function tavernPngEndsLikeZip(file) {
+			const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 65557)).arrayBuffer());
+			for (let index = tail.length - 22; index >= 0; index--) {
+				if (tail[index] === 0x50 && tail[index + 1] === 0x4b && tail[index + 2] === 0x05 && tail[index + 3] === 0x06) return true;
+			}
+			return false;
 		}
 
 		/** What a card file brought into its character material, for the import notice. */
@@ -964,10 +976,10 @@ window.__ModuleLoader__.load({
             }, SceneImageGallery)), "dsh-tavern: picture gallery");
             ctx.effect(() => slots.inject("conversation.view", () => slots.register({
                 name: "conversation.view", id: "dsh-tavern:polish", order: 13,
-                label: "精修对比", inject: sessionId => ({ polishSessionId: sessionId })
+                label: "精修", inject: sessionId => ({ polishSessionId: sessionId })
             }, PolishComparisonView)), "dsh-tavern: polish comparison");
             // 顶部标签（全部已注册的 conversation.view）的设置：设置页读这份目录，标签行由
-            // installTavernViewTabLayout 按保存的顺序显示或隐藏，没保存过时按注册顺序全部显示。
+            // installTavernViewTabLayout 按保存的顺序显示或隐藏，没保存过时按注册顺序派生，完整上下文按需添加。
             ctx.effect(function () {
                 const publish = function () { tavernViewTabCatalog.publish(tavernViewTabEntries(slots)); };
                 const dispose = typeof slots.subscribe === "function" ? slots.subscribe("conversation.view", publish) : function () { };
@@ -1107,6 +1119,8 @@ window.__ModuleLoader__.load({
 				const taskText = "【卡片任务：" + label + "】" + targetSection + "\n\n" + String(result && result.text || "").trim() + resourceSection;
 				input.setDraft(taskText + supplement);
 			}
+			// 界面皮肤 (modules/interface-skin.js): apply the imported skin once Tavern's routes answer.
+			void applyActiveInterfaceSkin().catch(function () {});
 			registerTavernStartPage(ctx, slots);
 			playControlsFeature.register({ ctx: ctx, slots: slots });
 			assistantRendererFeature.register({ ctx: ctx, slots: slots });
@@ -1126,6 +1140,15 @@ window.__ModuleLoader__.load({
 					label: function () { return "DSH Tavern"; }
 				}, TavernSettingsSection); });
 			}, "dsh-tavern: settings section");
+			// 界面皮肤 sits in 「Theme / 外观」 (the bundled dream-skin's item list), next to its
+			// 皮肤 and 强调色 rows, where players look for the app's look.
+			ctx.effect(function () {
+				return slots.inject("settings.dreamSkin.item", function () { return slots.register({
+					name: "settings.dreamSkin.item",
+					id: "dsh-tavern-interface-skin",
+					order: 26
+				}, InterfaceSkinSettings); });
+			}, "dsh-tavern: interface skin settings");
 			ctx.effect(function () {
 				return slots.inject("settings.section", function () { return slots.register({
 					name: "settings.section",
@@ -1290,7 +1313,9 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		// @include modules/assistant-visibility.js
 		installTavernAssistantVisibilityPatch(require);
 		// @include modules/host-session-patch.js
-		installTavernSessionHistoryPatch(require, rpc);
+		// The page's session history only: the server's headless card runtime has none, and
+		// would report the missing patch for the whole profile.
+		if (!window.__dshTavernHeadless) installTavernSessionHistoryPatch(require, rpc);
 		return module.exports;
 	}
 });

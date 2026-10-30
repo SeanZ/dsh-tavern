@@ -237,6 +237,8 @@ async function start(sessionId) {
   Object.defineProperty(w, 'crypto', { configurable: true, value: { subtle: webcrypto.subtle, getRandomValues: array => webcrypto.getRandomValues(array), randomUUID: () => 'server-' + webcrypto.randomUUID() } })
   let factory
   w.__ModuleLoader__ = { load(definition) { factory = definition.factory } }
+  // Tells the client bundle it has no real page: page-only patches stay out.
+  w.__dshTavernHeadless = true
   w.eval(await readFile(clientUrl, 'utf8'))
   await runDocumentScripts(w, dom.getInternalVMContext())
   const React = new Proxy({ createElement: () => null, useState: value => [typeof value === 'function' ? value() : value, () => {}], useRef: value => ({ current: value }), useMemo: fn => fn(), useCallback: fn => fn, useEffect() {}, useLayoutEffect() {}, useSyncExternalStore: (_subscribe, get) => get(), useReducer: (_reducer, state) => [state, () => {}], useContext() {}, createContext: () => ({ Provider: 'provider' }), memo: value => value, forwardRef: value => value, Fragment: 'fragment' }, { get: (target, key) => key in target ? target[key] : () => null })

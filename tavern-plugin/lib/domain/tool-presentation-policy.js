@@ -1,5 +1,15 @@
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
 
+// 与后台提示词装配共用规则；工具列表来自当前任务，不依赖持久成员的旧任务。
+export function filterBackgroundTools(tools, context) {
+  if (context.task === 'phone') return []
+  if (['polish', 'stage-director'].includes(context.task) || context.ownPrefix === true) {
+    const names = new Set(context.toolNames || [])
+    return tools.filter(tool => names.has(tool.name))
+  }
+  return context.worldbookSkillsEnabled ? tools : tools.filter(tool => !['read', 'worldbook_list', 'worldbook_grep'].includes(tool.name))
+}
+
 // 新宿主的提示词 waterfall 不再拥有工具声明。这里只缩小既有请求，不注册或扩张能力。
 export function installToolPresentationPolicy(ctx, { filter, sessionFor }) {
   const stage = 'tavern-tool-policy'

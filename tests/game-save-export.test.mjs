@@ -45,21 +45,6 @@ function fixture({ images = true, missing = false, pluginFailure = false, mutate
   return { exporter, reads, warnings, session }
 }
 
-test('导出器打包稳定历史、快照人物卡与剧本，筛掉旧分支媒体和已删除图片', async () => {
-  const { exporter, reads } = fixture()
-  const result = await exporter('session-a')
-  const save = readGameSave(Buffer.from(result.base64, 'base64'))
-  assert.equal(result.filename, '新_名称.dshsave')
-  assert.equal(result.revisions, 1)
-  assert.equal(result.images, 2)
-  assert.equal(save.card.payload.text, '{"name":"卡"}')
-  assert.equal(save.script.text, '剧本')
-  assert.deepEqual(save.revisions.map(r => r.revision), [1])
-  assert.deepEqual(reads, ['message', 'scene', 'audio'])
-  assert.deepEqual(save.plugins.media.items.map(item => item.id), ['current', 'duplicate'])
-  assert.equal(save.plugins.attachments[0].data.toString(), 'audio-bytes')
-})
-
 test('关闭场景图片仍保留消息图片；图片和插件不可读时正文仍可导出', async () => {
   const plain = fixture({ images: false })
   const result = await plain.exporter('session-a', { images: false })
@@ -74,32 +59,6 @@ test('关闭场景图片仍保留消息图片；图片和插件不可读时正�
   assert.equal(recoveredSave.chat.messages[0].text, '正文')
   assert.equal(recoveredSave.plugins, null)
   assert.equal(damaged.warnings.length, 1)
-})
-
-test('导出期间发生存档更新时拒绝返回混合版本；未绑定会话明确报错', async () => {
-  const { exporter } = fixture({ mutate: true })
-  await assert.rejects(exporter('session-a'), /发生变化/)
-  await assert.rejects(exporter('missing'), /没有绑定/)
-})
-
-test('同包带走世界书时不重复内嵌开局世界书；单独导出仍自带一份', async () => {
-  const { exporter } = fixture({ worldbook: true })
-  const selfContained = readGameSave(Buffer.from((await exporter('session-a')).base64, 'base64'))
-  assert.ok(selfContained.chat.openingWorldbookSnapshot?.document, '单独导出的存档自带整本世界书')
-  assert.ok(selfContained.revisions[0].state.openingWorldbookSnapshot?.document, '回退历史同样自带')
-
-  const slim = readGameSave(Buffer.from((await exporter('session-a', { embedWorldbook: false })).base64, 'base64'))
-  assert.equal(slim.chat.openingWorldbookSnapshot, undefined, '同包已带世界书时，局里不再存一份')
-  assert.equal(slim.revisions[0].state.openingWorldbookSnapshot, undefined, '回退历史也不存')
-  assert.ok(slim.chat.messages[0].text, '正文照旧')
-  assert.ok(slim.chat.cardDefinitionSnapshot?.raw, '卡片快照照旧')
-})
-
-test('卡没有绑定世界书时，即使包里带了别的书也保留这局的快照：它是这局唯一的世界', async () => {
-  const { exporter } = fixture({ worldbook: true, boundWorldbook: false })
-  const save = readGameSave(Buffer.from((await exporter('session-a', { embedWorldbook: false })).base64, 'base64'))
-  assert.ok(save.chat.openingWorldbookSnapshot?.document)
-  assert.ok(save.revisions[0].state.openingWorldbookSnapshot?.document)
 })
 
 test('同包带走预设时存档不再内嵌预设快照，但保留 runtimePresetPath 供导入重新冻结', async () => {

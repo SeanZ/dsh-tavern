@@ -376,3 +376,19 @@ test('输出走工具调用：请求在当前输入前插一条真实 assistant 
   assert.match(ack.content[0].text, /^收到。/)
   assert.equal(request.messages.at(-1).content[0].text, '新输入', '玩家输入仍在最后')
 })
+
+
+test('style instructions appear only with its offered tool, never inject polish principles', async () => {
+  let offered = true
+  const strategy = createNativePlayOrchestrationStrategy({ modeFor: async () => 'story',
+    visibleTools: async () => offered ? ['style_reference_submit'] : [], resolvePreset: async () => null,
+    controlledToolNames: new Set(['style_reference_submit']), styleReferencePrompt: () => '前台选段后继续写正文' })
+  const input = { sessionId: 'game', chat: { mode: 'story' }, fixedSystemSections: [{ name: 'card', text: '人物设定' }] }
+  const assemble = () => strategy.assembleSystemPrompt({ tools: [{ name: 'style_reference_submit' }], sections: [] }, input)
+  const on = await assemble()
+  assert.ok(on.sections.some(section => section.name === 'tavern:foreground-style-reference'))
+  assert.ok(!on.sections.some(section => /polish|draft/.test(section.name)))
+  offered = false
+  const off = await assemble()
+  assert.ok(!off.sections.some(section => section.name === 'tavern:foreground-style-reference'))
+})

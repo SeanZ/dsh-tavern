@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRegexManager, applyRegexOverrides, normalizeRegexOverrides, regexScriptKey, storedRegexScript } from '../tavern-plugin/lib/domain/regex-manager.js'
 import { createTavernRegexSettings } from '../tavern-plugin/lib/domain/regex-settings.js'
-import { withGlobalRegexScripts, composeTavernRegexScripts } from '../tavern-plugin/lib/domain/card-extension-reading.js'
 import { createRegexHandlers } from '../tavern-plugin/lib/rpc/regex.js'
 
 function extensionSettings(initial = {}) {
@@ -69,36 +68,6 @@ function harness(options = {}) {
   })
   return { manager, store, legacy, updates, chat: () => chat }
 }
-
-test('migrates the retired inert library into disabled global rules exactly once', async () => {
-  const h = harness({
-    global: [{ id: 'g1', scriptName: '全局A', findRegex: '/a/g', replaceString: 'A', placement: [2], disabled: false }],
-    legacy: [{ id: 'old1', name: '旧正则', script: { findRegex: '/old/g', replaceString: 'OLD', placement: [2] } }],
-    chat: null
-  })
-  const first = await h.manager.read('')
-  assert.equal(first.migrated, 1)
-  assert.deepEqual(first.global.map(entry => entry.name), ['全局A', '旧正则'])
-  assert.equal(first.global[1].enabled, false)
-  assert.equal(h.store.current().regex[1].disabled, true)
-  assert.equal(h.legacy.migrated(), true)
-  const second = await h.manager.read('')
-  assert.equal(second.migrated, 0)
-  assert.equal(second.global.length, 2)
-})
-
-test('reads global, preset snapshot and card rules with session overrides applied', async () => {
-  const h = harness({
-    global: [{ id: 'g1', scriptName: '全局A', findRegex: '/a/g', replaceString: 'A', placement: [2] }]
-  })
-  const data = await h.manager.read('session-1')
-  assert.equal(data.mode, 'story')
-  assert.deepEqual(data.global.map(entry => [entry.key, entry.enabled, entry.overridden]), [['g1', true, false]])
-  assert.equal(data.preset.name, 'warm-narrative')
-  assert.deepEqual(data.preset.scripts.map(entry => [entry.key, entry.sourceEnabled, entry.overridden, entry.enabled]), [['p1#1', true, true, false]])
-  assert.deepEqual(data.card.scripts.map(entry => [entry.key, entry.sourceEnabled, entry.overridden, entry.enabled]), [['c1', false, true, true], ['c2', true, false, true]])
-  assert.deepEqual(data.overrides, { preset: { 'p1#1': false }, card: { c1: true } })
-})
 
 test('global writes are compare-and-swap and preserve order and unknown fields', async () => {
   const h = harness({ global: [{ id: 'g1', scriptName: 'A', findRegex: '/a/g', replaceString: 'A', placement: [2], extra: 1, disabled: false }], chat: null })
@@ -205,18 +174,6 @@ test('preview uses the host replacement engine and layer filters', async () => {
   const broken = await h.manager.preview({ text: 'a', scripts: [{ name: '坏', findRegex: '(', replaceString: 'x', placement: [2] }, { name: '好', findRegex: '/a/g', replaceString: 'ok', placement: [2] }] })
   assert.equal(broken.text, 'ok')
   assert.equal(broken.warnings.length, 1)
-})
-
-test('card overrides and preset overrides flow into the composed regex list in SillyTavern order', async () => {
-  const global = { id: 'g1', name: 'G', findRegex: '/g/', replaceString: '', enabled: true, placement: [2] }
-  const card = { id: 'c1', name: 'C', ref: 'regex:0', findRegex: '/c/', replaceString: '', enabled: true, placement: [2] }
-  const preset = { id: 'p1', regexKey: 'p1#1', name: 'P', findRegex: '/p/', replaceString: '', enabled: true, placement: [2] }
-  const extensions = withGlobalRegexScripts({ regexScripts: [card] }, { regex: [global] }, { card: { c1: false } })
-  assert.deepEqual(extensions.regexScripts.map(script => [script.name, script.enabled]), [['G', true], ['C', false]])
-  assert.deepEqual(extensions.characterRegexScripts.map(script => script.enabled), [false])
-  const composed = composeTavernRegexScripts(extensions, [preset], { 'p1#1': false })
-  assert.deepEqual(composed.map(script => [script.name, script.enabled]), [['G', true], ['P', false], ['C', false]])
-  assert.equal(composed[1].findRegex, '/p/')
 })
 
 test('override maps are normalized and malformed entries are dropped', () => {

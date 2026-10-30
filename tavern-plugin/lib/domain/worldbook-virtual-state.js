@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { classifyWorldbookEntry, hasWorldbookPreprocessingSyntax } from './worldbook-entry-classification.js'
+import { classifyWorldbookEntry, hasWorldbookPreprocessingSyntax, isWorldbookRuntimeEntry } from './worldbook-entry-classification.js'
 import { isMvuUpdateEntry } from './worldbook-recall.js'
 import { promptOrder } from './worldbook-activation.js'
 
@@ -46,7 +46,8 @@ export function eligibleVirtualSourceEntries(worldBook, chat) {
 }
 
 /** Request-prefix projection never evaluates templates. Constants are freshly
- * read from source, while only version-valid latest dynamic snapshots survive.
+ * read from source; only version-valid runtime rule/controller snapshots are
+ * restored. Dynamic data stays in searchable files, even after compaction.
  * A prefix is outside the compressible message history and is rebuilt on retry.
  */
 export function projectVirtualWorldbookPrefix(worldBook, chat, { restore = true, restoreRefs } = {}) {
@@ -54,6 +55,6 @@ export function projectVirtualWorldbookPrefix(worldBook, chat, { restore = true,
   const state = currentVirtualState(chat, entries)
   const staticPrefix = entries.filter(entry => classifyWorldbookEntry(entry).kind === 'static-constant').map(entry => String(entry.content ?? '')).join('\n\n')
   const allowed = restoreRefs === undefined ? null : new Set(restoreRefs)
-  const snapshots = restore ? entries.filter(entry => classifyWorldbookEntry(entry).dynamic && (!allowed || allowed.has(entry.ref)) && (state.entries[entry.ref]?.contextText ?? state.entries[entry.ref]?.text)).map(entry => state.entries[entry.ref].contextText ?? state.entries[entry.ref].text).join('\n\n') : ''
+  const snapshots = restore ? entries.filter(entry => classifyWorldbookEntry(entry).dynamic && isWorldbookRuntimeEntry(entry) && (!allowed || allowed.has(entry.ref)) && (state.entries[entry.ref]?.contextText ?? state.entries[entry.ref]?.text)).map(entry => state.entries[entry.ref].contextText ?? state.entries[entry.ref].text).join('\n\n') : ''
   return { staticPrefix, snapshots, prefixContext: [staticPrefix, snapshots].filter(Boolean).join('\n\n') }
 }

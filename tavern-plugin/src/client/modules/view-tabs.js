@@ -1,5 +1,5 @@
 		// 顶部视图标签（全部已注册的 conversation.view 页签）：设置决定显示哪些、
-		// 按什么顺序；没保存过时按注册顺序全部显示。「对话」由宿主注册，始终保留在最前，不能移除。
+		// 按什么顺序；没保存过时按注册顺序派生，完整上下文按需添加。「对话」由宿主注册，始终保留在最前，不能移除。
 		// 标签行由宿主渲染，这里只给每个标签按钮设置 order / display。
 		const TAVERN_VIEW_TAB_RESIDENT = "chat";
 		const TAVERN_VIEW_TAB_ITEM_LIMIT = 24;
@@ -9,15 +9,15 @@
 			Object.freeze({ id: "trajectory", label: "轨迹" }),
 			Object.freeze({ id: "dsh-tavern:full-context", label: "完整上下文" }),
 			Object.freeze({ id: "dsh-tavern:gallery", label: "画廊" }),
-			Object.freeze({ id: "dsh-tavern:polish", label: "精修对比" })
+			Object.freeze({ id: "dsh-tavern:polish", label: "精修" })
 		]);
 
 		// 读取统一的可见清单：「对话」缺失时补上，排在后面时挪回首位。
-		// 没保存过清单时从已注册条目派生：对话首位，其余按 order 升序（相等保持注册顺序）。
+		// 没保存过清单时从已注册条目派生：对话首位，其余按 order 升序（相等保持注册顺序）；完整上下文按需添加。
 		function tavernViewTabItems(value, entries) {
 			const saved = value && Array.isArray(value.items) ? value.items : null;
 			const source = saved || (Array.isArray(entries) ? entries : [])
-				.slice().sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0)).map(entry => entry.id);
+				.filter(entry => entry.id !== "dsh-tavern:full-context").sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0)).map(entry => entry.id);
 			const items = [];
 			for (const id of source) {
 				if (typeof id !== "string" || id === "" || items.includes(id)) continue;
@@ -284,7 +284,7 @@
 			return h("section", { className: "dsh-tavern-view-tabs", "aria-label": "顶部标签" },
 				h("div", { className: "dsh-tavern-settings-copy" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "顶部标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方这排标签显示哪些、按什么顺序；默认按注册顺序全部显示。「对话」始终显示并排在最前，不能移除。")),
+					h("p", { className: "dsh-tavern-settings-desc" }, "决定会话上方这排标签显示哪些、按什么顺序；默认按注册顺序显示，完整上下文可按需添加。「对话」始终显示并排在最前，不能移除。")),
 				h("ul", { className: "dsh-tavern-view-tab-list" }, items.map(row)),
 				h("div", { className: "dsh-tavern-view-tab-catalog" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "可添加的标签"),

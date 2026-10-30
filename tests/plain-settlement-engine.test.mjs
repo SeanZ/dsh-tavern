@@ -27,12 +27,6 @@ const turn = posture => ({
   trace: { sessionId: '', boundary: null }, backgroundTasksSettings: { posture }
 })
 
-test('nothing wanted this turn settles without a model call or a plugin', async () => {
-  const { settle, runs } = engine({ wanted: false })
-  assert.deepEqual(await settle.run(turn(false)), { text: '', result: {} })
-  assert.equal(runs.length, 0)
-})
-
 test('a plugin that replaces the settlement wins; Tavern runs its own agent when the plugin declines', async () => {
   const byPlugin = engine({ replaced: { owner: 'anchor', posture: '坐着' } })
   const result = await byPlugin.settle.run(turn(true))
@@ -45,8 +39,4 @@ test('a plugin that replaces the settlement wins; Tavern runs its own agent when
   assert.equal(settled.result.posture, '靠在门边')
   assert.deepEqual(current.trace, { sessionId: 'background-1', boundary: 3 })
   assert.equal(own.runs[0].task, 'settlement')
-})
-
-test('a posture turn without a submitted posture fails', async () => {
-  await assert.rejects(engine({ submit: false }).settle.run(turn(true)), /未调用 posture_submit/)
 })

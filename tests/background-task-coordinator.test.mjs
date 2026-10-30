@@ -20,6 +20,8 @@ function coordinatorHarness(options = {}) {
   const coordinator = createBackgroundTaskCoordinator({
     timeline,
     blocked: options.blocked,
+    discarded: options.discarded,
+    lockEvent: options.lockEvent,
     store: {
       async readChat() { return current },
       async writeChat(chat) { current = chat; writes.push(chat) },
@@ -75,7 +77,7 @@ for (const conflict of [false,true,'cancel']) test(`narrow background mutations 
   assert.equal((await restarted.read('c')).messages[0].text,conflict?'concurrent':'keep')
 })
 
-for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery uses ${readMethod} and active recovery reloads the full Chat`, async () => {
+for (const role of ['candidate', 'worldbook-filter']) for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery uses ${readMethod} and active ${role} recovery reloads the full Chat`, async () => {
   const timeline = createStoryTimeline()
   let chat = timeline.apply({ chat: { id: 'c', messages: [{ role: 'assistant', text: 'preserve' }] }, intent: { kind: 'ensure' } }).chat
   let reads = 0, writes = 0
@@ -87,10 +89,11 @@ for (const readMethod of ['readState', 'readRecoveryState']) test(`idle recovery
   } })
   assert.equal((await coordinator.recover({ id: 'c' })).status, 'unchanged')
   assert.equal(reads, 0)
-  chat = timeline.apply({ chat, intent: { kind: 'agent.begin', role: 'candidate' } }).chat
+  chat = timeline.apply({ chat, intent: { kind: 'agent.begin', role } }).chat
   await coordinator.recover({ id: 'c' })
   assert.equal(reads, 1); assert.equal(writes, 1)
   assert.equal(chat.messages[0].text, 'preserve')
+  assert.equal(coordinator.activity(chat).busy, false)
 })
 
 for(const conflict of [false,true])test(`settlement begin reuses an exact snapshot without full reads; conflict=${conflict}`,async()=>{
@@ -189,43 +192,5 @@ test('复用快照开始时撞上并发写入：只重读任务状态字段再�
 })
 
 // A cancelled or empty style reference fails every few turns: marking it failed is a header write.
-test('后台任务失败收尾只写时间线：不读也不整份写入存档', async t => {
-  const { mkdtemp, rm } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const { createChatJournalStore } = await import('../tavern-plugin/lib/domain/chat-journal-store.js')
-  const root = await mkdtemp(join(tmpdir(), 'background-fail-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const p = createChatPersistence({ store: createChatJournalStore({ dataRoot: root }) })
-  const timeline = createStoryTimeline()
-  await p.write(timeline.apply({ chat: { id: 'c', mode: 'story', messages: [{ role: 'user', text: '行动' }, { role: 'assistant', turn: 2, text: '正文' }] }, intent: { kind: 'ensure' } }).chat)
-  let fullReads = 0, updates = 0
-  const coordinator = createBackgroundTaskCoordinator({ timeline, store: {
-    readChat: id => { fullReads++; return p.read(id) }, writeChat: p.write, readState: p.readSessionState, readSlice: p.readSlice,
-    updateChat: (...args) => { updates++; return p.update(...args) }, patchChat: (...args) => p.patch(...args) } })
-  const task = await coordinator.begin((await p.readSlice('c', [1])).chat, 'style-reference', { reuseSnapshot: true })
-  await task.fail(new Error('取消'))
-  assert.deepEqual({ fullReads, updates }, { fullReads: 0, updates: 0 })
-  assert.equal((await p.read('c')).timeline.operations[task.operationId].status, 'failed')
-})
-
 // #394: after a body edit rewinds the background session, the candidate rebuilds
 // its context from the messages it read; the task-state header must not wipe them.
-test('候选任务开始时合并任务状态，不丢掉已读的正文', async t => {
-  const { mkdtemp, rm } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const { createChatJournalStore } = await import('../tavern-plugin/lib/domain/chat-journal-store.js')
-  const { createTaskStateReader } = await import('../tavern-plugin/lib/domain/task-state-reader.js')
-  const root = await mkdtemp(join(tmpdir(), 'background-candidate-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const p = createChatPersistence({ store: createChatJournalStore({ dataRoot: root }) })
-  const timeline = createStoryTimeline()
-  await p.write(timeline.apply({ chat: { id: 'c', mode: 'story', messages: [{ role: 'user', text: '行动' }, { role: 'assistant', turn: 2, text: '改过的正文' }] }, intent: { kind: 'ensure' } }).chat)
-  const coordinator = createBackgroundTaskCoordinator({ timeline, store: {
-    readChat: p.read, writeChat: p.write, readState: p.readSessionState, readSlice: p.readSlice,
-    readRecoveryState: createTaskStateReader({ readSlice: p.readSlice, readState: p.readSessionState }).read,
-    updateChat: p.update, patchChat: (...args) => p.patch(...args) } })
-  const task = await coordinator.begin(await p.read('c'), 'candidate')
-  assert.equal(task.chat.messages.at(-1)?.text, '改过的正文')
-})

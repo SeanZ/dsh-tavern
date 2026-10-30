@@ -3,6 +3,7 @@ import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
 import { createBackgroundRunLedger } from './background-run-ledger.js'
+import { memberOf, pluginMember } from './domain/background-members.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -88,7 +89,7 @@ export function createBackgroundAgentSessions(options, task) {
   const now = typeof options.now === 'function' ? options.now : Date.now
   const idleMs = Number.isSafeInteger(options.residentIdleMs) && options.residentIdleMs > 0 ? options.residentIdleMs : 5 * 60 * 1000
   const maxResidents = Number.isSafeInteger(options.maxResidentSessions) && options.maxResidentSessions > 0 ? options.maxResidentSessions : 8
-  // 前台历史编辑最多等这么久排到父会话队列；后台忙就放弃，留给下次任务重试。
+  // 前台历史编辑最多等这么久排到成员队列；后台忙就放弃，留给下次任务重试。
   const editWaitMs = Number.isSafeInteger(options.editWaitMs) && options.editWaitMs > 0 ? options.editWaitMs : 3000
   const releasing = new Map()
   let reapTimer, reaping, stopped = false
@@ -97,7 +98,7 @@ export function createBackgroundAgentSessions(options, task) {
     clearTimeout(reapTimer)
     if (stopped || reaping) return
     const time = now()
-    const delays = [...residentHandles.entries()].filter(([id, item]) => !activeSessions.has(id) && !queues.has(item.parentSessionId) && !releasing.has(id))
+    const delays = [...residentHandles.entries()].filter(([id, item]) => !activeSessions.has(id) && !queues.has(item.queueKey) && !releasing.has(id))
       .map(([, item]) => Math.max(0, (item.retryAt || 0) - time, residentHandles.size > maxResidents ? 0 : item.lastUsedAt + idleMs - time))
     if (!delays.length) return
     reapTimer = setTimeout(() => { void reapIdle().catch(error => console.warn('dsh-tavern: 空闲后台回收失败', error)) }, Math.min(...delays))
@@ -131,8 +132,8 @@ export function createBackgroundAgentSessions(options, task) {
     reaping = (async () => {
       const candidates = [...residentHandles.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)
       for (const [id, resident] of candidates) {
-        if (stopped || queues.has(resident.parentSessionId) || activeSessions.has(id)) continue
-        await enqueue(resident.parentSessionId, async () => {
+        if (stopped || queues.has(resident.queueKey) || activeSessions.has(id)) continue
+        await enqueue(resident.queueKey, async () => {
           if (stopped || residentHandles.get(id) !== resident || activeSessions.has(id) || (resident.retryAt || 0) > now()) return
           const superseded = residentSessionByParent.get(resident.key) !== id
           if (superseded || residentHandles.size > maxResidents || now() - resident.lastUsedAt >= idleMs) await releaseResident(id, resident)
@@ -142,8 +143,20 @@ export function createBackgroundAgentSessions(options, task) {
     return reaping
   }
 
+  // The resident member a persistent task runs on (background-members.js): the plugin member it
+  // names, else its built-in one, else 书记.
+  function memberFor(input) {
+    return (pluginMember(input.member) && input.member) || memberOf(input.task) || 'background'
+  }
+
+  // One queue per member: its tasks share one Session, so they run one at a time.
+  function queueKey(input) {
+    const member = memberFor(input)
+    return member === 'background' ? str(input.sessionId) : JSON.stringify([str(input.sessionId), member])
+  }
+
   function residentKey(input) {
-    return JSON.stringify([str(input.sessionId), 'background'])
+    return JSON.stringify([str(input.sessionId), memberFor(input)])
   }
 
   async function releaseSuperseded(key) {
@@ -154,6 +167,9 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function descriptorFor(input, persistent) {
+    const member = persistent ? pluginMember(input.member) : null
+    if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: LEGACY_BACKGROUND_PROVIDER, label: '插件成员：' + member.name })
+    if (input.task === 'polish') return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-polish', label: '正文精修', agentProvider: input.selection.provider, agentModel: input.selection.model, persona: '只审读正文，通过精修工具逐处提交修改。' })
     if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
       mode: 'one-shot', provider: 'dsh-tavern-phone', label: '手机私聊',
@@ -181,18 +197,19 @@ export function createBackgroundAgentSessions(options, task) {
     const parent = agents.get(input.sessionId)
     if (parent === undefined || parent.session === undefined) throw new Error('无法创建后台 Agent：前台会话不可用')
     const runtimeInput = Object.assign({}, input)
-    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director'].includes(input.task) && Boolean(await options.resolveWorldbookSkills?.(input))
+    runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && Boolean(await options.resolveWorldbookSkills?.(input))
     // The game's web search setting, unless the task rules it out (style reference, worldbook
     // filter: paid, slow, and what they look for is not on the open web).
-    if (options.resolveWebSearch && input.task !== 'phone' && input.webSearchEnabled !== false) {
+    if (options.resolveWebSearch && !['phone', 'polish'].includes(input.task) && input.ownPrefix !== true && input.webSearchEnabled !== false) {
       runtimeInput.webSearchEnabled = await options.resolveWebSearch(input)
     }
     const persistent = input.persistent === true
-    const startOver = input.startOverAfterRewindFailure === true
+    const startOver = input.newSession === true || input.startOverAfterRewindFailure === true
     const requestedSessionId = startOver ? '' : str(persistent && typeof input.resolvePersistentSessionId === 'function'
       ? await input.resolvePersistentSessionId() : input.persistentSessionId)
     const key = residentKey(input)
-    const needsSession = persistent && typeof options.needsNewBackgroundSession === 'function'
+    // Only 书记's Session is bound in the save and may need a fresh one after a rewind.
+    const needsSession = persistent && memberFor(input) === 'background' && typeof options.needsNewBackgroundSession === 'function'
       && await options.needsNewBackgroundSession(input.sessionId)
     const residentSessionId = startOver || needsSession && requestedSessionId === '' ? '' : str(residentSessionByParent.get(key))
     let traceSessionId = requestedSessionId || (persistent ? residentSessionId : '') || makeId()
@@ -237,7 +254,7 @@ export function createBackgroundAgentSessions(options, task) {
             const savedDescriptor = sessionEvents(session).find(event => event.type === 'subagent/descriptor')?.data
             const savedParent = session.header?.parentSession
             if (savedParent && savedParent !== parent.id || savedDescriptor &&
-              savedDescriptor.provider === 'dsh-tavern-image') {
+              (savedDescriptor.provider === 'dsh-tavern-image' || (savedDescriptor.provider === 'dsh-tavern-polish') !== (input.task === 'polish'))) {
               await handle.dispose()
               throw new Error('持久后台 Agent 的父会话或任务类型不匹配，未创建替代会话')
             }
@@ -279,7 +296,7 @@ export function createBackgroundAgentSessions(options, task) {
       }
       catalogChild(parent, handle.agent.session, descriptor)
       if (persistent) {
-        resident = { handle, state, parentSessionId: str(input.sessionId), key, lastUsedAt: now() }
+        resident = { handle, state, parentSessionId: str(input.sessionId), key, queueKey: queueKey(input), lastUsedAt: now() }
         residentHandles.set(traceSessionId, resident)
         residentSessionByParent.set(key, traceSessionId)
       }
@@ -291,13 +308,17 @@ export function createBackgroundAgentSessions(options, task) {
     requestSessions.set(traceSessionId, handle.agent.session)
     requestContexts.set(traceSessionId, {
       scope: 'background',
-      webSearchEnabled: !['phone', 'stage-director'].includes(input.task) && runtimeInput.webSearchEnabled === true,
+      ownPrefix: runtimeInput.ownPrefix === true,
+      toolNames: (runtimeInput.tools || []).map(tool => tool.name),
+      worldbookSkillsEnabled: runtimeInput.worldbookSkillsEnabled === true,
+      webSearchEnabled: !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && runtimeInput.webSearchEnabled === true,
       parentSessionId: str(input.sessionId),
       selection: { ...input.selection },
       maxTokens,
       task: str(input.task) || 'background',
       turn: Math.max(0, Number(input.turn) || 0)
     })
+    input.runRecord?.bind(traceSessionId)
     try {
       return await task.execute({ agent: handle.agent, state, traceSessionId, persistent }, input)
     } catch (error) {
@@ -348,19 +369,24 @@ export function createBackgroundAgentSessions(options, task) {
 
   function run(input) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
-    const record = runs.begin(input)
+    const record = runs.begin({ ...input, member: input.persistent === true ? memberFor(input) : '' })
     input = { ...input, runRecord: record }
-    const work = input.persistent !== true ? execute(input) : enqueue(str(input.sessionId), () => {
+    const work = input.persistent !== true ? execute(input) : enqueue(queueKey(input), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
     })
-    return work.then(result => { record.finish(); return result }, error => {
-      record.fail(error, input.signal?.aborted === true || error?.name === 'AbortError')
+    // Every run's end is announced (任务完成), so other work can follow it.
+    const finished = status => options.onRunFinished?.({ sessionId: str(input.sessionId), task: str(input.task), plugin: str(input.pluginName),
+      member: input.persistent === true ? memberFor(input) : '', turn: Math.max(0, Number(input.turn) || 0), status })
+    return work.then(result => { record.finish(); finished('completed'); return result }, error => {
+      const cancelled = input.signal?.aborted === true || error?.name === 'AbortError'
+      record.fail(error, cancelled)
+      finished(cancelled ? 'cancelled' : 'failed')
       throw error
     })
   }
 
-  // 历史编辑和任务、空闲回收共用父会话队列；退休句柄释放完成后才能借用或恢复。
+  // 历史编辑和任务、空闲回收共用成员队列；退休句柄释放完成后才能借用或恢复。
   // 排队有时限：前台不能被无关的长后台任务挂住，超时后这次编辑作废，不再动该会话。
   function withSession(sessionId, parentSessionId, work) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
@@ -371,7 +397,11 @@ export function createBackgroundAgentSessions(options, task) {
         reject(Object.assign(new Error('后台任务仍在运行，稍后重试'), { code: 'BACKGROUND_BUSY' }))
       }, editWaitMs)
     })
-    const edited = enqueue(str(parentSessionId), async () => {
+    const resident = residentHandles.get(sessionId)
+    const savedKey = [...residentSessionByParent].find(([, id]) => id === sessionId)?.[0]
+    const member = savedKey ? JSON.parse(savedKey)[1] : 'background'
+    const editQueue = resident?.queueKey || (member === 'background' ? str(parentSessionId) : JSON.stringify([str(parentSessionId), member]))
+    const edited = enqueue(editQueue, async () => {
       if (expired) return
       clearTimeout(timer)
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
@@ -483,5 +513,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, runs: gameId => runs.list(gameId), run, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

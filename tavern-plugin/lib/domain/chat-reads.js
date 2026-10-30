@@ -36,14 +36,16 @@ export function createChatReads({ links, persistence, whole, allow = (_reason, o
     if (!head || head.sessionId !== String(sessionId ?? '')) return null
     return { ...head, messages: recent.messages, messagesFrom: recent.from, messageCount: recent.messageCount }
   }
-  async function latestFloors(sessionId, count = 1) {
+  async function latestFloors(sessionId, count = 1, { includePosition = false } = {}) {
     const chatId = await chatIdOf(sessionId)
     const head = chatId && await persistence.readSlice(chatId, [])
     if (!head?.chat || head.chat.sessionId !== sessionId || !Number.isSafeInteger(head.messageCount)) return whole(sessionId)
     if (head.messageCount === 0) return head.chat
     const from = Math.max(0, head.messageCount - count)
     const latest = await persistence.readSlice(chatId, Array.from({ length: head.messageCount - from }, (_, index) => from + index))
-    return latest?.chat ? latest.chat : whole(sessionId)
+    if (!latest?.chat) return whole(sessionId)
+    // Native slices are dense: their length is the window size, not the story's length.
+    return includePosition ? { ...latest.chat, messageCount: latest.messageCount, messagesFrom: from } : latest.chat
   }
   const floors = createSessionSliceReader({ links, readSlice: persistence.readSlice })
   return Object.freeze({ header, recentSummaries, latestFloors, floors, whole })

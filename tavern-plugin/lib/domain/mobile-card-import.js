@@ -2,6 +2,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
 import { renderPngThumbnail } from './png-thumbnail.js'
+import { pngCarriesCardArchive } from './card-archive.js'
 
 const CARD_EXTENSIONS = new Set(['.json', '.png', '.charx', '.dshcard'])
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024
@@ -22,7 +23,7 @@ function decodeName(value) {
   try { return Buffer.from(value, 'base64url').toString('utf8') } catch { throw new Error('无效的手机文件标识') }
 }
 
-function pngPayload(buffer, name) {
+export function pngPayload(buffer, name) {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
   if (buffer.length <= signature.length || !buffer.subarray(0, signature.length).equals(signature)) throw new Error('无法识别的角色卡 PNG')
   let offset = signature.length
@@ -89,7 +90,9 @@ export function createMobileCardImport(options = {}) {
   async function archive(id) {
     if (!enabled) throw new Error('当前宿主不允许从手机下载目录导入')
     const entry = await resolve(id)
-    return /\.(charx|dshcard)$/i.test(entry.item.name) ? { file: path.join(entry.root.path, entry.item.name), name: entry.item.name } : null
+    const file = path.join(entry.root.path, entry.item.name)
+    // A cover PNG with the archive behind it (大肥鱼.dshcard.png) is read as the archive.
+    return /\.(charx|dshcard)$/i.test(entry.item.name) || /\.png$/i.test(entry.item.name) && await pngCarriesCardArchive(file) ? { file, name: entry.item.name } : null
   }
 
   async function read(id) {

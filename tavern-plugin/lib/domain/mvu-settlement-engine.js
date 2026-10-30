@@ -10,7 +10,7 @@ function str(value) {
 }
 
 // Everything one settlement turn knows about official MVU variables
-// (docs/design/background-task-pipeline.md, engine 1): which reply waits for
+// (Wiki「设计：background-task-pipeline」, engine 1): which reply waits for
 // them, the run with its durable delivery and deferral, what the commit and a
 // failure write into that reply, and when a retry may restart them. The main
 // settlement only asks these questions; it never reads MVU fields itself.
@@ -19,7 +19,7 @@ export function createMvuSettlementEngine(deps) {
   // A variable retry settles the variables alone, whatever the game's switches say.
   function settings(snapshot) {
     const variableRetry = snapshot.messages?.some(message => message.mvu?.pending && message.mvu?.variableRetry === true)
-    return normalizeBackgroundTasks(variableRetry ? { variables: true, posture: false, characterDesign: false } : snapshot.backgroundTasks)
+    return normalizeBackgroundTasks(variableRetry ? { variables: true, posture: false, characterDesign: false } : { ...snapshot.backgroundTasks, variables: true })
   }
 
   function target(snapshot) {
@@ -28,9 +28,9 @@ export function createMvuSettlementEngine(deps) {
       : null
   }
 
-  // A switched-off variable task still delivers a submission already saved.
-  function runs(mvuTarget, backgroundTasksSettings) {
-    return mvuTarget !== null && (backgroundTasksSettings.variables !== false || Boolean(mvuTarget.message.mvu.pendingSubmission))
+  // Official MVU targets always settle; retired user switches cannot suppress them.
+  function runs(mvuTarget) {
+    return mvuTarget !== null
   }
 
   // The posture rides along in the same model call. Returns { deferred: true } when
@@ -205,8 +205,8 @@ export function createMvuSettlementEngine(deps) {
   }
 
   // The commit's MVU share: which messages it touches, whether the game state moved, and
-  // what it writes into the reply. A reply whose variables were switched off is marked skipped.
-  function completion({ mvuTarget, mvuResult, backgroundTasksSettings }) {
+  // what it writes into the reply.
+  function completion({ mvuTarget, mvuResult }) {
     const changes = mvuResult?.effect?.changes || []
     return {
       messageIndices: mvuTarget && changes.every(c => c.path[0] !== 'messages' || Number.isInteger(c.path[1]))
@@ -217,12 +217,6 @@ export function createMvuSettlementEngine(deps) {
           throw new Error('MVU provider 已卸载，拒绝提交其变量效果')
         }
         if (mvuResult && mvuResult.effect) applyMvuSettlementEffect(draft, mvuResult.effect, scope)
-        if (mvuTarget && mvuResult === null && backgroundTasksSettings.variables === false) {
-          const target = draft.messages[mvuTarget.messageId]
-          if (target && Math.max(0, Number(target.swipeId) || 0) === mvuTarget.swipeId) {
-            target.mvu = { ...target.mvu, pending: false, receipt: { version: 1, status: 'skipped', summary: '变量结算已关闭，本轮未更新变量。', changes: [], sideEffects: [], failures: [] } }
-          }
-        }
         if (mvuResult !== null) {
           const target = draft.messages[mvuTarget.messageId]
           if (target && target.role === 'assistant' && Math.max(0, Number(target.swipeId) || 0) === mvuTarget.swipeId) {

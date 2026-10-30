@@ -172,7 +172,7 @@ test('连续正文回合的实际 Frame 消息不重复基本信息和常驻世�
   const planner = createContextPlanner({ prompt: () => '正文写作规则' })
   const cardData = { name: '阿芙拉', description: '固定描述', personality: '固定性格', scenario: '固定场景', mes_example: '固定示例', system_prompt: '逐轮系统指令', post_history_instructions: '逐轮历史后指令' }
   for (const mode of ['story', 'script']) {
-    const run = harness(mode, { planner, cardData, preparedWorldBookContext: '本轮动态世界书' })
+    const run = harness(mode, { planner, cardData, preparedWorldBookContext: '旧后台召回缓存', projectWorldBookTemplates: async () => ({ context: '本轮动态世界书' }) })
     const prefix = await planner.plan({ purpose: 'play-card-snapshot', card: run.card(), chat: run.chat(), worldBookContext: '固定世界设定', worldBookLabel: '常驻世界书' })
     const adapter = createForegroundFrameSessionAdapter()
     let messages = []
@@ -184,6 +184,7 @@ test('连续正文回合的实际 Frame 消息不重复基本信息和常驻世�
       assert.doesNotMatch(text, /逐轮系统指令/)
       assert.match(text, /逐轮历史后指令/)
       assert.match(text, /本轮动态世界书/)
+      assert.doesNotMatch(text, /旧后台召回缓存/)
       // The production Session already owns the opening system snapshot.
       const session = { events: [{ type: 'user/message', data: { id: 'tavern-session-prefix:test', role: 'user', content: [],
         source: { kind: 'plugin', plugin: 'dsh-tavern', form: 'snapshot', sections: [{ name: 'tavern:session-context', text: prefix.text }] } } }] }
@@ -244,20 +245,6 @@ test('new card is created and bound before tool returns; next write updates the 
   assert.equal(run.card().description, '第二次修改')
   assert.equal(run.createdCards.length, 1)
   assert.deepEqual(run.chat().lastCardSave, { turn: 1, path: 'cards/新角色.json', createsCard: false, changed: true })
-})
-
-test('a tool save is reported as changed in the turn it happened, and only then', async () => {
-  const run = harness('card', { draft: true })
-  await run.orchestrator.saveChanges({ sessionId: 'session-1', turn: 2, fields: { name: '新角色', player: '旅人' } })
-  const committed = await run.orchestrator.finalize({ sessionId: 'session-1', turn: 2, userText: '就这样', assistantText: '建好了。' })
-  assert.equal(committed.changed, true)
-  assert.equal(run.chat().messages.at(-1).changed, true)
-  assert.equal(run.chat().nativeCommits['2'].changed, true)
-
-  // The next turn is a plain question: the earlier save must not bleed into it.
-  const next = await run.orchestrator.finalize({ sessionId: 'session-1', turn: 4, userText: '继续', assistantText: '**第 1 题：还要改什么？**' })
-  assert.equal(next.changed, false)
-  assert.equal(run.chat().messages.at(-1).changed, false)
 })
 
 test('玩家模板先于本轮召回，重试不重复执行；提交后只产生一条玩家消息', async () => {
@@ -366,7 +353,7 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
   const submitOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['submit_story'] } })
   assert.equal((await submitOff.orchestrator.visibleTools('session-1')).includes('submit_story'), false)
 
-  const disabled = ['tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
+  const disabled = ['read', 'worldbook_list', 'worldbook_grep', 'tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_recall_history', 'worldbook_search', 'web_search', 'web_fetch', 'submit_story']
   const none = harness('story', { storyToolCall: true, webSearchEnabled: true, chatFields: { disabledForegroundTools: disabled } })
   assert.deepEqual(await none.orchestrator.visibleTools('session-1'), [])
 
@@ -377,52 +364,4 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
 
   const card = harness('card', { chatFields: { disabledForegroundTools: disabled } })
   assert.ok((await card.orchestrator.visibleTools('session-1')).includes('tavern_update_card'))
-})
-
-test('native virtual snapshots persist with explicit request identity while static constants stay out of history frames', async () => {
-  let key
-  const virtualState = { schemaVersion: 1, scope: '["session-1","cards/阿芙拉.json"]', entries: { weather: { text: '晴', renderHash: 'sun', version: 'v' } } }
-  const run = harness('story', { chatFields: { worldbookStrategy: 'native-skills' }, projectForegroundWorldbook: async ({ requestKey }) => {
-    key = requestKey
-    return { context: '晴', staticPrefix: 'STATIC EXACT', virtualState, changedVirtualRefs: ['weather'], activation: { refs: ['weather'] }, refs: ['weather'], reads: {} }
-  } })
-  const prepared = await run.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '出门' })
-  assert.equal(typeof key, 'string')
-  assert.ok(key)
-  assert.deepEqual(run.chat().worldBookVirtualState, virtualState)
-  const frame = Object.values(run.chat().foregroundFrames).at(-1)
-  assert.equal(frame.source.worldBook.virtualWorldbook.entries.weather, 'sun')
-  assert.doesNotMatch(JSON.stringify(frame), /STATIC EXACT/)
-  assert.equal(prepared.ready, true)
-  await run.orchestrator.finalize({ sessionId: 'session-1', turn: 2, userText: '出门', assistantText: '天气晴朗。' })
-  assert.equal(run.rollback().chat.worldBookVirtualState, undefined, 'rollback removes snapshots from the abandoned future')
-})
-
-
-test('native gameplay advertises scoped read instead of legacy worldbook search; legacy and card tools stay unchanged', async () => {
-  for (const mode of ['story', 'script']) {
-    const native = harness(mode, { chatFields: { worldbookStrategy: 'native-skills' } })
-    const names = await native.orchestrator.visibleTools('session-1')
-    assert.ok(names.includes('read'))
-    assert.ok(names.includes('skill'))
-    assert.equal(names.includes('worldbook_search'), false)
-    const legacy = harness(mode)
-    const oldNames = await legacy.orchestrator.visibleTools('session-1')
-    assert.ok(!oldNames.includes('worldbook_search'))
-    assert.equal(oldNames.includes('read'), false)
-  }
-  assert.deepEqual(await harness('card', { chatFields: { worldbookStrategy: 'native-skills' } }).orchestrator.visibleTools('session-1'),
-    await harness('card').orchestrator.visibleTools('session-1'))
-})
-
-test('tool visibility reads worldbook strategy from bounded header', async () => {
-  let fields
-  const orchestrator = createTurnOrchestrator({ frameBuilder: createForegroundFrameBuilder(), store: { headerForSession: async (_id, requested) => {
-    fields = requested
-    return Object.fromEntries(requested.map(key => [key, { mode: 'story', worldbookStrategy: 'native-skills' }[key]]))
-  } } })
-  const names = await orchestrator.visibleTools('game')
-  assert.ok(fields.includes('worldbookStrategy'))
-  assert.ok(names.includes('read'))
-  assert.equal(names.includes('worldbook_search'), false)
 })

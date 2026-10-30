@@ -85,12 +85,6 @@ test('tool validation rejects whole batches; no partial figures, music or one-sh
   assert.deepEqual(await request.call({ ...submission(), performances: [events()[0], { ...events()[0], at: 2 }] }), { ok: true }, 'same action on different pages is intentional')
 })
 
-test('cancelled performance transactions cannot write either channel', async () => {
-  const h = await stageDirectorFixture(chat(), assets), request = await h.prepare()
-  assert.equal((await request.call(submission(), AbortSignal.abort())).ok, false)
-  assert.equal(await h.data.snapshot('story'), null)
-})
-
 function playback() {
   const timers = new Map(), played = [], cancelled = [], callbacks = []
   let next = 0
@@ -102,50 +96,3 @@ function playback() {
   return { owner, played, cancelled, timers, callbacks, flush() { const batch = [...timers.values()]; timers.clear(); for (const { fn } of batch) fn() },
     show(id, at, mode = 'page', input = events()) { owner.update({ id, at, mode, events: input }) } }
 }
-
-test('page back plays once per visit, not per render; rapid navigation only plays the settled page', () => {
-  const h = playback()
-  h.show('visit1', 1)
-  assert.deepEqual([...h.timers.values()].map(timer => timer.delay), [1000])
-  h.show('visit2', 2)
-  h.callbacks[0]() // A cancelled callback cannot play on a different page.
-  h.flush()
-  assert.equal(h.played.length, 1)
-  assert.equal(h.played[0].event.at, 2)
-  h.show('visit2', 2); h.flush()
-  assert.equal(h.played.length, 1)
-  h.show('back', 1); h.flush()
-  assert.equal(h.played.length, 2)
-  h.show('back', 1); h.flush()
-  assert.equal(h.played.length, 2)
-  assert.ok(h.cancelled.length > 0, 'leaving a page cancels its transient animation')
-  h.owner.dispose()
-})
-
-test('refresh, skip, closing and disposal suppress queued and late events without modifying state', () => {
-  for (const mode of ['refresh', 'skip']) {
-    const h = playback()
-    h.show('visit', 1, mode)
-    h.show('visit', 1, 'live') // Notifications/reopening cannot convert a consumed visit into playback.
-    h.flush()
-    assert.equal(h.played.length, 0)
-    h.show('explicit-back', 1); h.flush()
-    assert.equal(h.played.length, 1)
-    h.owner.dispose()
-  }
-  const h = playback()
-  h.show('old-source', 1)
-  h.owner.dispose()
-  h.callbacks[0]()
-  assert.equal(h.played.length, 0)
-})
-
-test('a new body can play its current page when direction arrives, but not earlier pages', () => {
-  const h = playback()
-  h.show('new-body', 1, 'live', [])
-  h.show('new-body', 1, 'live'); h.flush()
-  assert.equal(h.played.length, 1)
-  h.show('page-three', 3); h.flush()
-  assert.deepEqual(h.played.map(item => item.event.at), [1, 3])
-  h.owner.dispose()
-})

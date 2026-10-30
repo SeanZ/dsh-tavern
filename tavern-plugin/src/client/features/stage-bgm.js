@@ -1,4 +1,4 @@
-// The BGM player in the page (docs/design/cast-presentation.md「背景音乐」): one panel, two placements. In the
+// The BGM player in the page (Wiki「设计：cast-presentation」「背景音乐」): one panel, two placements. In the
 // fullscreen stage the 「♪ 曲名」 chip on the control bar opens it; in chat a header chip does (only for a game whose
 // stage is on). State: tavernBgm (modules/stage-bgm.js); transport: tavernStageMusic (modules/stage-music.js).
 // The panel has no volume slider: a track sounds at its entry's 音量, then the 背景音乐 layer and 总音量 (features/stage-audio.js).

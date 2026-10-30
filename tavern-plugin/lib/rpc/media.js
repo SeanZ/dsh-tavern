@@ -3,7 +3,7 @@
 export function createMediaHandlers(deps) {
   const { backgroundConfigForSession, castAssets, castCardOf, castEdit, castPresentation, castStage,
     castView, fontLibrary, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns, removePluginGalleryItems,
-    removePluginMediaVersion, sceneIllustrations, speakLine, prepareVoices, speech, speechReply, stageMusicTracks, str } = deps
+    removePluginMediaVersion, speakLine, prepareVoices, speech, speechReply, stageMusicTracks, str } = deps
   return {
     // The font library's families (font-library.js): what a skin's font ids resolve to.
     async listFonts() {
@@ -84,26 +84,14 @@ export function createMediaHandlers(deps) {
     async pluginMediaTurns(args) {
       return await pluginMediaTurns(args && args.sessionId)
     },
-    async sceneImageStatus(args) {
-      return { illustration: await sceneIllustrations.status(args.sessionId, args.turn) }
-    },
+    // The gallery: pictures plugins attached to the session's game.
     async listSceneImageHistory(args) {
-      // The gallery shows only the session's own game.
-      if (!args?.sessionId) return { items: await sceneIllustrations.history() }
-      const chat = await backgroundConfigForSession(str(args.sessionId))
-      return { items: chat?.id ? await sceneIllustrations.history(chat.id) : [], pluginItems: await pluginGalleryItems(args.sessionId) }
+      return { items: [], pluginItems: args?.sessionId ? await pluginGalleryItems(args.sessionId) : [] }
     },
     async removeSceneImageHistory(args) {
-      const legacyItems = args && args.items || []
       const pluginItems = args && args.pluginItems || []
-      if (!Array.isArray(legacyItems) || !Array.isArray(pluginItems) || legacyItems.length + pluginItems.length > 500) throw new Error('一次最多删除 500 张')
-      if (args && Object.hasOwn(args, 'sessionId')) {
-        const chat = await backgroundConfigForSession(str(args.sessionId))
-        if (!chat?.id) throw new Error('当前游戏不存在，未删除图片')
-        if (legacyItems.some(item => item?.chatId !== chat.id)) throw new Error('图片不属于当前游戏，未删除图片')
-      }
-      const results = await sceneIllustrations.removeStoredImages(legacyItems)
-      return { results: results.concat(await removePluginGalleryItems(args && args.sessionId, pluginItems)) }
+      if (!Array.isArray(pluginItems) || pluginItems.length > 500) throw new Error('一次最多删除 500 张')
+      return { results: await removePluginGalleryItems(args && args.sessionId, pluginItems) }
     },
   }
 }

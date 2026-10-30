@@ -1,3 +1,7 @@
+import { BACKGROUND_TASK_CATALOG, describeTasks } from '../domain/background-tasks.js'
+import { STORY_EVENTS } from '../domain/story-events.js'
+import { buildRunTree } from '../domain/background-run-tree.js'
+import { listMembers } from '../domain/background-members.js'
 import { setAllFailedErrorVisibility, setFailedErrorVisibility } from '../domain/failed-error-visibility.js'
 import { sessionEvents } from '../domain/session-events.js'
 import { applyPolishEdits, composePolishEdits } from '../domain/polish-review.js'
@@ -6,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 // In-game play, turn editing, compaction and background settlement requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
-  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
+  const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow, pluginApi, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, applyCardUpdate, cardAutoReload,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, notifyPluginTimeline, phoneChat,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
@@ -93,13 +97,6 @@ export function createPlayHandlers(deps) {
     async getBackgroundOperation(args) {
       return { operation: await sessionOperation(args && args.sessionId, args && args.operationId) }
     },
-    async setStatusBarPlacement(args) {
-      if (!['sidebar', 'body'].includes(args?.placement)) throw new Error('无效的状态栏位置')
-      const chat = await chatForSession(args.sessionId)
-      if (!chat || !['story', 'script'].includes(chat.mode || 'story')) throw new Error('请先打开游玩会话')
-      await updateChat(chat.id, current => ({ ...current, statusBarPlacement: args.placement }), { source: 'ui.status-bar-placement' })
-      return { statusBarPlacement: args.placement }
-    },
     async setPlayerName(args) {
       return { playerName: await setPlayerName(args && args.sessionId, args && args.userName) }
     },
@@ -183,6 +180,9 @@ export function createPlayHandlers(deps) {
         .catch(error => console.warn('dsh-tavern: 精修记录保存失败', error))
       return { edits, view }
     },
+    async polishProgress(args) {
+      return { progress: polishReviewer.progress(str(args?.sessionId)) }
+    },
     async polishComparison(args) {
       return { comparison: await polishRecords.latest(str(args?.sessionId)), prereview: (await readTavernSettings()).polishPrereview === true }
     },
@@ -263,7 +263,12 @@ export function createPlayHandlers(deps) {
       return { progress: backgroundAgentRunner.progress(args && args.sessionId) || pluginSettlementProgress.snapshot(args && args.sessionId) }
     },
     async getBackgroundRuns(args) {
-      return { runs: backgroundAgentRunner.runs(args && args.sessionId) }
+      const names = Object.fromEntries(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.name]))
+      const runs = backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task }))
+      const catalog = describeTasks([...BACKGROUND_TASK_CATALOG, ...(pluginApi?.taskCatalog?.() || [])], workflow?.table() || [], event => STORY_EVENTS[event] || event)
+      const moments = storyEvents?.history(args && args.sessionId) || []
+      const turns = buildRunTree({ moments, jobRuns: workflow?.runs(args && args.sessionId) || [], runs, catalog })
+      return { runs, turns, catalog, members: listMembers(), moments, locks: backgroundAgentRunner.locks(args && args.sessionId) }
     },
     async stopBackground(args) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }

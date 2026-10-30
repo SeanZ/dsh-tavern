@@ -16,5 +16,5 @@ test('active background lease inherits only its parent library; idle and isolate
   request={parentSessionId:'other',task:'candidate'}; assert.equal(await resolveWorldbookSkillChat(agent,deps),null)
   request=null; assert.equal(await resolveWorldbookSkillChat(agent,deps),null)
   assert.deepEqual(await resolveWorldbookSkillChat({session:{id:'parent'}},deps),{chat,authorizedSessionId:'parent'})
-  chat.worldbookStrategy='legacy'; assert.equal(await resolveWorldbookSkillChat({session:{id:'parent'}},deps),null)
+  chat.worldbookStrategy='legacy'; assert.deepEqual(await resolveWorldbookSkillChat({session:{id:'parent'}},deps),{chat,authorizedSessionId:'parent'})
 })

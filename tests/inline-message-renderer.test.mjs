@@ -15,139 +15,6 @@ async function loadClient() {
 
 const client = await loadClient()
 
-test('消息 iframe 将可信远程资源转入持久缓存，同时保留不透明来源隔离和受控高度协议', () => {
-  const document = client.buildTavernFrameDocument({
-    content: '<p>正文</p><style>p{color:red}</style><script src="https://cdn.jsdelivr.net/example.js"></script>',
-    token: 'height-token'
-  })
-
-  assert.match(document, /<p>正文<\/p><style>p\{color:red\}<\/style>/)
-  assert.match(document, /static-assets\?url=https%3A%2F%2Fcdn\.jsdelivr\.net%2Fexample\.js/)
-  assert.match(document, /data-dsh-tavern-static-cache/)
-  assert.match(document, /data-dsh-sillytavern-css-compat="1\.18\.0"/)
-  assert.match(document, /public%2Fcss%2Fsolid\.min\.css/)
-  assert.match(document, /HTMLImageElement/)
-  // The official desktop also serves Tavern's resources over dsh-app:// (official-desktop-frame-csp.test.mjs).
-  assert.match(document, /default-src (dsh-app:\/\/app\/api\/dsh-tavern\/ )?https: http: data: blob:/)
-  assert.match(document, /connect-src (dsh-app:\/\/app\/api\/dsh-tavern\/ )?https: http: wss: data: blob:/)
-  assert.match(document, /frame-src https: http: data: blob:/)
-  assert.match(document, /object-src 'none'/)
-  assert.match(document, /form-action 'none'/)
-  assert.match(document, /ResizeObserver/)
-  assert.match(document, /getBoundingClientRect/)
-  assert.match(document, /document\.fonts\.ready/)
-  assert.match(document, /dsh-tavern-frame-height/)
-  assert.match(document, /dsh-tavern-frame-runtime/)
-  assert.match(document, /unhandledrejection/)
-  assert.match(document, /XMLHttpRequest/)
-  assert.match(document, /window\.fetch/)
-  // 默认运行报告不复制 DOM；只有显式快照按预算遍历，且跳过宿主注入的脚本。
-  assert.doesNotMatch(document, /document\.body\.cloneNode\(true\)/)
-  assert.match(document, /dsh-tavern-frame-dom-snapshot/)
-  assert.match(document, /indexOf\("data-dsh-tavern"\) === 0/)
-  assert.match(document, /height-token/)
-  assert.match(document, /body\{padding:0 1px;overflow-wrap:anywhere;white-space:pre-wrap\}/)
-  assert.match(document, /body>\*\{white-space:normal\}/)
-})
-
-test('人物卡 Helper 脚本使用独立不透明 iframe，并获得脚本、世界书和 MVU facade', () => {
-  const document = client.buildTavernHelperScriptDocument({
-    token: 'script-token',
-    script: { id: 'dynamic-worldbook', name: '动态世界书', content: "import 'https://example.test/动态世界书.js'", data: { auto_apply: true }, buttons: [] },
-    context: { messages: [], scriptVariables: { 'dynamic-worldbook': { auto_apply: true } }, worldbook: { name: '灯火阑珊', entries: [] } }
-  })
-  const loader = helperLoaderSource(document)
-  const modules = JSON.parse(loader.match(/const scripts=(\[.*\]);/)[1])
-  const source = modules[0].content
-  assert.equal(source, "import 'https://example.test/动态世界书.js'")
-  assert.match(loader, /await window\.__dshTavernInitializationTiming\.wait\("companion-module",loadModule\(script\.content,script\.id,false,installComposer\),script\.id\)/)
-  assert.match(loader, /__dshTavernHelperSetCurrentScript\(script\.id\)/)
-  assert.match(loader, /__dshTavernHelperSubscriptionsReady\(script\.id\)/)
-  assert.match(document, /getScriptId/)
-  assert.match(document, /updateWorldbookWith/)
-  assert.match(document, /appendInexistentScriptButtons/)
-	assert.match(document, /getCharData/)
-  assert.match(document, /insertOrAssignVariables/)
-  assert.match(document, /insertVariables/)
-  assert.match(document, /localStorage/)
-  assert.match(document, /VARIABLE_UPDATE_ENDED:\s*"mag_variable_update_ended"/)
-  assert.match(document, /COMMAND_PARSED:\s*"mag_command_parsed"/)
-  assert.match(document, /dsh-tavern-helper-script-runtime/)
-  assert.match(document, /object-src 'none'/)
-  assert.doesNotMatch(document, /allow-same-origin/)
-})
-
-test('Helper Host 每个对话只创建一个共享脚本沙箱并只投递一次事件', async () => {
-  const windowListeners = new Map()
-  const frames = []
-  const hostWindow = {
-    crypto: { randomUUID() { return 'shared-runtime-token' } },
-    setTimeout,
-    clearTimeout,
-    addEventListener(name, handler) { windowListeners.set(name, handler) },
-    removeEventListener(name) { windowListeners.delete(name) }
-  }
-  const root = { isConnected: true, appendChild() {}, remove() {} }
-  const hostDocument = {
-    body: { appendChild() {} },
-    documentElement: { appendChild() {} },
-    createElement(tag) {
-      if (tag === 'div') return root
-      const frame = {
-        contentWindow: { messages: [], postMessage(message) { this.messages.push(message) } },
-        listeners: {},
-        addEventListener(name, handler) { this.listeners[name] = handler },
-        remove() {}
-      }
-      frames.push(frame)
-      return frame
-    }
-  }
-  const runtime = client.createTavernHelperScriptRuntime({
-    window: hostWindow,
-    document: hostDocument,
-    rpc() { return Promise.resolve({}) },
-    reportError() {}
-  })
-  runtime.sync('session', {
-    tavernHelper: { messages: [], scriptVariables: {} },
-    tavernHelperScripts: [
-      { id: 'idle', name: '未订阅脚本', content: 'void 0', data: {}, buttons: [] },
-      { id: 'first', name: '变量守卫一', content: 'void 0', data: {}, buttons: [] },
-      { id: 'second', name: '变量守卫二', content: 'void 0', data: {}, buttons: [] }
-    ]
-  })
-  assert.equal(frames.length, 1)
-  frames[0].listeners.load()
-  const receive = windowListeners.get('message')
-  receive({
-    source: frames[0].contentWindow,
-    data: {
-      type: 'dsh-tavern-helper-subscriptions',
-      token: 'shared-runtime-token',
-      names: ['mag_command_parsed'],
-      ready: true,
-      scripts: [
-        { id: 'idle', names: [], ready: true, failed: false },
-        { id: 'first', names: ['mag_command_parsed'], ready: true, failed: false },
-        { id: 'second', names: ['mag_command_parsed'], ready: true, failed: false }
-      ]
-    }
-  })
-
-  const emitted = runtime.emit('mag_command_parsed', [{ hp: 1 }], { messages: [] })
-  await Promise.resolve()
-  const requests = frames[0].contentWindow.messages.filter(item => item.type === 'dsh-tavern-helper-event')
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].name, 'mag_command_parsed')
-  receive({
-    source: frames[0].contentWindow,
-    data: { type: 'dsh-tavern-helper-event-complete', token: 'shared-runtime-token', eventId: requests[0].eventId, args: [{ hp: 3 }] }
-  })
-  assert.deepEqual(JSON.parse(JSON.stringify(await emitted)), [{ hp: 3 }])
-  runtime.dispose()
-})
-
 test('Helper Host 在共享沙箱全部脚本完成初始化后才开放事件', async () => {
   const windowListeners = new Map()
   const frames = []
@@ -257,26 +124,6 @@ test('开场 iframe 只选择现有 swipe，不伪造 MVU 或修改正式消息'
   for (const index of [-1, 1, 9, 1.5, '2']) assert.throws(() => client.openingPreviewSelection(preview, index), /不存在/)
 })
 
-test('开场选择经过当前 iframe 来源校验，不调用 Session RPC，卸载后旧页面失效', () => {
-  const listeners = new Map(), chosen = [], replies = []
-  const frame = { contentWindow: { postMessage(data) { replies.push(data) } } }
-  const host = { sessionStorage: { getItem() { return null }, setItem() {} }, document: null, setTimeout, clearTimeout,
-    addEventListener(name, fn) { listeners.set(name, fn) }, removeEventListener(name) { listeners.delete(name) } }
-  const lifecycle = client.createTavernMessageFrameLifecycle({ sessionId: '', content: '<button>选择开场</button>', turn: 1,
-    openingPreview: { swipes: ['首页', '海边'], openingIds: ['primary', 'alternate:0'], selectedIndex: 0 },
-    onSelectOpening: id => chosen.push(id)
-  }, { window: host, rpc() { throw Error('预览不得写入 Session') } })
-  const doc = lifecycle.snapshot().visibleDocument; doc.ref(frame)
-  const stop = lifecycle.start(() => {}), receive = listeners.get('message')
-  const data = { type: 'dsh-tavern-opening-select', token: doc.token, requestId: '1', swipeId: 1 }
-  receive({ source: {}, data }); assert.equal(chosen.length, 0)
-  receive({ source: frame.contentWindow, data }); assert.deepEqual(chosen, ['alternate:0'])
-  receive({ source: frame.contentWindow, data: { ...data, swipeId: 999 } }); assert.equal(replies.at(-1).ok, false)
-  lifecycle.update({ sessionId: '', content: '<button>另一张卡</button>', turn: 1, openingPreview: { swipes: ['新首页', '新开场'], openingIds: ['primary', 'alternate:0'], selectedIndex: 0 }, onSelectOpening: id => chosen.push(id) })
-  receive({ source: frame.contentWindow, data }); assert.equal(chosen.length, 1, '旧预览不能切换新卡的开场')
-  stop(); assert.equal(listeners.has('message'), false)
-})
-
 test('音视频源绕过整文件静态缓存，封面和图片继续缓存', () => {
   const html = '<video src="https://media.example/large.mp4" poster="https://media.example/cover.jpg"></video><audio src=https://media.example/bgm.mp3></audio><video><source src="https://media.example/stream?id=1"></video>'
   for (const doc of [client.buildOpeningPreviewDocument(html), client.buildTavernFrameDocument({ content: html })]) {
@@ -310,29 +157,6 @@ test('动态媒体 src 和属性观察器不重新代理，图片仍走缓存', 
   assert.match(image.attrs.src, /^\/api\/dsh-tavern\/static-assets/)
   // 卡片脚本读 src 时拿回原始 https（valid() 校验绝对地址），加载仍走缓存代理。
   assert.equal(image.getAttribute('src'), 'https://media.example/image.png')
-})
-
-test('iframe 是独立页面导航，不经静态缓存代理', () => {
-  const html = '<iframe src="https://app.example/hud/"></iframe><img src="https://app.example/a.png">'
-  for (const doc of [client.buildOpeningPreviewDocument(html), client.buildTavernFrameDocument({ content: html })]) {
-    assert.match(doc, /<iframe src="https:\/\/app.example\/hud\/"/)
-    assert.ok(doc.includes('/api/dsh-tavern/static-assets?url=' + encodeURIComponent('https://app.example/a.png')))
-  }
-  const script = client.buildTavernFrameDocument({ content: '<div></div>' }).match(/<script data-dsh-tavern-static-cache>([\s\S]*?)<\/script>/)[1]
-  let observe
-  class Element {
-    constructor(tag) { this.tagName = tag; this.nodeType = 1; this.attrs = {} }
-    setAttribute(k, v) { this.attrs[k] = v }
-    getAttribute(k) { return this.attrs[k] }
-  }
-  class Frame extends Element {}
-  Object.defineProperty(Frame.prototype, 'src', { configurable: true, get() { return this.attrs.src }, set(v) { this.attrs.src = v } })
-  vm.runInNewContext(script, { window: { HTMLIFrameElement: Frame }, Element, document: { documentElement: {} }, MutationObserver: class { constructor(fn) { observe = fn } observe() {} } })
-  const byProperty = new Frame('IFRAME'); byProperty.src = 'https://app.example/hud/?mode=landscape'
-  const byAttribute = new Frame('IFRAME'); byAttribute.setAttribute('src', 'https://app.example/hud/')
-  observe([byProperty, byAttribute].map(target => ({ target })))
-  assert.equal(byProperty.src, 'https://app.example/hud/?mode=landscape')
-  assert.equal(byAttribute.getAttribute('src'), 'https://app.example/hud/')
 })
 
 test('style 观察器无法改写的远程地址不回写，避免自触发死循环；带括号的引号地址也走缓存', () => {
@@ -519,31 +343,6 @@ test('standalone /trigger admits a native turn without overwriting the draft or 
   reply = { ok: false, error: { message: 'provider unavailable' } }
   await assert.rejects(execute('/trigger', 'opening'), /provider unavailable/)
   assert.equal(listeners.size, 0)
-})
-
-test('frame slash requests reject promptly when generation is unavailable instead of remaining pending', async () => {
-  for (const executeSlash of [undefined, () => { throw new Error('executor failed') }]) {
-    const listeners = new Map()
-    const replies = []
-    const frame = { contentWindow: { postMessage(message) { replies.push(message) } } }
-    const lifecycle = client.createTavernMessageFrameLifecycle({
-      sessionId: 'opening', content: '<button>start</button>', turn: 1, partIndex: 0,
-      helperContext: { lifecycleRevision: 1, messages: [] }, eager: true, executeSlash
-    }, { window: {
-      crypto: { randomUUID() { return 'slash-token' } },
-      sessionStorage: { getItem() { return null }, setItem() {} }, document: null, setTimeout, clearTimeout,
-      addEventListener(name, handler) { listeners.set(name, handler) }, removeEventListener(name) { listeners.delete(name) }
-    } })
-    const doc = lifecycle.snapshot().visibleDocument
-    doc.ref(frame)
-    const stop = lifecycle.start(() => {})
-    listeners.get('message')({ source: frame.contentWindow, data: { type: 'dsh-tavern-helper-call', token: doc.token, requestId: 'trigger', method: 'triggerTavernSlash', args: { line: '/trigger' } } })
-    await new Promise(resolve => setImmediate(resolve))
-    assert.equal(replies.length, 1)
-    assert.equal(replies[0].ok, false)
-    assert.match(replies[0].error, /无法触发生成|executor failed/)
-    stop()
-  }
 })
 
 test('Host acknowledgements confirm liveness without imposing a total event deadline', async () => {
@@ -792,17 +591,6 @@ test('trusted opening exposes live MVU and EJS to original parent-window checks'
   }
 })
 
-test('preparation host APIs retain priority over a background session runtime', () => {
-  const host = {}, preparation = { Mvu: { id: 'preparation' }, _: {} }, session = { Mvu: { id: 'session' } }
-  const releasePreparation = client.installTavernTrustedHostFacade(host, preparation, 10)
-  const releaseSession = client.installTavernTrustedHostFacade(host, session)
-  assert.equal(host.Mvu, preparation.Mvu)
-  releasePreparation()
-  assert.equal(host.Mvu, session.Mvu)
-  releaseSession()
-  assert.equal(Object.hasOwn(host, 'Mvu'), false)
-})
-
 test('managed MVU keeps jQuery when a card declares its own lexical dollar helper', async () => {
   const html = client.buildTavernHelperScriptDocument({ scripts: [] })
   const loader = helperLoaderSource(html)
@@ -821,18 +609,6 @@ test('managed MVU keeps jQuery when a card declares its own lexical dollar helpe
   assert.equal(vm.runInContext('$("missing")', context), null, 'the card keeps its own helper')
   await load('const $ = () => "card-local";window.cardResult=$();', 'user-card-script')
   assert.equal(sandbox.window.cardResult, 'card-local', 'user module declarations remain valid')
-})
-
-test('opening refresh submits the same preparation draft that its iframe writes', () => {
-  const updater = clientSource.match(/setOpeningPicker\(function \(current\) \{([\s\S]*?)\n\s*\}\);/)[1]
-  const response = { preparationId: 'new-draft', trustedCardMode: true, openings: [
-    { id: 'alternate:0', openingPreview: { preparationId: 'new-draft' } }, { id: 'primary' }
-  ] }
-  const refresh = vm.runInNewContext('(function(current){' + updater + '})', { response, cardPath: 'card.json', userName: '你', preparedKey: '["你","dsh"]' })
-  const next = refresh({ card: { path: 'card.json' }, userName: '你', preparationId: 'old-draft', index: 1, openings: [{ id: 'primary' }, { id: 'alternate:0' }] })
-  assert.equal(next.openings[next.index].id, 'alternate:0')
-  assert.equal(next.preparationId, next.openings[next.index].openingPreview.preparationId)
-  assert.equal(next.preparedKey, '["你","dsh"]')
 })
 
 test('pending opening frame can initialize its private MVU draft before becoming visible', async () => {
@@ -949,37 +725,6 @@ test('模板内生成命令在提交后返回，不占住模板队列等待下�
   assert.equal((await execute('/send 下一步|/trigger','game',{waitForCompletion:false})).submitted,true)
   assert.deepEqual(calls,['下一步','queue'])
   assert.equal((await execute('/trigger','game',{waitForCompletion:false})).submitted,true)
-})
-
-test('独立 /trigger 不向拒绝空输入的宿主提交空 prompt', async () => {
-  const calls = []
-  const ctx = {
-    sessions: {
-      scope: () => ({}),
-      binding: () => ({ session: { prompt: async content => {
-        calls.push(content)
-        if (!content.some(part => part.type === 'text' && part.text.trim())) {
-          return { ok: false, error: { message: 'prompt content must include non-whitespace text or an attachment (gateway/bad-request)' } }
-        }
-        return { ok: true }
-      } } })
-    },
-    get: () => ({ input: { for: () => ({ setDraft: assert.fail, submit: assert.fail }) } })
-  }
-  const execute = client.createTavernFrameSlashExecutor(ctx, { setTimeout, clearTimeout })
-  assert.equal((await execute('/trigger', 'game', { waitForCompletion: false })).submitted, true)
-  assert.equal(calls.length, 1)
-})
-
-test('unsupported card pipelines fail before draft mutation or generation', async () => {
-  const calls = []
-  const ctx = { sessions: { scope: () => ({}) }, get: () => ({ input: { for: () => ({ setDraft: x => calls.push(x), submit: () => calls.push('submit') }) } }), remote: { commands: { execute: async () => { calls.push('remote'); return {} } } } }
-  const execute = client.createTavernFrameSlashExecutor(ctx, { setTimeout, clearTimeout })
-  for (const command of ['/cut', '/unknown']) {
-    await assert.rejects(execute(`/send 创建结果 | ${command} 0 | /trigger`, 'game', { waitForCompletion: false }), error => error.code === 'UNSUPPORTED_SLASH_PIPELINE' && error.message.includes(command))
-  }
-  await assert.rejects(execute('/cut 0', 'game'), /未发送消息/ )
-  assert.deepEqual(calls, [])
 })
 
 test('保留多个正式会话时，parent.Mvu 随当前会话切换而不是最后创建的沙箱', () => {

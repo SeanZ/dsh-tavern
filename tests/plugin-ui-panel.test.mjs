@@ -212,6 +212,10 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   assert.equal(input.beat.speaker, '林曦')
   assert.equal(input.footer, 'controls')
   assert.deepEqual(input.stage.characters, [])
+  assert.equal(Object.hasOwn(input.stage, 'music'), false, '舞台 BGM 没接管时不给 music，插件自己放音乐')
+  const owned = stage.TavernStageSceneView({ ...props(), data: { player: '你', card: { name: 'A' }, cast: [], musicOwned: true, music: null } })
+  owned.children[0].type(owned.children[0].props)
+  assert.equal(Object.hasOwn(input.stage, 'music'), true, '舞台 BGM 接管时给 music（null 即静音）')
   tree = stage.TavernStageSceneView(props(1))
   assert.equal(tree.children[0].type(tree.children[0].props).type, 'Builtin', '返回 null 时用内置舞台')
 
@@ -325,4 +329,20 @@ test('状态分节与正文视图：注册校验；正文视图拿到 Tavern 自
   assert.equal(section.children[0].children[0], '当前场景')
   const content = section.children[1].children[0]
   assert.equal(content.type(content.props), 'scene:game-1')
+})
+
+test('消息按钮：when 拿得到这条消息的正文，可以只在合适的消息下显示', () => {
+  const start = source.indexOf('function TavernPluginActionButtons(props)')
+  const code = source.slice(start, source.indexOf('function TavernPluginComposerActions(', start))
+  const seen = []
+  const actions = [{ owner: 'card', id: 'accept', label: '接受剧情对战', when: context => { seen.push(context); return !/【进入本轮战斗】/.test(context.text) }, run() {} }]
+  const h = (type, props, ...children) => ({ type, props, children: children.flat() })
+  const view = vm.runInNewContext(code + '; ({ TavernPluginActionButtons, TavernPluginMessageActions })', {
+    React: { createElement: h, useState: init => [init, () => {}] }, useTavernUiExtensions() {}, tavernPluginAllowed: () => true,
+    tavernUiExtensions: { messageActions: () => actions }, tavernErrorHub: { report() {} }
+  })
+  const render = text => { const outer = view.TavernPluginMessageActions({ sessionId: 'game-1', turn: 2, settled: true, text }); return outer && outer.type(outer.props) }
+  assert.equal(render('小茂向你发起挑战。\n【进入本轮战斗】'), null)
+  assert.equal(render('小茂说：来比一场吧。').children[0].children[0], '接受剧情对战')
+  assert.deepEqual(JSON.parse(JSON.stringify(seen.at(-1))), { gameId: 'game-1', turn: 2, settled: true, text: '小茂说：来比一场吧。' })
 })

@@ -29,7 +29,7 @@ function waitForWritable(res) {
   })
 }
 
-// Asset library media by lease (docs/design/asset-library.md). The page's origin passes Tavern's
+// Asset library media by lease (Wiki「设计：asset-library」). The page's origin passes Tavern's
 // own check here; the service then checks resource, expiry and authorization on every request
 // and yields the body in bounded chunks.
 export async function respondAssetLease(assetLibrary, req, res) {
@@ -74,7 +74,6 @@ export function registerTavernHttpRoutes({
   performanceDiagnostics,
   runtimeGeneration,
   runtimeReadiness,
-  sceneIllustrations,
   readPluginMediaFile,
   pluginAssets,
   fontLibrary,
@@ -158,8 +157,8 @@ export function registerTavernHttpRoutes({
         if (gameplayRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host) {
           res.writeHead(403); res.end('forbidden'); return
         }
-        // Old pictures Tavern drew: shown, listed in the gallery and deleted there.
-        const sceneImageRoute = /^\/api\/dsh-tavern\/(?:scene-image|scene-image-stored|listSceneImageHistory|removeSceneImageHistory|sceneImageStatus)$/.test(pathname)
+        // The gallery: listing and deleting the pictures plugins attached.
+        const sceneImageRoute = /^\/api\/dsh-tavern\/(?:listSceneImageHistory|removeSceneImageHistory)$/.test(pathname)
         const pluginMediaRoute = /^\/api\/dsh-tavern\/(?:plugin-media|pluginMediaForTurn|pluginMediaTurns)$/.test(pathname)
         if (pluginMediaRoute && origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
           res.writeHead(403)
@@ -315,24 +314,30 @@ export function registerTavernHttpRoutes({
             createReadStream(found.path, { start, end }).on('error', () => res.destroy()).pipe(res)
             return
           }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/transfer-export') {
+          if ((req.method === 'GET' || req.method === 'HEAD') && (pathname === '/api/dsh-tavern/transfer-export' || pathname.startsWith('/api/dsh-tavern/transfer-export/'))) {
             const token = new URL(req.url, 'http://x').searchParams.get('token') || ''
-            const found = transferExports ? transferExports.take(token) : null
+            const found = transferExports ? await transferExports.take(token) : null
             if (!found) {
               res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
               res.end('export expired')
               return
             }
-            const name = String(found.filename || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
+            // 名字优先取服务端记录；URL 路径段只是给下载器的兜底（见 rpc 里 downloadUrl 的注释）。
+            const requested = pathname.slice('/api/dsh-tavern/transfer-export/'.length)
+            const name = String(found.filename || requested || 'DSH酒馆备份.dshtransfer').replace(/[\/:*?"<>|\r\n]/g, '_')
             res.writeHead(200, {
               'Content-Type': 'application/zip',
               'Content-Length': found.bytes,
               'Cache-Control': 'no-store',
               'X-Content-Type-Options': 'nosniff',
-              'Content-Disposition': 'attachment; filename="backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
+              // ASCII 名给只认 filename= 的下载器，filename* 给浏览器，路径段给 Android WebView。
+              'Content-Disposition': 'attachment; filename="tavern-backup.dshtransfer"; filename*=UTF-8\'\'' + encodeURIComponent(name)
             })
+            if (req.method === 'HEAD' || found.bytes === 0) { res.end(); return }
             const stream = found.stream()
-            res.on('close', () => { void transferExports.remove(token); stream.destroy() })
+            // 下载完不删：内嵌 WebView 或浏览器可能中途放弃第一次请求，用户刷新后还会再点。
+            // 文件按 token 有效期由 sweep 收掉，这里只中断本次流。
+            res.on('close', () => { stream.destroy(); void transferExports.sweep() })
             stream.on('error', () => res.destroy()).pipe(res)
             return
           }
@@ -377,20 +382,6 @@ export function registerTavernHttpRoutes({
             }
             res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': thumbnail.body.byteLength, 'Cache-Control': 'private, max-age=600', 'X-Content-Type-Options': 'nosniff' })
             res.end(thumbnail.body)
-            return
-          }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image') {
-            const query = new URL(req.url, 'http://x').searchParams
-            const image = await sceneIllustrations.readImage(query.get('sessionId'), Number(query.get('turn')), query.get('key'), query.get('versionId'))
-            res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
-            res.end(image.data)
-            return
-          }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/scene-image-stored') {
-            const query = new URL(req.url, 'http://x').searchParams
-            const image = await sceneIllustrations.readStoredImage(query.get('chatId'), query.get('key'), query.get('versionId'))
-            res.writeHead(200, { 'Content-Type': image.ref.mediaType, 'Content-Length': image.data.byteLength, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
-            res.end(image.data)
             return
           }
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/plugin-media') {

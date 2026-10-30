@@ -9,7 +9,7 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
-// The settlement of a game without official MVU variables (docs/design/background-task-pipeline.md,
+// The settlement of a game without official MVU variables (Wiki「设计：background-task-pipeline」,
 // engines 2 and 3): nothing to do when no item wants this turn; otherwise a plugin may replace
 // the posture settlement, and Tavern's own background agent runs when none does (or it fails).
 // The agent's tools and notes come from the settlement items. Returns { text, result }.

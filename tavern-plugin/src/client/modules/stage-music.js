@@ -1,4 +1,4 @@
-// The stage's BGM transport (docs/design/cast-presentation.md「背景音乐」): one decoded buffer per live track, looped
+// The stage's BGM transport (Wiki「设计：cast-presentation」「背景音乐」): one decoded buffer per live track, looped
 // natively by the audio render thread; crossfades between tracks, pause/resume and a fading stop.
 // Loop points (asset-library music loopStart/loopEnd, seconds of decoded PCM): the intro plays once, then
 // [loopStart, loopEnd) repeats. Without them the silent head and tail are trimmed and one short equal-power

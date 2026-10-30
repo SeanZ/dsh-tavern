@@ -6,11 +6,12 @@ export function worldbookReadHistory(events, directory, skillNames = [], inlineE
     if (event.type === 'tool/call') {
       let args
       try { args = typeof d.arguments === 'string' ? JSON.parse(d.arguments) : d.arguments } catch { continue }
-      const target = d.name === 'skill' ? args?.name : d.name === 'read' ? args?.file_path : null
+      const navigation = ['worldbook_list', 'worldbook_grep'].includes(d.name)
+      const target = navigation ? (args?.query || '世界书文件列表') : d.name === 'skill' ? args?.name : d.name === 'read' ? args?.file_path : null
       const normalized = typeof target === 'string' ? target.replaceAll('\\', '/') : ''
       const physical = directory && normalized.startsWith(directory.replaceAll('\\', '/') + '/')
-      if (typeof target !== 'string' || !(d.name === 'skill' ? true : target.startsWith('/__tavern_worldbook__/') || physical)) continue
-      calls.set(d.callId, { id: d.callId, seq: event.seq, turn: d.turn, step: d.step, kind: d.name, target, reference: /\/(?:entries|references)\//.test(normalized) && !normalized.endsWith('/references/资料目录.md'), offset: args.offset, limit: args.limit, status: 'pending' })
+      if (typeof target !== 'string' || !(navigation || d.name === 'skill' ? true : target.startsWith('/__tavern_worldbook__/') || physical)) continue
+      calls.set(d.callId, { id: d.callId, seq: event.seq, turn: d.turn, step: d.step, kind: d.name, target, reference: (physical && !normalized.includes('/references/') || /\/(?:entries|references)\//.test(normalized)) && !normalized.endsWith('/references/资料目录.md'), offset: args.offset, limit: args.limit, status: 'pending' })
     } else if (event.type === 'tool/result' && calls.has(d.message?.toolCallId)) {
       const item = calls.get(d.message.toolCallId)
       item.status = d.message.isError ? 'error' : 'success'
@@ -40,6 +41,10 @@ export function createWorldbookInspectorHandlers({ agentRegistry, chatForSession
       const evidence = sessionDebugEvidence(agent.session.id)
       const records = worldbookReadHistory(evidence.events, worldbookSkillProvider.directory, (catalog?.clusters || []).map(c => c.name), (catalog?.clusters || []).flatMap(c => c.entries))
       const labels = new Map()
+      for (const entry of catalog?.files || []) {
+        entry.readCount = records.filter(r => r.target === entry.path && r.status === 'success').length
+        labels.set(entry.path, entry.title)
+      }
       for (const cluster of catalog?.clusters || []) {
         cluster.readCount = records.filter(r => [cluster.name, cluster.legacyName].includes(r.target) && r.status === 'success').length
         labels.set(cluster.name, cluster.title)

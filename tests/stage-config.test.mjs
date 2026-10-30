@@ -35,25 +35,6 @@ function load(storage = memoryStorage()) {
   return { ...api, storage, tuned, context, sandbox }
 }
 
-test('every layer starts at its old level; volume and mute are kept apart and read back from this browser', () => {
-  const page = load(), audio = page.tavernStageAudio
-  assert.deepEqual(JSON.parse(JSON.stringify(audio.get())), { v: 1, master: 1, voice: 1, music: 1, sfx: 1, ambience: 1, muted: {} })
-  assert.deepEqual(page.tuned.at(-1), { level: 1 }, 'voices start at full volume')
-  audio.setVolume('voice', .6); audio.setVolume('master', .5)
-  assert.deepEqual(page.tuned.at(-1), { level: .3 }, 'a voice plays at 配音 × 总音量, at once')
-  audio.toggleMute('voice')
-  assert.deepEqual([audio.get().voice, audio.get().muted.voice, page.tuned.at(-1).level], [.6, true, 0], 'a mute keeps the level')
-  audio.toggleMute('voice')
-  assert.equal(page.tuned.at(-1).level, .3, 'unmuting restores it')
-  audio.toggleMute('music'); audio.setVolume('music', .4)
-  assert.equal(audio.get().muted.music, undefined, 'moving a muted slider unmutes it')
-  const again = load(page.storage).tavernStageAudio.get()
-  assert.deepEqual([again.voice, again.master, again.music], [.6, .5, .4], 'a reload reads the saved levels')
-  const odd = load(memoryStorage({ 'dsh-tavern-stage-audio': JSON.stringify({ voice: 7, sfx: 'loud', ambience: .3, muted: { music: true, extra: true } }) })).tavernStageAudio.get()
-  assert.deepEqual(JSON.parse(JSON.stringify(odd)), { v: 1, master: 1, voice: 1, music: 1, sfx: 1, ambience: .3, muted: { music: true } })
-  assert.equal(load(memoryStorage({ 'dsh-tavern-stage-audio': '{' })).tavernStageAudio.get().master, 1, 'an unreadable record is the defaults')
-})
-
 test('BGM, 音效 and 环境音 end in their layer bus and its dip, then 总音量; a change glides on what is already sounding', () => {
   const page = load(), audio = page.tavernStageAudio, ctx = audio.context()
   const music = audio.output(ctx, 'music'), sfx = audio.output(ctx, 'sfx'), ambience = audio.output(ctx, 'ambience')

@@ -29,37 +29,6 @@ function registry(state) {
 const outline = [entry(1, 0), entry(2, 10), entry(3, 20), entry(4, 30)]
 const liveNodes = [1, 5, 23, 27]
 
-test('快速跳转只列表面里还有内容的轮次', () => {
-  const state = { outline, inbox: [] }
-  const host = registry(state)
-  const dispose = installHostTurnRailFilter(host)
-  const result = host.snapshot(session(liveNodes))
-  assert.deepEqual(result.values.turnOutline.map(item => item.turn), [1, 3], '重试与被取代的轮次不再占刻度')
-  assert.equal(result.values.inbox, state.inbox, '其他投影原样透传')
-  assert.deepEqual(result.values.sessionStats, { turns: 1 })
-  assert.deepEqual(host.cachedSnapshot(session(liveNodes)).values.turnOutline.map(item => item.turn), [1, 3])
-  assert.deepEqual(host.hydrate(session(liveNodes)).values.turnOutline.map(item => item.turn), [1, 3])
-  dispose()
-  assert.deepEqual(host.snapshot(session(liveNodes)).values.turnOutline, outline, '卸载后回到原生行为')
-})
-
-test('没有表面节点的输入标记按 turn/start 边界算给它那一轮', () => {
-  // tavern 自己写的输入标记不带 data.turn：seq 落在第 3 轮区间里，第 3 轮就还活着。
-  const host = registry({ outline, inbox: [] })
-  const dispose = installHostTurnRailFilter(host)
-  assert.deepEqual(host.snapshot(session([12, 21])).values.turnOutline.map(item => item.turn), [2, 3])
-  // 第一条 turn/start 之前的节点不属于任何轮次。
-  assert.deepEqual(host.snapshot(session([0, 11])).values.turnOutline.map(item => item.turn), [1, 2])
-  dispose()
-})
-
-test('表面为空时目录清空，一个刻度都不留', () => {
-  const host = registry({ outline, inbox: [] })
-  const dispose = installHostTurnRailFilter(host)
-  assert.deepEqual(host.snapshot(session([])).values.turnOutline, [])
-  dispose()
-})
-
 test('变更推送只裁 turnOutline，监听器按原顺序收发', () => {
   const seen = []
   const host = registry({ outline, inbox: [] })

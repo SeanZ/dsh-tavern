@@ -2,6 +2,7 @@ import { taskStateFields } from './task-state-reader.js'
 import { createScopedMessages } from './scoped-messages.js'
 import { diffMvuChanges } from './mvu-settlement-effect.js'
 import { diffJson } from './json-mutation.js'
+import { participantOf, slotOf } from './background-members.js'
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
@@ -31,7 +32,6 @@ export function createBackgroundTaskCoordinator(options = {}) {
   const blocked = typeof options.blocked === 'function' ? options.blocked : function () { return false }
   // Optional work (the worldbook prefilter) yields to any other task instead of blocking it.
   // Runs outside the per-chat lock: the yielding task commits through that lock.
-  const preempt = typeof options.preempt === 'function' ? options.preempt : null
   const mutationTails = new Map()
   if (!store || typeof store.readChat !== 'function' || typeof store.writeChat !== 'function' || typeof store.updateChat !== 'function' || !timeline) {
     throw new Error('Background Task Coordinator 缺少存储或时间线 adapter')
@@ -47,11 +47,12 @@ export function createBackgroundTaskCoordinator(options = {}) {
     })
   }
 
-  function activity(chat) {
+  // `slot` (background-members.js): only that member's tasks; without it, the whole game.
+  function activity(chat, slot) {
     const inspected = timeline.inspect({ chat })
     const allOperations = Object.values(inspected.operations || {})
     const operations = allOperations.filter(function (operation) {
-      return operation && operation.kind === 'agent'
+      return operation && operation.kind === 'agent' && (slot === undefined || slotOf(operation.role) === slot)
     }).sort(function (left, right) {
       return (Number(right.createdAt) || 0) - (Number(left.createdAt) || 0)
     })
@@ -62,7 +63,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
     }).sort(function (left, right) {
       return (Number(right.completedAt) || 0) - (Number(left.completedAt) || 0)
     })[0]
-    const background = body && body.background
+    const background = body && body.background && (slot === undefined || slotOf(body.background.role || 'settlement') === slot) ? body.background : undefined
     if (running === undefined && background && background.phase === 'failed') {
       return { phase: 'failed', busy: false, role: str(background.role), operationId: str(body.id), basedOn: null,
         updatedAt: Number(background.updatedAt) || 0,
@@ -114,7 +115,6 @@ export function createBackgroundTaskCoordinator(options = {}) {
   async function begin(chat, role, input = {}) {
     const chatId = str(chat && chat.id)
     const requestId = str(input.requestId).trim().slice(0, 160)
-    if (preempt !== null && chatId !== '') await preempt(chatId, role)
     const begun = await serialize(chatId, async function () {
       if (role === 'candidate' && store.readRecoveryState) {
         // Header fields only: its empty message slice must not replace the story the
@@ -156,10 +156,12 @@ export function createBackgroundTaskCoordinator(options = {}) {
           || (Number(source.timeline?.revision) || 0) !== input.expectedTimeline.revision)) {
           throw new Error('剧情已变化，请重新生成候选项')
         }
-        const currentActivity = activity(source)
+        // Only a task on the same member's slot holds this one back.
+        const currentActivity = activity(source, slotOf(requestedRole))
         const expectedPending = currentActivity.phase === 'pending' && currentActivity.role === requestedRole
         const conflictingPending = currentActivity.phase === 'pending' && currentActivity.role !== requestedRole
         if ((currentActivity.busy || conflictingPending) && !expectedPending) {
+          options.lockEvent?.({ kind: 'refused', sessionId: str(chat?.sessionId || source?.sessionId), slot: slotOf(requestedRole), role: requestedRole, holder: str(currentActivity.role) })
           const error = new Error('后台 Agent 正在执行 ' + currentActivity.role + '，请等待完成')
           error.code = 'BACKGROUND_BUSY'
           error.activity = currentActivity
@@ -198,6 +200,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
         return next
       }
     })
+    // One agent operation at a time holds a game's background slot, from here to its commit.
+    const gameId = str(chat?.sessionId || begun.chat?.sessionId)
+    if (begun.value.created !== false) options.lockEvent?.({ kind: 'held', sessionId: gameId, slot: slotOf(role), role: str(role), operationId: begun.value.operationId })
     const task = {
       chat: begun.chat,
       operationId: begun.value.operationId,
@@ -232,7 +237,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
               // Begin may already have bound a durable reused session. Still
               // validate the operation above; a late callback must not bypass it.
               if (state.timeline.operations[begun.value.operationId]?.startedSessionId === sessionId &&
-                state.timeline.participants?.background?.sessionId === sessionId) {
+                state.timeline.participants?.[participantOf(role)]?.sessionId === sessionId) {
                 return stateOnly ? state : store.readChat(chatId)
               }
               const saved = await store.patchChat(chatId, state._storageRevision,
@@ -287,7 +292,7 @@ export function createBackgroundTaskCoordinator(options = {}) {
         })
       },
       async commit(input = {}) {
-        return await serialize(begun.chat.id, async function () {
+        const outcome = await serialize(begun.chat.id, async function () {
           const metadata = { source: 'background.' + str(role) + '.commit', operationId: begun.value.operationId }
           // This opt-in seam declares every floor the settlement callback can read/write.
           // Keep variable effects, delivery cleanup, receipt and timeline in one CAS frame.
@@ -347,6 +352,10 @@ export function createBackgroundTaskCoordinator(options = {}) {
           }, metadata)
           return saved === undefined ? { chat: null, status: 'missing' } : { chat: saved, status }
         })
+        options.lockEvent?.({ kind: 'released', sessionId: gameId, slot: slotOf(role), role: str(role), operationId: begun.value.operationId, status: str(outcome.status) })
+        // The story moved on while the agent ran: its result was dropped, not saved.
+        if (outcome.status === 'stale') options.discarded?.({ sessionId: gameId, role: str(role), agentSessionId: str(input.participant?.sessionId) })
+        return outcome
       },
       async fail(trace) {
         // Failing marks the operation only: commit it through the header. A role whose

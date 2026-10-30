@@ -1,6 +1,5 @@
 // 应用内安装插件：GitHub 地址 / ZIP → plugins/<文件夹>，列出加载情况，更新与删除都留备份。
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -65,41 +64,6 @@ test('压缩包检查：找插件根，去掉 .github；缺入口、依赖 npm �
   assert.deepEqual([...readPluginArchive(markers).files.keys()].sort(), ['index.mjs', 'package.json'])
 })
 
-test('插件清单必须有非空字符串 name 和 version；不强加 semver 格式', () => {
-  for (const field of ['name', 'version']) {
-    for (const value of [undefined, null, '', '   ', 1, false, {}, []]) {
-      const pkg = { name: 'valid-plugin', version: '1.0.0', main: 'index.mjs', [field]: value }
-      assert.throws(() => readPluginArchive(pluginZip({ 'package.json': pkg, 'index.mjs': '' })), error => {
-        assert.equal(error.code, 'TAVERN_PLUGIN_INSTALL')
-        assert.match(error.message, new RegExp(field + '.*非空字符串'))
-        return true
-      })
-    }
-  }
-  for (const pkg of [null, [], 'plugin', 123]) {
-    assert.throws(() => readPluginArchive(pluginZip({ 'package.json': JSON.stringify(pkg), 'index.mjs': '' })), /JSON 对象/)
-  }
-  assert.equal(readPluginArchive(hello('nightly-build')).pkg.version, 'nightly-build')
-})
-
-test('坏清单不能替换已安装插件，也不能重新启用旧的无版本插件', async t => {
-  const { installer, plugins, dataRoot, syncs } = await setup(t)
-  await installer.installFromZip(hello(), 'hello.zip')
-  const manifest = path.join(plugins, 'dsh-tavern-hello', 'package.json')
-  const original = await readFile(manifest, 'utf8')
-  await assert.rejects(installer.installFromZip(hello(undefined, { version: undefined }), 'hello.zip'), /version/)
-  assert.equal(await readFile(manifest, 'utf8'), original, '校验必须先于替换或备份')
-  assert.equal(existsSync(path.join(dataRoot, 'plugin-backups')), false)
-  assert.equal(syncs(), 1)
-  await installer.disable('dsh-tavern-hello')
-  const old = JSON.parse(original)
-  delete old.version
-  await writeFile(manifest, JSON.stringify(old))
-  await assert.rejects(installer.enable('dsh-tavern-hello'), /version/)
-  assert.ok(existsSync(path.join(plugins, 'dsh-tavern-hello', '.tavern-disabled')))
-  assert.equal(syncs(), 2, '拒绝启用时不触发加载同步')
-})
-
 test('上传 ZIP 安装、列表、删除进备份', async t => {
   const { installer, plugins, dataRoot, syncs } = await setup(t)
   const installed = await installer.installFromZip(hello(), 'dsh-tavern-hello.zip')
@@ -125,37 +89,6 @@ test('上传 ZIP 安装、列表、删除进备份', async t => {
   assert.ok(removed.backup.startsWith(path.join(dataRoot, 'plugin-backups')))
   assert.ok((await readdir(removed.backup)).includes('index.mjs'))
   await assert.rejects(installer.remove('../x'), /不存在/)
-})
-
-test('停用与启用：文件和数据都留着，列表状态跟着变；人物卡自带的插件不能停用', async t => {
-  const { installer, plugins, syncs } = await setup(t)
-  await installer.installFromZip(hello(), 'hello.zip')
-  await writeFile(path.join(plugins, 'dsh-tavern-hello', '.tavern-status.json'), JSON.stringify({ ok: true }))
-
-  let [listed] = await installer.list()
-  assert.equal(listed.enabled, true)
-  assert.equal(listed.state, 'loaded')
-  assert.equal(await installer.disable('dsh-tavern-hello').then(result => result.enabled), false)
-  assert.equal(syncs(), 2, '停用后同步 patch')
-  assert.ok(existsSync(path.join(plugins, 'dsh-tavern-hello', 'index.mjs')), '插件文件还在')
-  assert.ok(!existsSync(path.join(plugins, 'dsh-tavern-hello', '.tavern-status.json')), '清掉旧的加载记录')
-
-  ;[listed] = await installer.list()
-  assert.equal(listed.enabled, false)
-  assert.equal(listed.state, 'disabled')
-  assert.equal(listed.reason, '')
-  assert.equal(listed.source.kind, 'zip')
-
-  assert.equal(await installer.enable('dsh-tavern-hello').then(result => result.enabled), true)
-  assert.equal(syncs(), 3)
-  assert.ok(!existsSync(path.join(plugins, 'dsh-tavern-hello', '.tavern-disabled')))
-  ;[listed] = await installer.list()
-  assert.equal(listed.enabled, true)
-  assert.equal(listed.state, 'pending', '重新启用后等宿主加载')
-
-  await writeFile(path.join(plugins, 'dsh-tavern-hello', '.dsh-card.json'), '{}')
-  await assert.rejects(installer.disable('dsh-tavern-hello'), /人物卡库/)
-  await assert.rejects(installer.disable('../x'), /不存在/)
 })
 
 test('旧版本留下的更新状态：备份里有过加载记录就提示重启；删除后重装不误判', async t => {

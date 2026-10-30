@@ -76,7 +76,6 @@ export function createWorldbookSearch({ load, render }) {
 export function sharedWorldbookSearch(search) {
   return {
     tool: { ...WORLD_BOOK_SEARCH_TOOL, parameters: { type: 'object', properties: WORLD_BOOK_SEARCH_TOOL.parameters, additionalProperties: false } },
-    allowDuringWorldbookFilter: true,
     allowDuringCharacterDesign: true,
     async execute({ input, args }) { return JSON.stringify(await search(input.sessionId, args)) }
   }

@@ -73,3 +73,24 @@ test('旧 checkpoint 丢失直接来源时向前恢复最近的有效后台边�
   assert.equal(begun.value.participant.sessionId, 'background-old')
   assert.equal(begun.value.participant.rewindTo, 42)
 })
+
+test('自动精修只改措辞：版本号、候选项、姿势和结算都不动，场景键沿用原文；之后手动编辑才算新场景', async () => {
+  const { computeSceneTarget, sceneSourceDigest } = await import('../tavern-plugin/lib/domain/scene-illustration.js')
+  const { timeline, chat } = harness()
+  let current = beginAndCommitBody(timeline, chat, 1, '你好', '原来的正文。')
+  current.messages.at(-1).turn = 1
+  current.candidates = { choices: ['a'] }
+  const revision = current.timeline.revision, key = computeSceneTarget(current, 1).key
+  current = timeline.apply({ chat: current, intent: { kind: 'body.polish', turn: 1,
+    patch: { text: '润色后的正文。', sourceText: '润色后的正文。', polishedFrom: sceneSourceDigest('原来的正文。') } } }).chat
+  assert.equal(current.messages.at(-1).text, '润色后的正文。')
+  assert.equal(current.timeline.revision, revision)
+  assert.deepEqual(current.candidates, { choices: ['a'] })
+  assert.equal(current.posture, '门边站立')
+  assert.equal(current.settleStatus, 'done')
+  assert.equal(computeSceneTarget(current, 1).key, key)
+  current = timeline.apply({ chat: current, intent: { kind: 'body.edit', turn: 1, patch: { text: '玩家改过。', sourceText: '玩家改过。' } } }).chat
+  assert.equal(current.messages.at(-1).polishedFrom, undefined)
+  assert.notEqual(computeSceneTarget(current, 1).key, key)
+  assert.equal(current.timeline.revision, revision + 1)
+})

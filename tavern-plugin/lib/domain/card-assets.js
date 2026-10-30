@@ -2,7 +2,7 @@ import * as zlib from 'node:zlib'
 import { CAST_EMOTIONS } from './cast-annotation.js'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
 
-// Character material carried by a card file (docs/design/tavern-to-galgame.md): Character Card V3
+// Character material carried by a card file (Wiki「设计：tavern-to-galgame」): Character Card V3
 // `data.assets` in CHARX (`embeded://`), RisuAI PNG chunks (`chara-ext-asset_:N` → `__asset:N`),
 // `data:` URIs in JSON, RisuAI's own `extensions.risuai.emotions`, and Tavern's `extensions.dsh_tavern.cast`.
 
@@ -309,7 +309,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
 export function cardImportFromCard({ card, resolve, name }) {
   const collected = collectCardAssets(card, resolve)
   const text = JSON.stringify(card)
-  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)$/i, '') || '人物卡'
+  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)(\.png)?$/i, '') || '人物卡'
   if (collected.cover && isPng(collected.cover.bytes)) {
     const png = pngWithCard(collected.cover.bytes, text)
     return { payload: { kind: 'png', name: base + '.png', b64: Buffer.from(text, 'utf8').toString('base64'), fileB64: png.toString('base64') }, collected: { ...collected, cover: null } }

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
-import { appendSessionEvent, openTurnStep, sessionEvents, sessionEventData, surfaceReplacementRange } from './session-events.js'
+import { appendSessionEvent, markSurfaceEditTurn, openTurnStep, sessionEvents, sessionEventData, surfaceReplacementRange } from './session-events.js'
 import { agentForSession } from './agent-lookup.js'
 
 /** Commit a replacement against the current surface, never the raw history.
@@ -72,7 +72,7 @@ export function createSessionSurfaceMutator(session, events = sessionEvents(sess
     const turn = open.turn ?? lastTurn + 1
     const opensTurn = open.turn === null
     const step = opensTurn ? 1 : (lastStep.get(turn) || 0) + 1
-    if (opensTurn) write('turn/start', { turn })
+    if (opensTurn) { markSurfaceEditTurn(session, turn); write('turn/start', { turn }) }
     write('step/start', { turn, step })
     try {
       return body(turn, step)

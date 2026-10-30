@@ -23,7 +23,7 @@ export function createSettlementControls(deps) {
   }
 
   async function retrySettlement(sessionId, turn, guidance) {
-    const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, storyTimeline, view, worldbookPrefilter } = deps
+    const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, storyTimeline, view } = deps
     for (let attempt=0;attempt<5;attempt++) {
       const recent = await readOpeningWindow(sessionId)
       const window = recent && recent.chat.timeline?.schemaVersion === 1
@@ -32,8 +32,6 @@ export function createSettlementControls(deps) {
       const chat = window ? window.chat : await chatForSession(sessionId)
       if (chat === undefined) throw new Error('当前会话没有绑定人物卡')
       const activity = backgroundTasks.activity(chat)
-      // The next turn's preparation (worldbook pool, style reference) gives way.
-      if (activity.busy && ['worldbook-filter', 'style-reference'].includes(activity.role)) { await worldbookPrefilter.cancel(chat.id); continue }
       if (activity.busy) throw new Error('后台 Agent 正在运行，请稍候')
       if (Object.values(storyTimeline.inspect({ chat }).operations || {}).some(operation => operation.kind === 'body' && operation.status === 'running')) {
         throw new Error('正文正在生成，请等待完成后再重新结算')

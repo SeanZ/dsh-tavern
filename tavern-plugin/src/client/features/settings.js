@@ -157,8 +157,7 @@
                 return input && typeof input === "object" && Array.isArray(input.items) ? { items: tavernViewTabItems(input) } : null;
             }
             function apply(settings) {
-                value = { showSystemNavigation: settings.showSystemNavigation === true, hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
-                document.documentElement.classList.toggle("dsh-tavern-hide-process", value.hideContextAndReasoning);
+                value = { showSystemNavigation: settings.showSystemNavigation === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
                 document.documentElement.classList.toggle("dsh-tavern-show-system-navigation", value.showSystemNavigation);
                 listeners.forEach(listener => listener());
             }
@@ -176,8 +175,8 @@
                     try { window.localStorage.setItem(key, String(Date.now())); } catch (_) {}
                 },
                 start() {
-                    // Hidden is the default; keep process details out of view until the setting loads.
-                    if (value === null) document.documentElement.classList.add("dsh-tavern-hide-process");
+                    // The conversation never shows context injections, triggers or thinking; 轨迹 has them.
+                    document.documentElement.classList.add("dsh-tavern-hide-process");
                     refresh();
                     const onStorage = event => { if (event.key === key) refresh(); };
                     window.addEventListener("focus", refresh);
@@ -186,7 +185,7 @@
                 }
             };
         })();
-        function DisplayPreferencesSettings(props) {
+        function DisplayPreferencesSettings() {
             const preferences = React.useSyncExternalStore(displayPreferences.subscribe, displayPreferences.snapshot, displayPreferences.snapshot);
             const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState("");
             async function save(patch) {
@@ -203,9 +202,8 @@
                     h("input", { type: "checkbox", role: "switch", "aria-label": title, checked, disabled: preferences === null || busy, onChange: event => save(patch(event.target.checked)) }));
             }
             return h("section", { className: "dsh-tavern-settings-group dsh-tavern-display-preferences" },
-                props?.sidebar ? row("显示系统功能入口", "在侧栏显示原生系统导航，可打开插件、自动任务和更多功能。",
-                    preferences?.showSystemNavigation === true, value => ({ showSystemNavigation: value })) : row("隐藏上下文注入和思考过程", "隐藏对话中的上下文注入、上下文压缩记录、收到执行请求的提示、已思考和思考过程。仅影响显示，正文、模型请求和存档内容不变。",
-                    preferences?.hideContextAndReasoning === true, value => ({ hideContextAndReasoning: value })),
+                row("显示系统功能入口", "在侧栏显示原生系统导航，可打开插件、自动任务和更多功能。",
+                    preferences?.showSystemNavigation === true, value => ({ showSystemNavigation: value })),
                 notice ? h("p", { className: "dsh-tavern-settings-desc", role: "status" }, notice) : null);
         }
 
@@ -535,9 +533,11 @@
                     h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void rpc("openUserPluginsFolder").catch(function (err) { setError(String(err && err.message || err)); }); } }, "打开插件文件夹")));
         }
 
+        // @include modules/interface-skin.js
+        const { applyActiveInterfaceSkin, InterfaceSkinSettings } = createInterfaceSkinModule({ React, rpc });
         // @include modules/global-settings.js
         const { TavernSettingsSection, TavernPluginsSettingsSection } = createGlobalSettingsModule({
-            React, rpc, notifySettingsChanged: () => window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")),
+            React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             TavernDefaultModelSetting, TavernConversationWritingSkills, DisplayPreferencesSettings, HeaderItemsSettings,
             CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings
         });

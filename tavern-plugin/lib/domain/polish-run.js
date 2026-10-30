@@ -3,7 +3,7 @@
 // written, so pressing 精修 mostly finds it done.
 
 import { createHash } from 'node:crypto'
-import { buildPolishGuidanceRequest, buildPolishReviewRequest, parsePolishReview, polishReviewContext } from './polish-review.js'
+export { createPolishReviewer } from './polish-agent.js'
 
 function str(value) { return typeof value === 'string' ? value : value == null ? '' : String(value) }
 
@@ -12,33 +12,13 @@ export function polishTextKey(texts) {
   return createHash('sha256').update(JSON.stringify((texts || []).map(str))).digest('hex')
 }
 
-/** Model calls of a 精修, each reading the card and the latest floors of the game. */
-export function createPolishReviewer({ latestFloors, readCard, prompt, callModel }) {
-  async function material(sessionId) {
-    const chat = await latestFloors(sessionId, 4)
-    const card = await readCard(chat.cardPath).catch(() => undefined) || chat.cardDefinitionSnapshot?.raw?.data || chat.cardDefinitionSnapshot?.raw
-    return { card, playerName: chat.macroState?.userName, ...polishReviewContext(chat.messages) }
-  }
-  return Object.freeze({
-    /** The principles review of `texts`. */
-    async review(sessionId, texts, signal) {
-      const request = buildPolishReviewRequest({ principles: prompt('polish'), ...await material(sessionId), reply: texts.join('\n\n') })
-      return parsePolishReview(await callModel({ sessionId, signal, ...request }), texts)
-    },
-    /** Edits that carry out the player's guidance on `texts`, nothing else. */
-    async guide(sessionId, texts, guidance, signal) {
-      const request = buildPolishGuidanceRequest({ instructions: prompt('polish-guidance'), ...await material(sessionId), reply: texts.join('\n\n'), guidance })
-      return parsePolishReview(await callModel({ sessionId, signal, ...request }), texts)
-    }
-  })
-}
-
 /**
  * One review per game kept in memory, for the reply text it read. Starting again for the same
  * text keeps the running one; another text aborts it. A review is only handed to a 精修 of the
  * same text, so an edited, regenerated or rolled back reply never takes a stale one.
  */
-export function createPolishPrereview({ enabled, readTexts, review, logger = console }) {
+// `apply` (自动精修): writes a finished review back into the reply it read.
+export function createPolishPrereview({ enabled, readTexts, review, apply, logger = console }) {
   const jobs = new Map()
   // Text versions a 精修 already produced or reviewed: reviewing them again would only cost.
   const settled = new Map()
@@ -64,8 +44,12 @@ export function createPolishPrereview({ enabled, readTexts, review, logger = con
     // A failed pre-review only means 精修 reviews on the spot; the page never sees it.
     job.result.catch(error => {
       if (jobs.get(id) === job) jobs.delete(id)
-      if (!controller.signal.aborted) logger.warn('dsh-tavern: 精修预审失败，点精修时会重新审稿:', str(error?.message || error))
+      if (!controller.signal.aborted) logger.warn('dsh-tavern: 自动精修审稿失败，点精修时会重新审稿:', str(error?.message || error))
     })
+    // 自动精修: once reviewed, the reply is rewritten in place unless something overtook it.
+    if (apply) job.result.then(reviewed => controller.signal.aborted ? undefined : apply(id, texts, reviewed, controller.signal))
+      .catch(error => { if (!controller.signal.aborted) logger.warn('dsh-tavern: 自动精修未写回:', str(error?.message || error)) })
+      .finally(() => { if (jobs.get(id) === job) jobs.delete(id) })
     jobs.set(id, job)
     return true
   }

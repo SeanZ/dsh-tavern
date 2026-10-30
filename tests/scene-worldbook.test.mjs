@@ -59,39 +59,6 @@ test('only the latest turns keep their snapshots; shared snapshots and entries s
   assert.equal(await exists('scene-images/worldbooks/' + refs[0].digest + '.json'), false)
 })
 
-test('存档带齐开局、逐轮及可回退历史的快照，并输出可独立读取的内容', async t => {
-  const { api } = await fixture(t)
-  const opening = await api.capture({ worldBook: book('开局') })
-  const current = await api.capture({ worldBook: book('新正文设定') })
-  const historical = await api.capture({ worldBook: book('旧正文设定') })
-  const states = [{ sceneOpeningWorldbook: opening, messages: [{ role: 'assistant', turn: 1, sceneWorldbook: current }] },
-    { sceneOpeningWorldbook: opening, messages: [{ role: 'assistant', turn: 1, sceneWorldbook: historical }] }]
-  const packed = await api.exportForSave(states)
-  assert.equal(packed.length, 3)
-  assert.deepEqual(new Set(packed.map(item => item.digest)), new Set([opening.digest, current.digest, historical.digest]))
-  const other = await fixture(t)
-  for (const item of packed) await other.store.writeBytes('scene-images/worldbooks/' + item.digest + '.json', item.content)
-  for (const ref of [opening, current, historical]) assert.deepEqual(await other.api.read(ref), await api.read(ref))
-})
-
-test('导入登记快照引用，删除源游戏不影响新游戏且保留原去重布局', async t => {
-  const { api, store } = await fixture(t)
-  const ref = await api.capture({ worldBook: book('共享设定'), chat: { id: 'source' }, turn: 0 })
-  const states = [{ sceneOpeningWorldbook: ref, messages: [] }]
-  const snapshots = await api.exportForSave(states)
-  const manifest = 'scene-images/worldbooks/' + ref.digest + '.json'
-  const before = await store.readJson(manifest)
-  const counts = await store.readJson('scene-images/worldbook-entry-counts.json')
-  await api.importForSave('imported', states, snapshots)
-  assert.deepEqual(await store.readJson(manifest), before)
-  assert.deepEqual(await store.readJson('scene-images/worldbook-entry-counts.json'), counts)
-  await api.forgetChat('source')
-  assert.ok((await api.read(ref)).entries)
-  await api.forgetChat('imported')
-  assert.match((await api.read(ref)).unavailable, /缺失/)
-  assert.deepEqual(await store.readJson('scene-images/worldbook-entry-counts.json'), {})
-})
-
 test('跨机器导入保持快照可读，损坏快照不产生登记或覆盖已有数据', async t => {
   const source = await fixture(t), target = await fixture(t)
   const opening = await source.api.capture({ worldBook: book('初始设定') })

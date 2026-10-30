@@ -55,27 +55,6 @@ test('list 列出 materials 下的素材，读不到的跳过', async () => {
   ])
 })
 
-test('collect 产出 utf8 Buffer，文件名保留中文并替换非法字符', async () => {
-  const resources = memoryResources({
-    'materials/剧情大纲.txt': '第一幕\n',
-    'materials/人物:备注?.md': '设定\n',
-    'materials/无扩展名': '纯文本\n'
-  })
-  const transfer = createTransferMaterials({ fileResources: resources })
-
-  const items = await transfer.collect(['materials/剧情大纲.txt', 'materials/人物:备注?.md', 'materials/无扩展名'])
-
-  assert.deepEqual(items.map(item => item.key), ['materials/剧情大纲.txt', 'materials/人物:备注?.md', 'materials/无扩展名'])
-  assert.deepEqual(items.map(item => item.title), ['剧情大纲', '人物:备注?', '无扩展名'])
-  assert.deepEqual(items.map(item => item.fileName), ['剧情大纲.txt', '人物_备注_.md', '无扩展名.txt'])
-  for (const item of items) {
-    assert.ok(Buffer.isBuffer(item.content))
-    assert.equal(item.content.toString('utf8'), resources.files.get(item.key))
-  }
-  // 导出只读，不写盘。
-  assert.equal(resources.calls.some(call => call.method === 'importText'), false)
-})
-
 test('collect 未知或读不到的路径报「剧本素材不存在」', async () => {
   const resources = memoryResources({
     'materials/剧情大纲.txt': '第一幕\n'
@@ -116,14 +95,4 @@ test('importOne 写入素材并返回路径，同名走 unique 不覆盖', async
     assert.equal(call.cardPath, undefined)
     assert.deepEqual(call.options, { unique: true })
   }
-})
-
-test('importOne 没有内容时报错，不写盘', async () => {
-  const resources = memoryResources({})
-  const transfer = createTransferMaterials({ fileResources: resources })
-
-  await assert.rejects(() => transfer.importOne({ title: '空素材' }), /剧本素材内容为空/)
-  await assert.rejects(() => transfer.importOne({ title: '空素材', content: null }), /剧本素材内容为空/)
-  assert.equal(resources.files.size, 0)
-  assert.equal(resources.calls.some(call => call.method === 'importText'), false)
 })

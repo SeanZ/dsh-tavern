@@ -252,6 +252,7 @@ function createRetainedTavernFrames(options) {
 
 function TavernRetainedMessageFrame(props) {
     const home = React.useRef(null), lease = React.useRef(null);
+    const pendingPin = React.useRef(null);
     // A floor that scrolls back in finds its retained document still alive: reattach it at
     // once instead of waiting behind a placeholder and reloading.
     const [activated, setActivated] = React.useState(props.eager === true || tavernRetainedFrames.has(props));
@@ -293,13 +294,21 @@ function TavernRetainedMessageFrame(props) {
             ? Object.assign({}, frameProps, { helperContext: props.helperContextReader() }) : frameProps;
         const mounted = tavernRetainedFrames.mount(initialProps, home.current);
         lease.current = mounted;
+        // The first click may activate a cold frame. Wait for mount to register its
+        // panel before pinning, and never carry that intent to another message.
+        const pinAfterMount = pendingPin.current === panelId;
+        pendingPin.current = null;
+        if (pinAfterMount) {
+            try { tavernPanelRegistry.pin(panelId, true); }
+            catch (error) { tavernErrorHub.report("固定面板", error); }
+        }
         return function () { lease.current = null; mounted.detach(); };
     }, [activated, key]);
     React.useLayoutEffect(function () { if (lease.current) lease.current.update(frameProps); });
     const movable = !props.persistent && /<(?:script|iframe|object|embed)\b/i.test(String(props.content || ""));
     return React.createElement("div", null,
         movable && !pinned ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", onClick: function () {
-            if (!activated) { setActivated(true); return; }
+            if (!activated) { pendingPin.current = panelId; setActivated(true); return; }
             try { tavernPanelRegistry.pin(panelId, true); }
             catch (error) { tavernErrorHub.report("固定面板", error); }
         } }, "固定到右侧") : null,

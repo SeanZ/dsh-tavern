@@ -26,7 +26,7 @@ export async function createInitializationNative(bootPath, { preset, contextWind
   const { Session } = await import(new URL('../../dsh-session/lib/index.js', bootUrl))
   const root = await mkdtemp(join(tmpdir(), 'tavern-initialization-native-'))
   const config = join(root, 'host.yml')
-  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-token-meter', 'dsh-commands', 'dsh-agent-loop']
+  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-token-meter', 'dsh-commands', 'dsh-agent-loop', 'dsh-tool-executor-native']
   await writeFile(config, packages.map(name => '- id: ' + name + '\n  name: ' + new URL('../../' + name + '/lib/index.js', bootUrl).href + '\n').join(''))
   const ctx = await boot('initialization-native-test', config)
   if (preset) {

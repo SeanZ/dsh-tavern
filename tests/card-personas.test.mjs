@@ -4,8 +4,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 
 import { activeCardPersonaText, applyCardPersonaChange, presentCardPersonas } from '../tavern-plugin/lib/domain/card-personas.js'
-import { applyTavernSettingsPatch, presentTavernSettings } from '../tavern-plugin/lib/domain/tavern-settings.js'
-import { CARD_PERSONA_DEFINITIONS, cardPersonas } from '../tavern-plugin/lib/prompt-catalog.js'
+import { cardPersonas } from '../tavern-plugin/lib/prompt-catalog.js'
 
 const BUILTINS = [{ id: 'cat', label: '猫', text: '喵设定' }, { id: 'pro', label: '编辑', text: '编辑设定' }]
 const change = (document, value) => applyCardPersonaChange(structuredClone(document), value, BUILTINS)
@@ -15,25 +14,6 @@ test('默认空白，内置性格都在库里，不注入任何文字', () => {
   assert.deepEqual(view({}).activeId, '')
   assert.deepEqual(view({}).items.map(item => [item.id, item.name, item.builtin, item.modified]), [['builtin:cat', '猫', true, false], ['builtin:pro', '编辑', true, false]])
   assert.equal(activeCardPersonaText({}, BUILTINS), '')
-})
-
-test('修改内置性格后仍是同一个性格，标为已修改；恢复默认回到内置内容', () => {
-  let document = change({}, { action: 'select', id: 'builtin:cat' })
-  document = change(document, { action: 'save', id: 'builtin:cat', text: '  喵设定，再加一句  ' })
-  const library = view(document)
-  assert.equal(library.activeId, 'builtin:cat')
-  assert.deepEqual(library.items[0], { id: 'builtin:cat', name: '猫', text: '喵设定，再加一句', builtin: true, modified: true })
-  assert.equal(activeCardPersonaText(document, BUILTINS), '喵设定，再加一句')
-  document = change(document, { action: 'restore', id: 'builtin:cat' })
-  assert.equal(activeCardPersonaText(document, BUILTINS), '喵设定')
-  assert.equal(view(document).items[0].modified, false)
-})
-
-test('未修改的内置性格跟随版本更新，新增的内置性格自动出现', () => {
-  const document = change({}, { action: 'select', id: 'builtin:cat' })
-  const updated = [{ id: 'cat', label: '猫', text: '新版喵设定' }, ...BUILTINS.slice(1), { id: 'new', label: '新', text: '新设定' }]
-  assert.equal(activeCardPersonaText(document, updated), '新版喵设定')
-  assert.deepEqual(presentCardPersonas(document, updated).items.map(item => item.id), ['builtin:cat', 'builtin:pro', 'builtin:new'])
 })
 
 test('新建、复制、重命名、删除性格', () => {
@@ -68,12 +48,6 @@ test('旧版保存在系统提示词方案里的卡片 Agent 系统指令迁移�
   const saved = change(old, { action: 'select', id: 'builtin:pro' })
   assert.deepEqual(view(saved).items.filter(item => !item.builtin).map(item => item.name), ['我的性格', '方案二的性格'])
   assert.equal(view({ promptOverrides: { story: '正文' } }).items.length, 2)
-})
-
-test('设置补丁与设置展示接入性格库，内置性格文件齐全', () => {
-  const document = applyTavernSettingsPatch({}, { cardPersona: { action: 'select', id: 'builtin:' + CARD_PERSONA_DEFINITIONS[0].id } })
-  assert.equal(presentTavernSettings(document, {}).cardPersonas.activeId, 'builtin:' + CARD_PERSONA_DEFINITIONS[0].id)
-  for (const item of cardPersonas()) assert.ok(item.text.length > 0, item.id)
 })
 
 test('性格面板：选中内置性格修改后保存，下拉框仍停在该性格', async () => {

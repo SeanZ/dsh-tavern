@@ -17,19 +17,21 @@ function setup(names) {
   return { worldBook, chat, project }
 }
 
-test('本局刚设计的人物，未被点名也注入一次，之后回到关键词召回', async () => {
+test('本局新人物和修改后的设定留在资料库，不再强制注入正文', async () => {
   const { chat, project, worldBook } = setup(['林婉', '周默'])
   const first = await project({ chat, card: {}, userText: '用我设计的人物继续' })
   assert.equal(first.error, null)
-  assert.equal(first.refs.length, 2)
-  assert.match(first.context, /林婉的身份/)
+  assert.equal(first.refs.length, 0)
+  assert.doesNotMatch(first.context, /林婉的身份/)
+  assert.ok(worldBook.view.entries.some(entry => entry.content.includes("林婉的身份")))
   chat.worldBookReads = first.reads
   chat.messages.push({ role: 'assistant', turn: 2, text: '雨停了。' })
   const later = await project({ chat, card: {}, userText: '继续' })
   assert.deepEqual(later.refs, [])
-  // A revised design is a new version and is injected once again.
+  // Revised static designs remain searchable resources.
   const ref = worldBook.view.entries.find(entry => entry.title.includes('周默')).ref
   worldBook.view.entries.find(entry => entry.ref === ref).content += '\n补充：左手有疤'
   const revised = await project({ chat, card: {}, userText: '继续' })
-  assert.deepEqual(revised.refs, [ref])
+  assert.deepEqual(revised.refs, [])
+  assert.doesNotMatch(revised.context, /左手有疤/)
 })

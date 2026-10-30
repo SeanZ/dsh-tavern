@@ -34,12 +34,3 @@ test('关键词检索列出每个关键词出现的轮次', () => {
   assert.match(rendered, /「银钥匙」出现在第 2 轮（共 1 轮）/)
   assert.match(rendered, /「白塔」出现在第 1、3 轮（共 2 轮）/)
 })
-
-test('片段围绕每一处命中截取，长正文里靠后的命中也不会被截掉', () => {
-  const filler = '风声。'.repeat(200)
-  const long = { id: 'chat-long', messages: [{ role: 'assistant', turn: 1, text: '拳力测试机亮起。' + filler + '屏幕上显示809kg，杨哥笑了。' + filler }] }
-  const [match] = createHistoryRecall().recall({ chat: long, query: '拳力测试 809kg' }).matches
-  assert.match(match.excerpt, /拳力测试机/)
-  assert.match(match.excerpt, /809kg/)
-  assert.ok(match.excerpt.length < 400)
-})

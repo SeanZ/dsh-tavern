@@ -4,7 +4,7 @@ import { chromium } from 'playwright'
 
 // Exercise the public plugin registration and real React effects/events. Only
 // the DSH host and HTTP boundary are fixtures; no component source extraction.
-export async function openTavernSettings(t, { respond, section: pageSection, sessionId } = {}) {
+export async function openTavernSettings(t, { respond, section: pageSection, sessionId, beforeRender } = {}) {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE || undefined })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -32,12 +32,15 @@ export async function openTavernSettings(t, { respond, section: pageSection, ses
       else if (method === 'listUserPlugins') result = { plugins: [], dir: '/tmp/tavern/plugins' }
       else if (method === 'listLegacyPlugins') result = { plugins: [] }
       else if (method === 'checkUserPluginUpdates') result = { plugins: [] }
+      else if (method === 'getActiveInterfaceSkin') result = { id: null, css: '' }
+      else if (method === 'listInterfaceSkins') result = { active: null, skins: [] }
       else if (method === 'getSpeechSettings') result = { enabled: false, provider: 'browser', providers: [{ id: 'browser', label: '浏览器朗读', browser: true, key: false, fields: [], voices: [], voice: '', narratorVoice: '' }] }
       else throw new Error('Unexpected settings request: ' + method)
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, ...result }) })
   })
   await page.goto('http://tavern.test/')
+  if (beforeRender) await page.evaluate(beforeRender)
   let script = await browserReactScript()
   script += `window.__ModuleLoader__={load(definition){window.client=definition.factory(name=>name==='react'?modules.react:{});}};`
   await page.addScriptTag({ content: script })

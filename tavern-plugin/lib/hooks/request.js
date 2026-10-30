@@ -1,3 +1,5 @@
+import { virtualWorldbookRestoreRefs } from '../domain/worldbook-virtual-surface.js'
+import { worldbookContextDelta } from '../domain/worldbook-context-delta.js'
 import { normalizeProviderOverflow } from '../domain/provider-overflow.js'
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { randomUUID } from 'node:crypto'
@@ -13,9 +15,28 @@ export function appendVariableChanges({ chat, payload, decision }) {
   return { ...decision, messages: [...decision.messages, { id: randomUUID(), role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin:dsh-tavern', form: 'variable-changes' } }] }
 }
 
+export async function appendWorldbookRecovery({ chat, payload, decision, project }) {
+  if (!chat || chat.worldbookStrategy !== 'native-skills' || decision.kind !== 'enter' || !project) return decision
+  const state = chat.worldBookVirtualState
+  const refs = virtualWorldbookRestoreRefs(payload.agent.session, state, decision.messages)
+  if (!refs.length) return decision
+  const projected = await project(chat, { restoreRefs: refs })
+  const text = projected?.snapshots
+  if (!text) return decision
+  const texts = Object.fromEntries(refs.map(ref => [ref, state.entries[ref]?.contextText ?? state.entries[ref]?.text])
+    .filter(([, body]) => body && text.includes(body)))
+  const marker = { scope: state.scope, entries: Object.fromEntries(Object.keys(texts).map(ref => [ref, state.entries[ref].renderHash])), texts }
+  // Missing chains get a full baseline, appended after pending input; never edit system/history.
+  const full = worldbookContextDelta(null, marker, text)
+  return { ...decision, messages: [...decision.messages, { id: randomUUID(), role: 'user',
+    content: [{ type: 'text', text: '【世界书上下文恢复】\n' + full.text }],
+    source: { kind: 'plugin:dsh-tavern', form: 'worldbook-recovery', virtualWorldbook: marker, worldbookEntrySnapshots: full.records } }] }
+}
+
 export function registerRequestHooks({
   backgroundAgentRunner,
   cardMemory,
+  projectWorldbookRecovery,
   chatForSession,
   ctx,
   foregroundStrategies,
@@ -55,7 +76,11 @@ export function registerRequestHooks({
       chat,
       requestId: requestIdForMessages(payload.messages)
     })
-    const withChanges = appendVariableChanges({ chat, payload, decision: prepared })
+    // prepareStep may render and persist a newer worldbook state. Restoring the
+    // pre-prepare header would append stale content after the fresh delta.
+    const recoveryChat = projectWorldbookRecovery ? await chatForSession(sessionId) : chat
+    const recovered = await appendWorldbookRecovery({ chat: recoveryChat, payload, decision: prepared, project: projectWorldbookRecovery })
+    const withChanges = appendVariableChanges({ chat, payload, decision: recovered })
     try { return await cardMemory.appendRecall({ chat, payload, decision: withChanges }) }
     catch (error) { console.warn('[Tavern card memory] recall unavailable:', error.message); return withChanges }
   })

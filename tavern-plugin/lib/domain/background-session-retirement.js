@@ -1,3 +1,4 @@
+import { TIMELINE_MEMBERS, participantOf } from './background-members.js'
 const path = 'background-session-retirement.json'
 
 /** Native Session logs remain readable; only retired Tavern workers lose discovery/reuse. */
@@ -22,13 +23,16 @@ export function createBackgroundSessionRetirement(store, { readState, isRunning 
         const parents = new Set(rows.filter(row => row.kind === 'child').map(row => row.parentId || parentId).filter(Boolean))
         for (const owner of parents) {
           const chat = await readState(owner)
-          const current = chat?.timeline?.participants?.background?.sessionId
-          if (!current) continue
+          const participants = chat?.timeline?.participants
+          // Each member's current Session; an operation is judged against its own member's
+          // (书记's when its role has no timeline member).
+          const current = role => participants?.[TIMELINE_MEMBERS.includes(participantOf(role)) ? participantOf(role) : 'background']?.sessionId
+          if (!TIMELINE_MEMBERS.some(id => participants?.[id]?.sessionId)) continue
           const operations = Object.values(chat.timeline.operations || {})
           const running = new Set(operations.filter(op => op.status === 'running').map(op => op.startedSessionId))
           for (const op of operations) {
-            if (op.kind === 'agent' && ['failed', 'interrupted'].includes(op.status)
-              && op.startedSessionId && op.startedSessionId !== current && !running.has(op.startedSessionId)) {
+            if (op.kind === 'agent' && ['failed', 'interrupted'].includes(op.status) && current(op.role)
+              && op.startedSessionId && op.startedSessionId !== current(op.role) && !running.has(op.startedSessionId)) {
               Object.defineProperty(retired, op.startedSessionId, { value: {parentId: owner}, enumerable: true, configurable: true })
             }
           }

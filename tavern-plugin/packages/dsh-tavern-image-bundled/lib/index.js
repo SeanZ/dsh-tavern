@@ -98,6 +98,10 @@ const DEFAULTS = {
   promptPresets: [],
   activePromptPreset: '',
   promptMode: 'auto',
+  // 提示词里是否保留中文。默认 false = 沿用原有规则：comfyui 后端会把中文清空
+  // （本地 tag 模型只看英文）。工作流的文本编码器是中文原生（Qwen-Image、
+  // FLUX.1 Krea 的 qwen3vl 等）时设成 true，中文长句就原样送进工作流。
+  allowChinesePrompt: false,
   jpegOutput: false,
   jpegQuality: 88,
   jpegBackground: '#ffffff',
@@ -1609,7 +1613,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let fresh
       try {
         fresh = await startJob({
-          tag: normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }),
+          tag: normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: jobConfig.imageBackend, style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
           rawTag,
           characters: characterSource,
           artist: source.params?.artist,
@@ -2177,7 +2181,7 @@ let worldbookCache = null
             const expandOne = (text, keep = false) => {
               const expanded = expandRosterCalls(text, scoped, config.traitMode, { style: rosterStyle(config, plannerWorkflow), onMacro: entry => { macros?.push(entry); noteMacro(entry) } })
               if (keep) expandedScene = expanded
-              return normalizePrompts(expanded, scoped, { backend: config.imageBackend, style: rosterStyle(config, plannerWorkflow) })
+              return normalizePrompts(expanded, scoped, { backend: config.imageBackend, style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
             }
             const normalizedTag = expandOne(sceneText, true)
             const characters = planCharacters.map(item => ({ prompt: expandOne(item.prompt), centers: String(item.centers ?? '').trim(), uc: String(item.uc ?? '').trim() })).filter(item => item.prompt)
@@ -3436,6 +3440,7 @@ let worldbookCache = null
         if (patch.clearComfyAuthPass === true) config.comfyAuthPass = ''
         for (const key of ['lockWorkflow', 'overrideSteps', 'autoImageGen', 'imageEnabled', 'plannerEnabled', 'jpegOutput', 'smartImageSelection', 'characterAutoUpdate']) if (typeof patch[key] === 'boolean') config[key] = patch[key]
         if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed'].includes(patch.promptMode)) config.promptMode = patch.promptMode
+        if (typeof patch.allowChinesePrompt === 'boolean') config.allowChinesePrompt = patch.allowChinesePrompt
         if (typeof patch.activePromptPreset === 'string') config.activePromptPreset = patch.activePromptPreset.slice(0, 80)
         if (Array.isArray(patch.promptPresets)) config.promptPresets = normalizePromptPresets(patch.promptPresets)
         config.activePromptPreset = validPromptPresetId(config)
@@ -4245,7 +4250,7 @@ let worldbookCache = null
           const sceneRaw = submitted ? submitted.scene : askedRaw
           const characterSource = submitted ? submitted.characters : src.params?.characters
           const fresh = await startJob({
-            tag: normalizePrompts(expandRosterCalls(sceneRaw, defs, config.traitMode, { style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }), defs, { backend: config.imageBackend, style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }),
+            tag: normalizePrompts(expandRosterCalls(sceneRaw, defs, config.traitMode, { style: rosterStyle(config, styleWorkflow(config, src.workflowId)) }), defs, { backend: config.imageBackend, style: rosterStyle(config, styleWorkflow(config, src.workflowId)), allowChinese: config.allowChinesePrompt }),
             rawTag: sceneRaw,
             characters: characterSource,
             artist: src.params?.artist,
@@ -4605,6 +4610,8 @@ async function loadConfig(overrides) {
   const config = { ...DEFAULTS, ...file, ...(overrides ?? {}) }
   config.comfyUrl = String(config.comfyUrl || DEFAULTS.comfyUrl).replace(/\/+$/, '')
   config.comfyMode = config.comfyMode === 'simple' ? 'simple' : 'workflow'
+  // 这个开关主要在配置文件里手改，string "true" 一律当成 false，避免手误以为打开了
+  config.allowChinesePrompt = config.allowChinesePrompt === true
   config.comfySimple = normalizeComfySimpleConfig(config.comfySimple)
   config.promptPresets = normalizePromptPresets(config.promptPresets)
   if (!['auto', 'tags', 'natural', 'mixed'].includes(config.promptMode)) config.promptMode = 'auto'
@@ -5341,9 +5348,9 @@ function compileCharacterList(list, scoped, cfg, style, backend = cfg.imageBacke
     const raw = String(item?.prompt ?? '')
     const expanded = expandRosterCalls(raw, scoped, cfg.traitMode, { style })
     const injected = injectDefinitions(expanded, scoped, cfg, { style, raw, keepNegative: characterNegativePriority })
-    const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style })
+    const prompt = normalizePrompts(applyWeights(injected.text, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
     const uc = [String(item?.uc ?? ''), ...(injected.negatives ?? [])].filter(Boolean).join(', ')
-    const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style })
+    const normalizedUc = normalizePrompts(applyWeights(uc, weightMode), scoped, { backend, style, allowChinese: cfg.allowChinesePrompt })
     if (!characterNegativePriority) return { prompt, centers: String(item?.centers ?? '').trim(), uc: normalizedUc }
     const cleaned = dedupeCharacterNegativePriority(prompt, normalizedUc)
     return { prompt: cleaned.prompt, centers: String(item?.centers ?? '').trim(), uc: cleaned.uc }

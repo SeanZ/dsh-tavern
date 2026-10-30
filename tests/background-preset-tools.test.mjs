@@ -1,3 +1,4 @@
+import { parse } from 'yaml'
 // 后台预设必须声明 background-agent-task.js 里 restrict({allow}) 会点名的全局工具。
 // 0.2.0 的 tools.restrict() 会校验 allow/deny 里的名字都已注册，缺一行就让整个
 // 后台任务（MVU 结算、世界书过滤）失败——这是真实踩过的坑：后台 preset 漏了 tool-web，
@@ -47,29 +48,35 @@ test('tavern-background 预设声明了后台任务 restrict 会点名的全部�
   const hostToolRowFor = {
     skill: '@deepseek-ai/dsh-tool-skill',
     read: '@deepseek-ai/dsh-tool-fs',
+    web_fetch: '@deepseek-ai/dsh-tool-web',
     web_search: '@deepseek-ai/dsh-tool-web',
   }
   for (const name of names) {
     const specifier = hostToolRowFor[name]
-    if (specifier === undefined) continue // 插件自注册的 tavern_* 工具，不由 preset 声明
+    if (name === 'phone') continue // restrict 条件中的任务名，不是工具
+    if (specifier === undefined) {
+      assert.ok(['tavern_read_skill_reference', 'worldbook_list', 'worldbook_grep'].includes(name), `未校验的后台工具：${name}，必须补充注册来源` )
+      continue
+    }
     assert.ok(declared.has(specifier), `tavern-background 预设缺少 ${specifier}（后台任务会 restrict 到未注册的 "${name}"）`)
   }
 })
 
 test('tavern 与 tavern-background 预设各自的 tool-web 行都只开 search 不开 fetch', () => {
-  const patch = read('tavern-plugin/cordis.patch.yml')
-  const lines = patch.split('\n')
+  const patch = parse(read('tavern-plugin/cordis.patch.yml'), { logLevel: 'silent' })
   for (const presetId of ['preset-tavern', 'preset-tavern-background']) {
-    const rows = presetPlugins(patch, presetId).filter(row => row.specifier === '@deepseek-ai/dsh-tool-web')
+    const preset = patch.flatMap(item => item.insert || []).find(item => item.id === presetId)
+    const rows = preset.config.plugins.filter(item => item.name === '@deepseek-ai/dsh-tool-web')
     assert.equal(rows.length, 1, `${presetId} 必须恰好声明一行 tool-web`)
-    const start = lines.findIndex(line => line.trim() === '- id: tool-web')
-    // 只取本 preset 的那一段：从 tool-web 行往后读到下一个 `- id:` 行。
-    let end = lines.length
-    for (let index = start + 1; index < lines.length; index += 1) {
-      if (/^\s*- id: /.test(lines[index])) { end = index; break }
-    }
-    const block = lines.slice(start, end).join('\n')
-    assert.match(block, /search: true/, `${presetId} 的 tool-web 必须开启 search`)
-    assert.match(block, /fetch: false/, `${presetId} 的 tool-web 必须关闭 fetch`)
+    assert.equal(rows[0].config.search, true, `${presetId} 的 tool-web 必须开启 search`)
+    assert.equal(rows[0].config.fetch, false, `${presetId} 的 tool-web 必须关闭 fetch`)
   }
+})
+
+test('后台文件工具只注册 read，不开放文件写入、编辑或图片读取', () => {
+  const patch = parse(read('tavern-plugin/cordis.patch.yml'), { logLevel: 'silent' })
+  const background = patch.flatMap(item => item.insert || []).find(item => item.id === 'preset-tavern-background')
+  const rows = background.config.plugins.filter(item => item.name === '@deepseek-ai/dsh-tool-fs')
+  assert.equal(rows.length, 1)
+  assert.deepEqual(rows[0].config, { read: true, readImage: false, write: false, edit: false })
 })

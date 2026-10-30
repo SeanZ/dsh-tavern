@@ -1259,3 +1259,184 @@ test('台账整理替换：交回的增量先过校验；不合格、出错或�
   assert.equal(h.api.stopTasks('game-1'), true)
   await assert.rejects(running, /停止了台账整理/)
 })
+
+test('插件成员：注册后任务可以挂上去，在它的常驻会话里跑；只能用自己的成员；插件卸载时成员一起移除', { skip: !cordis }, async t => {
+  const { listMembers } = await import('../tavern-plugin/lib/domain/background-members.js')
+  const requests = []
+  const h = await harness(t, { data: createPluginData({ store: memoryStore() }), readPendingTurn: async () => turnMaterial(),
+    runTask: async input => { requests.push(input); return { text: 'ok' } } })
+  let tavern
+  const fork = await h.root.plugin({ name: 'npc-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'luna', title: '露娜' })
+    ctx.tavern.settlementTask({ name: 'diary', title: '露娜日记', member: 'luna', run: async input => { await input.runAgent({ prompt: '写日记' }) } })
+  } })
+  await tick()
+  assert.ok(listMembers().some(member => member.id === 'plugin:npc-plugin:luna' && member.name === '露娜' && member.plugin === 'npc-plugin'))
+  assert.deepEqual(h.api.taskCatalog().map(item => [item.task, item.name, item.plugin, item.member, item.lane]),
+    [['plugin:npc-plugin:diary', '露娜日记', 'npc-plugin', 'plugin:npc-plugin:luna', 'resident']])
+  await tavern.runTask({ gameId: 'game-1', prompt: '回忆', member: 'luna' })
+  assert.equal(requests.at(-1).member, 'plugin:npc-plugin:luna')
+  await tavern.runTask({ gameId: 'game-1', prompt: '一次性' })
+  assert.equal(requests.at(-1).member, '', 'without member: a fresh one-off')
+  await assert.rejects(tavern.runTask({ gameId: 'game-1', prompt: 'x', member: 'nobody' }), /没有注册成员/)
+  assert.throws(() => tavern.member({ name: 'luna' }), /已注册/)
+  await h.api.runSettlementTasks({ gameId: 'game-1', phase: 'after' })
+  assert.equal(requests.at(-1).member, 'plugin:npc-plugin:luna', 'a task registered on a member runs there')
+  fork.dispose?.()
+  await tick()
+  assert.ok(!listMembers().some(member => member.id === 'plugin:npc-plugin:luna'))
+})
+
+test('插件成员可以有自己的前缀：系统提示词和工具固定在成员上，任务只送一条工单、不能再带工具；工具调用回到插件', { skip: !cordis }, async t => {
+  const { listMembers, pluginMemberPrefix } = await import('../tavern-plugin/lib/domain/background-members.js')
+  const requests = [], rolled = []
+  const h = await harness(t, { runTask: async input => { requests.push(input); return { text: await input.call('roll_dice', { sides: 6 }) } } })
+  let tavern
+  await h.root.plugin({ name: 'dice-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'dealer', title: '荷官', system: '你是赌场荷官，只用 roll_dice 掷骰。',
+      tools: [{ name: 'roll_dice', description: '掷骰', parameters: { type: 'object', properties: { sides: { type: 'integer' } } },
+        execute: async ({ sides }) => { rolled.push(sides); return { value: 4 } } }] })
+    ctx.tavern.member({ name: 'plain', title: '普通' })
+  } })
+  await tick()
+  assert.ok(listMembers().some(member => member.id === 'plugin:dice-plugin:dealer' && member.ownPrefix === true))
+  assert.equal(pluginMemberPrefix('plugin:dice-plugin:plain'), null)
+  const { text } = await tavern.runTask({ gameId: 'game-1', member: 'dealer', prompt: '这一局掷一次' })
+  assert.equal(text, '{"value":4}')
+  assert.deepEqual(rolled, [6])
+  const sent = requests.at(-1)
+  assert.deepEqual([sent.member, sent.system, sent.prompt, sent.tools.map(tool => tool.name)],
+    ['plugin:dice-plugin:dealer', '你是赌场荷官，只用 roll_dice 掷骰。', '这一局掷一次', ['roll_dice']])
+  await assert.rejects(tavern.runTask({ gameId: 'game-1', member: 'dealer', prompt: 'x',
+    tools: [{ name: 'other_tool', description: 'd', parameters: { type: 'object' }, execute() {} }] }), /不能再传 tools/)
+  await tavern.runTask({ gameId: 'game-1', member: 'plain', prompt: '普通任务' })
+  assert.equal(requests.at(-1).system, undefined, 'a member without system keeps Tavern\'s background prefix')
+  assert.throws(() => tavern.member({ name: 'x', tools: [] }), /先给它 system/)
+  assert.throws(() => tavern.member({ name: 'y', system: '' }), /system 必须是/)
+  assert.throws(() => tavern.member({ name: 'z', system: 's', tools: [{ name: 'Bad', description: 'd', parameters: { type: 'object' }, execute() {} }] }), /工具名/)
+})
+
+test('tavern.on：插件挂到事件表上，出现在触发关系里；别的卡自带的插件不触发；出错只记错误', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  let cards = ['cards/other.json']
+  const h = await harness(t, { storyEvents, data: { readSettings: async () => ({ disabled: [] }), updateSettings: async () => {} },
+    cardScope: async () => new Map([['npc-plugin', { cards }]]), cardPathOf: async () => 'cards/this.json' })
+  const heard = []
+  let tavern
+  cards = ['cards/this.json']
+  await h.root.plugin({ name: 'npc-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.on('reply-committed', payload => { heard.push(payload) })
+    ctx.tavern.on('turn-discarded', () => { throw new Error('坏了') })
+  } })
+  await tick()
+  assert.throws(() => tavern.on('whenever', () => {}), /event 只能是/)
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'reply-committed').followers, ['插件「npc-plugin」'])
+  storyEvents.emit('reply-committed', { sessionId: 'game-1' })
+  storyEvents.emit('turn-discarded', { sessionId: 'game-1', turn: 4 })
+  await tick()
+  assert.deepEqual(heard, [{ event: 'reply-committed', gameId: 'game-1' }])
+  assert.match(h.errors()[0].message, /坏了/)
+  // A card plugin of another card stays out of this game.
+  cards = ['cards/other.json']
+  storyEvents.emit('reply-committed', { sessionId: 'game-1' })
+  await tick()
+  assert.equal(heard.length, 1, 'another card\'s plugin: not heard')
+})
+
+test('地图 → 手机：地图插件发布产出并发出自己的事件，手机插件挂上去、读到产出；内置的任务完成事件也能挂', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const h = await harness(t, { storyEvents, data: createPluginData({ store: memoryStore() }) })
+  let map
+  const calls = [], finished = []
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) { map = ctx.tavern } })
+  await h.root.plugin({ name: 'phone-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.on('map-plugin:signal-changed', async ({ gameId, from, data }) => {
+      const signal = await ctx.tavern.readOutput({ gameId, plugin: from, name: 'signal' })
+      calls.push(signal.value.strength === 0 ? '信号为零，打不通' : '接通 ' + data.turn)
+    })
+    ctx.tavern.on('task-finished', payload => { finished.push([payload.task, payload.status, payload.plugin || '']) })
+  } })
+  await tick()
+  await map.publishOutput({ gameId: 'game-1', turn: 3, name: 'signal', value: { strength: 0 } })
+  await map.emit('signal-changed', { gameId: 'game-1', data: { turn: 3 } })
+  await tick()
+  assert.deepEqual(calls, ['信号为零，打不通'])
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'map-plugin:signal-changed').followers, ['插件「phone-plugin」'])
+  // An output belongs to the turn and text version it was made for.
+  assert.equal((await map.readOutput({ gameId: 'game-1', turn: 3, plugin: 'map-plugin', name: 'signal' })).value.strength, 0)
+  h.setLatest({ ...turnMaterial(), key: 'key-3-regenerated' })
+  assert.equal(await map.readOutput({ gameId: 'game-1', plugin: 'map-plugin', name: 'signal' }), null)
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', member: 'background', turn: 3 })
+  await tick()
+  assert.deepEqual(finished, [['settlement', 'completed', '']])
+  await assert.rejects(map.emit('Bad Name', { gameId: 'game-1' }), /事件名/)
+  await assert.rejects(map.emit('big', { gameId: 'game-1', data: 'x'.repeat(9000) }), /8 KB/)
+})
+
+test('tavern.job 声明的任务进任务表：按事件和条件运行，列在触发关系和任务目录里，出错记在插件名下', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const { createWorkflow } = await import('../tavern-plugin/lib/domain/workflow.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events: storyEvents })
+  const h = await harness(t, { storyEvents, workflow })
+  const ran = []
+  let tavern
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.member({ name: 'surveyor', title: '测绘员' })
+    ctx.tavern.job({ name: 'locate', title: '定位', description: '判断主角在哪。', member: 'surveyor', on: 'task-finished',
+      if: ({ task, status }) => task === 'settlement' && status === 'completed',
+      run: async ({ gameId, turn }) => { ran.push([gameId, turn]); if (turn === 9) throw new Error('定位坏了') } })
+  } })
+  await tick()
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'candidate', status: 'completed', turn: 3 })
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 3 })
+  await tick()
+  assert.deepEqual(ran, [['game-1', 3]])
+  assert.deepEqual(storyEvents.table().find(row => row.event === 'task-finished').followers, ['插件「map-plugin」定位'])
+  const listed = workflow.table().find(job => job.id === 'plugin:map-plugin:locate')
+  assert.equal(listed.task, 'plugin:map-plugin:locate')
+  const catalog = h.api.taskCatalog().find(item => item.task === 'plugin:map-plugin:locate')
+  assert.deepEqual([catalog.name, catalog.member, catalog.lane, catalog.does], ['定位', 'plugin:map-plugin:surveyor', 'resident', '判断主角在哪。'])
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 9 })
+  await tick(); await tick()
+  assert.match(h.errors()[0].message, /定位坏了/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'nope', run() {} }), /on 只能是/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed', member: 'ghost', run() {} }), /还没有用 tavern.member/)
+  assert.throws(() => tavern.job({ name: 'x', on: 'reply-committed' }), /run 函数/)
+})
+
+test('tavern.job 的 needs：等别的插件任务这一轮做完再跑，读到它的产出；任务目录写出先后', { skip: !cordis }, async t => {
+  const { createStoryEvents } = await import('../tavern-plugin/lib/domain/story-events.js')
+  const { createWorkflow } = await import('../tavern-plugin/lib/domain/workflow.js')
+  const { describeTasks } = await import('../tavern-plugin/lib/domain/background-tasks.js')
+  const storyEvents = createStoryEvents({ logger: { warn() {} } })
+  const workflow = createWorkflow({ events: storyEvents, logger: { warn() {} } })
+  const h = await harness(t, { storyEvents, workflow })
+  const calls = []
+  await h.root.plugin({ name: 'map-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.job({ name: 'locate', title: '定位', on: 'task-finished', run: async ({ turn }) => ({ place: '花店', signal: turn === 4 ? 0 : 2 }) })
+  } })
+  let phone
+  await h.root.plugin({ name: 'phone-plugin', inject: ['tavern'], apply(ctx) {
+    phone = ctx.tavern
+    ctx.tavern.job({ name: 'call', title: '来电', needs: 'map-plugin:locate', if: ({ needs }) => needs['map-plugin:locate'].signal > 0,
+      run: async ({ turn, needs }) => { calls.push([turn, needs['map-plugin:locate'].place]) } })
+  } })
+  await tick()
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 3 })
+  storyEvents.emit('task-finished', { sessionId: 'game-1', task: 'settlement', status: 'completed', turn: 4 })
+  for (let i = 0; i < 6; i++) await tick()
+  assert.deepEqual(calls, [[3, '花店']], 'no signal on turn 4: its condition keeps it from running')
+  const lines = describeTasks(h.api.taskCatalog(), workflow.table(), event => event)
+  const call = lines.find(item => item.task === 'plugin:phone-plugin:call')
+  assert.equal(call.trigger, '定位完成后')
+  assert.equal(call.waits, '等定位完成')
+  assert.throws(() => phone.job({ name: 'x', run() {} }), /需要 on 或 needs/)
+  assert.throws(() => phone.job({ name: 'x', needs: 'Bad', run() {} }), /插件名:任务名/)
+})

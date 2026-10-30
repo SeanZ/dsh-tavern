@@ -5,13 +5,10 @@ import { JUDGE_KEY_REFS, validateJudgeConfig } from '../domain/engine-judge.js'
 // Tavern settings, system prompts, user profile and background model requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createSettingsHandlers(deps) {
-  const { agentRegistry, autoChoices, chatForSession, chatHeaderForSession, conversationBackgroundSettings, groupOfMode,
+  const { agentRegistry, autoChoices, interfaceSkins, chatForSession, chatHeaderForSession, conversationBackgroundSettings, groupOfMode,
     llm, playCardSnapshots, presentSystemPrompts, presentUserPreferenceProfile, readTavernSettings,
     sessionActivity, stageJudge, str, tavernModelCatalog, updateChat, updateTavernSettings, userPreferenceProfile } = deps
   const handlers = {
-    async getWebSearchStatus() { return deps.webAccess.status() },
-    async useBuiltinWebSearch() { await deps.webAccess.useBuiltin(); return deps.webAccess.status() },
-    async testWebSearch() { return deps.webAccess.test() },
     async getUserPreferenceProfile(args) {
       const chat = args?.sessionId && args.globalDefaults !== true ? await chatHeaderForSession(args.sessionId, ['userProfileEnabled','userProfileContextSnapshot','userProfileId','userProfileRevision']) : null
       return {
@@ -60,11 +57,17 @@ export function createSettingsHandlers(deps) {
     },
     async getDisplayPreferences(args) {
       const settings = await readTavernSettings()
-      return { showSystemNavigation: settings.showSystemNavigation, hideContextAndReasoning: settings.hideContextAndReasoning, headerItems: settings.headerItems, viewTabs: settings.viewTabs }
+      return { showSystemNavigation: settings.showSystemNavigation, headerItems: settings.headerItems, viewTabs: settings.viewTabs }
     },
     async getCandidatePreferences(args) {
       return { candidateDismissMode: (await readTavernSettings()).candidateDismissMode }
     },
+    // 界面皮肤: imported CSS appended after Tavern's stylesheet (interface-skins.js).
+    async listInterfaceSkins() { return await interfaceSkins.list() },
+    async importInterfaceSkin(args) { return await interfaceSkins.importSkin({ name: args?.name, css: args?.css }) },
+    async selectInterfaceSkin(args) { return await interfaceSkins.select(args?.id ?? null) },
+    async deleteInterfaceSkin(args) { return await interfaceSkins.remove(args?.id) },
+    async getActiveInterfaceSkin() { return await interfaceSkins.active() },
     async getTavernSettings(args) {
       return { settings: await readTavernSettings(), modelCatalog: await tavernModelCatalog() }
     },

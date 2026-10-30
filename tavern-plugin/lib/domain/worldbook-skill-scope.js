@@ -8,6 +8,6 @@ export async function resolveWorldbookSkillChat(agent, { background, readChat })
   const owner = request?.parentSessionId || sessionId
   if (!owner) return null
   const chat = await readChat(owner)
-  if (!chat || chat.sessionId !== owner || !['story', 'script'].includes(chat.mode || 'story') || chat.worldbookStrategy !== 'native-skills') return null
+  if (!chat || chat.sessionId !== owner || !['story', 'script'].includes(chat.mode || 'story')) return null
   return { chat, authorizedSessionId: sessionId }
 }

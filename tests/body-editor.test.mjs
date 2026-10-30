@@ -34,6 +34,15 @@ test('stale tabs, blank text, new HTML, running turns and HTML-only replies reje
   const html = fixture('<div>纯 HTML</div>'); await assert.rejects(html.editor.read(html.session.id), /没有可编辑文本/)
 })
 
+test('peek reads the last reply\'s text while settlement runs, the same text read gives once idle', async () => {
+  const h = fixture('第一段\n\n第二段')
+  h.change(chat => { chat.settleStatus = 'running' }); h.busy(true)
+  await assert.rejects(h.editor.read(h.session.id), /等待/)
+  const peeked = await h.editor.peek(h.session.id)
+  h.change(chat => { chat.settleStatus = 'done' }); h.busy(false)
+  assert.deepEqual(peeked, (await h.editor.read(h.session.id)).parts.filter(part => part.kind === 'text').map(part => part.text))
+})
+
 test('issue #72: stale bodyEdit after migration clears instead of blocking turns', async () => {
   const h = fixture('原正文')
   h.change(chat => {
@@ -159,19 +168,15 @@ assert.equal(patched, true)
 assert.equal(repairs, 3)
 })
 
-test('下一轮预备（世界书预筛、文风联想）正在跑时，编辑先停掉它再编辑，不拒绝', async () => {
+test('编辑不再取消旧预备任务，仍遵守后台忙碌保护', async () => {
   const h = fixture()
-  const cancelled = []
-  const editor = createBodyEditor({ ...h.options, cancelPreparation: async id => { cancelled.push(id); h.busy(false) } })
+  const editor = createBodyEditor({ ...h.options, cancelPreparation: async () => assert.fail('retired callback') })
   h.busy(true)
+  await assert.rejects(editor.read(h.session.id), /等待/)
+  h.busy(false)
   const edit = await editor.read(h.session.id)
   await editor.save(h.session.id, { token: edit.token, texts: ['改过的正文'] })
-  assert.deepEqual(cancelled, ['chat'])
   assert.equal(h.chat.messages[1].text, '改过的正文')
-  // Work that does not give way still refuses the edit.
-  const stuck = createBodyEditor({ ...h.options, cancelPreparation: async () => {} })
-  h.busy(true)
-  await assert.rejects(stuck.read(h.session.id), /等待/)
 })
 
 test('编辑正文写入模型上下文的替换带剧情轮次：重新生成过的轮次核对时不会算成别的轮', async () => {

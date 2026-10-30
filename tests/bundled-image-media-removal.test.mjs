@@ -19,15 +19,6 @@ test('设置页删图：撤下对话里同一张图的那个版本，不碰别�
   assert.deepEqual(removed, [['m1', 1], ['m1', 'current']])
 })
 
-test('旧版 Tavern 不能按版本删：只有这一张时整项删，有早期版本时不动', async () => {
-  const removed = []
-  const tavern = { apiVersion: 4, remove: async (id, options) => { removed.push([id, options]); return true },
-    list: async () => [{ id: 'a', kind: image, data: { jobId: 'j1' }, history: [] }, { id: 'b', kind: image, data: { jobId: 'j2' }, history: [{}] }] }
-  await removeMountedPicture(tavern, { id: 'j1', gameId: 'g' })
-  await removeMountedPicture(tavern, { id: 'j2', gameId: 'g' })
-  assert.deepEqual(removed, [['a', undefined]])
-})
-
 test('玩家在对话里删图：删掉被删各版本的生成记录；整项没了时连还在重画的那张一起删', async () => {
   let onRemoved
   const deleted = []

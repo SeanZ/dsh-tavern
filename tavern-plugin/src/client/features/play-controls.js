@@ -350,8 +350,8 @@
 					) : null,
 					view.worldBookError ? h("div", { className: "dsh-card-error" }, h("div", null, "世界书召回失败：" + view.worldBookError), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
 					view.foregroundError ? h("div", { className: "dsh-card-error" }, h("div", null, view.foregroundError.message || "前台正文生成失败，请重新生成本轮正文。"), h(TavernDebugButton, { sessionId: props.sessionId, turn: latestDebugTurn, className: "dsh-tavern-btn" })) : null,
-					view.tavernHelper ? h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
-						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }) : null,
+					h(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view: view, executeSlash: props.executeSlash,
+						panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true }),
 					(view.presentationWarnings || []).map(function (warning, index) {
 						return h("div", { className: "dsh-card-error", key: "presentation-warning-" + index }, warning);
 					}),
@@ -362,15 +362,15 @@
                     view.styleReferenceEnabled && view.styleReference ? h("section", { className: "dsh-tavern-status-section dsh-tavern-style-section" },
                         // Only the source and the passage's opening show; the passage opens on click, the retry input on demand.
                         h("div", { className: "dsh-tavern-style-head" },
-                            h("div", { className: "dsh-tavern-status-label" }, "下一轮文风联想"),
+                            h("div", { className: "dsh-tavern-status-label" }, "最近一次文风联想"),
                             view.styleReference.book ? h("span", { className: "dsh-tavern-style-source", title: "《" + view.styleReference.book + "》" + (view.styleReference.author || "") }, "《" + view.styleReference.book + "》" + (view.styleReference.author || "")) : null,
-                            styleEditing ? null : h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy || running || view.regenInProgress, onClick: () => setStyleEditing(true) }, styleBusy ? "正在换…" : "换一段")),
+                            styleEditing ? null : h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy || running || view.regenInProgress, onClick: () => setStyleEditing(true) }, styleBusy ? "保存中…" : "设置下轮偏好")),
                         h("blockquote", { className: "dsh-tavern-style-reference" + (styleExpanded ? " is-expanded" : ""), title: styleExpanded ? "点击收起" : "点击展开全文", onClick: () => setStyleExpanded(value => !value) }, view.styleReference.quote),
                         styleEditing ? h("div", { className: "dsh-tavern-guide-add" },
-                            h("textarea", { className: "dsh-tavern-regen-input", rows: 2, maxLength: 500, autoFocus: true, value: styleDraft, "aria-label": "换参考的要求", placeholder: "要求（可选），例如：要金庸的打斗描写；不要鲁迅", onChange: event => setStyleDraft(event.target.value) }),
+                            h("textarea", { className: "dsh-tavern-regen-input", rows: 2, maxLength: 500, autoFocus: true, value: styleDraft, "aria-label": "下轮文风偏好", placeholder: "要求（可选），例如：要金庸的打斗描写；不要鲁迅", onChange: event => setStyleDraft(event.target.value) }),
                             h("div", { className: "dsh-tavern-style-actions" },
                                 h("button", { type: "button", className: "dsh-tavern-style-retry", disabled: styleBusy, onClick: () => { setStyleEditing(false); setStyleDraft(""); } }, "取消"),
-                                h("button", { className: "dsh-card-primary", disabled: styleBusy || running || view.regenInProgress, onClick: retryStyleReference }, styleBusy ? "正在换…" : "换一段"))) : null,
+                                h("button", { className: "dsh-card-primary", disabled: styleBusy || running || view.regenInProgress, onClick: retryStyleReference }, styleBusy ? "保存中…" : "设置下轮偏好"))) : null,
                         styleError ? h("div", { className: "dsh-card-error", role: "alert" }, styleError) : null) : null,
 					h("section", { className: "dsh-tavern-status-section dsh-tavern-guide-section" },
 						h("div", { className: "dsh-tavern-status-label" }, "Guide", h("span", { className: "dsh-tavern-guide-caption" }, (view.guides || []).length + " 条")),
@@ -1115,7 +1115,7 @@
 			}, [props.sessionId, latestMessageId, running, backgroundRevision]);
 			// Background Agent sessions have no row plan: their rolled-back turns hide whole.
 			const backgroundTurnsRevision = backgroundTurns.join(",");
-			// The row plan decides which rows show (docs/design/transcript-row-plan.md).
+			// The row plan decides which rows show (Wiki「设计：transcript-row-plan」).
 			// Immutable and keyed by turn: a changed plan is a new object, never serialized here.
 			const transcriptTurns = suppressionState.view && suppressionState.view.transcriptTurns || null;
 			const transcriptFrom = suppressionState.view ? suppressionState.view.transcriptFrom : null;
@@ -1161,7 +1161,7 @@
 			const slots = input.slots;
 			const uiConversation = ctx.get("uiConversation") || ctx.get("conversation");
 			const executeSlash = createTavernFrameSlashExecutor(ctx);
-            // The stage: another view of the same game, at the top of 酒馆状态 (docs/design/cast-presentation.md).
+            // The stage: another view of the same game, at the top of 酒馆状态 (Wiki「设计：cast-presentation」).
             const submitTavernStageInput = function (sessionId, text) {
                 const scope = ctx.sessions.scope(sessionId);
                 const conversation = ctx.get("conversation");

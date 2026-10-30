@@ -61,7 +61,7 @@ ctx.tavern.cardImporter({
 })
 ```
 
-- `extensions` 1–10 个，写成 `.xxx`，大小写不敏感。`.png`、`.json`、`.charx`、`.dshcard` 始终由 Tavern 自己导入，插件不能接管；同一扩展名只能有一个插件。
+- `extensions` 1–10 个，写成 `.xxx`，大小写不敏感。`.png`、`.json`、`.charx`、`.dshcard` 始终由 Tavern 自己导入，插件不能接管（`.png` 包括封面后接 DSH 人物卡或 CHARX 的 `.dshcard.png`、`.charx.png`）；同一扩展名只能有一个插件。
 - `card` 里 CCv3 的 `data.assets`（封面、表情、背景）按 `files` 里的文件导入，和 CHARX 一样进角色素材；`packs` 存成素材包挂到这张卡上。
 - 同一个文件再次导入时直接打开已导入的卡，不再调用 `convert`。
 - `convert` 抛错、120 秒没返回或交回的东西不合格时，这次导入失败并把原因告诉玩家。`imported` 出错只记进 Tavern 日志，不影响已经导入的卡。
@@ -144,7 +144,7 @@ ctx.tavern.skillSource({ dir: fileURLToPath(new URL('./skills', import.meta.url)
 
 ### `listCardPacks({ gameId })`、`readCardPackFile({ gameId, pack, path })`
 
-DSH 人物卡（`.dshcard`，见[格式设计](design/dsh-card-format.md)）带的素材包。`listCardPacks` 返回这局人物卡带的包：`[{ id, contentHash, format, title, name, baseUrl }]`。Tavern 不解读包的内容，`format` 说明由谁解读（例如 `dsh-asset-pack`）。读文件：宿主侧用 `readCardPackFile`，返回 `{ data, mediaType, size }`；浏览器侧直接用 `baseUrl + 包内路径`，支持分段读取（音频、视频可以边下边播）。图片、音频、视频、字体、JSON、文本按原类型提供，其他类型（包括 HTML、SVG、JS）只能下载，不会在页面里运行。浏览器侧用 `tavernUi.getCardPacks(gameId)` 拿同样的列表。
+DSH 人物卡（`.dshcard`，见[格式设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Adsh-card-format)）带的素材包。`listCardPacks` 返回这局人物卡带的包：`[{ id, contentHash, format, title, name, baseUrl }]`。Tavern 不解读包的内容，`format` 说明由谁解读（例如 `dsh-asset-pack`）。读文件：宿主侧用 `readCardPackFile`，返回 `{ data, mediaType, size }`；浏览器侧直接用 `baseUrl + 包内路径`，支持分段读取（音频、视频可以边下边播）。图片、音频、视频、字体、JSON、文本按原类型提供，其他类型（包括 HTML、SVG、JS）只能下载，不会在页面里运行。浏览器侧用 `tavernUi.getCardPacks(gameId)` 拿同样的列表。
 
 ### 写角色素材：`setCastImage`、`removeCastImage`、`setCastCharacter`、`setCastVoice`、`removeCastCharacter`（第 3 版）
 

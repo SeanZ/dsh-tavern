@@ -23,7 +23,8 @@ function createTransferFeatureModule() {
 
 	function defaultPolicies(bundle) {
 		const policies = {}
-		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = "new" })
+		// 对话默认只带最新进度：一局存档点动辄七八份，导一份就等于整局写七八遍。
+		;(bundle && bundle.parts || []).forEach(function (part) { policies[part.kind] = part.kind === "chats" ? "latest" : "new" })
 		return policies
 	}
 
@@ -74,8 +75,15 @@ function createTransferFeatureModule() {
 		const [importing, setImporting] = React.useState(null)
 		const [openImport, setOpenImport] = React.useState({})
 		const [error, setError] = usePersistentError("导出与导入")
+		const [applyProgress, setApplyProgress] = React.useState(null)
 		const fileInput = React.useRef(null)
 		const bodyRef = React.useRef(null)
+		// 服务端一次导入要写几万个文件，手机端等不到回包就再点一次是常态：这里同步挡住第二次提交，
+		// 不至于按下两次就导入两遍（服务端也认同一个 token 只跑一次）。
+		const applyingRef = React.useRef(false)
+		// 最后生成的包，供「重新下载」复用。服务端在 token 有效期内允许多次下载，所以
+		// 第一次没弹出保存界面（内嵌 WebView 常见）时，用户可以直接再点一次。
+		const exportRef = React.useRef(null)
 
 		const refresh = React.useCallback(function () {
 			return rpc("getTransferCatalog", {}, sessionId).then(function (value) {
@@ -164,22 +172,36 @@ function createTransferFeatureModule() {
 			return { count, bytes, kinds }
 		}, [selected, parts])
 
+		// 触发一次保存。手机上的内嵌 WebView 往往没有下载器，点了会静默失败，
+		// 所以这里不把「保存成功」当既成事实：调用方仍然展示文件卡片和重试入口。
+		function saveExport(payload) {
+			if (!payload) { setError("这个包已经失效，请重新导出"); return }
+			if (payload.url) {
+				const link = document.createElement("a")
+				link.href = payload.url
+				link.download = payload.filename || "DSH酒馆备份.dshtransfer"
+				link.rel = "noopener"
+				document.body.appendChild(link)
+				link.click()
+				link.remove()
+				return
+			}
+			if (payload.base64) {
+				const bytes = Uint8Array.from(atob(payload.base64), function (value) { return value.charCodeAt(0) })
+				downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), payload.filename)
+			}
+		}
+
 		function submitExport() {
 			if (!stats.count) { setError("先选至少一个板块"); return }
 			setError("")
 			setBusy(true)
 			rpc("createTransferExport", { selection, includeImages }, sessionId).then(function (result) {
-				if (result.downloadUrl) {
-					const link = document.createElement("a")
-					link.href = result.downloadUrl
-					link.download = result.filename || "DSH酒馆备份.dshtransfer"
-					document.body.appendChild(link)
-					link.click()
-					link.remove()
-				} else {
-					const bytes = Uint8Array.from(atob(result.base64), function (value) { return value.charCodeAt(0) })
-					downloadTavernBlob(new Blob([bytes], { type: "application/zip" }), result.filename)
-				}
+				const payload = result.downloadUrl
+					? { url: result.downloadUrl, filename: result.filename }
+					: { base64: result.base64, filename: result.filename }
+				exportRef.current = payload
+				saveExport(payload)
 				setExported({ name: result.filename, bytes: result.bytes, totals: result.totals, parts: result.parts })
 				window.setTimeout(function () { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight }, 30)
 			}, function (err) { setError(String(err && err.message || err)) }).finally(function () { setBusy(false) })
@@ -221,18 +243,53 @@ function createTransferFeatureModule() {
 		}
 
 		function applyImport() {
-			if (!importing || !importing.token) return
+			if (!importing || !importing.token || applyingRef.current) return
+			applyingRef.current = true
 			setError("")
 			setBusy(true)
+			setApplyProgress(null)
 			setImporting(function (current) { return Object.assign({}, current, { stage: "applying" }) })
-			rpc("applyTransferBundle", { token: importing.token, policies: importing.policies, selection: selectionPayload(importing.selection) }, sessionId).then(function (result) {
+			const payload = { token: importing.token, policies: importing.policies, selection: selectionPayload(importing.selection) }
+			// 手机端断网、网关超时都会让这一次 POST 白跑；服务端同一个 token 只跑一趟，重发是安全的，
+			// 所以这里自己补一次，不必等用户手再点一遍。
+			const attempt = function (left) {
+				return rpc("applyTransferBundle", payload, sessionId).catch(function (err) {
+					const transient = !err || !err.status || err.retryable === true
+					if (left <= 0 || !transient) throw err
+					return new Promise(function (resolve) { window.setTimeout(resolve, 1500) }).then(function () { return attempt(left - 1) })
+				})
+			}
+			attempt(1).then(function (result) {
 				setImporting(function (current) { return Object.assign({}, current, { stage: "done", result }) })
 				notifyTavernDataChanged(["cards", "worldbooks", "presets", "sessions", "plugins"], "transfer")
 				void refresh()
 			}, function (err) {
 				setImporting(function (current) { return Object.assign({}, current, { stage: "preview" }) })
 				setError(String(err && err.message || err))
-			}).finally(function () { setBusy(false) })
+			}).finally(function () { applyingRef.current = false; setBusy(false) })
+		}
+
+		// 导入过程中每秒取一次进度：慢在哪个板块、走到第几项，看得见就不会被当成卡死。
+		const applyToken = importing && importing.stage === "applying" ? importing.token : ""
+		React.useEffect(function () {
+			if (!applyToken) return undefined
+			let stopped = false
+			function tick() {
+				rpc("getTransferImportProgress", { token: applyToken }, sessionId).then(function (value) {
+					if (!stopped && value) setApplyProgress(value)
+				}, function () { /* 取不到进度不影响导入本身 */ })
+			}
+			tick()
+			const timer = window.setInterval(tick, 1000)
+			return function () { stopped = true; window.clearInterval(timer) }
+		}, [applyToken, sessionId])
+
+		function applyProgressText() {
+			const row = applyProgress
+			const seconds = Math.max(1, Math.round(((row && row.elapsedMs) || 0) / 1000))
+			const part = row && row.label ? " · " + row.label : ""
+			const count = row && row.total ? " " + Math.min(row.items || 0, row.total) + "/" + row.total : ""
+			return "正在导入" + part + count + "，已 " + seconds + " 秒"
 		}
 
 		function renderItem(part, item) {
@@ -311,8 +368,22 @@ function createTransferFeatureModule() {
 							h("div", { className: "dsh-tavern-transfer-file-sub" }, fmtBytes(exported.bytes) + " · " + (exported.totals ? exported.totals.items + " 项" : ""))
 						)
 					),
-					h("button", { type: "button", className: "dsh-tavern-btn", onClick: submitExport }, "再导出")
-				) : null
+					// 大包用真链接：内嵌窗口不支持下载时，长按还能「复制链接地址」丢给系统浏览器。
+					exportRef.current && exportRef.current.url
+						? h("a", {
+							className: "dsh-tavern-btn primary dsh-tavern-transfer-save",
+							href: exportRef.current.url,
+							download: exportRef.current.filename,
+							role: "button"
+						}, "保存到手机")
+						: h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy, onClick: function () { saveExport(exportRef.current) } }, "保存到手机"),
+					h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: submitExport }, "再导出")
+				) : null,
+				exported ? h("p", { className: "dsh-tavern-transfer-hint" },
+					"点「保存到手机」后没有弹出保存位置，是当前窗口不支持下载：把酒馆地址复制到系统浏览器（Chrome 等）打开，在那里再导出一次，文件会进手机的「下载」。"
+					+ "包在服务端保留一小时，期间同一个「保存到手机」可以反复点。"
+					+ "保存到手机「下载」时后缀可能被系统改成 .bin（系统按下载类型改名，内容仍是完整包），导入时直接选这个文件即可。")
+					: null
 			)
 		}
 
@@ -425,6 +496,7 @@ function createTransferFeatureModule() {
 									"aria-label": part.label + " 的导入方式"
 								},
 									h("option", { value: "new" }, part.kind === "settings" ? "合并设置" : part.kind === "plugin-data" ? "覆盖数据" : "新建副本"),
+									part.kind === "chats" ? h("option", { value: "latest" }, "只导最新进度（快）") : null,
 									h("option", { value: "skip" }, "跳过")
 								),
 								items.length ? h("button", {
@@ -478,9 +550,11 @@ function createTransferFeatureModule() {
 					h("div", { className: "dsh-tavern-transfer-summary" },
 						h("strong", null, "新增 " + totals.added + " 项"),
 						h("span", null, "跳过 " + totals.skipped + " 项"),
-						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null
+						totals.conflicts ? h("span", { className: "is-warn" }, "其中 " + totals.conflicts + " 项同名会加副本") : null,
+						(state.policies && state.policies.chats === "latest") ? h("span", { className: "is-warn" }, "对话只带最新进度，可回退的存档点不导") : null,
+						state.stage === "applying" ? h("span", { className: "is-warn" }, applyProgressText()) : null
 					),
-					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport }, busy ? "导入中…" : "确认导入")
+					h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy || totals.added === 0, onClick: applyImport, title: state.stage === "applying" ? "导入还在进行，大包可能要几分钟" : "" }, busy ? "导入中…" : "确认导入")
 				) : null
 			)
 		}
@@ -503,7 +577,7 @@ function createTransferFeatureModule() {
 			),
 			h("div", { className: "dsh-tavern-transfer-modes" }, modeButton("export", "导出"), modeButton("import", "导入")),
 			error ? h("div", { className: "dsh-tavern-transfer-error" }, error) : null,
-			h("input", { ref: fileInput, type: "file", accept: ".dshtransfer,.zip", style: { display: "none" }, onChange: pickImportFile }),
+			h("input", { ref: fileInput, type: "file", accept: ".dshtransfer,.zip,.bin,application/octet-stream", style: { display: "none" }, onChange: pickImportFile }),
 			mode === "export" ? renderExport() : renderImport(),
 			mode === "export" ? h("div", { className: "dsh-tavern-transfer-bar" },
 				h("div", { className: "dsh-tavern-transfer-summary" },

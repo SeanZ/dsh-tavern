@@ -1,7 +1,7 @@
 // One policy for model visibility and dispatch. Read the owning chat through
 // Tavern's store, never through its on-disk representation or a cached tool list.
-export function createNetworkToolPolicy({ readHeader, backgroundContext, capabilityFor, settings }) {
-  const capability = name => ['web_search', 'tavern_research'].includes(name) ? 'search' : name === 'web_fetch' ? 'fetch' : capabilityFor(name)
+export function createNetworkToolPolicy({ readHeader, backgroundContext, capabilityFor }) {
+  const capability = name => name === 'web_search' ? 'search' : name === 'web_fetch' ? 'fetch' : capabilityFor(name)
   async function resolve(session) {
     if (!session?.id) return null
     const background = backgroundContext(session.id)
@@ -14,10 +14,9 @@ export function createNetworkToolPolicy({ readHeader, backgroundContext, capabil
     const chat = await readHeader(parent, fields)
     return chat ? { chat, background: true, allowed: !background || background.webSearchEnabled === true } : null
   }
-  function reason(name, state, config) {
+  function reason(name, state) {
     const kind = capability(name)
     if (!kind || !state) return undefined
-    if (kind === 'fetch' && config.fetchEnabled !== true) return '网页读取已关闭，请在全局设置 → 卡片工作台搜索中开启。'
     if (!state.allowed || (state.chat.mode !== 'card' && state.chat.webSearchEnabled !== true)) return '本局联网搜索已关闭，请在本局设置中开启。'
     if (!state.background && state.chat.mode !== 'card' && state.chat.disabledForegroundTools?.includes(name)) return '该工具已在本局的前台工具设置中关闭。'
     return undefined
@@ -25,12 +24,12 @@ export function createNetworkToolPolicy({ readHeader, backgroundContext, capabil
   return {
     async denial(name, session) {
       if (!capability(name)) return undefined
-      return reason(name, await resolve(session), settings())
+      return reason(name, await resolve(session))
     },
     async filter(tools, session) {
       if (!tools.some(tool => capability(tool.name))) return tools
-      const state = await resolve(session), config = settings()
-      return tools.filter(tool => !reason(tool.name, state, config))
+      const state = await resolve(session)
+      return tools.filter(tool => !reason(tool.name, state))
     }
   }
 }

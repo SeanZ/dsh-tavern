@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { helperHostHarness } from './fixtures/helper-host-harness.mjs'
 import { createHelperWorldbookHost } from './fixtures/helper-worldbook-host.mjs'
-import { prepareWorldBookRecall } from '../tavern-plugin/lib/domain/worldbook-recall.js'
 
 async function connect(host) {
   const initial = await host.adapter.getWorldbook('audit', 'current')
@@ -61,17 +60,6 @@ for (const embedded of [false, true]) {
   })
 }
 
-test('关键词更新进入现有 DSH 世界书召回，RegExp 跨宿主边界不丢失', async t => {
-  const host = await createHelperWorldbookHost()
-  t.after(host.cleanup)
-  const api = await connect(host)
-  await api.updateWorldbookWith('审计书', entries => { entries[0].strategy.keys = [/钟楼/u]; entries[0].content = '已更新的钟楼设定'; return entries })
-  const worldBook = await host.record()
-  const prepared = prepareWorldBookRecall({ card: { name: '角色' }, chat: { id: 'audit', messages: [{ role: 'assistant', text: '抵达钟楼', turn: 2 }] }, turn: 2, worldBook })
-  assert.equal(prepared.context, '已更新的钟楼设定')
-  assert.deepEqual(worldBook.view.entries[0].primaryKeys, ['/钟楼/u'])
-})
-
 test('脚本写世界书只传改动条目，版本没变不重传整本，别处改过则拒绝', async t => {
   const host = await createHelperWorldbookHost(false)
   t.after(host.cleanup)
@@ -107,20 +95,11 @@ test('脚本写世界书只传改动条目，版本没变不重传整本，别�
   assert.equal((await api.getWorldbook('审计书')).at(-1).name, '别处')
 })
 
-test('没有全局世界书和单独的聊天世界书时如实回答，不假装能新建世界书', async t => {
-  const host = await createHelperWorldbookHost(false)
-  t.after(host.cleanup)
-  const api = await connect(host)
-  assert.deepEqual(Array.from(api.getGlobalWorldbookNames()), [])
-  assert.equal(api.getChatWorldbookName('current'), null)
-  assert.equal(api.createWorldbook, undefined)
-})
-
-for (const embedded of [false, true]) test(`脚本增删改 → Skill 文件/稳定分类 → 失效通知，保留其他快照 (${embedded})`, async t => {
+for (const embedded of [false, true]) test(`脚本增删改 → 静态文件 → 失效通知，保留其他快照 (${embedded})`, async t => {
   const { mkdtemp, rm } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join, basename, dirname } = await import('node:path')
-  const { createWorldbookSkillProvider } = await import('../tavern-plugin/lib/domain/worldbook-skill-provider.js')
+  const { createWorldbookFiles } = await import('../tavern-plugin/lib/domain/worldbook-files.js')
   const { appendWorldbookSkillChanges } = await import('../tavern-plugin/lib/domain/worldbook-skill-changes.js')
   const host = await createHelperWorldbookHost(embedded)
   t.after(host.cleanup)
@@ -135,14 +114,14 @@ for (const embedded of [false, true]) test(`脚本增删改 → Skill 文件/稳
   const scope={session}, lookup={scope}, payload={agent:scope}
   const oldBook=structuredClone(await host.record())
   const oldScope={session:{id:'old'}}
-  const create=()=>createWorldbookSkillProvider({directory,inlineTokenBudget:0,load:async agent=>({chat:{...chat,sessionId:agent.session.id},worldBook:agent===oldScope?oldBook:await host.record()})})
+  const create=()=>createWorldbookFiles({directory,load:async agent=>({chat:{...chat,sessionId:agent.session.id},worldBook:agent===oldScope?oldBook:await host.record()})})
   let provider=create();t.after(()=>provider.dispose())
   await provider.refresh(scope)
   appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope))
   const first=await provider.inspect(lookup)
-  const bank=first.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款'))
-  const oldEntry=first.clusters.flatMap(c=>c.entries).find(e=>e.title==='城市·旧城')
-  assert.equal(await provider.readResource(oldEntry.path,{scope:oldScope}),'旧城旧正文')
+  const bank=first.files.find(e=>e.title==='银行·存款')
+  const oldEntry=first.files.find(e=>e.title==='城市·旧城')
+  assert.match(await provider.readResource(oldEntry.path,{scope:oldScope}),/旧城旧正文/)
   // Multiple script writes are observed as one effective batch before a model step.
   await api.updateWorldbookWith('审计书', rows=>rows.filter(e=>e.name!=='城市·旧港').map(e=>({...e,content:e.name==='城市·旧城'?'旧城改写后的正文':e.name==='医术·规则'?'<%= getvar("hp") %>':e.content})))
   await api.createWorldbookEntries('审计书',[{name:'城市·新港',content:'新港正文'}])
@@ -150,15 +129,13 @@ for (const embedded of [false, true]) test(`脚本增删改 → Skill 文件/稳
   const notice=appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope))
   assert.match(notice.content[0].text,/新增（1 条）/)
   assert.match(notice.content[0].text,/改写（1 条）/)
-  assert.match(notice.content[0].text,/移出静态 Skill（2 条）/)
+  assert.match(notice.content[0].text,/撤回资料（2 条）/)
   const second=await provider.inspect(lookup)
-  assert.deepEqual(second.clusters.flatMap(c=>c.entries.map(e=>e.title)).sort(),['城市·旧城','城市·新港','银行·存款'].sort())
-  const newBank=second.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款'))
-  assert.equal(newBank.name,bank.name)
-  assert.equal(basename(newBank.directory),basename(bank.directory))
-  assert.equal(basename(dirname(newBank.entries[0].path)),basename(dirname(bank.entries[0].path)))
+  assert.deepEqual(second.files.map(e=>e.title).sort(),['城市·旧城','城市·新港','银行·存款'].sort())
+  const newBank=second.files.find(e=>e.title==='银行·存款')
+  assert.equal(basename(newBank.path),basename(bank.path))
   assert.equal(await provider.readResource(oldEntry.path,lookup),undefined)
-  assert.equal(await provider.readResource(oldEntry.path,{scope:oldScope}),'旧城旧正文')
+  assert.match(await provider.readResource(oldEntry.path,{scope:oldScope}),/旧城旧正文/)
   await provider.refresh(scope)
   assert.equal(appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope)),null)
   // Cold provider recovers the last published layout from persisted native history.
@@ -166,6 +143,6 @@ for (const embedded of [false, true]) test(`脚本增删改 → Skill 文件/稳
   await api.updateWorldbookWith('审计书',rows=>rows.map(e=>e.name==='城市·旧城'?{...e,content:'再次修改正文'}:e))
   await provider.refresh(scope)
   const cold=await provider.inspect(lookup)
-  assert.equal(cold.clusters.find(c=>c.entries.some(e=>e.title==='银行·存款')).name,bank.name)
+  assert.equal(basename(cold.files.find(e=>e.title==='银行·存款').path),basename(bank.path))
   assert.match(appendWorldbookSkillChanges(payload,provider.changeSnapshot(scope)).content[0].text,/改写（1 条）/)
 })

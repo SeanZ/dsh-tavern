@@ -1,4 +1,4 @@
-// The background task pipeline (docs/design/background-task-pipeline.md).
+// The background task pipeline (Wiki「设计：background-task-pipeline」).
 //
 // Settlement items: work that rides on the main settlement's single model call. Tavern's own
 // items come first, then the plugins' tools and notes. Tool definitions

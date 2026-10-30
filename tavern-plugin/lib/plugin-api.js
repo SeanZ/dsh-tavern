@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { isMvuUpdateEntry } from './domain/worldbook-recall.js'
 import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
+import { pluginMember, pluginMemberId, registerPluginMember } from './domain/background-members.js'
+import { CUSTOM_EVENT, STORY_EVENTS } from './domain/story-events.js'
 import { bounded, untilAborted } from './domain/plugin-callback.js'
 import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
@@ -28,6 +30,7 @@ const POOL_TIMEOUT_MS = 5000
 const POOL_ENTRY_ID = /^[A-Za-z0-9._-]{1,64}$/
 const PLUGIN_TIMEOUT_MS = 30000
 const REPLACEMENT_TIMEOUT_MS = 120000
+const MAX_MEMBER_SYSTEM = 20000
 const MAX_VARIABLES = 1024 * 1024
 const MAX_EDIT_TEXT = 200000
 const MAX_HISTORY_TURNS = 50
@@ -44,6 +47,16 @@ const MAX_PACK_FILES = 5000
 const NATIVE_CARD_EXTENSIONS = new Set(['.png', '.json', '.charx', '.dshcard'])
 const CARD_EXTENSION = /^\.[a-z0-9][a-z0-9._-]{0,19}$/
 
+// Story moments plugins may follow (domain/story-events.js), and plugins' own (`<plugin>:<name>`).
+const PLUGIN_STORY_EVENTS = STORY_EVENTS
+const OWN_EVENT_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
+const MAX_EVENT_DATA = 8192
+const MAX_OUTPUT = 65536
+// Outputs live in plugin data beside the plugin's own records, under their own owner key.
+const outputOwner = (plugin, name) => 'output:' + plugin + ':' + name
+// A plugin's own moments per game in 10 s: two plugins answering each other cannot spin forever.
+const MAX_OWN_EVENTS = 60
+
 function ownerOf(service) {
   const ctx = service && service.ctx
   const fiber = ctx && (ctx[Symbol.for('cordis.shadow')] ? Object.getPrototypeOf(ctx) : ctx).fiber
@@ -53,6 +66,15 @@ function ownerOf(service) {
 }
 
 /** Register through the caller's Cordis fiber so plugin unload disposes it. */
+// What a plugin hears of a story moment: the game, and the moment's plain fields.
+function heardOf(event, gameId, payload) {
+  const heard = { event, gameId }
+  if (Number.isSafeInteger(payload?.turn)) heard.turn = payload.turn
+  for (const key of ['kind', 'task', 'plugin', 'member', 'status', 'from']) if (typeof payload?.[key] === 'string' && payload[key]) heard[key] = payload[key]
+  if (payload?.data !== undefined) heard.data = structuredClone(payload.data)
+  return heard
+}
+
 function owned(service, register, label) {
   const ctx = service && service.ctx
   return ctx && typeof ctx.effect === 'function' ? ctx.effect(register, label) : register()
@@ -128,7 +150,10 @@ export function createTavernPluginApi(deps) {
   const replacements = { settlement: new Map(), ledger: new Map() }
   const ledgerRuns = new Map()  // gameId → AbortController of a running ledger replacement
   const settlementTasks = new Map()
+  const ownEvents = new Map()
   const manualTasks = new Map()
+  // Task-table jobs plugins declared (tavern.job), by workflow id.
+  const jobs = new Map()
   const toolScopes = new Map()
   const toolNetworks = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
@@ -291,6 +316,88 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => { settledHandlers.add(entry); return () => settledHandlers.delete(entry) }, 'tavern.onTurnSettled()')
     },
 
+    // A moment of the event table, Tavern's (玩家发送, 正文开始, 正文写完, 本轮结算完, 回合作废,
+    // 剧情回退或改写, 任务完成) or a plugin's own ('<plugin>:<name>', see emit): the handler is
+    // listed there as this plugin's and hears { event, gameId, ... } in the games that have it on.
+    on(event, handler) {
+      const owner = ownerOf(this)
+      if (!Object.hasOwn(PLUGIN_STORY_EVENTS, event) && !CUSTOM_EVENT.test(String(event))) {
+        throw new Error('event 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、') + '，或别的插件的事件「插件名:事件名」')
+      }
+      if (typeof handler !== 'function') throw new TypeError('tavern.on() 需要一个函数')
+      if (!deps.storyEvents) throw new Error('当前酒馆不支持剧情事件')
+      return owned(this, () => deps.storyEvents.on(event, '插件「' + owner + '」', async payload => {
+        const gameId = String(payload?.sessionId || payload?.latest?.sessionId || '')
+        if (!gameId || (await choicesFor(gameId)).disabled.has(owner)) return
+        const heard = heardOf(event, gameId, payload)
+        try { await bounded(handler(heard), 'tavern.on(' + event + ')') }
+        catch (error) { recordError(gameId, owner, '剧情事件 ' + (PLUGIN_STORY_EVENTS[event] || event), error) }
+      }), 'tavern.on()')
+    },
+
+    // A task of the task table, declared like Tavern's own: the moments that start it (`on`),
+    // or the plugin tasks it runs after (`needs`: '<plugin>:<task>' — once they all finished
+    // the same turn), when it runs (`if`, given what started it) and its `run`. What `run`
+    // returns is its output for that turn: tasks that need it hear it as needs['<plugin>:<task>'].
+    // It is listed on the 后台任务 page; `member` names the plugin member it works through
+    // (runTask with that member), `description` what it does and `condition` its `if` in words.
+    job({ name, title, description, condition, on, needs, member, if: when, run } = {}) {
+      const owner = ownerOf(this)
+      if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('任务名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
+      const events = on === undefined ? [] : (Array.isArray(on) ? on : [on])
+      if (events.some(event => !Object.hasOwn(PLUGIN_STORY_EVENTS, event) && !CUSTOM_EVENT.test(String(event)))) {
+        throw new Error('on 只能是 ' + Object.keys(PLUGIN_STORY_EVENTS).join('、') + '，或别的插件的事件「插件名:事件名」')
+      }
+      const after = needs === undefined ? [] : (Array.isArray(needs) ? needs : [needs])
+      if (after.some(need => !CUSTOM_EVENT.test(String(need)))) throw new Error('needs 写成「插件名:任务名」')
+      if (events.length === 0 && after.length === 0) throw new Error('tavern.job() 需要 on 或 needs')
+      if (typeof run !== 'function') throw new TypeError('tavern.job() 需要 run 函数')
+      if (when !== undefined && typeof when !== 'function') throw new TypeError('tavern.job() 的 if 必须是函数')
+      if (member !== undefined && !pluginMember(pluginMemberId(owner, member))) throw new Error('成员 ' + member + ' 还没有用 tavern.member() 注册')
+      if (!deps.workflow) throw new Error('当前酒馆不支持任务表')
+      const id = 'plugin:' + owner + ':' + name
+      const entry = { id, owner, name, title: String(title || name), description: String(description || ''), member: member === undefined ? '' : String(member), needs: after.map(String) }
+      const heard = (payload, event) => {
+        const value = heardOf(event, payload.gameId, payload)
+        if (payload.needs) value.needs = Object.fromEntries(Object.entries(payload.needs).map(([need, output]) => [need.replace(/^plugin:/, ''), structuredClone(output)]))
+        return value
+      }
+      return owned(this, () => {
+        const stop = deps.workflow.job({ id, task: id, name: '插件「' + owner + '」' + entry.title, condition: String(condition || ''),
+          on: events, needs: entry.needs.map(need => 'plugin:' + need),
+          // A failing condition is this plugin's error, and the task does not run.
+          if: async (payload, event) => {
+            if ((await choicesFor(payload.gameId)).disabled.has(owner)) return false
+            try { return !when || Boolean(await when(heard(payload, event))) }
+            catch (error) { recordError(payload.gameId, owner, '任务 ' + entry.title, error); return false }
+          },
+          // A failing run is recorded as this plugin's error and leaves no output.
+          run: async (payload, event) => {
+            try { return await bounded(run(heard(payload, event)), 'tavern.job(' + name + ')') }
+            catch (error) { recordError(payload.gameId, owner, '任务 ' + entry.title, error); throw error }
+          } })
+        jobs.set(id, entry)
+        return () => { stop(); if (jobs.get(id) === entry) jobs.delete(id) }
+      }, 'tavern.job()')
+    },
+
+    // Announce a moment of this plugin, '<this plugin>:<name>': others follow it with tavern.on and
+    // hear { event, gameId, from, data }. Data is small (≤ 8 KB JSON): ids and flags; what they
+    // point at is read through readOutput.
+    async emit(name, { gameId, data } = {}) {
+      const owner = ownerOf(this)
+      if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('事件名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
+      const event = owner + ':' + name
+      if (!CUSTOM_EVENT.test(event)) throw new Error('插件名 ' + owner + ' 不能用作事件前缀')
+      const game = await requireGame(gameId)
+      if (data !== undefined && JSON.stringify(data).length > MAX_EVENT_DATA) throw new Error('data 最多 8 KB')
+      const now = Date.now(), recent = (ownEvents.get(game.sessionId) || []).filter(at => now - at < 10000)
+      if (recent.length >= MAX_OWN_EVENTS) throw new Error('这一局 10 秒内插件事件太多，已暂停发出')
+      ownEvents.set(game.sessionId, [...recent, now])
+      if (!deps.storyEvents) throw new Error('当前酒馆不支持剧情事件')
+      deps.storyEvents.emit(event, { sessionId: game.sessionId, from: owner, ...(data === undefined ? {} : { data: structuredClone(data) }) })
+    },
+
     onGameRemoved(handler) {
       if (typeof handler !== 'function') throw new TypeError('onGameRemoved 需要一个函数')
       const entry = { owner: ownerOf(this), handler }
@@ -310,7 +417,7 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => { timelineHandlers.add(entry); return () => timelineHandlers.delete(entry) }, 'tavern.onTimelineChanged()')
     },
 
-    // Who says each quoted line and how they feel (docs/design/cast-presentation.md), annotated by settlement.
+    // Who says each quoted line and how they feel (Wiki「设计：cast-presentation」), annotated by settlement.
     onCastAnnotated(handler) {
       if (typeof handler !== 'function') throw new TypeError('onCastAnnotated 需要一个函数')
       const entry = { owner: ownerOf(this), handler }
@@ -394,6 +501,36 @@ export function createTavernPluginApi(deps) {
       for (const record of await deps.data.turnsUpTo({ chatId: game.chatId, owner, turn: positiveTurn(turn) })) {
         if (!keys.has(record.turn)) keys.set(record.turn, await deps.currentKey(game.sessionId, record.turn))
         if (keys.get(record.turn) === record.key) return { turn: record.turn, textVersion: record.key, data: structuredClone(record.data) }
+      }
+      return null
+    },
+
+    // A named output of this plugin for a turn, which every plugin may read (readOutput): what an
+    // event points at, such as a map's 信号强度 for a phone. Kept per turn and text version like
+    // turn data, so a rollback or a regenerated reply drops it.
+    async publishOutput({ gameId, turn, name, value } = {}) {
+      const owner = ownerOf(this)
+      if (typeof name !== 'string' || !OWN_EVENT_NAME.test(name)) throw new Error('产出名只能用小写字母、数字、点、下划线和连字符，最多 64 个字符')
+      const game = await requireGame(gameId)
+      const at = positiveTurn(turn)
+      const key = await deps.currentKey(game.sessionId, at)
+      if (!key) throw Object.assign(new Error('这一轮不存在'), { code: 'TAVERN_PLUGIN_TURN_UNAVAILABLE' })
+      if (value === undefined) throw new TypeError('value 不能省略；要清除请传 null')
+      if (JSON.stringify(value).length > MAX_OUTPUT) throw new Error('产出最多 64 KB')
+      await deps.data.saveTurn({ chatId: game.chatId, owner: outputOwner(owner, name), turn: at, key, data: value })
+      return { turn: at, textVersion: key }
+    },
+
+    // Another plugin's (or this one's) output: the latest one at or before `turn` (the latest of
+    // all without it) whose turn still shows the text it was made for; null when there is none.
+    async readOutput({ gameId, turn, plugin, name } = {}) {
+      if (typeof plugin !== 'string' || !plugin || typeof name !== 'string' || !name) throw new TypeError('readOutput 需要 plugin 和 name')
+      const game = await deps.resolveGame(gameIdOf(gameId))
+      if (!game) return null
+      const keys = new Map()
+      for (const record of await deps.data.turnsUpTo({ chatId: game.chatId, owner: outputOwner(plugin, name), turn: turn === undefined ? Number.MAX_SAFE_INTEGER : positiveTurn(turn) })) {
+        if (!keys.has(record.turn)) keys.set(record.turn, await deps.currentKey(game.sessionId, record.turn))
+        if (keys.get(record.turn) === record.key) return { plugin, name, turn: record.turn, textVersion: record.key, value: structuredClone(record.data) }
       }
       return null
     },
@@ -726,31 +863,49 @@ export function createTavernPluginApi(deps) {
       return await snapshotOf(await requireTurn(material.sessionId, material.turn))
     },
 
-    // A one-off task in a fresh background session of this game: same background model,
-    // card background and world book as Tavern's own tasks, never Tavern's resident session.
+    // A task of this game in a background session: a fresh one-off by default; with `member`, the
+    // resident session of that member of this plugin (tavern.member), queued behind its other tasks.
     async runTask(input = {}) {
       return await taskExecution.runAgent(ownerOf(this), input)
     },
 
+    // A resident background Agent of this plugin: one per game, its own Session and prompt cache.
+    // Tasks given `member: name` run in it one at a time, beside Tavern's own members.
+    // A resident member of this plugin: one Session per game. With `system` it has a prefix of
+    // its own: that system prompt and `tools` (as in runTask) only, the same for every task, so
+    // each runTask({ member }) is one message to it and brings no tools of its own. Without
+    // `system` it shares Tavern's background prefix (card, world book), as before.
+    member({ name, title, system, tools } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      const label = taskTitle(title, name)
+      if (system !== undefined && (typeof system !== 'string' || !system.trim() || system.length > MAX_MEMBER_SYSTEM)) throw new Error('system 必须是 1–' + MAX_MEMBER_SYSTEM + ' 字的系统提示词')
+      if (tools !== undefined && system === undefined) throw new Error('成员要有自己的工具，先给它 system')
+      const checked = system === undefined ? undefined : taskExecution.checkTools(tools || [])
+      return owned(this, () => registerPluginMember({ owner, name, title: label, system: system?.trim(), tools: checked }), 'tavern.member()')
+    },
+
     // A task of this plugin run after each turn, before or after Tavern's own settlement.
-    settlementTask({ name, title, phase = 'after', run } = {}) {
+    settlementTask({ name, title, phase = 'after', member, run } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
       if (!Object.hasOwn(TASK_PHASES, phase)) throw new Error("phase 只能是 'before'、'parallel' 或 'after'")
       if (typeof run !== 'function') throw new TypeError('run 必须是函数')
-      const entry = { owner, name, title: taskTitle(title, name), phase, run }
+      if (member !== undefined) sectionName(member)
+      const entry = { owner, name, title: taskTitle(title, name), phase, member, run }
       return register.call(this, settlementTasks, taskKey(owner, name), entry, 'tavern.settlementTask()', '结算任务 ' + name + ' 已注册')
     },
 
     // A task the player starts by hand (a button in the game), or the plugin through startTask.
-    manualTask({ name, title, description = '', input, run } = {}) {
+    manualTask({ name, title, description = '', input, member, run } = {}) {
       const owner = ownerOf(this)
       sectionName(name)
       if (typeof description !== 'string' || description.length > MAX_TASK_DESCRIPTION) throw new Error('description 最多 ' + MAX_TASK_DESCRIPTION + ' 字')
       if (input !== undefined && (!input || typeof input !== 'object' || typeof input.label !== 'string' || !input.label.trim())) throw new Error('input 要写成 { label, placeholder? }')
       if (typeof run !== 'function') throw new TypeError('run 必须是函数')
       const ask = input ? { label: input.label.trim().slice(0, 200), placeholder: typeof input.placeholder === 'string' ? input.placeholder.slice(0, 500) : '' } : null
-      const entry = { owner, name, title: taskTitle(title, name), description: description.trim(), input: ask, run }
+      if (member !== undefined) sectionName(member)
+      const entry = { owner, name, title: taskTitle(title, name), description: description.trim(), input: ask, member, run }
       return register.call(this, manualTasks, taskKey(owner, name), entry, 'tavern.manualTask()', '手动任务 ' + name + ' 已注册')
     },
 
@@ -1402,7 +1557,24 @@ export function createTavernPluginApi(deps) {
     return typeof owner === 'string' && Array.from(mvuSettlementProviders.values()).some(entry => entry.owner === owner)
   }
 
-  return Object.freeze({ service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
+  /** Plugins' settlement and manual tasks, for the 后台任务 page's 任务目录. */
+  function taskCatalog() {
+    const item = (entry, kind) => ({
+      task: 'plugin:' + entry.owner + ':' + entry.name, name: entry.title, plugin: entry.owner,
+      member: entry.member ? pluginMemberId(entry.owner, entry.member) : '', lane: entry.member ? 'resident' : 'ephemeral',
+      does: kind === 'manual' ? (entry.description || '插件的手动任务。') : '插件的结算任务，每轮' + TASK_PHASES[entry.phase] + '运行。',
+      trigger: kind === 'manual' ? '玩家点插件的按钮，或插件自己启动。' : '每轮变量结算' + (entry.phase === 'parallel' ? '时' : entry.phase === 'before' ? '前' : '后') + '。',
+      lock: kind === 'manual'
+    })
+    // A job's start line comes from its declaration (describeTasks), so it brings none.
+    const job = entry => ({ task: entry.id, name: entry.title, plugin: entry.owner,
+      member: entry.member ? pluginMemberId(entry.owner, entry.member) : '', lane: entry.member ? 'resident' : 'ephemeral',
+      does: entry.description || '插件声明的任务。', manual: '', needs: entry.needs.map(need => 'plugin:' + need), lock: false })
+    return [...Array.from(settlementTasks.values(), entry => item(entry, 'settlement')), ...Array.from(manualTasks.values(), entry => item(entry, 'manual')), ...Array.from(jobs.values(), job)]
+      .sort((a, b) => a.plugin.localeCompare(b.plugin) || a.task.localeCompare(b.task))
+  }
+
+  return Object.freeze({ taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
     speechProviders: () => Array.from(speechProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,
     runSettlementTasks, manualTaskFor, runManualTask, stopTasks: stopAllTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }

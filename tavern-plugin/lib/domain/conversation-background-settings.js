@@ -1,20 +1,20 @@
 import { patchConversationBackground } from './conversation-background.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { foregroundToolCatalog, normalizeDisabledForegroundTools } from './foreground-tools.js'
-import { normalizeBackgroundTasks } from './tavern-settings.js'
+import { normalizeConfiguredBackgroundTasks } from './tavern-settings.js'
 
 /** Validate model choices, patch only current configuration and trigger newly enabled work. */
 export function createConversationBackgroundSettings({ readConfig, readChat, updateChat, modelCatalog, modelReasoning,
-  isPlayMode, onStyleEnabled = () => {}, extraTools = async () => [],
-  worldbookStrategies = { list: () => [{ id: 'legacy', label: '外部注入（旧机制）' }, { id: 'native-skills', label: '主动检索（推荐）' }], has: id => ['legacy', 'native-skills'].includes(id) } }) {
+  isPlayMode, extraTools = async () => [],
+  worldbookStrategies = { list: () => [{ id: 'native-skills', label: '主动检索' }], has: id => id === 'native-skills' } }) {
   function requirePlay(chat) {
     if (!chat || !isPlayMode(chat.mode)) throw new Error('请先打开游玩会话')
     return chat
   }
   function present(chat) {
     return { backgroundModel: chat.backgroundModelSelection || null,
-      worldbookStrategy: chat.worldbookStrategy || 'legacy',
-      backgroundTasks: normalizeBackgroundTasks(chat.backgroundTasks), webSearchEnabled: chat.webSearchEnabled === true,
+      worldbookStrategy: (!chat.worldbookStrategy || chat.worldbookStrategy === 'legacy') ? 'native-skills' : chat.worldbookStrategy,
+      backgroundTasks: normalizeConfiguredBackgroundTasks(chat.backgroundTasks), webSearchEnabled: chat.webSearchEnabled === true,
       disabledForegroundTools: normalizeDisabledForegroundTools(chat.disabledForegroundTools) }
   }
   async function toolCatalog(chat, sessionId) {
@@ -46,10 +46,9 @@ export function createConversationBackgroundSettings({ readConfig, readChat, upd
   async function save(args = {}) {
     const sessionId = String(args.sessionId || '')
     const chat = requirePlay(await readChat(sessionId))
-    if (Object.hasOwn(args, 'worldbookStrategy') && !await worldbookStrategies.has(args.worldbookStrategy)) throw new Error('世界书策略不可用')
+    if (Object.hasOwn(args, 'worldbookStrategy') && args.worldbookStrategy !== 'legacy' && !await worldbookStrategies.has(args.worldbookStrategy)) throw new Error('世界书策略不可用')
     if (Object.hasOwn(args, 'backgroundModel')) await checkModel(args.backgroundModel, '后台模型')
     const saved = await updateChat(chat.id, current => patchConversationBackground(current, args), { source: 'background-model.switch-conversation' })
-    if (args.backgroundTasks?.styleReference === true && chat.backgroundTasks?.styleReference !== true) onStyleEnabled(sessionId, chat.id)
     return present(saved)
   }
   return Object.freeze({ read, save })

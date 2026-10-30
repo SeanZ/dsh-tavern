@@ -509,6 +509,10 @@ export function createNativePlayOrchestrationStrategy(options) {
         sections.push({ name: 'tavern:no-foreground-tools', text: NO_FOREGROUND_TOOLS_PROMPT })
       }
     }
+    if (playMode && assembly.tools.some(tool => tool.name === 'style_reference_submit') && options.styleReferencePrompt) {
+      const text = options.styleReferencePrompt(input.chat)
+      if (text) sections.push({ name: 'tavern:foreground-style-reference', text })
+    }
     assembly.sections = sections
     return assembly
   }

@@ -28,23 +28,23 @@ function fixture() {
 }
 const input={cardPath:'card.json',text,operationId:'operation-123',sessionId:'session'}
 
-for (const textOnly of [false,true]) test(`历史导入装配真实筛选器仍不调用 Agent（textOnly=${textOnly}）`, async()=>{
+for (const textOnly of [false,true]) test(`历史导入与旧预筛调用均不启动 Agent（textOnly=${textOnly}）`, async()=>{
  const h=fixture(), runtime=await UpstreamTemplateRuntime.create()
- const {createWorldbookFilter}=await import('../tavern-plugin/lib/domain/worldbook-filter.js')
  let calls=0
  const worldBook={view:{entries:[{comment:'[initvar]',content:'hp: 10',enabled:false},
   ...['walk','rest'].flatMap(word=>Array.from({length:6},(_,i)=>({ref:word+i,enabled:true,primaryKeys:[word],content:`${word} rule ${i} `+'x'.repeat(4400)})))]}}
  const project=createForegroundWorldbook({bound:async()=>worldBook,runtime:async()=>runtime,globalVariables:async()=>({}),
-  filterCandidates:createWorldbookFilter({selection:()=>({}),beginTask:async()=>({participantRequest:{},fail:async()=>{}}),runAgent:async()=>{calls++;throw Error('model transport reached')}})})
+  filterCandidates:async()=>{calls++;throw Error('model transport reached')}})
  h.options.worldBooks.bound=async()=>worldBook;h.options.projectForegroundWorldbook=args=>project({...args,chat:{...args.chat,backgroundTasks:{worldbookScreening:true}}})
  await createChatHistoryImportService(h.options).import({...input,textOnly})
  assert.equal(calls,0)
  const frames=foregroundContexts(h.session)
- assert.match(frames[0],/walk rule/);assert.match(frames[1],/rest rule/)
+ assert.doesNotMatch(frames[0],/walk rule/);assert.doesNotMatch(frames[1],/rest rule/)
+ assert.match(frames[0],/世界书/);assert.match(frames[1],/世界书/)
  await project({chat:{id:'live',sessionId:'session',messages:[]},card:{},userText:'walk',worldBook})
  assert.equal(calls,0,'发送正文不等待模型筛选')
  await project({chat:{id:'live',sessionId:'session',backgroundTasks:{worldbookScreening:true},messages:[{role:'assistant',turn:1,text:'walk'}]},card:{},userText:'',worldBook,purpose:'prefilter'})
- assert.equal(calls,1,'回复结束后的预筛仍走真实模型筛选器')
+ assert.equal(calls,0,'旧预筛调用不再启动模型')
 })
 
 test('世界书投影失败时明确指出历史轮次，不发布残缺导入，修复后可重试',async()=>{

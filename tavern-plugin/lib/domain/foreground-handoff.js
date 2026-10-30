@@ -28,31 +28,16 @@ export function createForegroundHandoff(options = {}) {
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
-    const activity = chat === undefined ? { phase: 'idle', busy: false, role: '' } : tasks.activity(chat)
-    if (chat !== undefined && activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
-      await queueBackground(chat.id)
-    }
-    // Plugin tasks of the last turn (or one the player started) finish before the next turn.
-    if (chat !== undefined) await options.waitBackground?.(chat.id)
-    // After the waits: a settlement the player just asked for may have cleared the mark.
+    // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
+    if (chat !== undefined) await options.beforeNextTurn?.(chat)
+    // 等待后台任务后再检查，刚完成的重新结算可能已清除变量未重算标记。
     if (chat !== undefined) await options.rejectStaleTurn?.(input)
-    // An unfinished prefilter is optional: sending cancels it instead of waiting.
-    if (chat !== undefined) await options.cancelPrefilter?.(chat.id)
     // A failed turn is cleaned up after the failure, but that may not have happened (no live
     // session then, or it failed). Its input must not reach this request beside the new one.
     if (chat !== undefined) await options.clearFailedTurns?.(input.sessionId)
     // The stable prefix is rebuilt after this, so a world book edit received by
     // the previous turn must be adopted now rather than one turn later.
     if (chat !== undefined) await options.syncWorldBook?.(chat)
-    // A greeting is already story text. Direct typing may bypass candidate
-    // preparation, so project its keywords locally before the first body request.
-    const onlyGreeting = opening ? opening.messageCount === 1 && opening.firstGreeting === true
-      : chat?.messages?.length === 1 && chat.messages[0]?.greeting === true
-    if (chat && ['story', 'script'].includes(chat.mode) && !chat.preparedWorldBook && onlyGreeting &&
-        typeof options.prepareOpeningWorldBook === 'function') {
-      const latest = await store.chatForSession(input.sessionId)
-      if (latest && !latest.preparedWorldBook) await options.prepareOpeningWorldBook(latest)
-    }
     return await turns.prepare(input)
   }
 
@@ -74,20 +59,16 @@ export function createForegroundHandoff(options = {}) {
         // 临时回合不能启动变量结算，否则可能把尚未采用的正文写进正式状态。
         if (chat.regenInProgress === true) return
         // Independent session: start from the host's committed body, never await settlement.
-        options.directRound?.(input.sessionId)
-        // The 精修 pre-review reads the reply as written; settlement never waits for it.
-        void Promise.resolve(options.afterReply?.(input.sessionId)).catch(error => logger.warn('dsh-tavern: 精修预审未启动', error && error.message || error))
+        // A Tavern edit's own turn writes no reply: it is 剧情回退或改写, announced by the edit.
+        if (input.edit !== true) options.replyCommitted?.(input.sessionId)
         const activity = tasks.activity(chat)
         if (activity.role === 'settlement' && (activity.phase === 'pending' || activity.phase === 'running')) {
           await queueBackground(chat.id)
-        } else {
-          // No settlement this turn; the prefilter otherwise starts once settlement finishes.
-          void options.prefilterWorldbook?.(chat.id)
         }
       }, '启动后台结算')
       return true
     }
-    options.cancelDirector?.(input.sessionId, input.turn)
+    options.turnDiscarded?.(input.sessionId, input.turn)
     later(async function () {
       const target = { sessionId: input.sessionId, turn: input.turn }
       await turns.discard(target)

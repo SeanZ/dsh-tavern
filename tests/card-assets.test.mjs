@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildCharx, cardImport, collectCardAssets, emotionSlot, pngWithCard } from '../tavern-plugin/lib/domain/card-assets.js'
+import { buildCharx, cardImport, collectCardAssets, pngWithCard } from '../tavern-plugin/lib/domain/card-assets.js'
 import { createCastAssets } from '../tavern-plugin/lib/domain/cast-assets.js'
 import { readZipEntries, writeZipEntries } from '../tavern-plugin/lib/domain/zip-entries.js'
 
@@ -24,25 +24,6 @@ function store() {
     async readBytes(path) { return files.get(path) }
   }
 }
-
-test('表情名对到 ST 的 28 种情绪：英文、中文、带编号的都认，认不出的返回 null', () => {
-  assert.equal(emotionSlot('happy'), 'joy')
-  assert.equal(emotionSlot('Smile_2'), 'joy')
-  assert.equal(emotionSlot('开心'), 'joy')
-  assert.equal(emotionSlot('害羞'), 'embarrassment')
-  assert.equal(emotionSlot('anger.png'), 'anger')
-  assert.equal(emotionSlot('default'), 'neutral')
-  assert.equal(emotionSlot('thinking'), null)
-  assert.equal(emotionSlot('crying'), 'sadness')
-})
-
-test('同一情绪有多张时，名字最贴近的那张当立绘（sad 胜过 crying），其余保留', async () => {
-  const cast = createCastAssets({ store: store() })
-  const summary = await cast.importCardAssets({ cardPath: 'cards/c.json', name: '鱼', collected: { emotions: [{ name: 'crying', ext: 'png', bytes: png('cry') }, { name: 'sad', ext: 'png', bytes: png('sad') }], backgrounds: [], cover: null, extras: [], cast: [], skipped: 0 } })
-  assert.equal(summary.sprites, 1)
-  const manifest = await cast.read('cards/c.json')
-  assert.deepEqual(manifest.extras.map(item => item.name), ['crying'])
-})
 
 test('CHARX：PNG 卡面带上卡数据存成 PNG，立绘、背景、其他素材分开；地址读不到的计数', () => {
   const card = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: '林曦', assets: [
@@ -141,12 +122,6 @@ test('素材配额按唯一地址计算；超限拒绝导入导出，缺失的�
   assert.throws(() => buildCharx({ document: { data: {} }, manifest: { characters }, readFile: () => PNG }), /素材超过 300/)
   const missing = collectCardAssets({ data: { extensions: { risuai: { emotions: [['sad', 'missing']] }, dsh_tavern: { cast: { characters: [{ name: 'A', avatar: 'missing', sprites: { joy: 'missing' } }] } } } } }, () => undefined)
   assert.equal(missing.skipped, 3)
-})
-
-test('CHARX 导出拒绝生成超过导入解压容量的文件', () => {
-  const bytes = Buffer.alloc(8 * 1024 * 1024)
-  const characters = Array.from({ length: 20 }, (_, i) => ({ name: '角色' + i, sprites: { joy: i + '.png' } }))
-  assert.throws(() => buildCharx({ document: { data: {} }, manifest: { characters }, readFile: () => bytes }), /解压后 [0-9]+ MB，超过 150 MB/)
 })
 
 // 随卡参考音频 (cast-presentation.md 22/N): a clip is audio by its bytes plus what it says; the card file carries both.

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { installToolPresentationPolicy } from '../tavern-plugin/lib/domain/tool-presentation-policy.js'
+import { filterBackgroundTools, installToolPresentationPolicy } from '../tavern-plugin/lib/domain/tool-presentation-policy.js'
 import { markRequestHandled } from '../tavern-plugin/lib/domain/request-lineage.js'
 
 function fixture() {
@@ -40,4 +40,16 @@ test('执行前重新检查设置，已关闭工具不能调用下游；非酒�
   const request = { sessionId: 'unrelated', tools: [{ name: 'closed' }] }
   for await (const _ of f.ctx.llm.stream(request)) {}
   assert.equal(f.seen[0], request)
+})
+
+
+test('后台按当前任务缩小工具：精修和独立前缀仅自身工具，关闭世界书禁用三个读工具', () => {
+  const tools = ['polish_edit', 'polish_finish', 'member_tool', 'read', 'worldbook_list', 'worldbook_grep', 'skill'].map(name => ({ name }))
+  const names = context => filterBackgroundTools(tools, context).map(tool => tool.name)
+  assert.deepEqual(names({ task: 'polish', toolNames: ['polish_edit', 'polish_finish'] }), ['polish_edit', 'polish_finish'])
+  assert.deepEqual(names({ task: 'plugin', ownPrefix: true, toolNames: ['member_tool'] }), ['member_tool'])
+  assert.deepEqual(names({ task: 'stage-director', toolNames: ['member_tool'] }), ['member_tool'])
+  assert.deepEqual(names({ task: 'phone', worldbookSkillsEnabled: true }), [])
+  assert.deepEqual(names({ task: 'settlement', worldbookSkillsEnabled: false }), ['polish_edit', 'polish_finish', 'member_tool', 'skill'])
+  assert.equal(filterBackgroundTools(tools, { task: 'candidate', worldbookSkillsEnabled: true }), tools)
 })

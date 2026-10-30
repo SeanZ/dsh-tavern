@@ -32,14 +32,15 @@ export function polishSegments(original, edits) {
 
 export function createPolishRecords({ data, turns, now = Date.now }) {
   /** Keep this 精修 of `turn` as the game's latest, keyed to the text version it produced. */
-  async function save(sessionId, turn, { original, edits, seconds }) {
+  // `auto`: written by 自动精修 rather than the 精修 button.
+  async function save(sessionId, turn, { original, edits, seconds, auto = false }) {
     const game = await turns.resolveGame(sessionId)
     if (!game) return false
     const key = await turns.currentKey(game.sessionId, turn)
     if (!key) return false
     const kept = edits.map(edit => ({ reason: str(edit.reason), find: str(edit.find), replace: str(edit.replace) }))
     // `original` is the reply's text parts (around its HTML blocks), what an undo writes back.
-    await data.saveGame({ chatId: game.chatId, owner: POLISH_DATA_OWNER, data: { version: 2, turn, key, original: original.map(str), edits: kept, seconds: Number(seconds) || 0, at: now() } })
+    await data.saveGame({ chatId: game.chatId, owner: POLISH_DATA_OWNER, data: { version: 2, turn, key, original: original.map(str), edits: kept, seconds: Number(seconds) || 0, at: now(), ...(auto ? { auto: true } : {}) } })
     return true
   }
 
@@ -55,7 +56,7 @@ export function createPolishRecords({ data, turns, now = Date.now }) {
   /** What the 精修对比 page shows; null when there is nothing to compare. */
   async function latest(sessionId) {
     const record = await current(sessionId)
-    return record && { turn: record.turn, at: record.at, seconds: record.seconds, count: record.edits.length, segments: polishSegments(record.original.join('\n\n'), record.edits) }
+    return record && { turn: record.turn, at: record.at, seconds: record.seconds, count: record.edits.length, auto: record.auto === true, segments: polishSegments(record.original.join('\n\n'), record.edits) }
   }
 
   return Object.freeze({ save, current, latest })

@@ -5,7 +5,7 @@ import { audioKind, imageKind } from '../asset-library/pack-v2/media.js'
 import { validateStageSkin, stageSkinFiles } from '../../packages/dsh-presentation-protocol/src/stage-skin.cjs'
 import { validateStageEntrance } from './stage-entrance.js'
 
-// A card's stage material (backgrounds, music, sound effects, ambience, items) lives in the asset library (docs/design/asset-library.md):
+// A card's stage material (backgrounds, music, sound effects, ambience, items) lives in the asset library (Wiki「设计：asset-library」):
 // entries of the card's own pack, which the card's cast manifest binds by id (boundPackIds).
 // Leases are the only way bytes leave the library: the page gets a lease URL, export reads through one.
 export const STAGE_MEDIA_SCOPE = 'dsh-tavern-stage'
@@ -53,7 +53,10 @@ export function createStageMaterial({ library, castAssets, globalPackIds = async
     const existing = ids.length ? await snapshotOf(ids[0]) : null
     if (existing) return existing
     const taken = new Set((await library.listPacks()).map(pack => pack.manifest?.name))
-    const base = (String(cardName || '').trim() || '人物卡') + ' · 本卡素材包'
+    // The name is only needed when a pack has to be created, so a caller may pass a
+    // reader: cards with no stage material never get their whole card file parsed.
+    const resolvedName = typeof cardName === 'function' ? await cardName() : cardName
+    const base = (String(resolvedName || '').trim() || '人物卡') + ' · 本卡素材包'
     let name = base
     for (let n = 2; taken.has(name); n++) name = base + ' (' + n + ')'
     const { snapshot } = await library.createPack({ name, expectedRevision: null })

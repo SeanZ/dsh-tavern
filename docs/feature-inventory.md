@@ -515,4 +515,4 @@
 - [后台人物设计 Skill](../presets/tavern-background/skills/character-design/SKILL.md)、[人物档案工具与即时保存](../tavern-plugin/lib/domain/character-design-document.js)、[独立采样阶段](../tavern-plugin/lib/domain/character-design-stage.js)
 - [后台任务与搜索授权](../tavern-plugin/lib/background-agent-runner.js)、[联网设置测试](../tests/tavern-settings.test.mjs)、[前台搜索授权测试](../tests/turn-orchestration.test.mjs)
 - [生图渠道目录](../tavern-plugin/packages/dsh-image-gen/src/tavern/scene-image-channels.js)、[绘图风格](../tavern-plugin/packages/dsh-image-gen/src/tavern/scene-image-style.js)
-- [内置卡片工作台 Skill](../presets/tavern/skills/)、[兼容模式停用记录](design/sillytavern-compatibility-mode.md)
+- [内置卡片工作台 Skill](../presets/tavern/skills/)、[兼容模式停用记录](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Asillytavern-compatibility-mode)

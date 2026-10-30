@@ -5,7 +5,7 @@ import { pipeline } from 'node:stream/promises'
 import { createWriteStream } from 'node:fs'
 import { pluginManifestProblem } from './plugin-manifest.js'
 
-// Plugins a DSH card carries (docs/design/dsh-card-format.md). Import keeps their files aside,
+// Plugins a DSH card carries (Wiki「设计：dsh-card-format」). Import keeps their files aside,
 // unused; the player turning them on copies them into <data>/plugins/, where the user-plugin
 // loader picks them up like any plugin, with a marker naming the cards they belong to.
 // Tavern then confines them to those cards' games (plugin-api.js `cardScope`).

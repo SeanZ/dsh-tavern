@@ -1,4 +1,4 @@
-// Trigger words are checked once, when an author writes them (docs/design/asset-library.md「触发词」).
+// Trigger words are checked once, when an author writes them (Wiki「设计：asset-library」「触发词」).
 // An entry's words count as written when they differ from the stored ones: a new entry, or an edit of its
 // keywords or synonyms. Renaming an entry or switching its lamp does not author its words, so an
 // installed pack never starts failing on an unrelated edit. An entry without words is recalled by its name.

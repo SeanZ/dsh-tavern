@@ -55,3 +55,23 @@ test('文件内容未变化时不重复通知，单次读取失败不会终止�
   assert.equal(received[0].kind, 'tavern-state')
   close()
 })
+
+test('打开的游戏随每次轮询做一次自身检查（如人物卡文件被改）；检查失败只报告，停止监听后不再检查', async function () {
+  const clock = intervals()
+  const ticks = [], errors = []
+  const publisher = createPublisher([], {
+    async load() { return { mailboxVersion: 1, activity: { busy: false, phase: 'idle', updatedAt: 1 }, task: null } },
+    async onTick(sessionId) { ticks.push(sessionId); if (ticks.length === 2) throw new Error('card stat failed') },
+    onError(error) { errors.push(error.message) },
+    startInterval: clock.start,
+    stopInterval: clock.stop
+  })
+  const stop = publisher.watch('session-a')
+  await clock.tick()
+  await clock.tick()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(ticks, ['session-a', 'session-a'])
+  assert.deepEqual(errors, ['card stat failed'])
+  stop()
+  assert.equal(clock.count(), 0)
+})

@@ -1,4 +1,4 @@
-// 舞台素材: the asset library's editor (docs/design/asset-library.md「编辑界面」). The library panel lists every pack
+// 舞台素材: the asset library's editor (Wiki「设计：asset-library」「编辑界面」). The library panel lists every pack
 // with its 全局 / 本卡 / 关闭 state; a pack opens one window (entries on the left, the chosen entry on the right); 舞台设置
 // › 素材包 lists this card's packs. Every write goes to the host's store (CAS revisions); nothing is kept on the page.
 const TAVERN_ASSET_KINDS = Object.freeze({ backgrounds: "背景", music: "音乐", sfx: "音效", ambience: "环境音", props: "物品", skins: "皮肤", entrances: "入场演出" });

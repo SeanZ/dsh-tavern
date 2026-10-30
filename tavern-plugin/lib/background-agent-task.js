@@ -1,13 +1,14 @@
+import { filterBackgroundTools } from './domain/tool-presentation-policy.js'
+import { withWorldbookFileInstructions } from './domain/worldbook-virtual-surface.js'
 import { createBackgroundProgress } from './domain/background-progress.js'
 import { worldbookSnapshot } from './domain/worldbook-snapshot.js'
 import { CARD_SYSTEM_PROMPT_SECTION, cardSystemPromptSnapshot, cardSystemPromptSource } from './domain/card-system-prompt.js'
 import { projectCandidateScriptContext } from './domain/candidate-script-context.js'
-import { projectWorldbookFilterContext } from './domain/worldbook-filter-context.js'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { prependSystemInstruction } from './domain/system-append.js'
 import { markTavernSectionsLiteral } from './domain/literal-sections.js'
 import { rewindBackgroundSurface } from './domain/background-surface.js'
-import { releaseOpeningTurn, sessionEvents } from './domain/session-events.js'
+import { ensureSessionSystemHead, releaseOpeningTurn, sessionEvents } from './domain/session-events.js'
 import { randomUUID } from 'node:crypto'
 import {
   CHARACTER_DESIGN_FINISH_TOOL,
@@ -37,7 +38,7 @@ function backgroundPrompt(messages, turnContext, task, taskProtocol, input = {})
       : (message && message.role === 'assistant' ? '正文' : '用户')
     return '[' + role + ']\n' + messageText(message)
   }).filter(function (text) { return text.trim() !== '' }).join('\n\n')
-  const taskName = task === 'stage-director' ? '舞台导演' : task === 'worldbook-filter' ? '世界书筛选' : task === 'style-reference' ? '文风联想' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
+  const taskName = task === 'stage-director' ? '舞台导演' : task === 'settlement' ? '状态结算' : task === 'phone' ? '手机私聊' : task === 'character-design' ? '人物设计' : task === 'ledger' ? '台账整理' : task === 'plugin' ? '插件任务' : '候选生成'
   sections.push('【最近剧情与本次任务】\n任务类型：' + taskName + '\n' + recent)
   const protocol = str(taskProtocol).trim()
   if (protocol !== '') sections.push('【任务要求】\n' + protocol)
@@ -125,7 +126,9 @@ export function createBackgroundAgentTask(options) {
   }
 
   function setupFor(state, descriptor, appendDescriptor) {
-    const isolated = state.input.task === 'stage-director'
+    // Tasks with a prefix of their own (its system prompt and tools only): 舞台导演, 精修, and a
+    // plugin member that defines one (tavern.member with `system`).
+    const isolated = ['stage-director', 'polish'].includes(state.input.task) || state.input.ownPrefix === true
     const backgroundPersona = state.input.task === 'phone'
       ? '你是与故事正文隔离的手机私聊 Agent。你只代表指定联系人回复当前手机消息，不推进正文、不修改状态，也不把私聊虚构成已经发生的现场剧情。'
       : state.input.task === 'plugin'
@@ -146,7 +149,8 @@ export function createBackgroundAgentTask(options) {
         }
         if (decision.kind !== 'enter') return decision
         const input = state.input || {}
-        const snapshot = typeof options.resolveRuntimePresetSnapshot === 'function'
+        // A prefix of its own carries no card preset either.
+        const snapshot = input.task !== 'polish' && input.ownPrefix !== true && typeof options.resolveRuntimePresetSnapshot === 'function'
           ? await options.resolveRuntimePresetSnapshot({ sessionId: input.sessionId, operation: input.task || 'background' })
           : null
         const messageOptions = { scope: 'background', turn, step }
@@ -176,15 +180,24 @@ export function createBackgroundAgentTask(options) {
             if (state.input.task === 'phone') return []
             return [{ ...section, text: '以下人物卡系统提示仅用于候选文本的写作；结算、筛选、人物设计等后台任务遵循各自任务协议。\n' + section.text }]
           })
-          const sections = state.currentWorldbook === undefined ? fixed : withCurrentWorldbook(fixed, state.currentWorldbook)
+          let sections = state.currentWorldbook === undefined ? fixed : withCurrentWorldbook(fixed, state.currentWorldbook)
+          if (state.input.worldbookSkillsEnabled) sections = withWorldbookFileInstructions(sections)
+          else sections = sections.filter(section => section.name !== 'tavern:worldbook-skills')
           const assembly = { sections: [...sections, { name: 'deployment:persona', text: backgroundPersona }] }
           return prependSystemInstruction(assembly, options.systemAppend?.()).sections.map(section => section.text).join('\n\n')
         }
       })
       childCtx.systemPrompt.suppressRuntimeContext()
-      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
+      childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'worldbook_list', 'worldbook_grep', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
       childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
         const assembly = await next()
+        if (Array.isArray(assembly.tools)) assembly.tools = filterBackgroundTools(assembly.tools, { ...state.input, toolNames: (state.input.tools || []).map(tool => tool.name) })
+        if (state.input.task === 'polish' || state.input.ownPrefix === true) {
+          const names = new Set((state.input.tools || []).map(tool => tool.name))
+          assembly.sections = (assembly.sections || []).filter(section => !section?.name?.startsWith('tool:') || names.has(section.name.slice(5)))
+          markTavernSectionsLiteral(assembly)
+          return assembly
+        }
         if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
         markTavernSectionsLiteral(assembly)
         if (state.input.task === 'phone') {
@@ -195,8 +208,7 @@ export function createBackgroundAgentTask(options) {
           return assembly
         }
         if (!state.input.worldbookSkillsEnabled) {
-          assembly.sections = (assembly.sections || []).filter(section => section?.name !== 'tool:read')
-          assembly.tools = (assembly.tools || []).filter(tool => tool?.name !== 'read')
+          assembly.sections = (assembly.sections || []).filter(section => !['tool:read', 'tool:worldbook_list', 'tool:worldbook_grep'].includes(section?.name))
         }
         if (state.input.webSearchEnabled === true) return assembly
         assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })
@@ -261,12 +273,11 @@ export function createBackgroundAgentTask(options) {
     let refusedCount = 0
     let removed = false
     const allowed = new Map(tools.map(function (tool) { return [tool.name, tool] }))
-    if (stableBackgroundTools.length > 0 && input.task !== 'stage-director') {
+    if (stableBackgroundTools.length > 0 && !['stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true) {
       state.activeToolTask = {
         async execute(tool, args, execution) {
           const registeredShared = sharedByName.get(tool.name)
-          const shared = (input.task !== 'worldbook-filter' || registeredShared?.allowDuringWorldbookFilter === true) &&
-            (input.task !== 'character-design' || registeredShared?.allowDuringCharacterDesign === true) ? registeredShared : undefined
+          const shared = (input.task !== 'character-design' || registeredShared?.allowDuringCharacterDesign === true) ? registeredShared : undefined
           const current = allowed.get(tool.name) || (shared && shared.tool)
           if (current === undefined && input.task === 'settlement' && state.settlementCall && settlementItems()?.has(tool.name)) {
             const result = await state.settlementCall(tool.name, args)
@@ -335,9 +346,11 @@ export function createBackgroundAgentTask(options) {
             render: function (_args, value) { return [{ type: 'text', text: value }] }
           },
           async execute(args, execution) {
+            if (input.task === 'polish' && input.stopToolsWhen?.()) return JSON.stringify({ ok: false, error: '本次精修已完成。' })
             if (tool.countsTowardLimit !== false) {
               toolCallCount++
               if (toolCallCount > maxToolCalls) {
+                if (input.task === 'polish') execution?.concludeTurn?.()
                 return JSON.stringify({ message: input.toolLimitMessage || '已达到剧本查询上限，请停止查询，基于已有材料开始推理并输出最终候选。' })
               }
             }
@@ -349,7 +362,7 @@ export function createBackgroundAgentTask(options) {
             if (typeof input.stopToolsWhen === 'function') {
               const complete = input.stopToolsWhen()
               if (complete) execution?.concludeTurn?.()
-              if (complete || toolCallCount >= maxToolCalls) await removeTools()
+              if (input.task !== 'polish' && (complete || toolCallCount >= maxToolCalls)) await removeTools()
             }
             return result
           }
@@ -381,7 +394,7 @@ export function createBackgroundAgentTask(options) {
     state.session = agent.session
     if (input.undoLastTask === true) return undoLastTask(agent.session, traceSessionId, agent)
     const runtimeInput = state.input
-    const isolated = input.task === 'stage-director'
+    const isolated = ['stage-director', 'polish'].includes(input.task) || input.ownPrefix === true
     try { rewindBackgroundSurface(agent.session, input.rewindTo, agent, input.rewindFormatVersion || 3) }
     catch (error) {
       const failure = new Error('后台历史回退失败，本次任务已停止，未基于旧上下文继续执行。原因：' + str(error?.message || error), { cause: error })
@@ -416,21 +429,18 @@ export function createBackgroundAgentTask(options) {
         releaseOpeningTurn(agent.session, agent)
         if (prefix && prefix.event !== existing?.event && typeof options.flushSession === 'function') await options.flushSession(agent.session)
       }
-      else releaseOpeningTurn(agent.session, agent)
-      // The filter reuses the last projection (or makes the first one after a restart) so the
-      // shared system prefix stays byte-identical and the filter reads settlement's cache.
-      const nextTurnPreparation = input.task === 'worldbook-filter' || input.task === 'style-reference'
-      const projectsWorldbook = !isolated && (!nextTurnPreparation || state.currentWorldbook === undefined)
+      else {
+        if (input.task === 'polish') ensureSessionSystemHead(agent.session)
+        releaseOpeningTurn(agent.session, agent)
+      }
+      const projectsWorldbook = !isolated
       const worldbook = projectsWorldbook && typeof options.resolveCurrentWorldbook === 'function'
         ? await options.resolveCurrentWorldbook(input) : undefined
       if (projectsWorldbook) state.currentWorldbook = worldbook && typeof worldbook === 'object' ? worldbook.prefixContext : worldbook
-      const turnWorldbookSource = nextTurnPreparation ? undefined : worldbook
+      const turnWorldbookSource = worldbook
       const turnWorldbook = turnWorldbookSource && typeof turnWorldbookSource === 'object' ? str(turnWorldbookSource.foregroundContext).trim() : ''
       const eventStart = sessionEvents(agent.session).length
-      const filterContext = projectWorldbookFilterContext(agent.session, input)
       const scriptContext = projectCandidateScriptContext(agent.session, input)
-      const foregroundReads = !isolated && typeof options.resolveForegroundWorldbookReads === 'function'
-        ? await options.resolveForegroundWorldbookReads(input) : ''
       const snapshot = turnWorldbookSource && typeof turnWorldbookSource === 'object'
         ? worldbookSnapshot(agent.session, turnWorldbook) : null
       const systemUpdate = input.task === 'candidate' && typeof input.systemPromptText === 'string'
@@ -441,20 +451,22 @@ export function createBackgroundAgentTask(options) {
       const candidateNotes = input.task === 'candidate' && typeof options.pluginCandidate === 'function'
         ? await options.pluginCandidate()?.sections(pluginContext).catch(() => []) || [] : []
       const candidateText = candidateNotes.length ? ['【插件附加的候选要求】', ...candidateNotes.map(note => note.text)].join('\n\n') : ''
-      const taskText = [foregroundReads, snapshot?.rendered, systemUpdate?.rendered,
-        backgroundPrompt(filterContext?.messages || input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
+      const taskText = input.task === 'polish' || input.ownPrefix === true ? (typeof input.taskText === 'function' ? input.taskText() : input.taskText) : [snapshot?.rendered, systemUpdate?.rendered,
+        backgroundPrompt(input.messages, scriptContext?.turnContext ?? input.turnContext, input.task, isolated ? '' : input.system, input), settlementText, candidateText].filter(Boolean).join('\n\n')
       agent.followup({
         id: randomUUID(),
         role: 'user',
         content: [{ type: 'text', text: taskText }],
         source: { kind: 'plugin:dsh-tavern', ...(systemUpdate ? { trace: cardSystemPromptSource(systemUpdate) } : {}), ...(snapshot ? { worldbookSnapshot: snapshot } : {}), ...(scriptContext?.body ? {
           candidateScriptWindow: { version: 1, start: taskText.indexOf(scriptContext.body), length: scriptContext.body.length, digest: scriptContext.digest }
-        } : {}), ...(filterContext ? {
-          worldbookFilterPayload: { version: 1, start: taskText.indexOf(filterContext.payloadText), length: filterContext.payloadText.length }
         } : {}) }
       })
       await progress.wait(agent.whenIdle())
       input.signal?.throwIfAborted()
+      if (input.task === 'polish') {
+        const underlying = terminalError(sessionEvents(agent.session), eventStart)
+        if (underlying) throw underlying
+      }
       const rawResult = finalMessage(sessionEvents(agent.session), eventStart)
       if (rawResult === null) {
         const underlying = terminalError(sessionEvents(agent.session), eventStart)
@@ -463,6 +475,7 @@ export function createBackgroundAgentTask(options) {
           throw new Error(input.task === 'settlement' ? '后台 Agent 没有返回结算文本' : input.task === 'plugin' ? '后台 Agent 没有返回任务结果' : '后台 Agent 没有返回候选文本')
         }
       }
+      if (input.task === 'polish') await options.flushSession?.(agent.session)
       const text = rawResult === null ? '' : rawResult.text.trim()
       return { text, traceSessionId, persistent, traceBoundary: completedBoundary(sessionEvents(agent.session)) }
     } catch (error) {

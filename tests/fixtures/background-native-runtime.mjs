@@ -1,3 +1,4 @@
+import { filterBackgroundTools, installToolPresentationPolicy } from '../../tavern-plugin/lib/domain/tool-presentation-policy.js'
 import { createBackgroundSessionRetirement, installRetiredBackgroundFilter } from '../../tavern-plugin/lib/domain/background-session-retirement.js'
 // Real installed DSH Agent loop/tools/sessions with a scripted text model, for background agents.
 import { sessionEvents } from '../../tavern-plugin/lib/domain/session-events.js'
@@ -7,8 +8,10 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createBackgroundAgentRunner } from '../../tavern-plugin/lib/background-agent-runner.js'
 import { createProfileDataStore } from '../../tavern-plugin/lib/profile-data-store.js'
+import { createWorldbookFiles } from '../../tavern-plugin/lib/domain/worldbook-files.js'
+import { registerWorldbookFileTools } from '../../tavern-plugin/lib/tools/worldbook-files.js'
 
-export async function createBackgroundNativeRuntime(bootPath, { systemAppend, resolveModelSelection, beforeModelRequest, residentOptions = {}, setupHost, fileTools = true } = {}) {
+export async function createBackgroundNativeRuntime(bootPath, { systemAppend, resolveModelSelection, beforeModelRequest, modelResponse, residentOptions = {}, setupHost, fileTools = true } = {}) {
   const bootUrl = pathToFileURL(bootPath)
   const { boot } = await import(bootUrl.href)
   const { LlmAdapter } = await import(new URL('../../dsh-llm/lib/index.js', bootUrl))
@@ -27,23 +30,35 @@ export async function createBackgroundNativeRuntime(bootPath, { systemAppend, re
     async *stream(input) {
       await beforeModelRequest?.(input)
       requests.push(structuredClone({ model: input.model, reasoningEffort: input.reasoningEffort, maxTokens: input.maxTokens, system: input.messages.filter(message => message.role === 'system').flatMap(message => message.content || []), messages: input.messages, tools: input.tools }))
-      const block = { type: 'text', text: '已完成。' }
-      yield { type: 'block-start', index: 0, blockType: block.type }
-      yield { type: 'block-end', index: 0, block }
-      yield { type: 'finish', reason: { kind: 'stop' } }
+      const blocks = modelResponse ? await modelResponse(input, requests.length) : [{ type: 'text', text: '已完成。' }]
+      for (const [index, block] of blocks.entries()) {
+        yield { type: 'block-start', index, blockType: block.type }
+        yield { type: 'block-end', index, block }
+      }
+      yield { type: 'finish', reason: { kind: blocks.some(block => block.type === 'tool-call') ? 'tool-calls' : 'stop' } }
     }
   }
   ctx.llm.registerAdapter(['scene-fixture', 'scene-fixture-other', 'deepseek-official'], new FixtureModel())
-  for (const name of ['skill', 'tavern_read_skill_reference', 'web_search']) ctx.tools.register({
+  for (const name of ['skill', 'read', 'tavern_read_skill_reference', 'web_search'].filter(name => !ctx.tools.get(name))) ctx.tools.register({
     name, description: 'Fixture tool', parameters: { type: 'object', properties: {} },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute() { return 'fixture' }
   })
+  // 使用正式文件工具注册器；未绑定资料的测试会话按生产契约拒绝资料访问。
+  registerWorldbookFileTools(ctx.tools, createWorldbookFiles({ directory: join(root, 'worldbooks'), load: async () => null }))
   const parent = await ctx.agents.create({ sessionId: 'scene-parent', agentOptions: { provider: 'scene-fixture', model: 'fixture-text' } })
   const retirement = createBackgroundSessionRetirement(createProfileDataStore({ dataRoot: root }), { isRunning: id => ctx.agents.get(id)?.status === 'running' })
   const stopRetirementFilter = installRetiredBackgroundFilter(ctx.get('subagents'), retirement, ctx.get('sessionQuery'))
   const runnerOptions = { retirement, ...residentOptions, systemAppend, resolveModelSelection, agents: ctx.agents, flushSession: session => ctx.sessions.flush(session) }
   let runner = createBackgroundAgentRunner(runnerOptions)
+  // 与插件入口相同的 alpha.2 声明和执行过滤，使用当前持久成员任务的上下文。
+  installToolPresentationPolicy(ctx, {
+    sessionFor: id => runner.requestSession(id),
+    filter: async (tools, session) => {
+      const background = runner.requestContext(session.id)
+      return background ? filterBackgroundTools(tools, background) : tools
+    }
+  })
   // The runner's idle timers are unref'd: keep the loop alive while a test waits on a stalled model.
   const keepAlive = setInterval(() => {}, 1000)
   return {

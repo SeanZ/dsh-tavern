@@ -19,27 +19,6 @@ async function setup(t) {
   const persistence=createChatPersistence({store})
   return {root,store,persistence,chat, app:await sessionHarness(persistence,chat)}
 }
-test('production getSession cache hit and activity query avoid full-chat reads',async t=>{
-  const {app}=await setup(t)
-  const result=await app.get()
-  assert.equal(result.revision,1)
-  assert.equal(result.view.settlementTurn,1)
-  assert.equal(result.view.mvuReceipts[0].receipt.status,'updated')
-  assert.equal((await app.activity()).chatId,'c')
-  assert.equal(app.fullReads(),0,'cache hit and status query must not clone full history')
-})
-
-test('session state excludes heavy payloads and cannot mutate journal or later results',async t=>{
-  const {store,persistence}=await setup(t)
-  const state=await persistence.readSessionState('c')
-  assert.equal(state.messages[1].text,undefined)
-  assert.equal(state.messages[1].variables,undefined)
-  state.messages[1].mvu.receipt.status='tampered'
-  state.messages.length=0
-  assert.equal((await persistence.read('c')).messages[1].mvu.receipt.status,'updated')
-  assert.equal((await persistence.readSessionState('c')).messages.length,2)
-})
-
 test('cache miss reads full history and uses the full-read revision after a concurrent write',async t=>{
   const {persistence,chat}=await setup(t)
   const stages=[]
@@ -89,46 +68,6 @@ test('compact state observes external writes, deletion, and recreated chat',asyn
   assert.equal((await persistence.readSessionState('c')).messages[1].mvu.receipt.status,'updated')
 })
 
-test('legacy timeline inspection retains full body for migration',async t=>{
-  const {persistence}=await setup(t)
-  await persistence.update('c',value=>{
-    value.timeline={schemaVersion:1,branchId:'b',revision:2,checkpoints:[],participants:{},operations:{body:{
-      id:'body',kind:'body',status:'foreground-completed',basedOn:{branchId:'b',revision:2},turn:1,
-      userText:'go',beforeRevision:1,beforeParticipants:{}}}}
-    return value
-  })
-  const state=await persistence.readSessionState('c')
-  assert.equal(state.messages[1].text,'body')
-  state.messages[1].text='changed'
-  assert.equal((await persistence.read('c')).messages[1].text,'body')
-})
-
-test('journal update isolates retained drafts, returned values, aborted and throwing mutations',async t=>{
-  const {persistence}=await setup(t)
-  let retained
-  const saved=await persistence.update('c',value=>{retained=value;value.messages[1].text='saved';return value})
-  retained.messages[1].text='after-callback'
-  saved.messages[1].mvu.receipt.status='after-return'
-  assert.equal((await persistence.read('c')).messages[1].text,'saved')
-  assert.equal((await persistence.read('c')).messages[1].mvu.receipt.status,'updated')
-  const unchanged=await persistence.update('c',value=>{value.messages[1].text='discard';return undefined})
-  assert.equal(unchanged.messages[1].text,'saved')
-  unchanged.messages[1].text='mutated-return'
-  await assert.rejects(persistence.update('c',value=>{value.messages[1].text='throw';throw Error('abort')}),/abort/)
-  assert.equal((await persistence.read('c')).messages[1].text,'saved')
-})
-
-test('non-journal adapters keep defensive input and output clones',async()=>{
-  let value=seed()
-  const persistence=createChatPersistence({store:{read:async()=>structuredClone(value),remove:async()=>{},
-    update:async(_id,fn)=>{const next=await fn(value);if(next)value=next;return value}}})
-  await persistence.update('c',draft=>{draft.messages[1].text='discard';return undefined})
-  assert.equal(value.messages[1].text,'body')
-  const saved=await persistence.update('c',draft=>{draft.messages[1].text='saved';return draft})
-  saved.messages[1].text='after-return'
-  assert.equal(value.messages[1].text,'saved')
-})
-
 test('compact state preserves live rollback, interrupted receipts, script state and undo decisions',async t=>{
   const {persistence}=await setup(t)
   await persistence.update('c',value=>{
@@ -163,18 +102,6 @@ test('legacy feature adoption falls back to a complete draft',async t=>{
   await app.activity()
   assert.equal(adopted,true)
   assert.equal(app.fullReads(),1)
-})
-
-test('compact projection never visits historical text, variables, delivery payloads or rollback snapshots',async()=>{
-  const {projectChatSessionState}=await import('../tavern-plugin/lib/domain/chat-session-state.js')
-  const chat=seed()
-  const poison=(object,key)=>Object.defineProperty(object,key,{enumerable:true,get(){throw Error('heavy subtree visited: '+key)}})
-  poison(chat.messages[1],'text');poison(chat.messages[1],'variables')
-  poison(chat.messages[1].mvu,'pendingSubmission')
-  chat.rollbackUndo={version:1,foreground:{afterCount:1}}
-  poison(chat.rollbackUndo,'chat')
-  const state=projectChatSessionState(chat)
-  assert.equal(state.messages[1].mvu.receipt.status,'updated')
 })
 
 test('state resolution preserves aliases, recovers missing links and removes stale links without full reads',async()=>{

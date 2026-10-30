@@ -8,7 +8,7 @@
 
 ## 人物卡 iframe 尺寸契约与 Agent 适配（2026-09-27）
 
-设计见[人物卡 iframe 尺寸契约](design/card-frame-sizing.md)。宿主提供明确布局规则与诊断能力，Agent 按卡适配；已实现尺寸配置与保存的布局诊断，实时预览闭环待补。
+设计见[人物卡 iframe 尺寸契约](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Acard-frame-sizing)。宿主提供明确布局规则与诊断能力，Agent 按卡适配；已实现尺寸配置与保存的布局诊断，实时预览闭环待补。
 
 - [x] 提供内容自适应、应用视口、显式尺寸三种模式；尺寸模式与正文/侧栏放置位置独立，旧卡保留现有兼容行为。
 - [x] 明确初始占位、实际可用区域、尺寸上下限与滚动归属；应用模式保留文档高度链，防止测高循环、裁切及不必要的双层滚动。
@@ -65,7 +65,7 @@
 
 ## 后台任务精简方向（2026-09-10）
 
-- [ ] 按[后台任务精简备忘](design/background-task-simplification-memo.md)设计手动台账整理与人物设计小对话；人物设计须经玩家确认才采用。本条是待实施方向，不改变当前运行行为。
+- [ ] 按[后台任务精简备忘](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Abackground-task-simplification-memo)设计手动台账整理与人物设计小对话；人物设计须经玩家确认才采用。本条是待实施方向，不改变当前运行行为。
 
 ## MVU 变量更新性能（2026-09-11，暂缓）
 
@@ -128,7 +128,7 @@
 
 ### 世界书调优
 
-- [ ] 用真实大型人物卡验证[世界书召回](design/worldbook-recall.md)，重点检查常驻前缀、关键词命中、五条上限、蓝绿灯编排和十轮冷却。
+- [ ] 用真实大型人物卡验证[世界书召回](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Aworldbook-recall)，重点检查常驻前缀、关键词命中、五条上限、蓝绿灯编排和十轮冷却。
 
 ### 结构化状态与 UI
 
@@ -137,7 +137,7 @@
 
 ### MVU 后台变量渐进式披露（以后再做）
 
-设计讨论见[超多变量下的 MVU 设计备忘](design/mvu-large-state-design-memo.md)：规则按 Skill 披露、变量按需读取，以及一轮多次更新的备选方案。当前仅记录，暂缓实施。
+设计讨论见[超多变量下的 MVU 设计备忘](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Amvu-large-state-design-memo)：规则按 Skill 披露、变量按需读取，以及一轮多次更新的备选方案。当前仅记录，暂缓实施。
 
 - [ ] 完整变量继续由当前对话的 MVU 本地保存；模型每轮只接收完成本次结算所需的最小状态切片，不再重复注入全部 `stat_data`、Schema 和人物库。
 - [ ] 建立通用的热、温、冷状态投影：时间、地点、玩家位置和在场人物等少量热状态可自动进入本轮；相关人物、任务、物品和地点按需读取；未登场人物与历史归档默认不注入。
@@ -166,7 +166,7 @@
 
 ### 卡片模式文风 Skill
 
-- [ ] 补齐[文风库](design/writing-style-skills.md)、导入、选择、删除和样文制作入口，复用已有 Skill 读写与隔离加载能力；每次只使用一份文风。
+- [ ] 补齐[文风库](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Awriting-style-skills)、导入、选择、删除和样文制作入口，复用已有 Skill 读写与隔离加载能力；每次只使用一份文风。
 
 ### 卡片 Agent：用户偏好问卷与用户建模（2026-09-01）
 

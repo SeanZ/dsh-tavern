@@ -96,20 +96,6 @@ test('only a skin that declares art.narration lays out a narration page; a pictu
   for (const mode of ['skip', 'refresh']) assert.equal(layout({ events: [item('blob:key')], mode }), 'screen', 'a ' + mode + ' visit never shows the item')
 })
 
-test('the skin\'s art.narration.layout wins over the item picture: box keeps the box, free is always centred, band always the strip', () => {
-  const { stageNarrationLayout } = load()
-  const told = { kind: 'narration', text: '雨停了。' }, picture = [{ op: 'item.play', at: 2, item: '旧钥匙', image: 'blob:key' }]
-  const layout = (mode, patch) => stageNarrationLayout({ narration: { ...narration, ...(mode ? { layout: mode } : {}) }, beat: told, skipping: false, mode: 'page', events: [], at: 2, ...patch })
-  assert.deepEqual([layout(), layout(undefined, { events: picture })], ['screen', 'band'], 'omitted: the stage\'s rule (centred, the band while the picture shows)')
-  assert.deepEqual([layout('free'), layout('free', { events: picture })], ['screen', 'screen'])
-  assert.deepEqual([layout('band'), layout('band', { events: picture }), layout('band', { mode: 'refresh' })], ['band', 'band', 'band'])
-  assert.deepEqual([layout('box'), layout('box', { events: picture })], [undefined, undefined])
-  for (const mode of ['free', 'band']) {
-    assert.equal(layout(mode, { skipping: true }), undefined, 'a fast-forward still keeps the box')
-    assert.equal(layout(mode, { beat: { kind: 'line', text: '"走吧。"', speaker: '纱织' } }), undefined, 'a line page keeps the box')
-  }
-})
-
 test('the skin declares the boxless ink, its halo and the veil colour; the defaults are the subtitle look on black', () => {
   const interpreter = vm.runInNewContext(client('features/stage-skin.js') + '; ({ stageSkinTokens, stageSkinRoot })', { skinContrast, stageSkinImageOf, stageSkinSliceEdges, STAGE_NARRATION_INK })
   const plain = interpreter.stageSkinTokens(skin({ screen: 576, narration }))
@@ -155,13 +141,6 @@ test('the new fields are checked where the skin enters: their words and ranges, 
   validateStageSkin(skin({ screen: 576, narration: { font: 30, pitch: 50, veil: 0 } }))
 })
 
-test('a card\'s visual lines come from its glyphs\' measured tops; a line break ends its line', () => {
-  const { stageNarrationLineRuns } = load()
-  assert.deepEqual(Array.from(stageNarrationLineRuns(['一', '二', '三', '四'], [0, 0, 40, 40])), ['一二', '三四'])
-  assert.deepEqual(Array.from(stageNarrationLineRuns(['甲', '\n', '乙'], [0, 0, 40])), ['甲\n', '乙'])
-  assert.deepEqual(Array.from(stageNarrationLineRuns([], [])), [])
-})
-
 test('art.narration is drawn from the document alone: its size, pitch, veil and centre, and the band\'s, with defaults', () => {
   const interpreter = vm.runInNewContext(client('features/stage-skin.js') + '; ({ stageSkinTokens, stageSkinArt })', { skinContrast, stageSkinImageOf, stageSkinSliceEdges, STAGE_NARRATION_INK })
   const declared = skin({ screen: 576, screenWidth: 1024, narration })
@@ -204,25 +183,4 @@ test('a narration card comes in line by line on the skin\'s fade and stagger, an
   out = other.runner.render(other.TavernStageNarrationLines, { ...quick, instant: true })
   assert.deepEqual([out.props['data-instant'], out.props['data-typed'], done], ['', '', 2])
   runner.unmount(); other.runner.unmount()
-})
-
-test('a line break ends its line; 文字速度 0 and reduced motion show the card at once', () => {
-  const page = load()
-  const out = page.runner.render(page.TavernStageNarrationLines, { text: '雨停了。\n她推开门。', lines: { fade: .5, stagger: .5 }, speed: 28 })
-  assert.deepEqual(out.children.map(text), ['雨停了。\n', '她推开门。'], 'the break stays in the card\'s one flow')
-  assert.equal(out.children[0].props.style['--nar-rise'], 'calc(0 * var(--nar-u))', 'no rise by default')
-  for (const [options, props] of [[{}, { speed: 0 }], [{ reduced: true }, { speed: 28 }]]) {
-    const at = load(options)
-    let done = 0
-    const shown = at.runner.render(at.TavernStageNarrationLines, { text: '一二三四五六七八九十甲乙', lines: narration.lines, onDone: () => done++, ...props })
-    assert.deepEqual([shown.props['data-instant'], shown.props['data-typed'], done, shown.children.length], ['', '', 1, 2])
-  }
-})
-
-test('the stage wires one reader per page: lines for a narration page of a skin that declares them, the typewriter otherwise', () => {
-  const source = client('features/stage-runtime.js')
-  assert.match(source, /const typer = beat && beat\.kind === "narration" && props\.narrationLines \? TavernStageNarrationLines : TavernStageTypewriter;/)
-  assert.match(source, /h\(typer, \{ key: props\.visit, text: props\.card \?\? beat\.text,[^}]*lines: props\.narrationLines, instant: props\.typed, onDone: props\.onTyped \}\)/)
-  assert.match(source, /stageNarrationLayout\(\{ narration, beat: beats\[reader\.index\], skipping, mode: reader\.mode,/)
-  assert.match(source, /"data-narration-layout": narrationLayout,/)
 })

@@ -423,7 +423,9 @@ export function createCandidateGenerator(options) {
       try {
         await reportStage('committing')
         completed = await taskRun.commit({
-          stateChanged: true,
+          // Choices change no story: only a script's cursor moves the story revision, which
+          // would otherwise void work fenced on it, like this turn's stage director.
+          stateChanged: scriptMode,
           headerOnly: true,
           participant,
           apply(draft) {

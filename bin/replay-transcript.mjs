@@ -4,7 +4,7 @@
 //   node bin/replay-transcript.mjs --chat <chatId> [--home ~/.dsh-tavern]   a local save
 // Prints every row the host draws, whether Tavern's hiding leaves it visible, and each
 // break of the page's invariant (one input and one reply per saved round).
-// See docs/design/transcript-row-plan.md.
+// See Wiki「设计：transcript-row-plan」.
 import { readFile, readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'

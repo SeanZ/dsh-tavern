@@ -490,19 +490,20 @@ test('后台主动检索开放原生 read，切回旧机制后隐藏；运行期
         on(name,listener){if(name==='system-prompt/assemble') assemble=listener}})
       return {agent:{session,followup(){work=(async()=>{
         assert.equal(runner.requestContext(session.id).parentSessionId,'parent')
-        packets.push(await assemble(null,{},async()=>({sections:[{name:'tool:read'}],tools:[{name:'read'},{name:'skill'}]})))
+        packets.push(await assemble(null,{},async()=>({sections:[{name:'tool:read'}],tools:[{name:'read'},{name:'skill'},{name:'worldbook_list'},{name:'worldbook_grep'}]})))
       })()},async whenIdle(){await work}},async dispose(){}}
     }}
   })
   const input={sessionId:'parent',persistent:true,task:'settlement',selection:{provider:'test',model:'test'},messages:[],tools:[],acceptWithoutText:()=>true}
   try {
     await runner.run(input)
-    assert.ok(allowed.includes('read')); assert.ok(allowed.includes('skill'))
+    for (const name of ['read', 'skill', 'worldbook_list', 'worldbook_grep']) assert.ok(allowed.includes(name))
+    for (const name of ['worldbook_list', 'worldbook_grep']) assert.ok(packets[0].tools.some(tool=>tool.name===name))
     assert.ok(packets[0].tools.some(tool=>tool.name==='read'))
     assert.equal(runner.activeRequestContext(session.id),null)
     enabled=false
     await runner.run({...input,task:'candidate'})
-    assert.ok(!packets[1].tools.some(tool=>tool.name==='read'))
+    assert.ok(!packets[1].tools.some(tool=>['read', 'worldbook_list', 'worldbook_grep'].includes(tool.name)))
     assert.ok(!packets[1].sections.some(section=>section.name==='tool:read'))
   } finally {await runner.dispose()}
 })

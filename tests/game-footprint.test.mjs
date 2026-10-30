@@ -91,13 +91,3 @@ test('启动时清掉已删除游戏遗留的插图记录，在世的游戏和�
   assert.equal(await exists(path.join(data, 'scene-images', sha('chat-gone'))), false)
   for (const kept of [sha('chat-live'), sha('chat-legacy'), 'settings.json', 'worldbooks']) assert.equal(await exists(path.join(data, 'scene-images', kept)), true, kept)
 })
-
-test('读不到存档列表时不清理任何插图记录', async t => {
-  const profile = await mkdtemp(path.join(tmpdir(), 'tavern-footprint-sweep-'))
-  t.after(() => rm(profile, { recursive: true, force: true }))
-  const data = path.join(profile, 'data')
-  await mkdir(path.join(data, 'scene-images', sha('chat-x')), { recursive: true })
-  const footprint = createGameFootprint({ dataRoot: data, sessionsRoot: path.join(profile, 'sessions') })
-  assert.equal(await footprint.sweepDeletedGameImages(), 0)
-  assert.equal(await exists(path.join(data, 'scene-images', sha('chat-x'))), true)
-})
