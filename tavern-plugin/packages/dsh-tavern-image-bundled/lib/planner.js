@@ -473,6 +473,17 @@ export function normalizePrompts(text, definitions, context = {}) {
   // 中文原生编码器读中文长句更准，但此前没有任何绕过的办法；默认仍按原规则删中文。
   const allowChinese = context?.allowChinese === true
   const shouldCleanChinese = !allowChinese && (!backend || backend.toLowerCase() === 'comfyui')
+  if (allowChinese && context?.style === 'natural') {
+    // 中文整句写法：单独写在开头或人物句前面的中文名（「殷雪, 画面中的女子是……」）对画面没用，
+    // 读中文的模型还可能把它写成画面里的字，去掉。只删确实是人名的那一段（人物库里有这个名字，
+    // 或者后面紧跟着「画面中的」人物句），「近景，」「傍晚，」这类画面描述不动。
+    const names = new Set((definitions?.characters ?? []).flatMap(c => [c?.name, String(c?.name ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, ''),
+      ...String(c?.match ?? '').split(/[,，]/)]).map(v => String(v ?? '').trim()).filter(v => /^[\u4e00-\u9fa5]/.test(v)))
+    const NAME = /([\u4e00-\u9fa5]{2,6}(?:[（(][^）)]{1,8}[）)])?)\s*[,，]\s*/
+    out = out.replace(new RegExp('^\\s*' + NAME.source), (m, name, offset, all) => (names.has(name) || all.slice(m.length).startsWith('画面中的')) ? '' : m)
+    out = out.replace(/。\s*[。，,]+/g, '。')
+    out = out.replace(new RegExp('(^|[。，,；;\\s])' + NAME.source + '(?=画面中的)', 'g'), (m, pre, name) => names.has(name) ? pre : m)
+  }
   if (shouldCleanChinese) {
     const hadChinese = /[\u4e00-\u9fa5]/.test(out)
     // A leading Chinese character name is useful for local models only when replaced by its
