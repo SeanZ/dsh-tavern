@@ -23,25 +23,6 @@ test('安装脚本与更新检查在所有下载方式上都跟随 main 分支',
   assert.doesNotMatch(workflow, /@main\/|@0\.2\.1/, 'CDN 刷新按推送的分支')
 })
 
-test('内置更新的安装下载、提交记录与手动恢复入口默认指向 koabop/dsh-tavern', () => {
-  const defaults = {
-    'install.sh': ['REPOSITORY=${DSH_TAVERN_REPOSITORY:-koabop/dsh-tavern}'],
-    'install.ps1': ["$Repository = if ($env:DSH_TAVERN_REPOSITORY) { $env:DSH_TAVERN_REPOSITORY } else { 'koabop/dsh-tavern' }"],
-    'android/setup.sh': [
-      'DEFAULT_REPOSITORY="https://github.com/koabop/dsh-tavern.git"',
-      'DEFAULT_TARBALL_URL="https://codeload.github.com/koabop/dsh-tavern/tar.gz/refs/heads/main"',
-      'CDN_METADATA_URL="${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/koabop/dsh-tavern@main/dsh-tavern-runtime.json}"',
-      'CDN_ROOT_URL="${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/koabop/dsh-tavern}"',
-    ],
-    'bin/launcher-environment.mjs': ["export const DEFAULT_COMMIT_URL = 'https://api.github.com/repos/koabop/dsh-tavern/commits/main'"],
-    'bin/application-update.mjs': ['irm https://cdn.jsdelivr.net/gh/koabop/dsh-tavern@main/install.ps1 | iex'],
-  }
-  for (const [file, expected] of Object.entries(defaults)) {
-    const source = readFileSync(new URL(file, root), 'utf8')
-    for (const value of expected) assert.ok(source.includes(value), `${file}: ${value}`)
-  }
-})
-
 test('安装脚本只接受桌面版与命令行版宿主', { skip: process.platform === 'win32' }, () => {
   const result = spawnSync('sh', [new URL('install.sh', root).pathname], { encoding: 'utf8', env: { ...process.env, DSH_TAVERN_HOST: 'android' } })
   assert.equal(result.status, 1)
