@@ -31,8 +31,10 @@ render({ match, groups, gameId, turn, streaming })  // 返回 React 元素；返
 在每条已写完的助手消息下方加一个按钮，例如「配图」「重画」。`when(context)` 决定是否显示（不传则总是显示），点击时调用 `run(context)`，`run` 可以是异步函数，执行期间按钮不可再点。
 
 ```js
-context = { gameId, turn, settled }
+context = { gameId, turn, settled, text }
 ```
+
+`text` 是这条消息的正文（模型写出的原文），可用来只在合适的消息下显示按钮，例如正文里已经有某个标记时就不显示。
 
 ## `registerComposerAction({ id, label, when, run })`
 

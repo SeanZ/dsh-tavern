@@ -1302,7 +1302,8 @@
 			const actions = tavernUiExtensions.messageActions().filter(function (entry) { return tavernPluginAllowed(entry.owner, props.sessionId); });
 			if (!actions.length) return null;
 			return React.createElement(TavernPluginActionButtons, { actions: actions, className: "dsh-tavern-plugin-message-actions", buttonClassName: "dsh-tavern-btn",
-				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled } });
+				// text: the reply as written, so `when` can show a button only for the replies it fits.
+				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled, text: String(props.text || "") } });
 		}
 
 		function TavernPluginComposerActions(props) {

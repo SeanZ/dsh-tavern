@@ -12959,7 +12959,8 @@ function bindTavernFontZoom(node, win) {
 			const actions = tavernUiExtensions.messageActions().filter(function (entry) { return tavernPluginAllowed(entry.owner, props.sessionId); });
 			if (!actions.length) return null;
 			return React.createElement(TavernPluginActionButtons, { actions: actions, className: "dsh-tavern-plugin-message-actions", buttonClassName: "dsh-tavern-btn",
-				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled } });
+				// text: the reply as written, so `when` can show a button only for the replies it fits.
+				context: { gameId: props.sessionId, turn: props.turn, settled: props.settled, text: String(props.text || "") } });
 		}
 
 		function TavernPluginComposerActions(props) {
@@ -21758,7 +21759,7 @@ function TavernBgmChat(props) {
 				const pluginMediaNode = trailingMedia.length ? React.createElement("div", { className: "dsh-tavern-plugin-media-list" }, trailingMedia.map(function (item) {
 					return React.createElement(TavernPluginMediaItem, { key: item.id, item: item, sessionId: props.sessionId, turn: storyTurn });
 				})) : null;
-				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled }) : null;
+				const pluginActions = playView && settled ? React.createElement(TavernPluginMessageActions, { sessionId: props.sessionId, turn: storyTurn, settled: settled, text: replyTextForFold }) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
 				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}
