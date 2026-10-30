@@ -212,6 +212,10 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   assert.equal(input.beat.speaker, '林曦')
   assert.equal(input.footer, 'controls')
   assert.deepEqual(input.stage.characters, [])
+  assert.equal(Object.hasOwn(input.stage, 'music'), false, '舞台 BGM 没接管时不给 music，插件自己放音乐')
+  const owned = stage.TavernStageSceneView({ ...props(), data: { player: '你', card: { name: 'A' }, cast: [], musicOwned: true, music: null } })
+  owned.children[0].type(owned.children[0].props)
+  assert.equal(Object.hasOwn(input.stage, 'music'), true, '舞台 BGM 接管时给 music（null 即静音）')
   tree = stage.TavernStageSceneView(props(1))
   assert.equal(tree.children[0].type(tree.children[0].props).type, 'Builtin', '返回 null 时用内置舞台')
 
