@@ -18,9 +18,11 @@ const TRANSITION = /\b(?:disappear\w*|vanish\w*|fad(?:e|es|ed|ing)|shifting|rece
 const norm = value => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
 const split = value => String(value ?? '').split(/[,，、]/).map(s => s.trim()).filter(Boolean)
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// 「殷雪（人形）」和「殷雪（显形）」去掉括号后缀是同一个名字，也算同一角色的不同形态。
+const baseName = v => String(v ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, '')
 const sameFamily = (a, b) => {
   const x = String(a?.name ?? ''), y = String(b?.name ?? '')
-  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x)))
+  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x) || (baseName(x) && baseName(x) === baseName(y))))
 }
 const cueHits = (scene, cues) => cues.filter(cue => (/[㐀-鿿]/.test(cue)
   ? scene.includes(cue)
