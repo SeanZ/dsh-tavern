@@ -50,6 +50,74 @@ const verifiedUpdate = {
   compareCommits: async () => 'ahead',
 }
 
+for (const source of ['github-api', 'github-manifest', 'jsdelivr']) {
+  test(`默认更新请求使用 koabop/dsh-tavern，覆盖 ${source} 路径`, async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-update-repository-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const latestCommit = 'b'.repeat(40)
+    const urls = {
+      version: 'https://raw.githubusercontent.com/koabop/dsh-tavern/main/package.json',
+      commit: 'https://api.github.com/repos/koabop/dsh-tavern/commits/main',
+      compare: `https://api.github.com/repos/koabop/dsh-tavern/compare/${knownIdentity.currentCommit}...${latestCommit}`,
+      manifest: 'https://raw.githubusercontent.com/koabop/dsh-tavern/main/dsh-tavern-runtime.json',
+      cdn: 'https://cdn.jsdelivr.net/gh/koabop/dsh-tavern@main/dsh-tavern-runtime.json',
+    }
+    const metadata = { revision: latestCommit, version: '1.2.0', files: [{ path: 'package.json', sha256: 'f'.repeat(64) }] }
+    const requests = []
+    t.mock.method(globalThis, 'fetch', async input => {
+      const url = String(input)
+      requests.push(url)
+      let value
+      if (url === urls.version) value = { version: '1.2.0' }
+      else if (url === urls.commit) {
+        if (source !== 'github-api') return new Response('', { status: 503 })
+        value = { sha: latestCommit }
+      } else if (url === urls.manifest) {
+        if (source === 'jsdelivr') return new Response('', { status: 503 })
+        value = metadata
+      } else if (url === urls.cdn) value = metadata
+      else if (url === urls.compare) value = { status: 'ahead', base_commit: { sha: knownIdentity.currentCommit } }
+      else {
+        unexpectedRequests.push(url)
+        throw new Error(`Unexpected update URL: ${url}`)
+      }
+      return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
+    })
+    // Use the real request functions, not the fixture wrapper's injected fallbacks.
+    const updater = createUpdater({ dataRoot: root, sourceRoot: root, dshHome: root, runtimeHost: 'desktop',
+      readLocalIdentity: async () => knownIdentity })
+    const checked = await updater.check()
+    assert.equal(checked.phase, 'update-available', checked.error)
+    assert.equal(checked.checkSource, source === 'jsdelivr' ? 'jsdelivr' : 'github')
+    assert.equal(checked.latestCommit, latestCommit)
+    assert.equal(checked.latestVersion, '1.2.0')
+    assert.deepEqual(requests.toSorted(), [urls.version, urls.commit, urls.compare, urls.cdn,
+      ...(source === 'github-api' ? [] : [urls.manifest])].toSorted())
+  })
+}
+
+test('更换更新仓库后丢弃旧源的检查缓存，同时保留修复状态', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-update-old-repository-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const phase of ['update-available', 'up-to-date', 'repair-required']) {
+    const repairRequired = phase === 'repair-required'
+    await writeFile(path.join(root, 'update-status.json'), JSON.stringify({
+      phase, checkPolicy: 5, checkedForCommit: knownIdentity.currentCommit,
+      latestCommit: 'c'.repeat(40), ...(repairRequired ? { repairRequired: true, repairSince: 123 } : {}),
+    }))
+    const updater = createApplicationUpdater({ dataRoot: root, sourceRoot: root, runtimeHost: 'desktop', ...verifiedUpdate })
+    const status = await updater.status()
+    assert.equal(status.phase, repairRequired ? 'repair-required' : 'idle')
+    assert.equal(status.latestCommit, undefined)
+    assert.equal(Boolean(status.repairRequired), repairRequired)
+    if (repairRequired) assert.equal(status.repairSince, 123)
+    const checked = await updater.check()
+    assert.equal(checked.phase, 'update-available')
+    assert.equal(checked.checkPolicy, 6)
+    assert.equal(checked.latestCommit, 'b'.repeat(40))
+  }
+})
+
 test('真实 Git 历史可离线识别新旧，包括 archive 安装的 bare source-cache', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-tavern-order-git-'))
   try {
