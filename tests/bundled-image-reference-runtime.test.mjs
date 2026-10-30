@@ -72,7 +72,7 @@ test('本地上传预览、保存定义、只传本张参考图；实际输入�
   assert.equal(calls.filter(c => c.url.endsWith('/uploadMedia')).length, 2)
 })
 
-test('参考模式全无图或非Atlas时明确拒绝，单图明确文生图可继续且不上传', async t => {
+test('参考模式全无图或协议不支持时明确拒绝，单图明确文生图可继续且不上传', async t => {
   const calls = []; globalThis.fetch = atlasMock(calls)
   const { runtime } = await prepare(t)
   const missing = await runtime.request('jobs', { tag: '一片森林', subjects: [] })
@@ -84,12 +84,12 @@ test('参考模式全无图或非Atlas时明确拒绝，单图明确文生图可
   assert.equal(calls.filter(c => c.url.endsWith('/uploadMedia')).length, 0)
   const bad = await runtime.request('jobs', { tag: raw, generationMode: 'unknown' })
   assert.equal(bad.status, 400)
-  await runtime.request('config', { imageBackend: 'comfyui' })
+  await runtime.request('config', { imageBackend: 'custom', activeImageChannel: 'nai-reference-test', imageChannels: [{ id: 'nai-reference-test', provider: 'custom', name: 'NovelAI', baseUrl: 'https://nai.example.test', model: 'nai-diffusion-5-full', options: { apiProtocol: 'novelai' } }] })
   const count = calls.length
-  const wrongBackend = await runtime.request('jobs', { tag: raw, generationMode: 'reference' })
-  assert.equal(wrongBackend.status, 400)
-  assert.match(wrongBackend.body.error, /仅支持 atlas cloud/)
-  assert.equal(calls.length, count)
+  const unsupported = await runtime.request('jobs', { tag: raw, subjects: [{ characterId: 'lin' }], generationMode: 'reference' })
+  assert.equal(unsupported.status, 400)
+  assert.match(unsupported.body.error, /NovelAI.*参考图|参考图.*NovelAI/i)
+  assert.equal(calls.length, count, 'unsupported protocol must make zero HTTP/paid requests')
 })
 
 test('快照独立于人物库与全局模式，旧图重绘默认原版，明确更新才取新一致性文字', async t => {
