@@ -8,7 +8,7 @@
 - `compress.mjs`：从原料卡生成压缩后的 `大肥鱼.dshcard`（约 90 MB）。PNG 转 WebP、音乐和音效转 Ogg Opus，`--drop-live2d` 去掉 Live2D 模型，卡内插件取 `plugin/` 里最新的；每个素材包里写一份 `credits/DSH-CARD-CHANGES.md` 说明改动。
 - `RELEASE.md`：发布说明。
 
-- `../dshcard-png.mjs`：把 `大肥鱼.dshcard` 接在封面后面，生成带封面的 `大肥鱼.dshcard.png`：系统和聊天软件显示封面，Tavern 导入整张卡。Release 里两个都放，内容相同。
+- `../dshcard-png.mjs`：把 `大肥鱼.dshcard` 接在封面后面，生成带封面的 `大肥鱼.dshcard.png`：系统和聊天软件显示封面，Tavern 导入整张卡。Release 里放的就是它。有封面的卡都这样分发，没有封面的保持 `.dshcard`。
 
 这些卡文件都太大，不进仓库（`.gitignore`）。改了插件或预设后重新生成：
 

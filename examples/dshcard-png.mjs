@@ -1,7 +1,8 @@
 // Put a DSH card (or CHARX) behind its cover PNG: 大肥鱼.dshcard → 大肥鱼.dshcard.png. The result is the cover
 // picture (so systems and chat apps show it as the file's icon) carrying the card as chara/ccv3 for other
 // tavern apps, followed by the archive unchanged; Tavern imports the whole archive from it.
-// The cover is the card's own icon asset unless --cover names a picture; JPEG and WebP become PNG.
+// The cover is the card's own icon asset unless --cover names a picture; JPEG and WebP become PNG. A card with
+// no cover is left as it is: distribute the .dshcard.
 //
 //   node examples/dshcard-png.mjs 大肥鱼.dshcard [大肥鱼.dshcard.png] [--cover cover.png]
 //
@@ -31,10 +32,11 @@ try {
     const data = card.data && typeof card.data === 'object' ? card.data : card
     const icon = (Array.isArray(data.assets) ? data.assets : []).find(asset => asset && asset.type === 'icon' && asset.name === 'main' && String(asset.uri || '').startsWith('embeded://'))
     const entry = icon && zip.entries.get(icon.uri.slice('embeded://'.length))
-    if (!entry) throw new Error('卡里没有封面（icon/main），请用 --cover 指定一张图片')
-    cover = await zip.readBuffer(entry)
+    if (entry) cover = await zip.readBuffer(entry)
   }
 } finally { await zip.close() }
+// A card without a cover stays a plain .dshcard: there is no picture to show.
+if (!cover) { console.log(source + ' 没有封面（icon/main），保持 .dshcard 分发即可；要加封面用 --cover 指定图片'); process.exit(0) }
 cover = await coverImageAsPng(cover)
 
 const text = JSON.stringify(card)
