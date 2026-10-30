@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "b2289d0a13167ab38de3b3801b6316140b03280e",
-  "releaseSequence": 993,
+  "revision": "d7397a5be2122d72edb940dcba83e722727b43bf",
+  "releaseSequence": 995,
   "version": "3.1.0",
   "files": [
     {
@@ -801,13 +801,13 @@
     },
     {
       "path": "tavern-plugin/lib/client-assets/tavern.css",
-      "sha256": "e82e93cc47dedec1c08704901ba0ace9fe9b0ea90b9dfa280b98173bf8cd73d1",
-      "size": 524172
+      "sha256": "a6e82f29b86950d72c4185837af6287256199ace0cd8bfa59425e1c0432ad8c9",
+      "size": 524342
     },
     {
       "path": "tavern-plugin/lib/client.js",
-      "sha256": "0da18fb2a5a6f9627086d37e3d0a3a1b1bfde67e3972464289fb23528d611635",
-      "size": 2958119
+      "sha256": "2aa982b1b22fd52037e5e832db266e5da86e6b3221875e42117c3410c687e341",
+      "size": 2959315
     },
     {
       "path": "tavern-plugin/lib/cordis-inspect.js",
@@ -2855,6 +2855,11 @@
       "size": 2039
     },
     {
+      "path": "tavern-plugin/lib/domain/worldbook-mvu-entry.js",
+      "sha256": "50e1495f0bcf11c853e465399c62193fae019fe9736a862b91345458721ff215",
+      "size": 485
+    },
+    {
       "path": "tavern-plugin/lib/domain/worldbook-placement.js",
       "sha256": "2b5204c33126da6add9bb9c98480bc723bbb784e31d994a5cefed9cedee51143",
       "size": 2807
@@ -2876,8 +2881,8 @@
     },
     {
       "path": "tavern-plugin/lib/domain/worldbook-recall.js",
-      "sha256": "9c084bc2017510e126f61c02564b8212b9a7a1ce1323ada34c0deda03901cceb",
-      "size": 17282
+      "sha256": "6116801c64cc0f885b07049a20ad91cf38f355802c54e9c0c7039a59324ee365",
+      "size": 17208
     },
     {
       "path": "tavern-plugin/lib/domain/worldbook-resource.js",
@@ -2966,8 +2971,8 @@
     },
     {
       "path": "tavern-plugin/lib/gameplay-api.js",
-      "sha256": "b1b305474990abad2a87324a738a3b071060898866bf0e841441b52c1e9e7d82",
-      "size": 7797
+      "sha256": "1730313e009b7ad1791fabe13c69b31cb81b9a31f767787af94c4d559f8d2e1b",
+      "size": 7975
     },
     {
       "path": "tavern-plugin/lib/hooks/model-stream.js",
@@ -5151,9 +5156,9 @@
     }
   ],
   "archive": {
-    "commit": "dc8349e863f7b157b41aec7eb2ed3d16f67efa18",
+    "commit": "80b96c087ccb505f10f8ae2efbf8606259f17c7f",
     "path": "runtime.zip",
-    "sha256": "d1fb3586fed5af55874d68c8508e15e6aae62df8cf71a674dd94dc11731a658c",
-    "size": 10669429
+    "sha256": "5496020c53fd30cf3331e6d14b1157f836ed3f0ae7be8952038b01a89d46d4fe",
+    "size": 10670346
   }
 }
