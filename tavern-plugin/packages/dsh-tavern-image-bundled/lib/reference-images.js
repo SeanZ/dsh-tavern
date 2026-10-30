@@ -548,8 +548,44 @@ export function buildReferenceText(references) {
   return lines.join('\n')
 }
 
+function structuredReferenceLabels(items) {
+  const cleanLabel = value => cleanText(value).replace(/\s*\[characterId=[^\]\r\n]*\]/g, '').replace(/\n/g, ' ')
+  const identities = items.filter(item => item.kind === 'character')
+  const names = new Map(identities.map(item => [item.characterId, cleanLabel(item.label) +
+    (identities.some(other => other !== item && cleanLabel(other.label) === cleanLabel(item.label)) ? '（对象' + item.index + '）' : '')]))
+  const labels = items.map(item => {
+    if (item.kind === 'character') return names.get(item.characterId)
+    let label = cleanText(item.label)
+    const owner = identities.find(person => person.characterId === item.characterId)
+    if (owner && label.startsWith(owner.label + '／')) label = names.get(owner.characterId) + label.slice(owner.label.length)
+    // Shared costumes may belong to several wearers, not to their library owner.
+    for (const person of identities) label = label.replaceAll(person.label + ' [characterId=' + person.characterId + ']', names.get(person.characterId))
+    return cleanLabel(label)
+  })
+  return labels.map((label, index) => items[index].kind !== 'character' && items.some((other, at) => at !== index && other.kind === items[index].kind && labels[at] === label)
+    ? label + '（对象' + (index + 1) + '）' : label)
+}
+
+/** Render trusted bindings once; IDs stay in the job metadata, not visual prose. */
+export function buildStructuredReferenceText(references) {
+  const items = checkedReferences(references)
+  if (!items.length) return ''
+  const lines = []
+  if (items.some(item => item.kind === 'character')) lines.push('身份图仅约束面部、发型和固有体型比例，不继承其中的服装、姿势、表情或背景。')
+  if (items.some(item => item.kind === 'outfit')) lines.push('服装图仅约束服饰设计，不继承模特身份、面部、发型、体型、姿势或背景。')
+  lines.push('动作、镜头和环境以本张描述为准；剧情明确的换装、湿衣、破损及外观变化优先于参考图的旧状态。')
+  const labels = structuredReferenceLabels(items)
+  for (const [index, item] of items.entries()) {
+    const label = labels[index]
+    lines.push('参考图' + item.index + ' → ' + label + '：' + (item.kind === 'character' ? '身份参考。' : '服装参考。'))
+    const extra = normalizeConsistencyText(item.consistencyText)
+    if (extra) lines.push('此对象的一致性补充：\n' + extra)
+  }
+  return lines.join('\n')
+}
+
 /** Planner gets labels/IDs/availability, never bytes, local paths, or remote URLs. */
-export function referencePlannerGuidance(definitions = {}) {
+export function referencePlannerGuidance(definitions = {}, { structured = false } = {}) {
   const lib = catalog(definitions)
   const lines = ['【参考图模式规划规则】',
     '只为当前这张 image 中实际出现的人物选择参考图，不得把整个图库或仅在正文被提及但不出镜的人物传入。',
@@ -558,6 +594,7 @@ export function referencePlannerGuidance(definitions = {}) {
     '服装可以只用文字描述，不必从图库挑一套；当前剧情明确的衣着、状态变化优先，脱下、拿在手中或放在一旁的衣服不作为正在穿着的服装。',
     '有图对象以图片及其一致性补充约束固定外观，不再完整堆叠它的固定 traits 或服装标签；缺图对象继续使用完整文字描述。角色图不继承服装、姿势或背景，服装图不继承模特身份；动作和场景依据当前剧情。',
     '后台插件会按实际上传顺序绑定参考图编号，不要自行猜测编号。若整张图没有任何可用参考图，后端会暂停并提示，不自动退回纯文生图。',
+    ...(structured ? ['结构化画面正文只写人物名称及本张可见状态；不要重复写“身份以参考图为准”、参考图编号、内部ID或通用参考图约束。绑定与用途说明由插件生成一次；精确ID放在 subjects 元数据中。同名人物需要区别动作时，使用人物宏 ${"name":"精确角色ID","angle":"本张朝向"}$ 绑定各自描述，插件会展开为与参考图一致的短称呼；不要在普通正文中裸写内部ID。'] : []),
     '【可用对象与参考图清单；仅文字元数据】']
   for (const person of lib.people) {
     personById(lib, idOf(person))
@@ -585,10 +622,11 @@ export function referencePlannerGuidance(definitions = {}) {
 /**
  * Clone, never mutate the library. Supplying resolved subjects also restricts
  * automatic outfit injection to the exact per-image choice ('' means none).
- * The tiny face/upper markers deliberately survive expandRosterCalls and
- * injectDefinitions; empty traits alone would lose the character's identity.
+ * Legacy tag/natural callers retain face/upper markers. Structured callers use
+ * markers:false: identity and reference numbering travel as separate metadata,
+ * never as fake visual traits. Re-scoping also upgrades old frozen definitions.
  */
-export function referenceScopedDefinitions(definitions = {}, references = [], { subjects } = {}) {
+export function referenceScopedDefinitions(definitions = {}, references = [], { subjects, markers = true } = {}) {
   const result = structuredClone(definitions)
   const checked = checkedReferences(references)
   // Shared clothes use the legacy body/full/bodyBack/fullBack schema. They
@@ -609,16 +647,16 @@ export function referenceScopedDefinitions(definitions = {}, references = [], { 
     if (!reference) return outfit
     for (const key of ['upper', 'lower', 'shoes', 'accessory', 'full', 'back', 'body', 'bodyBack', 'fullBack', 'negative']) delete outfit[key]
     const marker = '服装「' + displayName(outfit) + '」[outfitId=' + idOf(outfit) + ']外观参照图' + reference.index
-    outfit.upper = marker
-    outfit.body = marker
+    if (markers) { outfit.upper = marker; outfit.body = marker }
     return outfit
   }
   for (const person of original.people) {
     const reference = characterRefs.get(idOf(person))
     if (reference) {
+      if (!markers) person.promptLabel = structuredReferenceLabels(checked)[reference.index - 1]
       const feature = person.traits?.feature
       const marker = '角色「' + displayName(person) + '」[characterId=' + idOf(person) + ']身份参照图' + reference.index
-      person.traits = { ...(typeof feature === 'string' ? { feature } : {}), face: marker, faceBack: marker }
+      person.traits = { ...(typeof feature === 'string' ? { feature } : {}), ...(markers ? { face: marker, faceBack: marker } : {}) }
     }
     for (const outfit of arr(person.outfits)) trimOutfit(outfit, outfitRefs.get(JSON.stringify([idOf(person), idOf(outfit)])))
   }

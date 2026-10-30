@@ -47,7 +47,7 @@ import { createDiagnostics } from './diagnostics.js'
 import { deleteWorkflow } from './workflow-delete.js'
 import { createFormatWorldbooks } from './format-worldbooks.js'
 import { composeStructuredPrompt, combineStructuredPrompt } from './prompt-presets.js'
-import { normalizeReferenceImage, normalizeConsistencyText, createReferenceImageStore, resolveImageReferences, buildReferenceText, referencePlannerGuidance, referenceScopedDefinitions } from './reference-images.js'
+import { normalizeReferenceImage, normalizeConsistencyText, createReferenceImageStore, resolveImageReferences, buildReferenceText, buildStructuredReferenceText, referencePlannerGuidance, referenceScopedDefinitions } from './reference-images.js'
 
 export const name = 'dsh-tavern-image'
 export const inject = ['webServer']
@@ -374,7 +374,7 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
             tags: !natural,
           })
           const angleTag = angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle)) ? angle : ''
-          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style))
+          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style) || person.promptLabel || person.name || asked)
           else {
             if (picked.tags.length) bits.push(...picked.tags)
             if (wear) bits.push(wear)
@@ -441,8 +441,9 @@ function boundCharacterPhrase(person, picked, extras = [], wear = '', style = 'n
   const traits = origins.filter(o => !o.outfitId).map(o => o.text)
   const outfit = origins.filter(o => o.outfitId).map(o => o.text)
   if (style === 'structured') {
-    const identity = String(person?.name || label || person?.id || '')
-    return `人物“${identity}”：` + [traits.join('；'), outfit.length ? '穿着：' + outfit.join('；') : (wear ? '穿着：' + wear : ''), ...extras].filter(Boolean).join('；')
+    const identity = String(person?.promptLabel || person?.name || label || person?.id || '')
+    const body = [traits.join('；'), outfit.length ? '穿着：' + outfit.join('；') : (wear ? '穿着：' + wear : ''), ...extras].filter(Boolean).join('；')
+    return body ? `人物“${identity}”：` + body : ''
   }
   const look = [person?.traits?.face, person?.traits?.faceBack, person?.traits?.feature].map(v => String(v ?? '')).join(' ')
   const who = /\b(woman|girl|female|lady)\b/i.test(look) ? ['the woman', 'she']
@@ -688,6 +689,7 @@ export function apply(ctx, config = {}) {
   route(`${BASE}/worldbook-entry`, (request, response, url, engine) => engine.handleConsole('worldbook-entry', request, response, url))
   route(`${BASE}/worldbook-add`, (request, response, url, engine) => engine.handleConsole('worldbook-add', request, response, url))
   route(`${BASE}/worldbook-export`, (request, response, url, engine) => engine.handleConsole('worldbook-export', request, response, url))
+  route(`${BASE}/worldbook-upgrade`, (request, response, url, engine) => engine.handleConsole('worldbook-upgrade', request, response, url))
 route(`${BASE}/generate-outfits`, (request, response, url, engine) => engine.handleConsole('generate-outfits', request, response, url))
   route(`${BASE}/generate-outfits-bulk`, (request, response, url, engine) => engine.handleConsole('generate-outfits-bulk', request, response, url))
 route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => engine.handleConsole('generate-characters-minor', request, response, url))
@@ -942,7 +944,7 @@ function createRuntime(ctx, overrides, logger, deps) {
               providerTaskProvider: job.providerTaskProvider ?? '',
               characterSnapshot: job.characterSnapshot ?? null, comfySimple: job.comfySimple ?? null,
               generationMode: job.generationMode ?? 'text', promptMode: job.promptMode,
-              referenceSnapshot: job.referenceSnapshot ?? null, submittedPrompt: job.submittedPrompt ?? '',
+              referenceSnapshot: job.referenceSnapshot ?? null, submittedPrompt: job.submittedPrompt ?? '', promptAssembly: job.promptAssembly ?? null,
               submissionTracked: job.submissionTracked === true,
               gameId: job.gameId ?? '', turn: job.turn ?? null, textVersion: job.textVersion ?? '',
               imageOutputWarning: job.imageOutputWarning ?? '',
@@ -1459,16 +1461,20 @@ function createRuntime(ctx, overrides, logger, deps) {
         : defsForTurn
       let referenceState = null
       if (generationMode === 'reference') {
+        const sectioned = rosterStyle(jobConfig, workflow) === 'structured'
         if (referenceSnapshot) {
           referenceState = structuredClone(referenceSnapshot)
-          scopedDefs = referenceState.definitions
+          scopedDefs = sectioned
+            ? referenceScopedDefinitions(referenceState.definitions, referenceState.references, { subjects: referenceState.subjects, markers: false })
+            : referenceState.definitions
         } else {
           const selected = resolveImageReferences({ text: params.rawTag, characters: params.characters, subjects: rawParams?.subjects, definitions: scopedDefs })
-          scopedDefs = referenceScopedDefinitions(scopedDefs, selected.references, { subjects: selected.subjects })
-          referenceState = { version: 1, ...selected, definitions: structuredClone(scopedDefs) }
+          scopedDefs = referenceScopedDefinitions(scopedDefs, selected.references, { subjects: selected.subjects, markers: !sectioned })
+          referenceState = { version: sectioned ? 2 : 1, ...selected, definitions: structuredClone(scopedDefs) }
         }
         if (!referenceState.references?.length) throw Object.assign(new Error('本张图片没有可用的角色或服装参考图；请添加参考图，或明确切换为文生图'), { submissionNotStarted: true, code: 'REFERENCE_IMAGES_REQUIRED' })
         params.subjects = structuredClone(referenceState.subjects)
+        if (sectioned) params.referenceText = buildStructuredReferenceText(referenceState.references)
         const style = rosterStyle(jobConfig, workflow)
         params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: 'atlascloud', style })
       }
@@ -1480,7 +1486,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const onStage = traceStages ? (name, data) => traceStages.push({ name, data }) : null
       const compiled = workflow ? compileJob({ workflow, params, config: compileConfig, definitions: scopedDefs, onStage })
         : compileChannelJob({ params, config: jobConfig, definitions: scopedDefs, channel, onStage })
-      if (referenceState) compiled.positive = [compiled.positive, buildReferenceText(referenceState.references)].filter(Boolean).join('\n\n')
+      if (referenceState && compiled.promptMode !== 'structured') compiled.positive = [compiled.positive, buildReferenceText(referenceState.references)].filter(Boolean).join('\n\n')
       if (traceStages) {
         const T = diag.text
         const at = { imageIndex: diagTrace.imageIndex }
@@ -1505,7 +1511,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         channelEndpoint: channel ? channelEndpointOf(channel) : '', comfyEndpoint: endpointOf(jobConfig.comfyUrl),
         state: 'pending', percent: 0, seed: compiled.seed, createdAt: Date.now(), queryAt: 0, requestStarted: false,
         params: { ...params }, key, size: compiled.size, hits: compiled.hits,
-        generationMode, promptMode: compiled.promptMode,
+        generationMode, promptMode: compiled.promptMode, promptAssembly: compiled.promptAssembly ?? null,
         referenceSnapshot: referenceState,
         submissionTracked: channel?.provider === 'atlascloud',
         submittedPrompt: channel?.provider === 'atlascloud' ? (compiled.promptMode === 'structured' ? combineStructuredPrompt(compiled.positive, compiled.negative) : [compiled.positive, compiled.negative ? 'Avoid: ' + compiled.negative : ''].filter(Boolean).join('\n\n')) : compiled.positive,
@@ -2060,7 +2066,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const system = buildPlannerSystem({
         rules: plannerContext.staticRules, dynamicRules: plannerContext.dynamicRules,
         roster, rosterIndex: plannerContext.rosterIndex, count: want,
-        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped) : ''].filter(Boolean).join('\n\n'),
+        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped, { structured: plannerMode === 'structured' }) : ''].filter(Boolean).join('\n\n'),
         smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode,
       })
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
@@ -2549,6 +2555,9 @@ function createRuntime(ctx, overrides, logger, deps) {
         ...publicJob(job),
         prompt: job.positive ?? '', negative: job.negative ?? '', tag: job.params?.tag ?? '',
         rawPrompt,
+        rawPromptSource: job.params?.rawTag ? 'rawTag' : job.params?.tag ? 'tag' : 'positive',
+        submittedPromptSource: job.submittedPrompt ? 'submittedPrompt' : 'positive',
+        promptAssembly: job.promptAssembly ?? null,
         characters,
         promptText: characters.length ? formatPromptsBlock(rawPrompt, characters) : '',
         artist: job.params?.artist ?? '', size: job.size ? `${job.size.width}x${job.size.height}` : '',
@@ -2938,6 +2947,19 @@ function createRuntime(ctx, overrides, logger, deps) {
             sendJson(response, 200, { ok: true, referenceImage })
           } else sendJson(response, 405, { ok: false, error: 'method-not-allowed' })
         } catch (error) { sendJson(response, 400, { ok: false, error: String(error?.message ?? error) }) }
+        return
+      }
+      if (action === 'worldbook-upgrade') {
+        try {
+          if (request.method === 'GET') {
+            const upgrade = await formatWorldbooks.getUpgradeStatus(normalizeBookKey(_url?.searchParams?.get('book')))
+            sendJson(response, 200, { ok: true, upgrade })
+          } else if (request.method === 'POST') {
+            const input = await readBody(request)
+            const upgrade = await formatWorldbooks.applyDefaultUpgrade(normalizeBookKey(input.book), { expectedFingerprint: input.expectedFingerprint, entryIds: input.entryIds })
+            sendJson(response, 200, { ok: true, upgrade })
+          } else sendJson(response, 405, { ok: false, error: 'method-not-allowed' })
+        } catch (error) { sendJson(response, error?.code === 'WORLDBOOK_UPGRADE_STALE' ? 409 : 400, { ok: false, error: String(error?.message ?? error) }) }
         return
       }
       if (request.method === 'GET') {
@@ -5413,7 +5435,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const fingerprint = c => [c?.traits?.face, c?.traits?.faceBack].map(v => String(v ?? '').trim()).filter(v => v.length >= 12)
   const expanded = (definitions.characters ?? []).filter(c => c && c.enabled !== false && (
     ['the woman', 'the man', 'a character'].some(who => source.includes(label(c) + who + ' in this scene')) ||
-    (structured && source.includes(`人物“${c.name || splitTags(c.match)[0] || c.id}”：`)) ||
+    (structured && source.includes(`人物“${c.promptLabel || c.name || splitTags(c.match)[0] || c.id}”：`)) ||
     fingerprint(c).some(f => source.includes(f))))
   // 人物的负面词作用于整张图：多人画面里 A 的「不要短发」会压掉 B 的短发。
   // 所以先按人收集，最后只在画面里只有一个库中人物时才用上。
@@ -5523,7 +5545,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     else segments.splice(at + 1, 0, ' ' + tags.join(', '))
   }
   const placedText = segments.join(',')
-  if (structured) return { text: [source, ...added].filter(Boolean).join('\n\n'), hits, negatives }
+  if (structured) return { text: [source, ...added].filter(Boolean).join('\n\n'), hits, negatives, additions: added }
   return { text: added.length ? `${placedText}, ${added.join(', ')}` : placedText, hits, negatives }
 }
 
@@ -5568,7 +5590,7 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
 
   if (mode === 'structured') {
     const injected = injectDefinitions(tag, definitions, config, { style: 'structured', raw: params.rawTag })
-    const prepared = composeStructuredPrompt({ text: injected.text, config, artist, artistPosition: params.artistPosition ?? config.artistPosition,
+    const prepared = composeStructuredPrompt({ text: injected.text, config, artist, artistPosition: params.artistPosition ?? config.artistPosition, referenceText: params.referenceText || '',
       negative: [activeArtistText(config).negative, params.negative, ...(injected.negatives ?? [])].filter(Boolean).join('\n') })
     if (workflow) {
       const binding = workflow.bindings.negative?.[0]
@@ -5578,7 +5600,8 @@ function prepareImagePrompt({ workflow, params, config, definitions, onStage = n
     }
     stage('compile-positive', { mode, final: prepared.positive, hits: injected.hits })
     stage('compile-negative', { negativeMode: config.negativeMode, final: prepared.negative })
-    return { positive: prepared.positive, negative: prepared.negative, hits: injected.hits }
+    return { positive: prepared.positive, negative: prepared.negative, hits: injected.hits,
+      promptAssembly: { version: 2, definitionAdditions: injected.additions || [], referenceText: params.referenceText || '' } }
   }
 
   const rawBase = (params.artistPosition ?? config.artistPosition) === 'suffix'
@@ -5688,7 +5711,7 @@ export function compileJob({ workflow, params, config, definitions, onStage = nu
   }
 
   const size = applySize(prompt, params.size, workflow.sizes ?? config.sizes ?? null, workflow.bindings?.size)
-  return { prompt, seed, positive, negative, promptMode, size, hits, workflowId: workflow.id, loras: loraApplied }
+  return { prompt, seed, positive, negative, promptMode, size, hits, workflowId: workflow.id, loras: loraApplied, ...(prepared.promptAssembly ? { promptAssembly: prepared.promptAssembly } : {}) }
 }
 
 /** 挑工作流：先看锁定 / 默认，再按外部传来的 model 匹配 id / label / match。 */
