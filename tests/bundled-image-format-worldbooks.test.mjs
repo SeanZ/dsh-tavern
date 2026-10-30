@@ -207,3 +207,151 @@ test('validated mode/group cannot escape storage; structured seeds are fresh ind
   assert.deepEqual(FORMAT_WORLDBOOK_GROUPS, ['main', 'outfits'])
   assert.deepEqual(FORMAT_WORLDBOOK_MODES, ['tags', 'natural', 'mixed', 'structured'])
 })
+
+async function installedV1(t, change = () => {}) {
+  const root = await fixture(t)
+  await createFormatWorldbooks({ root }).ensure()
+  const books = structuredWorldbookDefaults(1)
+  change(books)
+  for (const key of FORMAT_WORLDBOOK_GROUPS) await fs.writeFile(pathFor(root, 'structured', key), JSON.stringify(books[key]))
+  return { root, books }
+}
+
+test('v2 fresh seeds contain semantic rules, short Chinese examples and version fingerprints', async t => {
+  const store = createFormatWorldbooks({ root: await fixture(t) })
+  const book = await store.readBook('structured', 'main')
+  assert.equal(book.defaultSeed.version, 2)
+  assert.equal(book.entries.length, 6)
+  assert.equal(Object.keys(book.defaultSeed.fingerprints).length, 6)
+  const text = book.entries.map(e => e.content).join('\n')
+  for (const pattern of [/时间点/, /接触点/, /裁切/, /光源/, /林月/, /江铭/, /不能按输出前一张/]) assert.match(text, pattern)
+  assert.doesNotMatch(text, /<image>|<subjects>|<decision>|image\/regex\/prompts/)
+  const status = await store.getUpgradeStatus('main')
+  assert.equal(status.available, false)
+  assert.ok(status.entries.every(e => e.state === 'current'))
+})
+
+test('untouched v1 groups upgrade with exact-byte backups and restart is idempotent', async t => {
+  const { root } = await installedV1(t)
+  const before = await fs.readFile(pathFor(root, 'structured'), 'utf8')
+  const tags = await fs.readFile(pathFor(root, 'tags'), 'utf8')
+  const store = createFormatWorldbooks({ root })
+  const result = await store.ensure()
+  const upgraded = result.upgrades.find(item => item.key === 'main')
+  assert.equal(await fs.readFile(upgraded.backupFile, 'utf8'), before)
+  assert.deepEqual(await store.readBook('structured', 'main'), structuredWorldbookDefaults().main)
+  assert.equal(await fs.readFile(pathFor(root, 'tags'), 'utf8'), tags)
+  const backups = await fs.readdir(join(root, 'backups', 'format-worldbooks-upgrades'))
+  const restart = createFormatWorldbooks({ root })
+  await restart.ensure()
+  assert.deepEqual(await fs.readdir(join(root, 'backups', 'format-worldbooks-upgrades')), backups)
+  assert.equal((await restart.getUpgradeStatus('main')).available, false)
+})
+
+test('edited, disabled, deleted, reordered and extended v1 groups never receive new defaults automatically', async t => {
+  for (const scenario of ['edited', 'disabled', 'deleted', 'reordered', 'extended', 'title']) await t.test(scenario, async t => {
+    const { root, books } = await installedV1(t, books => {
+      const b = books.main
+      if (scenario === 'edited') b.entries[0].content = '用户正文不可覆盖'
+      if (scenario === 'disabled') b.entries[0].enabled = false
+      if (scenario === 'deleted') b.entries.splice(0, 1)
+      if (scenario === 'reordered') b.entries.reverse()
+      if (scenario === 'extended') b.entries.push({ id: 'mine', content: '用户规则' })
+      if (scenario === 'title') b.name = '我的标题'
+    })
+    const store = createFormatWorldbooks({ root })
+    const result = await store.readBook('structured', 'main')
+    assert.deepEqual(result.entries.map(e => e.id), books.main.entries.map(e => e.id))
+    const first = result.entries.find(e => e.id === 'structured-prose')
+    if (scenario === 'edited') assert.equal(first.content, '用户正文不可覆盖')
+    if (scenario === 'disabled') { assert.equal(first.enabled, false); assert.equal(first.content, books.main.entries[0].content) }
+    const other = result.entries.find(e => e.id === 'structured-story')
+    assert.equal(other.content, structuredWorldbookDefaults().main.entries[1].content, 'unchanged old entries can update independently')
+    const restart = createFormatWorldbooks({ root })
+    assert.deepEqual((await restart.readBook('structured', 'main')).entries, result.entries)
+  })
+})
+
+test('empty and wholly custom groups stay byte-for-byte unchanged across initialization and restart', async t => {
+  for (const entries of [[], [{ id: 'mine', content: '完全自定义' }]]) {
+    const { root } = await installedV1(t, books => { books.main = { name: '自定义', entries } })
+    const before = await fs.readFile(pathFor(root, 'structured'), 'utf8')
+    await createFormatWorldbooks({ root }).ensure()
+    await createFormatWorldbooks({ root }).ensure()
+    assert.equal(await fs.readFile(pathFor(root, 'structured'), 'utf8'), before)
+  }
+})
+
+test('explicit upgrade restores only selected entries, preserves disabled state, backs up and rejects stale previews', async t => {
+  const { root } = await installedV1(t, books => {
+    books.main.entries[0].content = '用户改过'
+    books.main.entries[1].enabled = false
+  })
+  const store = createFormatWorldbooks({ root })
+  const status = await store.getUpgradeStatus('main')
+  assert.equal(status.entries[0].state, 'customized')
+  assert.equal(status.entries[1].state, 'disabled')
+  assert.equal(status.entries[2].state, 'missing')
+  assert.equal(status.entries[2].current, null)
+  const before = await fs.readFile(pathFor(root, 'structured'), 'utf8')
+  const updated = await store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-prose', 'structured-story', 'structured-people'] })
+  assert.equal(await fs.readFile(updated.backupFile, 'utf8'), before)
+  const book = await store.readBook('structured', 'main')
+  assert.equal(book.entries.length, 3)
+  assert.equal(book.entries[1].enabled, false)
+  assert.equal(book.entries[0].content, status.entries[0].proposed.content)
+  assert.equal((await store.getUpgradeStatus('main')).fingerprint, updated.fingerprint)
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-space'] }), { code: 'WORLDBOOK_UPGRADE_STALE' })
+  assert.deepEqual((await createFormatWorldbooks({ root }).readBook('structured', 'main')).entries, book.entries)
+})
+
+test('explicit upgrades validate selections and never replace originals when backup fails', async t => {
+  const { root } = await installedV1(t, books => { books.main.entries = [] })
+  let fail = false
+  const store = createFormatWorldbooks({ root, io: { ...fs, link: async (from, to) => {
+    if (fail && to.includes('format-worldbooks-upgrades')) throw new Error('backup denied')
+    return fs.link(from, to)
+  } } })
+  const status = await store.getUpgradeStatus('main')
+  const before = await fs.readFile(pathFor(root, 'structured'), 'utf8')
+  await assert.rejects(store.applyDefaultUpgrade('../main', {}), /世界书分组/)
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['unknown'] }), /有效/)
+  fail = true
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-prose'] }), /backup denied/)
+  assert.equal(await fs.readFile(pathFor(root, 'structured'), 'utf8'), before)
+})
+
+test('duplicate default IDs are ambiguous and never overwritten automatically or explicitly', async t => {
+  const { root } = await installedV1(t, books => { books.main.entries.push({ ...books.main.entries[0], content: 'another' }) })
+  const store = createFormatWorldbooks({ root })
+  const status = await store.getUpgradeStatus('main')
+  assert.equal(status.entries[0].state, 'ambiguous')
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-prose'] }), /标识重复/)
+  assert.equal((await store.readBook('structured', 'main')).entries.filter(e => e.id === 'structured-prose').length, 2)
+})
+
+test('upgrade previews detect concurrent edits and compare-and-write after backup', async t => {
+  const { root } = await installedV1(t, books => { books.main.entries = [] })
+  let editDuringBackup = false
+  const store = createFormatWorldbooks({ root, io: { ...fs, link: async (from, to) => {
+    const result = await fs.link(from, to)
+    if (editDuringBackup && to.includes('format-worldbooks-upgrades')) {
+      editDuringBackup = false
+      await fs.writeFile(pathFor(root, 'structured'), JSON.stringify({ name: '外部并发修改', entries: [] }))
+    }
+    return result
+  } } })
+  const status = await store.getUpgradeStatus('main')
+  editDuringBackup = true
+  await assert.rejects(store.applyDefaultUpgrade('main', { expectedFingerprint: status.fingerprint, entryIds: ['structured-story'] }), { code: 'WORLDBOOK_UPGRADE_STALE' })
+  assert.equal((await store.readBook('structured', 'main')).name, '外部并发修改')
+  const fresh = await store.getUpgradeStatus('main')
+  const second = createFormatWorldbooks({ root })
+  await second.ensure()
+  const results = await Promise.allSettled([
+    store.applyDefaultUpgrade('main', { expectedFingerprint: fresh.fingerprint, entryIds: ['structured-story'] }),
+    second.applyDefaultUpgrade('main', { expectedFingerprint: fresh.fingerprint, entryIds: ['structured-visible'] }),
+  ])
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1)
+  assert.equal(results.find(r => r.status === 'rejected').reason.code, 'WORLDBOOK_UPGRADE_STALE')
+})

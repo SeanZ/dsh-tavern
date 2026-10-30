@@ -196,3 +196,13 @@ test('roster exposes outfit IDs/reference availability/consistency only, never i
   assert.match(roster, /保留领口刺绣/)
   assert.doesNotMatch(roster, /SECRET_IMAGE_BYTES|\/private|不可选/)
 })
+
+test('importance ordering never makes a frame inherit the previously emitted frame state', () => {
+  for (const promptMode of ['structured', 'natural', 'tags']) for (const smartSelection of [true, false]) {
+    const system = buildPlannerSystem({ promptMode, smartSelection, count: 3 })
+    assert.match(system, /按重要性排序/)
+    assert.match(system, /该画面正文时点之前最后明确的状态/)
+    assert.match(system, /不能按输出前一张继承状态/)
+    assert.doesNotMatch(system, /才延续前一张状态/)
+  }
+})

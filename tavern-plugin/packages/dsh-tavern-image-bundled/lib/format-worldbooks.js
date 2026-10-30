@@ -1,8 +1,20 @@
 import * as nodeFs from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { normalizeEntryActivation } from './planner-context.js'
-import { PROMPT_FORMATS, STRUCTURED_PROMPT_GUIDANCE } from './prompt-presets.js'
+import { PROMPT_FORMATS } from './prompt-presets.js'
+
+export const STRUCTURED_WORLDBOOK_SEED_VERSION = 2
+// Frozen v1 baseline: never import live guidance here. Changing prompt presets
+// must not change the fingerprint used to recognize an untouched old book.
+const LEGACY_STRUCTURED_GUIDANCE = [
+  '使用结构化中文自然语言写画面提示词，标题和描述都使用中文，不堆砌英文标签。',
+  '默认可按以下分节组织：人物及参考图对应、服装、动作、环境、镜头与光线、风格、约束。没有内容的节可以省略，不增加任务宣告段。',
+  '这些只是默认分节；本格式独立世界书可以调整标题、顺序、增减分节，不要求机械套用固定模板。',
+  '保留人物身份、服装与参考图的明确对应，不虚构参考图，不自行编造图片序号；没有参考图时只写人物描述。',
+  '正文决定动作、环境与明确的状态变化；画风指导不能改写剧情事实。不要虚构画师、质量分数或接口参数。',
+  '保持自然段、列表、标点和有意义的重复，不把不同人物的相同特征全局去重。',
+].join('\n')
 
 export const FORMAT_WORLDBOOK_MODES = PROMPT_FORMATS
 export const FORMAT_WORLDBOOK_GROUPS = Object.freeze(['main', 'outfits'])
@@ -11,6 +23,7 @@ const BOOKS = Object.freeze({
   outfits: { file: 'worldbook-outfits.json', seed: '世界书-角色与服装库.json', label: '角色与服装库' },
 })
 const MIGRATION_VERSION = 1
+const WRITE_QUEUES = new Map()
 const json = value => JSON.stringify(value, null, 2) + '\n'
 const clone = value => JSON.parse(JSON.stringify(value))
 
@@ -61,11 +74,11 @@ export function normalizeFormatWorldbook(raw, { name = '生图世界书' } = {})
 }
 
 /** A fresh pair on every call, so editing one format/group never mutates a seed. */
-export function structuredWorldbookDefaults() {
+function structuredWorldbookDefaultsV1() {
   const entry = (id, comment, content) => ({ id, comment, content, enabled: true, activation: 'always', keywords: [], andKeywords: [], backends: ['structured'] })
   return {
     main: { name: '结构化中文 · 生图规则', entries: [
-      entry('structured-prose', '中文分节（默认结构可修改）', STRUCTURED_PROMPT_GUIDANCE),
+      entry('structured-prose', '中文分节（默认结构可修改）', LEGACY_STRUCTURED_GUIDANCE),
       entry('structured-story', '画面事实与叙事瞬间', [
         '从本轮正文选择明确发生的可视瞬间，按各张画面对应的时点描述人物、衣着、动作和环境。',
         '有多张图时，各自突出不同的瞬间、景别或动作，不编造正文没有发生的事件。',
@@ -90,6 +103,87 @@ export function structuredWorldbookDefaults() {
   }
 }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
+  return value
+}
+const fingerprint = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
+function bookContent(book) {
+  const { defaultSeed, ...content } = normalizeFormatWorldbook(book)
+  return content
+}
+function seedMetadata(book) {
+  return { version: STRUCTURED_WORLDBOOK_SEED_VERSION, fingerprints: Object.fromEntries(book.entries.map(entry => [entry.id, fingerprint(entry)])) }
+}
+
+/** Immutable historical baselines are also exposed for migrations/tests. */
+export function structuredWorldbookDefaults(version = STRUCTURED_WORLDBOOK_SEED_VERSION) {
+  const books = structuredWorldbookDefaultsV1()
+  if (version === 1) return books
+  if (version !== STRUCTURED_WORLDBOOK_SEED_VERSION) throw new Error('结构化默认规则版本无效')
+  const entry = (id, comment, lines) => ({ id, comment, content: lines.join('\n'), enabled: true, activation: 'always', keywords: [], andKeywords: [], backends: ['structured'] })
+  books.main.entries = [
+    entry('structured-prose', '中文分节与事实边界', [
+      '使用结构化中文自然语言，以可见事实组织人物、服装、动作、环境、镜头与光线、风格、约束；标题、顺序和分节可自行调整，无内容的节省略。',
+      '画风与构图只能表现剧情，不能添加不在场的人物、道具或事件；不输出内心独白、任务宣告或接口参数。保留自然段和人物各自有意义的重复。',
+    ]),
+    entry('structured-story', '单张定格与剧情时点', [
+      '单张图只取一个时间点、一个可同时成立的动作阶段，写清当前姿态、受力或接触点、朝向和视线；不把起身全过程、随后巡视和心理变化串成连续镜头。',
+      '多张图各有不同瞬间、景别或动作。即使按重要性而非时间先后输出，也必须沿用该画面正文时点之前最后明确的状态，不能按输出前一张继承服装、地点和外貌。',
+    ]),
+    entry('structured-people', '多人动作与物品归属', [
+      '每名入镜人物用稳定称呼分别说明站位、朝向、动作和交互对象，明确谁的手接触谁、谁持有什么，不用含混的“他们”代替动作归属。',
+      '两个人共有的特征可以分别重复；不要把人物甲的衣服、外貌或参考图约束套给人物乙。局部入镜仍保留人物身份，同一角色按此刻形态描述。',
+    ]),
+    entry('structured-visible', '镜头裁切与可见内容', [
+      '先确定景别、视角和裁切范围，再描述实际可见的外貌、衣物与道具。穿着事实不等于本镜头必须展示；不为了展示鞋脚强行扩大构图，也不把所有中景都当成看不到脚。',
+      '背影不强求瞳色或正脸，遮挡处不同时写清被遮住的细节。姿态、接触点和空间位置须能在同一画面成立。',
+    ]),
+    entry('structured-space', '遮挡与空间光线', [
+      '明确已有物体的位置、遮挡范围、光源和照射路径，使它们能够共存；区分窗户遮光布、窗帘和原文明确的开口。',
+      '正文说黑布遮窗又有光线时，只澄清正文已有关系，不为解释光线擅自新增开口、掀布或移动光源；没有依据的细节不补造。',
+    ]),
+    entry('structured-examples', '中文短例与输出前自检', [
+      '单人例：正文写江铭撑起回望，可写“江铭上半身刚撑离床面，一手支撑床沿，头侧转回望，神情警觉”，不要续写他随后下床巡视。',
+      '双人例：正文写林月向陈安递伞，可写“林月站在左侧，右手握伞柄伸向陈安；陈安站在右侧，左手接住伞柄”，不要只写“两人递伞”；左右和手别仅在正文已有或不违背已确立构图时确定。',
+      '输出前检查人数、动作归属、剧情时点、可见衣着、遮挡光路和参考用途；修正文句即可，不额外输出检查过程或长篇思考。示例人物、动作和布景不是每张图必加的内容。',
+    ]),
+  ]
+  books.outfits.entries[0] = entry('structured-identity', '人物与参考资料的分工', [
+    '有身份参考图的人物，以参考图约束面部、发型和固有体型比例，不照搬服装、姿势、表情和背景，也不再完整堆叠旧外貌标签。',
+    '无身份图的人物使用库内文字与正文描述可见外貌；未知人物照正文写，不编造人物库标识。仅收到文字清单时不能声称看过图片。',
+    '人物名称保持清楚，一致性补充归属到具体对象；剧情明确的外观变化优先，不混写不同人物或形态。参考图编号和绑定说明由插件统一生成，不重复代写。',
+  ])
+  books.outfits.entries[1] = entry('structured-clothes', '当刻穿着与服装可见性', [
+    '按本张画面对应的剧情时点确定穿着，换装前后分别描述；未写变化时沿用此时点之前最后明确的状态，不沿用输出上一张图的衣服。',
+    '引用库中服装使用准确服装名，不把标识或“常穿”备注当成服装名；纯文字衣着不必强套服装库。拿在手里、脱下或放在一旁不等于正在穿着。',
+    '服装图只约束服饰设计，不继承模特身份、姿势或背景；没有服装图时用中文说明可见颜色、款式和状态，正文明确的湿衣、破损等变化优先。',
+    '衣着记录与当前镜头可见性分别处理：画外部位不强求展示，不因没写服装参考就擅自补常穿。',
+  ])
+  for (const book of Object.values(books)) book.defaultSeed = seedMetadata(book)
+  return books
+}
+
+function upgradeStatus(book, key) {
+  const current = normalizeFormatWorldbook(book)
+  const latest = structuredWorldbookDefaults()[key]
+  const legacy = normalizeFormatWorldbook(structuredWorldbookDefaults(1)[key])
+  const wholeLegacyUnchanged = fingerprint(bookContent(current)) === fingerprint(bookContent(legacy))
+  const entries = latest.entries.map(proposed => {
+    const matches = current.entries.filter(entry => entry.id === proposed.id)
+    const previous = legacy.entries.find(entry => entry.id === proposed.id)
+    const item = matches[0] || null
+    const state = matches.length > 1 ? 'ambiguous' : !item ? 'missing'
+      : item.enabled === false ? 'disabled'
+      : fingerprint(item) === fingerprint(proposed) ? 'current'
+      : previous && fingerprint(item) === fingerprint(previous) ? 'update' : 'customized'
+    return { id: proposed.id, state, current: item, proposed: clone(proposed), autoUpdate: state === 'update' || (state === 'missing' && wholeLegacyUnchanged) }
+  })
+  return { format: 'structured', key, version: STRUCTURED_WORLDBOOK_SEED_VERSION, fingerprint: fingerprint(current), wholeLegacyUnchanged, entries,
+    available: entries.some(entry => entry.state !== 'current'), autoUpdateIds: entries.filter(entry => entry.autoUpdate).map(entry => entry.id) }
+}
+
 /**
  * Independent worldbooks, scoped to an explicit resolved prompt format.
  *
@@ -99,8 +193,9 @@ export function structuredWorldbookDefaults() {
  * Paths: format-worldbooks/<format>/{worldbook,worldbook-outfits}.json.
  * An immutable migration snapshot pins both old sources before any copy is made.
  * Originals are never modified; exact source bytes are backed up. Restarting a
- * partial migration creates missing books from that snapshot and never replaces
- * existing books, including empty books or user edits made during an interruption.
+ * partial migration creates missing books from that snapshot. Structured defaults
+ * then upgrade only fingerprint-confirmed old entries, with exact-byte backups;
+ * empty groups, deletions, disabled entries and user edits are never auto-restored.
  */
 export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
   if (typeof root !== 'string' || !root.trim()) throw new Error('需要世界书根目录 root')
@@ -108,7 +203,14 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
   const folder = join(base, 'format-worldbooks')
   const migrationFile = join(folder, 'migration-v1.json')
   const backupFolder = join(base, 'backups', 'format-worldbooks-v1')
-  const writes = new Map()
+  const writes = WRITE_QUEUES
+  async function serialize(file, run) {
+    const previous = writes.get(file) ?? Promise.resolve()
+    const operation = previous.catch(() => {}).then(run)
+    writes.set(file, operation)
+    try { return await operation }
+    finally { if (writes.get(file) === operation) writes.delete(file) }
+  }
   let ready = null
 
   const fileFor = (mode, key) => join(folder, assertMode(mode), BOOKS[assertGroup(key)].file)
@@ -179,7 +281,9 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
         if (await publish(fileFor(mode, key), json(document))) created.push({ mode, key })
       }
     }
-    return { version: MIGRATION_VERSION, created, migrationFile, backupFolder }
+    const upgrades = []
+    for (const key of FORMAT_WORLDBOOK_GROUPS) upgrades.push(await upgradeBook(key, { automatic: true }))
+    return { version: MIGRATION_VERSION, created, migrationFile, backupFolder, upgrades }
   }
   function ensure() {
     if (!ready) ready = initialize().catch(error => { ready = null; throw error })
@@ -191,6 +295,49 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
     const text = await readText(file)
     if (text === null) throw new Error('独立世界书文件已不存在：' + mode + '/' + key)
     return normalizeFormatWorldbook(parse(text, file), { name: BOOKS[key].label })
+  }
+  async function getUpgradeStatus(key) {
+    return upgradeStatus(await readBook('structured', assertGroup(key)), key)
+  }
+  async function upgradeBook(key, { automatic = false, expectedFingerprint, entryIds } = {}) {
+    const file = fileFor('structured', key)
+    // Snapshot explicit selections before waiting for another writer.
+    const requested = Array.isArray(entryIds) ? [...entryIds] : null
+    return serialize(file, async () => {
+      const old = await readText(file)
+      if (old === null) throw new Error('结构化世界书不存在')
+      const book = normalizeFormatWorldbook(parse(old, file))
+      const status = upgradeStatus(book, key)
+      if (!automatic && expectedFingerprint !== status.fingerprint) throw Object.assign(new Error('世界书已变更，请刷新升级预览后重试'), { code: 'WORLDBOOK_UPGRADE_STALE' })
+      const ids = automatic ? status.autoUpdateIds : requested
+      if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !status.entries.some(entry => entry.id === id))) throw new Error('请选择有效的默认规则条目')
+      const next = clone(book)
+      for (const id of new Set(ids)) {
+        const item = status.entries.find(entry => entry.id === id)
+        if (item.state === 'ambiguous') throw new Error('默认规则标识重复，请先处理：' + id)
+        if (item.state === 'current') continue
+        const at = next.entries.findIndex(entry => entry.id === id)
+        const replacement = { ...item.current, ...clone(item.proposed) }
+        // Explicit content restoration never re-enables a user-disabled entry.
+        if (item.current?.enabled === false) replacement.enabled = false
+        if (at < 0) next.entries.push(replacement)
+        else next.entries[at] = replacement
+      }
+      if (fingerprint(next) === fingerprint(book)) return status
+      next.defaultSeed = structuredWorldbookDefaults()[key].defaultSeed
+      const backupFile = join(base, 'backups', 'format-worldbooks-upgrades', key + '-' + Date.now() + '-' + randomUUID() + '.json')
+      await publish(backupFile, old)
+      // Reject an external edit observed while the backup was being written.
+      if (await readText(file) !== old) throw Object.assign(new Error('世界书已变更，请刷新升级预览后重试'), { code: 'WORLDBOOK_UPGRADE_STALE' })
+      await publish(file, json(next), true)
+      return { ...upgradeStatus(next, key), backupFile }
+    })
+  }
+  async function applyDefaultUpgrade(key, options = {}) {
+    assertGroup(key)
+    const captured = { expectedFingerprint: options.expectedFingerprint, entryIds: Array.isArray(options.entryIds) ? [...options.entryIds] : options.entryIds }
+    await ensure()
+    return upgradeBook(key, captured)
   }
   async function writeBook(mode, key, value) {
     const file = fileFor(mode, key)
@@ -227,5 +374,5 @@ export function createFormatWorldbooks({ root, io = nodeFs } = {}) {
     for (const book of books) for (const entry of book.entries) entries.push({ ...entry, book: book.key, bookIndex: entry.index, index: entries.length })
     return { format: mode, name: books[0].name, entries, books }
   }
-  return { ensure, readBook, writeBook, readFormat, listBooks }
+  return { ensure, readBook, writeBook, readFormat, listBooks, getUpgradeStatus, applyDefaultUpgrade }
 }
