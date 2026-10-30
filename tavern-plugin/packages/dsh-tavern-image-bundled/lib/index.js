@@ -248,6 +248,37 @@ function referenceFields(raw) {
   return fields
 }
 
+/**
+ * 规划抄挂载句时偶尔改了几个字（「喷在」写成「落在」）：在正文里找和它最像的一段（一到三句）代替，不再整张图丢掉。
+ * 按两字片段的重合度（Dice ≥ 0.45）；同样像时取靠后的（正文前面有时混着写作计划）。
+ */
+export function closestMount(mount, body, anchor = v => String(v ?? '')) {
+  const needle = anchor(mount)
+  if (needle.length < 4) return ''
+  const grams = text => { const out = new Set(); for (let i = 0; i + 1 < text.length; i++) out.add(text.slice(i, i + 2)); return out }
+  const want = grams(needle)
+  const source = String(body ?? '')
+  const cuts = [0]
+  for (const m of source.matchAll(/[。！？!?…\n]+/g)) cuts.push(m.index + m[0].length)
+  cuts.push(source.length)
+  let best = '', bestScore = 0
+  for (let i = 0; i < cuts.length - 1; i++) {
+    for (let j = i + 1; j < cuts.length && j <= i + 3; j++) {
+      const piece = source.slice(cuts[i], cuts[j]).trim()
+      const hay = anchor(piece)
+      if (hay.length < 4) continue
+      if (hay.length > needle.length * 2 + 10) break
+      const have = grams(hay)
+      let hit = 0
+      for (const g of want) if (have.has(g)) hit++
+      // 两边都算（Dice）：多带一句无关的正文会拉低分数；分数一样时取靠后的。
+      const score = 2 * hit / (want.size + have.size)
+      if (score >= bestScore) { bestScore = score; best = piece }
+    }
+  }
+  return bestScore >= 0.45 ? best : ''
+}
+
 export function normalizeOutfit(raw, index) {
   const item = {
     ...referenceFields(raw),
@@ -421,37 +452,6 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
         return bits.join(style === 'structured' ? '；' : ', ')
       })
     }
-
-/**
- * 规划抄挂载句时偶尔改了几个字（「喷在」写成「落在」）：在正文里找和它最像的一段（一到三句）代替，不再整张图丢掉。
- * 按两字片段的重合度（Dice ≥ 0.45）；同样像时取靠后的（正文前面有时混着写作计划）。
- */
-export function closestMount(mount, body, anchor = v => String(v ?? '')) {
-  const needle = anchor(mount)
-  if (needle.length < 4) return ''
-  const grams = text => { const out = new Set(); for (let i = 0; i + 1 < text.length; i++) out.add(text.slice(i, i + 2)); return out }
-  const want = grams(needle)
-  const source = String(body ?? '')
-  const cuts = [0]
-  for (const m of source.matchAll(/[。！？!?…\n]+/g)) cuts.push(m.index + m[0].length)
-  cuts.push(source.length)
-  let best = '', bestScore = 0
-  for (let i = 0; i < cuts.length - 1; i++) {
-    for (let j = i + 1; j < cuts.length && j <= i + 3; j++) {
-      const piece = source.slice(cuts[i], cuts[j]).trim()
-      const hay = anchor(piece)
-      if (hay.length < 4) continue
-      if (hay.length > needle.length * 2 + 10) break
-      const have = grams(hay)
-      let hit = 0
-      for (const g of want) if (have.has(g)) hit++
-      // 两边都算（Dice）：多带一句无关的正文会拉低分数；分数一样时取靠后的。
-      const score = 2 * hit / (want.size + have.size)
-      if (score >= bestScore) { bestScore = score; best = piece }
-    }
-  }
-  return bestScore >= 0.45 ? best : ''
-}
 
 /** 规划有时把角色清单里的「（常穿）」标记一起抄进宏里；匹配服装名前去掉它。 */
 function stripUsualSuffix(value) {
