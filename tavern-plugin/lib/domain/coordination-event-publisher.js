@@ -77,12 +77,21 @@ export function createCoordinationEventPublisher(options = {}) {
     }
   }
 
+  // options.onTick: a cheap check of a watched session's own (for example its card file changing),
+  // run with each fallback poll; its failures are reported, never thrown into the poll.
+  function tick(record) {
+    if (typeof options.onTick !== 'function' || record.watchers === 0) return
+    Promise.resolve().then(function () { return options.onTick(record.id) }).catch(function (error) {
+      if (typeof options.onError === 'function') options.onError(error)
+    })
+  }
+
   function watch(sessionId) {
     const record = recordFor(sessionId)
     record.watchers += 1
     if (record.watchers === 1) {
       void refresh(record, true)
-      record.timer = startInterval(function () { void refresh(record, true) }, fallbackIntervalMs)
+      record.timer = startInterval(function () { void refresh(record, true); tick(record) }, fallbackIntervalMs)
       if (record.timer && typeof record.timer.unref === 'function') record.timer.unref()
     }
     let stopped = false

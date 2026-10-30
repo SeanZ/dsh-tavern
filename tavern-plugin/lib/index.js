@@ -3517,8 +3517,27 @@ export async function apply(ctx) {
     return [runtimeGeneration, chatId, chatVersion, projectionVersion].join(':')
   }
 
+  // An open game picks up an edit of its card file by itself. The page reads a game only on that
+  // game's own events, and the automatic reload runs on such a read; an edit made while the game sits
+  // idle (in the card workbench, the editor or the file) would otherwise wait for a page refresh.
+  const watchedCardStamps = new Map()
+  async function noticeCardEdit(sessionId) {
+    const header = await chatHeaderForSession(sessionId, ['cardPath', 'mode', 'requestMode', 'settleStatus'])
+    if (!header || !['story', 'script'].includes(header.mode || 'story') || header.requestMode === 'sillytavern' || str(header.cardPath) === '') return
+    const stamp = (await fileResources.metadata(normalizeResourcePath(header.cardPath, 'card')).catch(() => null))?.updatedAt || 0
+    const seen = watchedCardStamps.get(sessionId)
+    if (seen === undefined) { watchedCardStamps.set(sessionId, stamp); return }
+    if (seen === stamp) return
+    // A busy game keeps the old stamp, so the edit is noticed again once it is idle.
+    if ((await sessionActivity(sessionId))?.busy === true || ['pending', 'running', 'waiting-runtime'].includes(header.settleStatus)) return
+    watchedCardStamps.set(sessionId, stamp)
+    const chat = await chatForSession(sessionId)
+    if (chat) await cardUpdateStatus(chat)
+  }
+
   coordinationEvents = createCoordinationEventPublisher({
     readVersion: async function (sessionId) { return await coordinationVersion(sessionId) },
+    onTick: noticeCardEdit,
     load: async function (sessionId) { return await candidateTasks.sync(sessionId, { kind: 'candidate' }) },
     publishSignal: function (sessionId, signal) { sessionSignals.publish(sessionId, signal) },
     fallbackIntervalMs: 5000,
