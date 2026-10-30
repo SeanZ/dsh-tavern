@@ -4416,8 +4416,15 @@ function createRuntime(ctx, overrides, logger, deps) {
 
       if (action === 'cancel') {
         const id = String(body?.id ?? '')
-        if (getJob(id)) sendJson(response, 200, { ok: true, job: cancelJob(id) })
-        else sendJson(response, 200, { ok: cancelTask(id) })
+        if (getJob(id)) {
+          const job = cancelJob(id)
+          try {
+            await persistJobs({ required: true })
+            sendJson(response, 200, { ok: true, job })
+          } catch (error) {
+            sendJson(response, 500, { ok: false, error: String(error?.message ?? error) })
+          }
+        } else sendJson(response, 200, { ok: cancelTask(id) })
         return
       }
 
@@ -4570,9 +4577,21 @@ async function readJson(path, fallback) {
 }
 
 async function writeJsonAtomic(path, value) {
-  const tmp = `${path}.tmp`
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  await rename(tmp, path)
+  const tmp = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmp, path)
+        break
+      } catch (error) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 4) throw error
+        await new Promise(resolve => setTimeout(resolve, Math.min(20 * (2 ** attempt), 100)))
+      }
+    }
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {})
+  }
 }
 
 function cacheRoot(config) { return join(ROOT, String(config.cacheDir || DEFAULTS.cacheDir)) }

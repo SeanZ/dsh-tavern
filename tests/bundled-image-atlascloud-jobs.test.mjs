@@ -16,6 +16,46 @@ const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000
 const json = data => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } })
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
 
+test('原子 JSON 写入短暂遇到 Windows rename 锁会有界重试，最终失败只清理临时文件', async () => {
+  const source = await readFile(new URL('lib/index.js', SOURCE), 'utf8')
+  const start = source.indexOf('async function writeJsonAtomic(path, value) {')
+  const next = source.indexOf('function cacheRoot(', start)
+  const end = source.lastIndexOf('}', next)
+  assert.ok(start >= 0 && end > start)
+  const compile = dependencies => vm.runInNewContext(`(${source.slice(start, end + 1)})`, dependencies)
+
+  const attempts = [], removed = [], written = []
+  const transientRename = async (tmp, target) => {
+    attempts.push([tmp, target])
+    if (attempts.length < 3) throw Object.assign(new Error('sharing violation'), { code: 'EPERM' })
+  }
+  await compile({
+    randomUUID: () => 'temporary-id', JSON, writeFile: async (...args) => written.push(args),
+    rename: transientRename, rm: async (path, options) => removed.push([path, options]),
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+  })('jobs-store.json', { state: 'cancelled' })
+  assert.equal(attempts.length, 3)
+  assert.deepEqual(attempts.map(([, target]) => target), Array(3).fill('jobs-store.json'))
+  assert.equal(written.length, 1)
+  assert.equal(removed[0][0], 'jobs-store.json.temporary-id.tmp')
+  assert.equal(removed[0][1].force, true)
+
+  const failedAttempts = [], failedRemoved = []
+  await assert.rejects(compile({
+    randomUUID: () => 'failed-id', JSON, writeFile: async () => {},
+    rename: async (tmp, target) => {
+      failedAttempts.push([tmp, target])
+      throw Object.assign(new Error('sharing violation'), { code: 'EPERM' })
+    },
+    rm: async (path, options) => failedRemoved.push([path, options]),
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+  })('jobs-store.json', { state: 'cancelled' }), error => error.code === 'EPERM')
+  assert.equal(failedAttempts.length, 5, '重试次数有上限')
+  assert.equal(failedRemoved.length, 1, '失败时只清理临时文件')
+  assert.equal(failedRemoved[0][0], 'jobs-store.json.failed-id.tmp')
+  assert.equal(failedRemoved[0][1].force, true)
+})
+
 async function fixture(t, { jobs = {}, provider = 'atlascloud' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-atlas-jobs-'))
   const pluginRoot = join(root, 'plugin')
@@ -197,6 +237,7 @@ test('Atlas 用户主动取消不被卸载恢复逻辑覆盖，保留取消和�
   await polling.promise
   const cancelled = await runtime.request('cancel', { id: created.body.id })
   assert.equal(cancelled.body.job.state, 'cancelled')
+  assert.equal((await f.stored())[created.body.id].state, 'cancelled', 'HTTP 成功响应前必须确认取消状态已落盘')
   runtime.close()
   const saved = await f.untilStored(created.body.id, job => job.state === 'cancelled')
   assert.equal(saved.cancelMayHaveContinued, true)
