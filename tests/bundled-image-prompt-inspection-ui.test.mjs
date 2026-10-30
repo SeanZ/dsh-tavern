@@ -9,6 +9,7 @@ function fragment(start, end) {
   assert.ok(at >= 0 && until > at)
   return source.slice(at, until)
 }
+const promptCapabilities = fragment('const IMAGE_REFERENCE_PROTOCOLS =', 'function createHistoryRequestEpoch()')
 const editor = fragment('    function PromptEditor() {', '    async function viewImage(')
 const upgrade = fragment('    function WorldbookUpgradePanel(', '    function SettingsPanel() {')
 const h = (type, props, ...children) => ({ type, props: props || {}, children })
@@ -27,7 +28,7 @@ function mount(code, name, props = {}, initial, extra = {}) {
     useEffect(fn) { const at = cursor++; if (!(at in slots)) { slots[at] = true; cleanup.push(fn()) } },
   }
   const ctx = vm.createContext({ React, h, useEffect() {}, BASE: '/plugins/dsh-tavern-image', confirm: () => true, ...extra })
-  const fn = vm.runInContext(`(()=>{let openPromptEditor;${code};return ${name}})()`, ctx)
+  const fn = vm.runInContext(`(()=>{${promptCapabilities};let openPromptEditor;${code};return ${name}})()`, ctx)
   let tree
   const render = () => { cursor = 0; tree = fn(props); return tree }
   render()
