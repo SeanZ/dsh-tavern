@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "b2289d0a13167ab38de3b3801b6316140b03280e",
-  "releaseSequence": 993,
+  "revision": "9ac8098653216b5062c40ce02b92f5e5d80cd388",
+  "releaseSequence": 994,
   "version": "3.1.0",
   "files": [
     {
@@ -2966,8 +2966,8 @@
     },
     {
       "path": "tavern-plugin/lib/gameplay-api.js",
-      "sha256": "b1b305474990abad2a87324a738a3b071060898866bf0e841441b52c1e9e7d82",
-      "size": 7797
+      "sha256": "1730313e009b7ad1791fabe13c69b31cb81b9a31f767787af94c4d559f8d2e1b",
+      "size": 7975
     },
     {
       "path": "tavern-plugin/lib/hooks/model-stream.js",
@@ -5151,9 +5151,9 @@
     }
   ],
   "archive": {
-    "commit": "dc8349e863f7b157b41aec7eb2ed3d16f67efa18",
+    "commit": "bd2c152fc5fe3f5a7a0a7e465042396668932db0",
     "path": "runtime.zip",
-    "sha256": "d1fb3586fed5af55874d68c8508e15e6aae62df8cf71a674dd94dc11731a658c",
-    "size": 10669429
+    "sha256": "04e5cb768fc693bea301f4cc50c3f3bcff3f4b00a7bf7cde618eaca1ce36c7fa",
+    "size": 10669477
   }
 }
