@@ -58,6 +58,12 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
   ].map(([label, value]) => textOf(value) ? `- ${label}：${textOf(value)}` : '').filter(Boolean)
 
   const existingNames = existing.map(o => textOf(o?.name)).filter(Boolean)
+  // 人物外貌是中文写的（给 MOSS 这类读中文整句的模型用）：服装也要中文整句，格式照人物库现有的来。
+  // 外貌是英文 Tag 的角色照旧出英文 Tag。
+  const chinese = /[\u3400-\u9fff]/.test([traits.face, traits.bodySFW].map(textOf).join(''))
+  // 已有服装当风格参考：时代背景（古风 / 现代）、写法和颜色习惯都照它们来。
+  const samples = existing.filter(o => o && o.enabled !== false && (textOf(o.upper) || textOf(o.lower))).slice(0, 3)
+    .map(o => '- ' + textOf(o.name) + '：' + [o.upper, o.lower, o.shoes].map(textOf).filter(Boolean).join('；'))
 
   const system = [
     '你是角色服装设计师，为一个虚构角色设计成套的服装，输出严格的 JSON 数组。',
@@ -77,22 +83,49 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
     '- 造型线索不重复：至少要换掉 upper 或 lower 之一',
     '- 覆盖不同场合：日常 / 正式 / 居家 / 户外 / 季节',
     '',
-    '每套服装的字段：',
-    '- name       中文名，简短（如「常服」「雨夜外衣」「夏日便装」）',
-    '- upper      上身英文 Tag（white shirt, denim jacket）',
-    '- lower      下身英文 Tag（black slacks, pleated skirt）',
-    '- shoes      鞋英文 Tag',
-    '- accessory  配饰，可空',
-    '- full       整套一句话描述，可空',
-    '- back       背影专用补充，可空',
-    '- negative   这套不该出现的元素，可空',
-    '- nsfw       只用于私密场景时为 true，否则 false',
-    '- default    是否常穿，最多一套 true',
+    ...(samples.length ? ['这个角色已有的服装（时代背景、写法和用色照这些来，新衣服不要和它们重样）：', ...samples] : []),
+    '',
+    ...(chinese ? [
+      '每套服装的字段（全部用中文完整短句，画图模型读中文整句，不认英文 Tag）：',
+      '- name       中文名，简短好记，4～10 个字（如「月白素纱古风旗袍」「雨夜青布斗篷」），不要带括号，不要加「女装·常服」这类分类后缀',
+      '- upper      上身，以「上身穿着」开头，写清颜色、面料、领口、袖子（如「上身穿着一件淡蓝色丝绸交领上襦，衬着白色内领，宽袖，袖口绣花」）',
+      '- lower      下身，以「下身是」开头，写清颜色、款式、长度（如「下身是一条白色高腰百褶长裙，垂到脚踝」）',
+      '- shoes      鞋袜，以「脚上穿着」开头，写清颜色和款式',
+      '- accessory  配饰（簪子、耳坠、玉佩、镯子、腰带等），可空',
+      '- full       整套一句话总结，如「整体是清雅的江南仕女日常装」，可空',
+      '- back       从背后看的样子，如「背后是长长的丝带和裙褶」，可空',
+      '- negative   这套不该出现的元素，可空',
+      '- nsfw       只用于私密场景时为 true，否则 false',
+      '- default    是否常穿，最多一套 true',
+      '',
+      '写法要求：',
+      '- 每一件都要写颜色：没写颜色的衣服，每张图会被画成不一样的颜色。不要只写「素色」「深色」这种含糊的颜色。',
+      '- 旗袍、连衣裙、长袍这类连体的衣服：upper 写整件衣服（颜色、领口、袖子），lower 写下摆的长度（如「旗袍的长下摆一直垂到脚踝，裹住双腿」），不要把 lower 空着。',
+      '- 不写开衩、裙摆分叉、「露出一截腿」这类会露腿的写法：人一坐下，模型会从开衩里多画出一条腿（实测出现过三条腿）。',
+      '- 发型不写进服装（不写「头发束成马尾」「挽成发髻」），发型属于人物外貌；发饰可以写在 accessory。',
+      '- 不写否定句（「没有……」「不露……」），画图模型会把否定的东西画出来；要遮住的地方直接写「高立领」「长袖」这样的正面说法。',
+    ] : [
+      '每套服装的字段：',
+      '- name       中文名，简短（如「常服」「雨夜外衣」「夏日便装」），不要带括号',
+      '- upper      上身英文 Tag（white shirt, denim jacket）',
+      '- lower      下身英文 Tag（black slacks, pleated skirt）',
+      '- shoes      鞋英文 Tag',
+      '- accessory  配饰，可空',
+      '- full       整套一句话描述，可空',
+      '- back       背影专用补充，可空',
+      '- negative   这套不该出现的元素，可空',
+      '- nsfw       只用于私密场景时为 true，否则 false',
+      '- default    是否常穿，最多一套 true',
+      '',
+      '每一件都要带颜色（white shirt，不写 shirt）。',
+    ]),
     '',
     '只写服装本身：面料、版型、颜色、配饰、暴露程度。不要写身体描写，不要写情节，不要写年龄解释。',
     '',
     '输出格式：只输出 JSON 数组，不要任何解释文字、不要 markdown 代码围栏：',
-    '[{"name":"常服","upper":"white shirt","lower":"black slacks","shoes":"leather loafers","accessory":"","full":"office attire","back":"","negative":"","nsfw":false,"default":true}]',
+    chinese
+      ? '[{"name":"青竹纹素绸襦裙","upper":"上身穿着一件浅青色素绸交领短襦，袖口绣着细竹纹，窄袖","lower":"下身是一条月白色高腰长裙，垂到脚踝","shoes":"脚上穿着浅青色软缎绣鞋","accessory":"腰间系着一条青色丝绦，挂着一枚白玉坠","full":"整体是清爽的夏日常服","back":"背后是垂下的丝绦和裙褶","negative":"","nsfw":false,"default":false}]（这只是格式示例，不要照抄名字和内容）'
+      : '[{"name":"常服","upper":"white shirt","lower":"black slacks","shoes":"leather loafers","accessory":"","full":"office attire","back":"","negative":"","nsfw":false,"default":true}]',
   ].join('\n')
 
   return {
@@ -142,7 +175,8 @@ export function parseOutfits(text) {
   const seenNames = new Set()
   for (const item of list) {
     if (!item || typeof item !== 'object') { dropped++; continue }
-    const name = textOf(item.name)
+    // 名字去掉空白；模型仍给了括号分类后缀（「……（女装·常服）」）时去掉，免得规划写状态时括号套括号。
+    const name = textOf(item.name).replace(/\s+/g, '').replace(/[（(][^（）()]*[）)]$/, '') || textOf(item.name)
     const upper = textOf(item.upper)
     const lower = textOf(item.lower)
     // name 与上下身至少各有一个，否则这套没意义
@@ -168,13 +202,15 @@ export function parseOutfits(text) {
  */
 export function mergeOutfits(existing, incoming, { keepDefault = true } = {}) {
   const base = Array.isArray(existing) ? existing.slice() : []
-  const names = new Set(base.map(o => textOf(o?.name)).filter(Boolean))
+  // 认重名时去掉空白和括号：「常服」「常服 」「常服（女装）」算同一套，不重复加。
+  const key = v => textOf(v).replace(/\s+/g, '').replace(/[（(][^（）()]*[）)]/g, '')
+  const names = new Set(base.map(o => key(o?.name)).filter(Boolean))
   let added = 0, skipped = 0
   let hasDefault = base.some(o => o && o.default === true)
   for (const outfit of Array.isArray(incoming) ? incoming : []) {
     const name = textOf(outfit?.name)
-    if (!name || names.has(name)) { skipped++; continue }
-    names.add(name)
+    if (!name || names.has(key(name))) { skipped++; continue }
+    names.add(key(name))
     const next = { ...outfit }
     if (keepDefault && hasDefault) next.default = false
     else if (next.default === true) hasDefault = true
