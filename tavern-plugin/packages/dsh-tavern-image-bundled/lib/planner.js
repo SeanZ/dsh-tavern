@@ -249,9 +249,13 @@ export function parsePlannerDecision(text) {
   return { decision, reason, characterUpdates, characterUpdatesPresent: Boolean(updateBlock), characterUpdatesValid }
 }
 
-/** 人物库备注（note）里写了「玩家」或 player：这个角色就是玩家本人（正文里的「我」「你」）。 */
+/** 人物库备注明确标为「玩家」或 player，且没有否定该标记时，这个角色就是玩家本人。 */
 export function isPlayerCharacter(character) {
-  return /玩家|player/i.test(String(character?.note ?? ''))
+  const note = String(character?.note ?? '')
+    // 否定标签不能因为包含「玩家」/ player 子串而被当作肯定标记。
+    .replace(/(?:并不是|并非|不是|非|不属于|不算)\s*玩家/gi, ' ')
+    .replace(/\b(?:non[-\s]?player|(?:is\s+)?not\s+(?:a\s+|the\s+)?player|isn['’]?t\s+(?:a\s+|the\s+)?player|no\s+player)\b/gi, ' ')
+  return /玩家|\bplayer\b/i.test(note)
 }
 
 /**
