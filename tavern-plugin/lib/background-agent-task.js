@@ -138,6 +138,7 @@ export function createBackgroundAgentTask(options) {
     return async function (childCtx) {
       if (setupAgent !== null) await setupAgent(childCtx)
       state.ctx = childCtx
+      // 0.2.1 由可变引用选择模型；alpha.2 只用此钩子显示切换提示，实际选择在任务开始时写入 Agent。
       state.modelSelection = { current: { ...state.input.selection }, assembled: undefined }
       installModelSelection(childCtx, state.modelSelection)
       childCtx.on('agent/assistant-stream', ({frame}) => state.progress?.frame(frame))
@@ -413,6 +414,8 @@ export function createBackgroundAgentTask(options) {
 
     try {
       input.signal?.throwIfAborted()
+      // alpha.2 恢复会话时优先使用已记录模型；在回退之后、首个 pre-step 之前应用本任务的完整选择。
+      agent.model?.select(input.selection)
       if (persistent && typeof input.onPersistentSessionReady === 'function') {
         // Persist the native session before publishing its identity, even if the first task fails.
         if (typeof options.flushSession === 'function') await options.flushSession(agent.session)
