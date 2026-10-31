@@ -741,14 +741,14 @@
 				const [busy, setBusy] = React.useState(false);
 				// Progress and outcome show in the turn's text (TavernIllustrationDraft), not here.
 				async function draw() {
-					if (busy) return;
+					if (busy || props.disabled) return;
 					setBusy(true);
 					try { await runTavernIllustrator(props.illustrator, props.sessionId, props.turn); }
 					finally { setBusy(false); }
 				}
 				const label = busy ? "正在整理画面…" : "为这一轮配图";
 				return React.createElement(DshUi.Tooltip, { label: label, side: "bottom" },
-					React.createElement("button", { type: "button", className: "dsh-tavern-message-fork dsh-tavern-message-illustrate", "aria-label": label, disabled: busy, onClick: draw },
+					React.createElement("button", { type: "button", className: "dsh-tavern-message-fork dsh-tavern-message-illustrate" + (props.className ? " " + props.className : ""), "aria-label": label, disabled: busy || props.disabled, onClick: draw },
 						React.createElement(TavernIllustrateIcon, null)));
 			}
 			function register(input) {
@@ -814,5 +814,5 @@
 					}, TavernIllustrateAssistantAction); });
 				}, "dsh-tavern: earlier-turn illustration action");
 			}
-			return Object.freeze({ register: register });
+			return Object.freeze({ register: register, IllustrateAction: TavernPluginIllustrateAction });
 		}
