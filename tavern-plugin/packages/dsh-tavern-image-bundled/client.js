@@ -5714,6 +5714,8 @@ function versionsOf(jobId) {
           } catch { return saved }
         }
         const [draft, setDraftState] = React.useState(readDraft)
+        const [characterRequirements, setCharacterRequirements] = React.useState(String(config.characterDesignRequirements || ''))
+        const [outfitRequirements, setOutfitRequirements] = React.useState(String(config.outfitDesignRequirements || ''))
         const setDraft = next => {
           const value = typeof next === 'function' ? next(draft) : next
           setDraftState(value)
@@ -5758,6 +5760,26 @@ function versionsOf(jobId) {
               h('option', { value: 'auto', style: optStyle }, '自动'), h('option', { value: 'tags', style: optStyle }, '标签'), h('option', { value: 'natural', style: optStyle }, '自然语言'), h('option', { value: 'mixed', style: optStyle }, '混合'), h('option', { value: 'structured', style: optStyle }, '结构化自然语言')),
             h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, '当前：' + (config.promptEffectiveFormat || 'mixed')),
           ),
+          h('div', { style: Object.assign({}, S.row, { marginTop: '8px' }) },
+            h('label', { style: S.label }, '角色与服装生成写法'),
+            h('select', { 'aria-label': '角色与服装生成写法', value: config.designPromptMode || 'auto', style: S.input, onChange: e => save({ designPromptMode: e.target.value }) },
+              h('option', { value: 'auto', style: optStyle }, '自动'),
+              h('option', { value: 'chinese', style: optStyle }, '中文整句'),
+              h('option', { value: 'tags', style: optStyle }, '英文 Tag')),
+          ),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', margin: '4px 0 7px' } }, '自动参考现有角色资料；角色设计缺少现有资料时参考绘图模型。已有条目不会被自动翻译。'),
+          h('label', { style: Object.assign({}, S.row, { marginTop: '7px' }) },
+            h('input', { type: 'checkbox', 'aria-label': '挂载句单字错字容错', checked: config.closestMountTolerance === true, onChange: e => save({ closestMountTolerance: e.target.checked }) }),
+            h('span', null, '挂载句单字错字容错（默认关闭）')),
+          h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', margin: '2px 0 7px' } }, '开启后只接受唯一、长度足够且仅差一个非动作/颜色/方向/否定字的句子；其他情况仍跳过该图。'),
+          h('label', { style: { display: 'block', fontSize: '12px', margin: '7px 0 3px' } }, '角色生成要求'),
+          h('textarea', { 'aria-label': '角色生成要求', value: characterRequirements, placeholder: '补充角色外貌、字段写法或其他生成偏好', style: area('55px'), onChange: e => setCharacterRequirements(e.target.value) }),
+          h('label', { style: { display: 'block', fontSize: '12px', margin: '7px 0 3px' } }, '服装生成要求'),
+          h('textarea', { 'aria-label': '服装生成要求', value: outfitRequirements, placeholder: '补充服装款式、命名或字段写法要求', style: area('55px'), onChange: e => setOutfitRequirements(e.target.value) }),
+          h('button', { style: Object.assign({}, buttonStyle, { marginTop: '5px' }), onClick: async () => {
+            const result = await save({ characterDesignRequirements: characterRequirements, outfitDesignRequirements: outfitRequirements })
+            setMessage(result ? '角色与服装生成要求已保存。' : '保存失败。')
+          } }, '保存角色与服装要求'),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' } }, library.map(profile => h('button', { key: profile.id, style: Object.assign({}, buttonStyle, { borderColor: activeId === profile.id ? 'var(--dsw-alias-brand-primary)' : undefined }), onClick: () => save({ activePromptPreset: profile.id }) }, (activeId === profile.id ? '● ' : '○ ') + profile.name))),
           h('div', { style: Object.assign({}, S.row, { marginTop: '7px' }) }, h('button', { style: buttonStyle, disabled: draft.length >= 60, onClick: addBlank }, '新建空白预设'), h('button', { style: buttonStyle, onClick: () => save({ activePromptPreset: '' }) }, '不使用预设')),
           draft.map((p, i) => h('div', { key: p.id || i, style: { padding: '9px', marginTop: '8px', border: '1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 25%, transparent)', borderRadius: '8px' } },

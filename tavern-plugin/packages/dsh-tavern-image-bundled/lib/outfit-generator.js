@@ -44,7 +44,7 @@ function listOf(value) {
  * @param {boolean} [input.nsfw]        是否包含私密场景服装
  * @returns {{ system: string, text: string, count: number, ageBand: string, nsfw: boolean }}
  */
-export function buildOutfitPrompt({ character, preference = '', count = 3, ageBand = 'adult', nsfw = false } = {}) {
+export function buildOutfitPrompt({ character, preference = '', count = 3, ageBand = 'adult', nsfw = false, promptMode = 'auto', requirements = '' } = {}) {
   const safeCount = Math.max(1, Math.min(12, Number.isFinite(Number(count)) ? Math.trunc(Number(count)) : 3))
   const safeAge = AGE_BANDS.includes(ageBand) ? ageBand : 'adult'
   const name = textOf(character?.name) || '（未命名角色）'
@@ -60,7 +60,8 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
   const existingNames = existing.map(o => textOf(o?.name)).filter(Boolean)
   // 人物外貌是中文写的（给 MOSS 这类读中文整句的模型用）：服装也要中文整句，格式照人物库现有的来。
   // 外貌是英文 Tag 的角色照旧出英文 Tag。
-  const chinese = /[\u3400-\u9fff]/.test([traits.face, traits.bodySFW].map(textOf).join(''))
+  const chinese = promptMode === 'chinese' || (promptMode !== 'tags' && /[\u3400-\u9fff]/.test([traits.face, traits.bodySFW].map(textOf).join('')))
+  const customRequirements = textOf(requirements)
   // 已有服装当风格参考：时代背景（古风 / 现代）、写法和颜色习惯都照它们来。
   const samples = existing.filter(o => o && o.enabled !== false && (textOf(o.upper) || textOf(o.lower))).slice(0, 3)
     .map(o => '- ' + textOf(o.name) + '：' + [o.upper, o.lower, o.shoes].map(textOf).filter(Boolean).join('；'))
@@ -87,7 +88,7 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
     '',
     ...(chinese ? [
       '每套服装的字段（全部用中文完整短句，画图模型读中文整句，不认英文 Tag）：',
-      '- name       中文名，简短好记，4～10 个字（如「月白素纱古风旗袍」「雨夜青布斗篷」），不要带括号，不要加「女装·常服」这类分类后缀',
+      '- name       简短好记的名称；可以使用括号补充款式或季节信息',
       '- upper      上身，以「上身穿着」开头，写清颜色、面料、领口、袖子（如「上身穿着一件淡蓝色丝绸交领上襦，衬着白色内领，宽袖，袖口绣花」）',
       '- lower      下身，以「下身是」开头，写清颜色、款式、长度（如「下身是一条白色高腰百褶长裙，垂到脚踝」）',
       '- shoes      鞋袜，以「脚上穿着」开头，写清颜色和款式',
@@ -106,7 +107,7 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
       '- 不写否定句（「没有……」「不露……」），画图模型会把否定的东西画出来；要遮住的地方直接写「高立领」「长袖」这样的正面说法。',
     ] : [
       '每套服装的字段：',
-      '- name       中文名，简短（如「常服」「雨夜外衣」「夏日便装」），不要带括号',
+      '- name       简短好记的名称；可以使用括号补充款式或季节信息',
       '- upper      上身英文 Tag（white shirt, denim jacket）',
       '- lower      下身英文 Tag（black slacks, pleated skirt）',
       '- shoes      鞋英文 Tag',
@@ -126,7 +127,10 @@ export function buildOutfitPrompt({ character, preference = '', count = 3, ageBa
     chinese
       ? '[{"name":"青竹纹素绸襦裙","upper":"上身穿着一件浅青色素绸交领短襦，袖口绣着细竹纹，窄袖","lower":"下身是一条月白色高腰长裙，垂到脚踝","shoes":"脚上穿着浅青色软缎绣鞋","accessory":"腰间系着一条青色丝绦，挂着一枚白玉坠","full":"整体是清爽的夏日常服","back":"背后是垂下的丝绦和裙褶","negative":"","nsfw":false,"default":false}]（这只是格式示例，不要照抄名字和内容）'
       : '[{"name":"常服","upper":"white shirt","lower":"black slacks","shoes":"leather loafers","accessory":"","full":"office attire","back":"","negative":"","nsfw":false,"default":true}]',
-  ].join('\n')
+  ].join('\n') + [
+    customRequirements ? '【用户自定义服装要求】\n' + customRequirements + '\n优先遵循用户对风格、款式、命名和写法的要求；仍须保留上述 JSON 数组结构、字段、数量和已选语言。' : '',
+    '【写法选择】' + (chinese ? '使用中文整句。' : '使用英文绘图 Tag。') + '不得因自定义风格要求切换此语言。',
+  ].filter(Boolean).join('\n\n')
 
   return {
     system,
@@ -175,8 +179,8 @@ export function parseOutfits(text) {
   const seenNames = new Set()
   for (const item of list) {
     if (!item || typeof item !== 'object') { dropped++; continue }
-    // 名字去掉空白；模型仍给了括号分类后缀（「……（女装·常服）」）时去掉，免得规划写状态时括号套括号。
-    const name = textOf(item.name).replace(/\s+/g, '').replace(/[（(][^（）()]*[）)]$/, '') || textOf(item.name)
+    // 名称原样保留括号内容（季节、款式等可能区分两套服装）。
+    const name = textOf(item.name)
     const upper = textOf(item.upper)
     const lower = textOf(item.lower)
     // name 与上下身至少各有一个，否则这套没意义
@@ -202,8 +206,8 @@ export function parseOutfits(text) {
  */
 export function mergeOutfits(existing, incoming, { keepDefault = true } = {}) {
   const base = Array.isArray(existing) ? existing.slice() : []
-  // 认重名时去掉空白和括号：「常服」「常服 」「常服（女装）」算同一套，不重复加。
-  const key = v => textOf(v).replace(/\s+/g, '').replace(/[（(][^（）()]*[）)]/g, '')
+  // 只忽略空白；括号内容可能区分季节、款式或用途，不能据此合并。
+  const key = v => textOf(v).replace(/\s+/g, '')
   const names = new Set(base.map(o => key(o?.name)).filter(Boolean))
   let added = 0, skipped = 0
   let hasDefault = base.some(o => o && o.default === true)

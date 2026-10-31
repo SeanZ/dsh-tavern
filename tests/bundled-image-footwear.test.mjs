@@ -26,6 +26,12 @@ test('脱鞋、换拖鞋、只穿袜子：服装里的鞋去掉，袜子保留',
   const out = expandRosterCalls(raw, defs, 'natural', { style: 'tags' })
   assert.doesNotMatch(out, /white sneakers/)
   assert.match(out, /white ankle socks/)
+  for (const socks of ['white stockings', 'black pantyhose', 'dark tights', 'thigh-highs']) {
+    const scene = expandRosterCalls('${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$, 她光着脚站着', { characters: [{ ...jing, outfits: [{ name: 'test', upper: '', lower: socks, shoes: 'red shoes', default: true }] }] }, 'sfw', { style: 'tags' })
+    assert.doesNotMatch(scene, new RegExp(socks.replace('-', '[- ]?')), socks + ' should be removed when barefoot')
+  }
+  const sockOnly = expandRosterCalls('${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$, 她脱了鞋，只穿袜子', defs, 'sfw', { style: 'tags' })
+  assert.match(sockOnly, /white ankle socks/)
 })
 
 test('中文赤脚和英文 barefoot 一样，鞋袜都不写', () => {
@@ -51,4 +57,19 @@ test('鞋拿在手里时不算赤脚，也不往负面里加 shoes', () => {
   const raw = '1girl, Xu Jinghao, 光脚站着，手里拎着鞋'
   const { negative = '' } = injectDefinitions(raw, defs, {}, { raw })
   assert.doesNotMatch(String(negative), /\bshoes\b/)
+  const handheld = expandRosterCalls('${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$ 她拎着鞋，脚上穿着白袜。', defs, 'sfw', { style: 'tags' })
+  assert.doesNotMatch(handheld, /white sneakers/)
+  assert.match(handheld, /white ankle socks/)
+})
+
+test('多人画面只按能归属到该角色的鞋袜描述处理', () => {
+  const second = { id: 'b', name: '宋玉轩', match: 'Song Yuxuan', enabled: true, traits: { face: 'short hair' },
+    outfits: [{ id: 'b1', name: '制服', upper: 'white blouse', lower: 'navy skirt', shoes: '白色运动鞋，白色短袜', default: true }] }
+  const multi = { characters: [jing, second] }
+  const raw = '${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$ Xu Jinghao光着脚。${"name":"Song Yuxuan","upperBody":"sfw","lowerBody":"sfw"}$ Song Yuxuan穿着白色运动鞋。'
+  const out = expandRosterCalls(raw, multi, 'sfw', { style: 'tags' })
+  assert.doesNotMatch(out, /white sneakers/, out)
+  assert.equal((out.match(/白色运动鞋/g) || []).length, 2, out, 'B retains the library shoes alongside the scene description')
+  const ambiguous = '${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$ 她光着脚。${"name":"Song Yuxuan","upperBody":"sfw","lowerBody":"sfw"}$ 他站在一旁。'
+  assert.match(expandRosterCalls(ambiguous, multi, 'sfw', { style: 'tags' }), /白色运动鞋/)
 })

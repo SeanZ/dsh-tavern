@@ -20,10 +20,12 @@ test('人物外貌是英文 Tag：照旧要英文 Tag', () => {
   assert.doesNotMatch(system, /全部用中文完整短句/)
 })
 
-test('服装名去掉空白和末尾的括号分类；合并时「常服」「常服（女装）」算同一套', () => {
+test('服装名保留括号原文；夏冬款不会因括号被合并', () => {
   const { outfits } = parseOutfits('[{"name":"月白素纱 旗袍（女装·常服）","upper":"上身穿着一件月白色旗袍","lower":"下身是长下摆"}]')
-  assert.equal(outfits[0].name, '月白素纱旗袍')
-  const merged = mergeOutfits([{ name: '常服' }], [{ name: '常服（女装）', upper: 'x', lower: 'y' }, { name: '新衣', upper: 'x', lower: 'y' }])
-  assert.equal(merged.added, 1)
-  assert.equal(merged.skipped, 1)
+  assert.equal(outfits[0].name, '月白素纱 旗袍（女装·常服）')
+  const parsed = parseOutfits('[{"name":"制服（夏季）","upper":"white summer shirt","lower":"blue skirt"},{"name":"制服（冬季）","upper":"wool coat","lower":"wool pants"}]')
+  assert.deepEqual(parsed.outfits.map(item => item.name), ['制服（夏季）', '制服（冬季）'])
+  const merged = mergeOutfits([{ name: '制服（夏季）' }], [{ name: '制服（冬季）', upper: 'x', lower: 'y' }, { name: '新衣', upper: 'x', lower: 'y' }])
+  assert.equal(merged.added, 2)
+  assert.equal(merged.skipped, 0)
 })

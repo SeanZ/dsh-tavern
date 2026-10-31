@@ -13,6 +13,9 @@ test('画面没写时间：从正文最后一个状态栏补；写了白天或�
   assert.equal(addSceneTime('全身，午后的阳光照进客厅。', body), '全身，午后的阳光照进客厅。')
   assert.equal(addSceneTime('夜里，窗外漆黑，她点灯。', ''), '夜里，窗外漆黑，她点灯。')
   assert.equal(addSceneTime('1girl, night, kitchen', ''), '1girl, night, kitchen', '英文 tag 画面不动')
+  assert.equal(addSceneTime('她的长发如夜幕般垂落，午后阳光明亮。', body), '她的长发如夜幕般垂落，午后阳光明亮。')
+  assert.equal(addSceneTime('她并非在夜里，午后阳光照亮客厅。', body), '她并非在夜里，午后阳光照亮客厅。')
+  assert.equal(addSceneTime('午后阳光洒进屋里，窗外夜色渐深。', body), '午后阳光洒进屋里，窗外夜色渐深。', '昼夜线索冲突时不擅自补时间')
 })
 
 test('开头的人物宏和镜头句保持在前面，时间句插在它们后面', () => {
@@ -23,9 +26,13 @@ test('开头的人物宏和镜头句保持在前面，时间句插在它们后�
 test('三个人以上：竖图改横图；两个人不动', () => {
   const three = '${"name":"A"}$ 她站着。${"name":"B"}$ 他坐着。${"name":"C"}$ 她笑着。'
   assert.equal(sceneHeadcount(three), 3)
-  assert.equal(crowdSize('竖图', three), '横图')
+  assert.equal(crowdSize('竖图', three), '竖图')
   assert.equal(crowdSize('', three), '横图')
   assert.equal(crowdSize('横图', three), '横图')
   assert.equal(crowdSize('竖图', '${"name":"A"}$ ${"name":"B"}$ 画面里是两个人。'), '竖图')
-  assert.equal(crowdSize('832x1216', '画面里是三个人。'), '横图')
+  assert.equal(crowdSize('832x1216', '画面里是三个人。'), '832x1216')
+  assert.equal(crowdSize('portrait', three), 'portrait')
+  const twoCharactersAndOutfit = '${"name":"A"}$ 她站着。${"name":"B"}$ 他坐着。${"name":"夏日制服","upperBody":"visible"}$'
+  assert.equal(sceneHeadcount(twoCharactersAndOutfit), 2)
+  assert.equal(crowdSize('', twoCharactersAndOutfit), '')
 })

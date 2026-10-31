@@ -25,7 +25,7 @@ const sameFamily = (a, b) => {
   return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x) || (baseName(x) && baseName(x) === baseName(y))))
 }
 const CHINESE_CUE_NEGATION = /(?:并不是|不是|并没有|没有|并无|并非|非|无|未曾|并未|不再|不带|不具有|不长|未见|看不到|看不见|不见)(?:[\u3400-\u9fff]{0,4})$/
-const hasPositiveChineseCue = (scene, cue) => {
+export const hasPositiveChineseCue = (scene, cue) => {
   let at = scene.indexOf(cue)
   while (at >= 0) {
     const before = scene.slice(Math.max(0, at - 12), at)

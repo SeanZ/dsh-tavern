@@ -51,4 +51,7 @@ test('同一角色的两个形态（名字只差括号后缀）：宏写本名�
   assert.match(plain, /human ears/)
   const tail = expandRosterCalls('${"name":"Yin Xue","angle":"from front"}$, 她身后的狐尾轻轻摆着', forms, 'natural', { style: 'tags' })
   assert.match(tail, /silver hair/)
+  const denied = expandRosterCalls('${"name":"Yin Xue","angle":"from front"}$ 她不是狐耳，也没有狐尾', forms, 'natural', { style: 'tags' })
+  assert.match(denied, /human ears/)
+  assert.doesNotMatch(denied, /silver hair/)
 })
