@@ -132,7 +132,7 @@ export function resolvePromptMode(config = {}, backend = '') {
   if (isComfy) {
     if (name.includes('flux')) return 'natural'
     // Z-Image / Lumina / Qwen-Image / HiDream 用大语言模型做文本编码器，读整句自然语言；SDXL（如 Illustrious、Pony）读 tag。
-    if (/z[\s_-]?image|lumina|qwen[\s_-]?image|hidream/.test(name)) return 'natural'
+    if (/z[\s_-]?image|lumina|qwen[\s_-]?image|hidream|moss/.test(name)) return 'natural'
     if (name.includes('anima')) return 'mixed'
     return 'tags'
   }
@@ -141,6 +141,14 @@ export function resolvePromptMode(config = {}, backend = '') {
   if (name === 'flux' || name.startsWith('flux ')) return 'natural'
   if (name === 'anima' || name.startsWith('anima ')) return 'mixed'
   return 'mixed'
+}
+
+/**
+ * 文本编码器读得懂中文的本地模型（目前是 MOSS-Image，编码器是 Qwen3.5）：中文画面描述原样保留，
+ * 相当于对这类工作流自动打开 allowChinesePrompt。其他 ComfyUI 模型照旧清理中文。
+ */
+export function acceptsChinese(backend = '') {
+  return /moss/.test(String(backend ?? '').toLowerCase())
 }
 
 export function formatPromptForBackend(text, backend = '', mode = 'tags') {
@@ -154,7 +162,10 @@ export function formatPromptForBackend(text, backend = '', mode = 'tags') {
   } else if (name.includes('novelai')) {
     out = out.replace(/\(([^(),]+):\s*(\d+(?:\.\d+)?)\)/g, (_m, tag, weight) => `${Math.max(0.01, Math.min(2, Number(weight))).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}::${tag.trim()}::`)
   }
-  return out.replace(/\s*,\s*/g, ', ').replace(/,\s*,+/g, ',').trim()
+  out = out.replace(/\s*,\s*/g, ', ').replace(/,\s*,+/g, ',')
+  // 中文整句后面紧跟的英文逗号（「……空气感。, 画面中……」）去掉，只留中文句号。
+  if (mode === 'natural' || mode === 'mixed') out = out.replace(/([。！？；：])\s*,\s*/g, '$1')
+  return out.trim()
 }
 
 function textForMode(preset, mode) {

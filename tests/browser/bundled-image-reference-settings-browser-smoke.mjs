@@ -25,11 +25,15 @@ const books = format => [{ key: 'main', name: format + '规则', count: 1, entri
 const worldbooks = Object.fromEntries(['tags', 'natural', 'mixed', 'structured'].map(format => [format, books(format)]))
 const state = {
   referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
-    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [] },
+    designPromptMode: 'auto', characterDesignRequirements: '', outfitDesignRequirements: '',
+    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [{ id: 'legacy-entry', name: '旧提示词条目', positive: 'legacy positive', negative: 'legacy negative', enabled: true }] },
   definitions: { characters: [{ id: 'person-a', name: '林月', match: 'Lin Yue', cards: [], traits: { face: 'keep original traits' }, outfits: [{ id: 'outfit-a', name: '白衬衫', upper: 'white shirt', enabled: true }] }], scenes: [], props: [] },
   outfits: [{ id: 'shared-a', name: '通用外套', upper: 'coat', enabled: true }],
   worldbookFormat: 'tags', worldbookBooks: clone(worldbooks.tags), tasks: [], workflows: [{ id: 'workflow-a', label: 'Reference workflow', file: 'workflow-a.json', enabled: true, current: true, summary: { nodeCount: 5 } }], imageProviders: [{ id: 'openai', label: 'OpenAI 兼容' }, { id: 'custom', label: '自定义 API' }],
 }
+const preservedWorldbooks = clone(worldbooks)
+const preservedPromptPresets = clone(state.config.promptPresets)
+const preservedCharacterEntry = clone(state.definitions.characters[0])
 function publicState() {
   const next = clone(state)
   for (const channel of next.config.imageChannels || []) {
@@ -105,6 +109,55 @@ try {
   assert.equal(state.config.promptMode, 'structured')
   assert.equal(state.config.imageChannels[0].model, 'keep-exact-model')
   assert.ok(calls.filter(call => call.path === '/config').every(call => !Object.hasOwn(call.body.config, 'imageChannels')), 'mode switches never alter model/channel configuration')
+
+  const waitForConfigPatch = expected => page.waitForResponse(response => {
+    if (!response.url().endsWith('/config') || response.request().method() !== 'POST') return false
+    const patch = response.request().postDataJSON()?.config
+    return Object.entries(expected).every(([key, value]) => patch?.[key] === value)
+  })
+  const selectDesignMode = async value => {
+    const response = waitForConfigPatch({ designPromptMode: value })
+    await page.getByLabel('角色与服装生成写法', { exact: true }).selectOption(value)
+    await response
+    assert.equal(state.config.designPromptMode, value)
+  }
+  const saveDesignRequirements = async (characterText, outfitText) => {
+    const expected = { characterDesignRequirements: characterText, outfitDesignRequirements: outfitText }
+    const response = waitForConfigPatch(expected)
+    await page.getByRole('button', { name: '保存角色与服装要求', exact: true }).click()
+    const saved = await response
+    assert.deepEqual(saved.request().postDataJSON().config, expected, 'the save button POSTs both requirement fields')
+    assert.deepEqual({
+      characterDesignRequirements: state.config.characterDesignRequirements,
+      outfitDesignRequirements: state.config.outfitDesignRequirements,
+    }, expected)
+  }
+  const chineseCharacterRequirements = '人物外貌使用完整中文短句，保留角色已有特征。'
+  const chineseOutfitRequirements = '服装名称简洁；颜色与款式使用中文描述。'
+  await selectDesignMode('chinese')
+  await page.getByLabel('角色生成要求', { exact: true }).fill(chineseCharacterRequirements)
+  await page.getByLabel('服装生成要求', { exact: true }).fill(chineseOutfitRequirements)
+  await saveDesignRequirements(chineseCharacterRequirements, chineseOutfitRequirements)
+  await page.getByRole('button', { name: '人物库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'chinese', 'the saved language mode survives leaving and reopening settings')
+  assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), chineseCharacterRequirements)
+  assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), chineseOutfitRequirements)
+
+  const englishCharacterRequirements = 'Use concise English prose; preserve established character traits.'
+  const englishOutfitRequirements = 'Use descriptive English tags with explicit colors and garment shapes.'
+  await selectDesignMode('tags')
+  await page.getByLabel('角色生成要求', { exact: true }).fill(englishCharacterRequirements)
+  await page.getByLabel('服装生成要求', { exact: true }).fill(englishOutfitRequirements)
+  await saveDesignRequirements(englishCharacterRequirements, englishOutfitRequirements)
+  await page.getByRole('button', { name: '人物库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'tags', 'the English Tag mode survives leaving and reopening settings')
+  assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), englishCharacterRequirements)
+  assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), englishOutfitRequirements)
+  assert.deepEqual(state.config.promptPresets, preservedPromptPresets, 'saving design instructions does not rewrite an existing prompt preset entry')
+  assert.deepEqual(state.definitions.characters[0], preservedCharacterEntry, 'saving design instructions does not rewrite existing character/outfit records')
+  assert.deepEqual(worldbooks, preservedWorldbooks, 'saving design instructions does not rewrite existing worldbook entries')
 
   await page.getByRole('button', { name: '人物库', exact: true }).click()
   const saveLibrary = async label => {

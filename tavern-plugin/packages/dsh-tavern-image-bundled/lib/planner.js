@@ -249,6 +249,30 @@ export function parsePlannerDecision(text) {
   return { decision, reason, characterUpdates, characterUpdatesPresent: Boolean(updateBlock), characterUpdatesValid }
 }
 
+/** 人物库备注明确标为「玩家」或 player，且没有否定该标记时，这个角色就是玩家本人。 */
+export function isPlayerCharacter(character) {
+  const note = String(character?.note ?? '')
+    // 否定标签不能因为包含「玩家」/ player 子串而被当作肯定标记。
+    .replace(/(?:并不是|并非|不是|非|不属于|不算)\s*玩家/gi, ' ')
+    .replace(/\b(?:non[-\s]?player|(?:is\s+)?not\s+(?:a\s+|the\s+)?player|isn['’]?t\s+(?:a\s+|the\s+)?player|no\s+player)\b/gi, ' ')
+  const chineseMarker = /^(?:玩家|玩家本人|玩家角色)(?:\s*[（(【\[].*[）)】\]])?\s*[。.!！?？]?$/u.test(note.trim()) ||
+    /(?:^|[\s,，;；|/([{（【])(?:身份|角色|标记)\s*[:：=]\s*玩家(?:$|[\s,，;；|/)\]})）】])/u.test(note)
+  const englishMarker = /^(?:the\s+)?player(?:\s*[（(【\[].*[）)】\]])?\s*[.!?]?$/i.test(note.trim()) ||
+    /\bplayer\s+(?:avatar|character|role)\b/i.test(note) ||
+    /\b(?:role|identity|type)\s*[:=]\s*(?:the\s+)?player\b/i.test(note)
+  return chineseMarker || englishMarker
+}
+
+/**
+ * 这张卡自己绑了玩家角色时，没绑卡的全局通用玩家让开（list 已经按卡筛过）。
+ * 否则清单里会同时出现两个玩家角色，规划不知道「我」该画成谁。
+ */
+export function hideGlobalPlayers(list) {
+  const usable = Array.isArray(list) ? list : []
+  const ownPlayer = usable.some(c => c && c.enabled !== false && isPlayerCharacter(c) && (c.cards ?? []).length)
+  return ownPlayer ? usable.filter(c => !(isPlayerCharacter(c) && !(c.cards ?? []).length)) : usable
+}
+
 /** 人物库 → 给规划模型的"可用角色"清单（按可见块列，模型好照抄）。 */
 const ROSTER_TRAITS = [
   ['feature', '性格气质（据此挑这一刻的表情、神态和动作，不要原样抄进提示词）'],
@@ -344,7 +368,9 @@ export function characterRoster(definitions, { fullTraits = false, text = '' } =
     if (String(character.formCues ?? '').trim()) lines.push('  形态线索（画面里有这些就是这个形态，宏里写这个形态的名字）：' + clip(character.formCues, 200))
     if (character.current?.outfit) lines.push('  当前穿着（之前的正文记录，宏里没写 outfit 时插件会自动用它）：' + clip(character.current.outfit, 400))
     if (!lines.length) lines.push('  （还没填外貌，请按通用描述处理）')
-    blocks.push('- ' + name + ' [stable_id=' + String(character.id ?? '') + ']' + (character.match && character.match !== name ? '（也写作 ' + character.match + '）' : '') + '\n' + lines.join('\n'))
+    // 人物库备注里写了「玩家」的角色：标成玩家角色。规划用第三人称画亲吻、拥抱、抱起时就调用他，不用自己从正文猜「我」是谁。
+    const player = isPlayerCharacter(character) ? '（玩家角色：正文里的「我」「你」就是他）' : ''
+    blocks.push('- ' + name + ' [stable_id=' + String(character.id ?? '') + ']' + player + (character.match && character.match !== name ? '（也写作 ' + character.match + '）' : '') + '\n' + lines.join('\n'))
   }
   return blocks.join('\n')
 }
@@ -404,8 +430,8 @@ export function buildPlannerSystem({ rules, dynamicRules = '', roster, rosterInd
   if (characterUpdates) {
     const taskAt = parts.findIndex(part => part.startsWith('<本次任务>'))
     const update = '<角色视觉历史>\n在本次同一份分析中检查正文是否明确叙述了已知人物永久外貌的改变，例如新留疤、永久剪发、失明或永久义肢。只记录正文明确确认的永久变化，不能推测或补充 traits。衣着、姿势、表情、妆容、临时伤痕、场景状态都不是永久外貌更新。只更新可用角色列表中的人物，并复制角色列表的 stable_id。若更新某一字段，输出该字段的完整新描述，并保留该字段里正文未改变的旧事实；不要只写变化片段。先输出 <character_updates>{"updates":[{"id":"stable_id","name":"角色原名","permanent":true,"fields":{"face":"该字段完整的新描述"},"reason":"引用正文明确叙述的永久变化"}]}</character_updates>，无变化时也必须输出空数组。必须在 decision 与任何 image 块之前完整输出这个标签。字段只可用 feature、face、faceBack、bodySFW、bodySFWBack、lowerSFW、lowerSFWBack、bodyNSFW、bodyNSFWBack、lowerNSFW、lowerNSFWBack。'
-      + '\n另外记录人物的当前穿着（这不是永久外貌，不要写 permanent）：本段正文写到某个可用角色此刻身上穿着什么（换了衣服，或第一次写到），就在同一个 updates 数组里加一条 {"id":"stable_id","name":"角色原名","current":{"outfit":"英文完整描述（上衣、下装、鞋袜等身上正穿着的，每件都写颜色，例如 white blouse, light grey trousers, beige apron）；如果正文只说了类别、你从服装库里挑了一套，就直接写那套的服装名（正文写到的单品和那套冲突时不要用它，照正文写，没写到的部分沿用之前的记录）；全身脱光时写 nude"},"reason":"引用正文"}。'
-      + '只写正文明确写到的；手里拿着或放在一旁的衣服不算；正文没写到穿着就不要输出这一条，插件会沿用之前的记录。正文只说换了衣服、没写换成什么时，从这个角色的服装库里挑一套最符合当时场景的（例如出门挑外出的、睡前挑睡衣、上班挑职场装），current.outfit 写那套的服装名，这一轮之后的画面宏里也写同一个服装名；服装库里没有合适的才沿用之前的记录。画面宏里写 outfit 时：已经确定是服装库里的某一套（包括「当前穿着」里记的服装名），就直接写服装名，不要改写成英文描述；' + (structured
+      + '\n另外记录人物的当前穿着（这不是永久外貌，不要写 permanent）：本段正文写到某个可用角色此刻身上穿着什么（换了衣服，或第一次写到），就在同一个 updates 数组里加一条 {"id":"stable_id","name":"角色原名","current":{"outfit":"完整描述（上衣、下装、鞋袜等身上正穿着的，每件都写颜色，颜色照正文写的来，正文没写才沿用服装库或之前记录里的颜色；角色列表里这个人的外貌是中文写的就用中文，否则用英文，例如 white blouse, light grey trousers, beige apron；只写衣服本身，不写湿了、沾了泥、被水洇出深色、皱了、敞开这类会变的状态）；如果正文只说了类别、你从服装库里挑了一套，就直接写那套的服装名（正文写到的单品和那套冲突时不要用它，照正文写，没写到的部分沿用之前的记录）；全身脱光时写 nude"},"reason":"引用正文"}。'
+      + '只写正文明确写到的；手里拿着或放在一旁的衣服不算；衣服临时的状态（湿、脏、洇出水渍、扣子解开、袖子挽起）不记进当前穿着，只在那一张图的宏里写，下一张正文没再提就不写——记进去的话之后每张图都会一直带着；正文没写到穿着就不要输出这一条，插件会沿用之前的记录。正文只说换了衣服、没写换成什么时，从这个角色的服装库里挑一套最符合当时场景的（例如出门挑外出的、睡前挑睡衣、上班挑职场装），current.outfit 写那套的服装名，这一轮之后的画面宏里也写同一个服装名；服装库里没有合适的才沿用之前的记录。画面宏里写 outfit 时：已经确定是服装库里的某一套（包括「当前穿着」里记的服装名），就直接写服装名，不要改写成英文描述；' + (structured
         ? '画面提示词里的衣着描述使用中文自然语言，明确每件衣服的颜色、款式和当刻状态，不要求按逗号拆成标签。character_updates 的英文描述仅供跨格式共用的内部历史记录，不能使 <prompts> 变成英文标签。'
         : '自己描述时按逗号分成单个 tag，每件衣服前面写颜色，例如 burgundy dress, halterneck, bodycon, side slit，不要写成一整句长描述（长句里的颜色模型常常画错）。') + '同一角色的不同形态共用这条记录，写其中一个即可。'
       + '本段正文里有人换了衣服时，current.outfit 写换完之后的穿着；同时这一轮每张 image 里这个人物的宏都必须写 "outfit" 字段，填那张图那一刻身上穿的（换衣之前的画面写换之前的，之后的写之后的），不要留空让插件自动补。'
@@ -456,6 +482,17 @@ export function normalizePrompts(text, definitions, context = {}) {
   // 中文原生编码器读中文长句更准，但此前没有任何绕过的办法；默认仍按原规则删中文。
   const allowChinese = context?.allowChinese === true
   const shouldCleanChinese = !allowChinese && (!backend || backend.toLowerCase() === 'comfyui')
+  if (allowChinese && context?.style === 'natural') {
+    // 中文整句写法：单独写在开头或人物句前面的中文名（「殷雪, 画面中的女子是……」）对画面没用，
+    // 读中文的模型还可能把它写成画面里的字，去掉。只删确实是人名的那一段（人物库里有这个名字，
+    // 或者后面紧跟着「画面中的」人物句），「近景，」「傍晚，」这类画面描述不动。
+    const names = new Set((definitions?.characters ?? []).flatMap(c => [c?.name, String(c?.name ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, ''),
+      ...String(c?.match ?? '').split(/[,，]/)]).map(v => String(v ?? '').trim()).filter(v => /^[\u4e00-\u9fa5]/.test(v)))
+    const NAME = /([\u4e00-\u9fa5]{2,6}(?:[（(][^）)]{1,8}[）)])?)\s*[,，]\s*/
+    out = out.replace(new RegExp('^\\s*' + NAME.source), (m, name, offset, all) => (names.has(name) || all.slice(m.length).startsWith('画面中的')) ? '' : m)
+    out = out.replace(/。\s*[。，,]+/g, '。')
+    out = out.replace(new RegExp('(^|[。，,；;\\s])' + NAME.source + '(?=画面中的)', 'g'), (m, pre, name) => names.has(name) ? pre : m)
+  }
   if (shouldCleanChinese) {
     const hadChinese = /[\u4e00-\u9fa5]/.test(out)
     // A leading Chinese character name is useful for local models only when replaced by its

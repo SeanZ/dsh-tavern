@@ -1,4 +1,4 @@
-import { resolveCharacterForms } from './character-forms.js'
+import { resolveCharacterForms, hasPositiveChineseCue } from './character-forms.js'
 import { charactersFromWorldbookText, charactersFromCardBookBody, charactersFromCardBook, charactersFromExtraction, mergeCharacters } from './character-import.js'
 import { buildMinorBatchPrompt, scrubMinorNegatives } from './character-import.js'
 import { parseCharacters } from './character-generator.js'
@@ -35,12 +35,12 @@ import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences } 
 import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch, migrateLegacyImageConfig } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
-import { parseImagePlan, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
+import { parseImagePlan, hideGlobalPlayers, parsePlannerDecision, characterRoster, buildPlannerSystem, runPlanner, normalizePrompts, dedupeTags, parseDesign, parsePromptsBlock, formatPromptsBlock, preserveCharacterMetadata } from './planner.js'
 import { normalizeEntryActivation, selectPlannerContext } from './planner-context.js'
 import { createDownloadPackage, PLUGIN_DOWNLOADS } from './download-package.js'
 import { createMediaActions } from './media-actions.js'
 import { applyCharacterSnapshot, boundCharacterSnapshot, emptyCharacterSnapshot, mergeCharacterUpdates } from './character-history.js'
-import { getPromptGuidance } from './prompt-presets.js'
+import { getPromptGuidance, acceptsChinese } from './prompt-presets.js'
 import { PROMPT_FORMATS, BUILTIN_PROMPT_PRESETS, normalizePromptPresets, resolvePromptMode, composePresetText, promptPresetNegative, effectivePromptPreset, formatPromptForBackend, validPromptPresetId, promptBackendContext } from './prompt-presets.js'
 import { transcodeImageOutputAsync, isBlankImage } from './image-output.js'
 import { comfyLoadImageBindings, applyComfyReferenceImages } from './comfy-reference-images.js'
@@ -101,6 +101,10 @@ const DEFAULTS = {
   promptPresets: [],
   activePromptPreset: '',
   promptMode: 'auto',
+  designPromptMode: 'auto',
+  closestMountTolerance: false,
+  characterDesignRequirements: '',
+  outfitDesignRequirements: '',
   // 提示词里是否保留中文。默认 false = 沿用原有规则：comfyui 后端会把中文清空
   // （本地 tag 模型只看英文）。工作流的文本编码器是中文原生（Qwen-Image、
   // FLUX.1 Krea 的 qwen3vl 等）时设成 true，中文长句就原样送进工作流。
@@ -206,13 +210,40 @@ const NSFW_HINT = /\b(nsfw|nude|naked|topless|nipples?|pussy|cum|sex|penetration
  * 只对规划原文（去掉宏）判断：人物外貌里常见的 medium breasts 之类不能把每张图都当成裸露画面。
  */
 // 画面写着赤脚：服装里的鞋袜不再加进去（服装库的整套衣服常带鞋，会和 barefoot 打架，模型照样画鞋）。
-const BAREFOOT = /\b(barefoot|bare[- ]?feet|bare[- ]?foot|no shoes|shoeless|without shoes|shoes off|toes in (?:the )?(?:sand|water|grass|sea)|feet in (?:the )?(?:water|sand|sea)|(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals))\b/i
+const BAREFOOT = /\b(barefoot|bare[- ]?feet|bare[- ]?foot|shoeless|toes in (?:the )?(?:sand|water|grass|sea)|feet in (?:the )?(?:water|sand|sea))\b/i
+const BAREFOOT_ZH = /赤脚|赤着脚|赤足|光脚|光着(?:两只|一双|双)?脚|赤着双脚|双脚赤着|脚赤着/
+const isBarefoot = text => BAREFOOT.test(String(text ?? '')) || BAREFOOT_ZH.test(String(text ?? ''))
+// 画面自己交代了脚上的状态（脱了鞋、换了拖鞋、只穿袜子），或者写的鞋和这身衣服里的鞋不是同一种：
+// 服装里的鞋不再加进去，否则「脚上穿着白色帆布鞋」会和「趿着拖鞋」打架，模型照样画帆布鞋。
+const ZH_FOOTWEAR_NOUN = /人字拖|拖鞋|凉鞋|高跟鞋|雪地靴|马丁靴|雨靴|靴子?|木屐|帆布鞋|运动鞋|足球鞋|篮球鞋|钉鞋|跑鞋|球鞋|板鞋|乐福鞋|老爹鞋|平底鞋|舞鞋|溜冰鞋|冰鞋|旱冰鞋|登山鞋|皮鞋|布鞋|棉鞋|绣花鞋|球袜|袜子|丝袜|棉袜|短袜|长袜|薄袜|裤袜/g
+const ZH_SHOES_OFF = /脱(?:下|掉|去|了)?[^。，；,;]{0,8}?鞋|鞋[^。，；,;]{0,6}?(?:脱|退出来|蹬掉|踢掉|甩掉)|换上?[^。，；,;]{0,6}?拖鞋|趿着|只穿着?[^。，；,;]{0,6}?袜|袜底|穿着袜子|没穿(?:着)?鞋|(?:拎|提|拿|捧|抱|握|摆|并)[^。，；,;]{0,8}鞋/
+const EN_SHOES_OFF = /\b(?:no shoes|without shoes|in (?:her |his |their )?(?:socks|stockings|slippers)|socks only|stocking(?:ed)? feet|(?:wearing|in) (?:\w+ ){0,2}(?:slippers|flip[- ]flops)|took off (?:her |his |their )?(?:shoes|sneakers|boots)|kicked off (?:her |his |their )?(?:shoes|sneakers|boots)|holding (?:her |his |their )?(?:shoes|sneakers|sandals))\b/i
+/** 画面写了脱鞋/换鞋，或写的鞋在这身衣服里找不到：服装里的鞋不再写进提示词。 */
+export function footwearOverridden(sceneText, outfitText) {
+  const scene = String(sceneText ?? '')
+  if (ZH_SHOES_OFF.test(scene) || EN_SHOES_OFF.test(scene)) return true
+  const nouns = [...new Set(scene.match(ZH_FOOTWEAR_NOUN) ?? [])]
+  return nouns.length > 0 && !nouns.some(noun => String(outfitText ?? '').includes(noun))
+}
+/** 这个人身上可能出现的所有衣服文字（服装库、当前穿着、外貌里的鞋袜），用来判断画面写的鞋是不是同一种。 */
+function personWearText(person, extra = '') {
+  return [extra, person?.current?.outfit, person?.current?.previous, ...Object.values(person?.traits ?? {}),
+    ...(person?.outfits ?? []).filter(o => o && o.enabled !== false).map(o => [o.upper, o.lower, o.shoes, o.full, o.accessory].join(' '))]
+    .map(v => String(v ?? '')).join(' ')
+}
 // 鞋本身拿在手里时，负面里不能写 shoes。
-const SHOES_IN_HAND = /\b(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals)\b/i
-const FOOTWEAR = /\b(shoes?|sneakers?|boots?|heels|high[- ]heels|sandals?|slippers?|loafers?|flats|pumps|socks?|clogs|geta|footwear|mary janes)\b/i
+const SHOES_IN_HAND = /\b(?:holding|carrying) (?:her |his |their )?(?:shoes|sneakers|sandals)\b|(?:拎|提|拿|捧|抱|握|摆|并)[^。，；,;]{0,8}鞋/i
+const FOOTWEAR = /\b(shoes?|sneakers?|boots?|heels|high[- ]heels|sandals?|slippers?|loafers?|flats|pumps|socks?|stockings?|pantyhose|tights?|thigh[- ]?highs?|kneehighs?|clogs|geta|footwear|mary janes)\b/i
 /** 去掉一段衣服描述里的鞋袜部分（按逗号分段）。 */
-function dropFootwear(text) {
-  return String(text ?? '').split(',').map(t => t.trim()).filter(t => t && !FOOTWEAR.test(t)).join(', ')
+// keepSocks：只是脱了鞋、换了拖鞋（不是赤脚）时，袜子、丝袜还穿在脚上，不能一起删。
+function dropFootwear(text, keepSocks = false) {
+  const value = String(text ?? '')
+  if (/[\u3400-\u9fff]/.test(value)) {
+    const shoe = keepSocks ? /鞋|靴|木屐/ : /鞋|靴|木屐|袜/
+    return value.split(/[,，、]/).map(t => t.trim()).filter(t => t && !shoe.test(t)).join('，')
+  }
+  const sock = /\b(?:socks?|stockings?|pantyhose|tights|thigh[- ]?highs|kneehighs?)\b/i
+  return value.split(',').map(t => t.trim()).filter(t => t && !(FOOTWEAR.test(t) && !(keepSocks && sock.test(t) && !/\b(?:shoes?|sneakers?|boots?|heels|sandals?|slippers?|loafers?|flats|pumps)\b/i.test(t)))).join(', ')
 }
 const GARMENT_WORDS = ['dress', 'gown', 'skirt', 'shirt', 'blouse', 'top', 'sweater', 'cardigan', 'hoodie', 'jacket', 'coat', 'vest', 'apron', 'kimono', 'yukata', 'robe', 'bathrobe', 'pajamas', 'uniform', 'suit', 'pants', 'trousers', 'jeans', 'shorts', 'leggings', 'swimsuit', 'bikini', 'towel', 'lingerie', 'bra', 'panties', 'underwear', 'stockings', 'pantyhose', 'socks', 'sneakers', 'boots', 'heels', 'sandals', 'slippers']
 const HELD_ITEM = /\b(?:holding|carrying|lifting|raising|showing|in (?:her |his |their |own )?hands?|on (?:the )?(?:bed|hanger|floor|chair))\b/i
@@ -222,6 +253,16 @@ const HELD_ITEM = /\b(?:holding|carrying|lifting|raising|showing|in (?:her |his 
  * 返回 'before' / 'after' / 'unclear'（判断不了，沿用换之后的）。
  */
 export function pickOutfitForScene(scene, before, after) {
+  if (/[\u3400-\u9fff]/.test(String(scene ?? '')) && /[\u3400-\u9fff]/.test(String(before ?? '') + String(after ?? ''))) {
+    // 中文画面：数画面描述和换衣前/后的衣服描述有多少相同的两字片段（「吊带」「寝衣」「长裙」）。
+    const grams = t => { const s = String(t ?? '').replace(/[^\u3400-\u9fff]/g, ' '); const out = new Set(); for (const w of s.split(/\s+/)) for (let i = 0; i + 1 < w.length; i++) out.add(w.slice(i, i + 2)); return out }
+    const sceneGrams = grams(scene)
+    const shared = t => { const g = grams(t); let n = 0; for (const x of g) if (sceneGrams.has(x)) n++; return n }
+    const sb = shared(before), sa = shared(after)
+    if (sb >= sa + 2) return 'before'
+    if (sa >= sb + 2) return 'after'
+    return 'unclear'
+  }
   const words = text => new Set(GARMENT_WORDS.filter(word => new RegExp('\\b' + word + 's?\\b', 'i').test(String(text ?? ''))))
   const worn = String(scene ?? '').split(',').filter(part => !HELD_ITEM.test(part)).join(',')
   const mentioned = words(worn)
@@ -234,7 +275,7 @@ export function pickOutfitForScene(scene, before, after) {
   return 'unclear'
 }
 const BARE_SCENE = /\b(nude|naked|topless|bottomless|half-naked|undress(?:ed|ing)?|unclothed|strip(?:ped|ping)|nipples?|breasts?|penis|pussy|sex|penetration|underwear|lingerie|bra|panties|thong|showering|taking a shower|in the shower|under the shower|bathing|in the bath(?:tub)?|soaking in the (?:tub|bath)|hot spring|onsen|skinny dipping|spread legs|exposed (?:waist|chest|skin|body|thighs?|hips?|belly|stomach))\b/i
-const stripMacros = text => String(text ?? '').replace(/\$\{[\s\S]*?\}\$/g, ' ')
+const stripMacros = text => repairMacros(text).replace(MACRO_BLOCK, ' ')
 /** 「当前穿着」记录写的是没穿（全脱了）：什么衣服都不补，也不写 "is wearing naked" 这种句子。 */
 const NOTHING_WORN = /^(?:nude|naked|nothing|no clothes|completely (?:nude|naked))\b|^(?:全裸|裸体|赤裸|一丝不挂|没穿|什么都没穿)/i
 
@@ -283,17 +324,30 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       const natural = style === 'natural' || style === 'structured'
       let lastPerson = null
       const nameKey = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
-      const standaloneNames = new Set([...String(text ?? '').matchAll(/\$\{([\s\S]*?)\}\$/g)].flatMap((m) => {
+      const standaloneNames = new Set([...repairMacros(text).matchAll(MACRO_BLOCK)].flatMap((m) => {
         try { const c = JSON.parse('{' + m[1] + '}'); return [nameKey(stripUsualSuffix(c.name ?? c['名称'] ?? c['角色']))] } catch { return [] }
       }).filter(Boolean))
+      const macroRows = [...repairMacros(text).matchAll(MACRO_BLOCK)].map(match => {
+        try { return JSON.parse('{' + match[1] + '}') } catch { return null }
+      }).filter(Boolean)
+      const characterMacros = macroRows.filter(c => String(c.upperBody ?? '').toLowerCase() !== 'visible')
+      const personMacroCount = new Set(characterMacros.map(c => nameKey(c.name ?? c['名称'] ?? c['角色'])).filter(Boolean)).size
       const bareScene = BARE_SCENE.test(stripMacros(text))
       const sceneText = stripMacros(text)
-      const barefoot = BAREFOOT.test(sceneText)
+      // 多人场景只有能把句子归到具体角色时才改该角色鞋袜；无法归属就保留服装库内容。
+      const sceneForPerson = person => {
+        if (personMacroCount === 1) return sceneText
+        if (personMacroCount === 0) return ''
+        const aliases = [person?.name, ...splitTags(person?.match)].map(v => String(v ?? '').trim()).filter(v => v.length >= 2)
+        if (!aliases.length) return ''
+        return sceneText.split(/(?<=[。！？!?…\n])/).filter(sentence => aliases.some(alias => sentence.toLowerCase().includes(alias.toLowerCase()))).join(' ')
+      }
+      const barefoot = personMacroCount === 1 && isBarefoot(sceneText)
       // 服装的「背面」字段只在背影画面里用：画面写着背影，或者同一段里刚调用的人物宏 angle 是背面。
       const backView = BACK_VIEW.test(sceneText)
       let lastBack = false
       // 同一角色的不同形态：画面写着某形态的线索（如狐耳狐尾）时，宏改指向那个形态。
-      return resolveCharacterForms(text, scoped).replace(/\$\{([\s\S]*?)\}\$/g, (_match, body) => {
+      return resolveCharacterForms(repairMacros(text), scoped).replace(MACRO_BLOCK, (_match, body) => {
         const source = String(body ?? '').trim()
         if (!source) return ''
         let parsed = null
@@ -304,13 +358,17 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
         const norm = (value) => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
         const key = norm(asked)
         const bits = []
+        const sceneScope = lastPerson ? sceneForPerson(lastPerson) : (personMacroCount === 1 ? sceneText : '')
+        const bareForScope = isBarefoot(sceneScope)
         const pushOutfit = (outfit) => {
+          const shoesOff = !bareForScope && footwearOverridden(sceneScope, [outfit.upper, outfit.lower, outfit.shoes, outfit.full].join(' '))
+          const noShoes = bareForScope || shoesOff
           for (const field of ['upper', 'lower', 'shoes', 'accessory', 'full', 'back']) {
-            if (barefoot && field === 'shoes') continue
+            if (bareForScope && !shoesOff && field === 'shoes') continue
             // 「整体印象」(full) 是给自然语言模型的一句概括；tag 写法里已有上衣下装时它只是噪音。
             if (field === 'full' && !natural && (String(outfit.upper ?? '').trim() || String(outfit.lower ?? '').trim())) continue
             if (field === 'back' && !(backView || lastBack)) continue
-            const value = barefoot ? dropFootwear(outfit[field]) : String(outfit[field] ?? '').trim()
+            const value = noShoes ? dropFootwear(outfit[field], shoesOff) : String(outfit[field] ?? '').trim()
             if (value && !PLACEHOLDER_VALUE.test(value)) bits.push(value)
           }
         }
@@ -329,6 +387,13 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const base = loose.filter((ch) => loose.every((other) => other === ch || String(other.name ?? '').startsWith(String(ch.name ?? ''))))
           matches = loose.length <= 1 ? loose : (base.length === 1 ? base : loose)
         }
+        // 命中的是同一角色的几个形态（宏只写了「Yin Xue」）：按画面里的形态线索挑；没有线索就用不带线索的那个（通常是人形）。
+        if (matches.length > 1 && matches.every(m => matches.every(o => o === m || sameCharacterFamily(m, o)))) {
+          const cueCount = c => splitTags(String(c.formCues ?? '').replace(/[，、]/g, ','))
+            .filter(cue => (/[㐀-鿿]/.test(cue) ? hasPositiveChineseCue(sceneText, cue) : new RegExp('(?<![\\w-])' + cue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(sceneText))).length
+          const ranked = [...matches].sort((a, b) => cueCount(b) - cueCount(a) || (String(a.formCues ?? '').trim() ? 1 : 0) - (String(b.formCues ?? '').trim() ? 1 : 0))
+          matches = [ranked[0]]
+        }
         // 仍然命中多个不同的人：不猜，保留原名，交给后面的按名字注入。
         if (matches.length > 1) note({ macro: source, asked, result: 'ambiguous', candidates: matches.map((ch) => String(ch.id ?? '')) })
         const person = matches.length === 1 ? matches[0] : null
@@ -339,13 +404,29 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
           const upper = String(parsed.upperBody ?? parsed.body ?? '').toLowerCase()
           const lower = String(parsed.lowerBody ?? '').toLowerCase()
           const nsfw = upper === 'nsfw' || lower === 'nsfw' || mode === 'all'
-          const outfitName = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
+          // 「服装名（状态）」：括号前是服装库里的名字，括号里是这一刻的临时状态（袖子挽起、赤足、沾了土）。
+          // 整串拿去对服装库会对不上，于是被当成一句自写描述，模型不知道「常服」长什么样，衣服每张都变。
+          const outfitAsked = stripUsualSuffix(parsed.outfit ?? parsed.clothes ?? parsed['服装'])
+          const enabledOutfits = (person.outfits ?? []).filter((o) => o && o.enabled !== false)
+          const exactHit = enabledOutfits.some((o) => o.name === outfitAsked)
+          const stated = exactHit ? null : /^(.+?)\s*[（(]([^（()）]*)[）)]\s*$/.exec(outfitAsked)
+          const statedBase = stated && enabledOutfits.some((o) => o.name === stated[1].trim()) ? stated[1].trim() : ''
+          // 服装名本身带括号（「日常襦裙（女装·常服）」）时，规划常漏写括号、或把状态塞进同一个括号
+          //（「日常襦裙（女装·常服，袖口沾墨）」）。去掉所有括号后名字对得上就认作这一套，括号里多出来的部分当状态。
+          const bareName = (v) => String(v ?? '').replace(/[（(][^（）()]*[）)]/g, '').replace(/\s+/g, '')
+          const parenParts = (v) => [...String(v ?? '').matchAll(/[（(]([^（）()]*)[）)]/g)].flatMap((m) => m[1].split(/[，,；;]/)).map((t) => t.trim()).filter(Boolean)
+          const looseHit = !exactHit && !statedBase && bareName(outfitAsked) ? enabledOutfits.find((o) => bareName(o.name) && bareName(o.name) === bareName(outfitAsked)) : null
+          const outfitName = exactHit ? outfitAsked : (statedBase || (looseHit ? looseHit.name : outfitAsked))
+          const outfitState = statedBase ? stated[2].trim()
+            : (looseHit ? parenParts(outfitAsked).filter((t) => !parenParts(looseHit.name).includes(t)).join('，') : '')
           // 衣服的优先级：宏里指定的服装库服装 > 宏里直接写的英文描述 > 之前正文记录的「当前穿着」> 常穿。
           // 同一段里另有属于此人的单独服装宏时，衣服交给那个宏。
           const hiddenBody = /hidden/i.test(upper) && /hidden/i.test(lower)
           const ownsStandalone = (person.outfits ?? []).some((o) => o && o.enabled !== false && standaloneNames.has(nameKey(o.name)))
           const libraryHit = outfitName && (person.outfits ?? []).some((o) => o && o.enabled !== false && o.name === outfitName)
-          const macroText = outfitName && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName))) && !PLACEHOLDER_VALUE.test(outfitName)
+          const macroText = outfitName && !PLACEHOLDER_VALUE.test(outfitName) && (style === 'structured' || (/^[\x20-\x7e]+$/.test(outfitName) && /[a-z]/i.test(outfitName)) ||
+            // 中文人物：宏里直接写的中文服装描述（不是服装库里的名字）照样用。
+            (chinesePerson(person) && style === 'natural' && /[\u3400-\u9fff]/.test(outfitName)))
           // 插件自动补的衣服（「当前穿着」记录、常穿）只在穿着衣服的画面里补：
           // 标了 nsfw、全身 hidden、画面写着洗澡/裸体/内衣，或者记录本身就是「没穿」时都不补。
           // 宏里明确写的衣服（例如半脱的内衣）不受影响，总是保留。
@@ -364,24 +445,54 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
               wearMoment = person.current.previous ? moment : ''
             }
           }
-          if (barefoot && wear) wear = dropFootwear(wear)
+          // 服装名后面的状态写着赤足（「常服（裤脚挽起，赤足）」）：这一刻也是光脚。
+          const personScene = sceneForPerson(person)
+          const stateBare = isBarefoot(outfitState)
+          const personBarefoot = isBarefoot(personScene) || stateBare
+          const shoesOff = !personBarefoot && footwearOverridden(personScene, personWearText(person, wear))
+          const noShoes = personBarefoot || shoesOff
+          if (noShoes && wear) wear = dropFootwear(wear, shoesOff)
+          // 上身 hidden、下身没 hidden：拍的是腿和脚（脚部特写），腿脚和下装都要写，脸不写。
+          const lowerShot = upper === 'hidden' && lower !== 'hidden'
+          // 中文整句、画面是近景/半身/特写：看不到腿和脚，就不写腿型和鞋（写了模型会硬把腿画进来，人被拉长）。
+          // 宏里明确标了下身 nsfw 的照常写。
+          const closeShot = style === 'natural' && chinesePerson(person) && closeShotZh(sceneText) && lower !== 'nsfw' && !lowerShot
+          if (closeShot && wear) wear = dropFootwear(wear, false)
           const picked = characterTags(person, {
             nsfw,
             back,
             mode,
             upper,
             lower,
-            barefoot,
+            full: !closeShot,
+            barefoot: noShoes || closeShot,
+            keepSocks: shoesOff && !closeShot,
             outfitName: outfitName || undefined,
             noOutfit: Boolean(wear) || ownsStandalone || (!libraryHit && autoOff),
             tags: !natural,
           })
           const angleTag = angle && (style === 'structured' || /front|back|side|behind|left|right|from/i.test(angle)) ? angle : ''
-          if (natural) bits.push(boundCharacterPhrase(person, picked, angleTag ? [angleTag] : [], wear, style) || person.promptLabel || person.name || asked)
+          // 中文整句：画面描述自己写了镜头（景别、机位、俯仰）时，不再给每个人加「镜头正对着她」这类句子，
+          // 否则多人画面里每人一句、再加上画面那句，几处镜头说法互相打架。
+          const sceneCamera = style === 'natural' && chinesePerson(person) && SCENE_CAMERA_ZH.test(sceneText)
+          // 服装名后面括号里的这一刻状态，接在衣服后面写。
+          const extras = [outfitState, sceneCamera ? '' : angleTag].filter(Boolean)
+          if (outfitState) extras.outfitState = outfitState
+          // 宏里可以写 "age"（回忆里的童年画面、多年以后），覆盖人物库里的年龄。
+          if (parsed.age ?? parsed['年龄']) extras.age = String(parsed.age ?? parsed['年龄'])
+          // 宏里的 "expression"：这一刻的表情和情绪。纯背面看不到脸时不写（会逼模型补脸），背身回头的照写。
+          const expression = String(parsed.expression ?? parsed['表情'] ?? '').trim()
+          const backTurn = /回头|回过头|转过头|转过身|侧过脸|侧过身|侧过头|偏过头|扭过头|转过脸|侧脸/.test(sceneText)
+          if (expression && !PLACEHOLDER_VALUE.test(expression) && !(back && !backTurn) && !lowerShot) extras.expression = expression
+          // 人物库里的招牌发型：这一刻衣服里写了发型、或画面写着散发/湿发时不带。
+          extras.dropHair = hairOverridden(sceneText, [wear, ...(picked.origins ?? []).filter(o => o.outfitId).map(o => o.text)].join(' '))
+          if (natural) bits.push(boundCharacterPhrase(person, picked, extras, wear, style) || person.promptLabel || person.name || asked)
           else {
             if (picked.tags.length) bits.push(...picked.tags)
             if (wear) bits.push(wear)
+            if (outfitState) bits.push(outfitState)
             if (angleTag) bits.push(angleTag)
+            if (extras.expression) bits.push(extras.expression)
           }
           note({ macro: source, asked, result: 'character', characterId: String(person.id ?? ''), characterName: String(person.name ?? ''), outfitAsked: outfitName, outfitResult: outfitName ? (libraryHit ? 'found' : (wear ? 'free-text' : 'not-found')) : 'none-requested', wear, ...(wearMoment ? { wearMoment } : {}), droppedNegatives: picked.negative, origins: picked.origins })
           lastPerson = person
@@ -422,6 +533,58 @@ export function expandRosterCalls(text, scoped, mode, options = {}) {
       })
     }
 
+// 一个完整的宏：${ … }$，中间不能再出现 ${（否则坏宏会一路吞到下一个宏的结尾，把中间的画面描述一起吞掉）。
+const MACRO_BLOCK = /\$\{((?:(?!\$\{)[\s\S])*?)\}\$/g
+// 宏的键值对本身（从 "name" 开始，后面跟着若干 "键":"值"），两头的 ${ 、{ 、} 、}$ 可有可无。
+const MACRO_PAIRS = /\$?\{?\s*("(?:name|名称|角色)"\s*:\s*"[^"]*"(?:\s*,\s*"[^"\n]{1,20}"\s*:\s*"[^"]*")*)\s*,?\s*\}?\$?/g
+/**
+ * 规划偶尔把人物宏写坏：漏了结尾的 $、只写了 { … }、漏了开头的 ${。补成完整的宏，
+ * 否则整段 JSON 会原样漏进提示词，这个人的外貌也补不上。
+ */
+export function repairMacros(text) {
+  // ① ${ … } 漏了结尾的 $。
+  const fixed = String(text ?? '').replace(/\$\{(\s*"(?:name|名称|角色)"[^{}$]*?)\}(?!\$)/g, '${$1}$')
+  // ② 其余的坏写法：在完整宏以外的文字里找键值对，补成完整的宏。
+  return fixed.split(/(\$\{(?:(?!\$\{)[\s\S])*?\}\$)/).map((part, i) => i % 2 ? part
+    : part.replace(MACRO_PAIRS, (_m, body) => '${' + body.trim() + '}$')).join('')
+}
+
+/**
+ * 规划抄挂载句时偶尔改了几个字（「喷在」写成「落在」）：在正文里找和它最像的一段（一到三句）代替，不再整张图丢掉。
+ * 按两字片段的重合度（Dice ≥ 0.45）；同样像时取靠后的（正文前面有时混着写作计划）。
+ */
+export function closestMount(mount, body, anchor = v => String(v ?? '')) {
+  const needle = anchor(mount)
+  if (needle.length < 12) return ''
+  const source = String(body ?? '')
+  const cuts = [0]
+  for (const m of source.matchAll(/[。！？!?…\n]+/g)) cuts.push(m.index + m[0].length)
+  cuts.push(source.length)
+  const risky = /[脱穿换拿放走来去进出上下前后左右红蓝绿黄黑白紫粉橙棕灰金银没不未非无否拒绝禁止站坐躺蹲趴跪抬举弯转回挥伸缩握抓捏搂抱吻亲跑跳躲闪追推拉开关起卧倒落停扬收]/
+  const candidates = []
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const piece = source.slice(cuts[i], cuts[i + 1]).trim()
+    const candidate = anchor(piece)
+    if (candidate.length < 12) continue
+    let a = 0, b = 0, edits = 0
+    while (a < needle.length && b < candidate.length) {
+      if (needle[a] === candidate[b]) { a++; b++; continue }
+      if (++edits > 1) break
+      const changed = needle.length === candidate.length ? [needle[a++], candidate[b++]]
+        : needle.length > candidate.length ? [needle[a++]] : [candidate[b++]]
+      if (changed.some(char => risky.test(char))) { edits = 2; break }
+    }
+    edits += (needle.length - a) + (candidate.length - b)
+    if (edits === 1) candidates.push(piece)
+  }
+  // 单字容错仅作用户主动开启后的窄回退；颜色、方向、动作和否定词变化均拒绝。
+  return candidates.length === 1 ? candidates[0] : ''
+}
+
+export function resolveMountFallback(config, mount, body, anchor) {
+  return config?.closestMountTolerance === true ? closestMount(mount, body, anchor) : ''
+}
+
 /** 规划有时把角色清单里的「（常穿）」标记一起抄进宏里；匹配服装名前去掉它。 */
 function stripUsualSuffix(value) {
   return String(value ?? '').trim().replace(/\s*[（(]\s*(?:这套是)?常穿\s*[)）]\s*$/, '')
@@ -430,7 +593,9 @@ function stripUsualSuffix(value) {
 /** 同一角色的不同形态：名字互为前缀（如「阿梅」与「阿梅（狐形）」）。 */
 function sameCharacterFamily(a, b) {
   const x = String(a?.name ?? ''), y = String(b?.name ?? '')
-  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x)))
+  // 「殷雪（人形）」和「殷雪（显形）」去掉括号后缀是同一个名字，也算同一角色的不同形态。
+  const base = v => v.replace(/\s*[（(][^）)]*[）)]\s*$/, '')
+  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x) || (base(x) && base(x) === base(y))))
 }
 
 /**
@@ -449,9 +614,11 @@ function boundCharacterPhrase(person, picked, extras = [], wear = '', style = 'n
     return body ? `人物“${identity}”：` + body : ''
   }
   const look = [person?.traits?.face, person?.traits?.faceBack, person?.traits?.feature].map(v => String(v ?? '')).join(' ')
+  if (chinesePerson(person)) return chineseCharacterPhrase(person, traits, outfit, extras, wear, look, label)
+  for (let i = 0; i < traits.length; i++) traits[i] = String(traits[i]).replace(HAIR_MARK, '，')
   const who = /\b(woman|girl|female|lady)\b/i.test(look) ? ['the woman', 'she']
     : /\b(man|boy|male|gentleman)\b/i.test(look) ? ['the man', 'he'] : ['a character', 'they']
-  let phrase = label + ' is ' + who[0] + ' in this scene: ' + traits.join(', ')
+  let phrase = label + ' is ' + who[0] + ' in this scene' + (extras.expression ? ' (' + String(extras.expression).trim() + ')' : '') + ': ' + traits.join(', ')
   const wearing = who[1] === 'they' ? ' are wearing ' : ' is wearing '
   if (outfit.length) phrase += '; ' + who[1] + wearing + outfit.join(', ')
   else if (wear) phrase += '; ' + who[1] + wearing + wear
@@ -459,9 +626,204 @@ function boundCharacterPhrase(person, picked, extras = [], wear = '', style = 'n
   return phrase
 }
 
-/** 服装条目 → 一句完整描述。 */
+/**
+ * 从一段中文外貌里找出写年龄的分句，去掉开头的「她是 / 他是」：
+ *   「她是一位二十多岁的成年女子，乌黑的长发」→「一位二十多岁的成年女子」
+ * 「看上去比实际年龄年轻几岁」这种不是年龄，不算（岁前面要有数字）。
+ */
+const ZH_AGE = /(?:\d+|[一二两三四五六七八九十]+[几多]?)\s*岁|成年|未成年|少女|少年/
+function zhAgeClause(text) {
+  const value = String(text ?? '').trim()
+  if (!value) return ''
+  const clause = value.split(/[，,。；;\n]/).map(t => t.trim()).find(t => ZH_AGE.test(t))
+  if (!clause) return ''
+  return clause.replace(/^(?:她|他|TA|ta)?\s*(?:是|为)?\s*/, '').trim()
+}
+
+/** 人物资料（脸部外貌）是用中文写的：给读得懂中文的模型用的人物条目。 */
+function chinesePerson(person) {
+  return /[㐀-鿿]/.test(String(person?.traits?.face ?? ''))
+}
+
+/** 画面描述里交代了镜头（景别、机位、俯仰、正侧背）。 */
+const SCENE_CAMERA_ZH = /镜头|机位|视角|俯视|仰视|平视|俯拍|仰拍|特写|近景|中景|远景|全景|全身|半身|七分身|侧面|正面|背影/
+
+/** 画面是近景、半身、特写（看不到腿脚）。写了全身、全景、远景、中景的不算。 */
+function closeShotZh(scene) {
+  const text = String(scene ?? '')
+  return /特写|近景|半身|胸像|头像/.test(text) && !/全身|全景|远景|(?<!近)中景|七分身/.test(text)
+}
+
+/** 人物外貌里招牌发型分句的标记：「……；平时头发梳成双螺髻」。 */
+const HAIR_MARK = /[；;]\s*平时\s*/
+/** 这一刻的衣服描述里写了发型，或画面写着头发散开、湿透：不再带人物库里的招牌发型。 */
+const HAIR_IN_WEAR_ZH = /髻|辫|马尾|束发|束起|挽起|盘起|盘成|挽成|梳成|披发|散发|披散|头发/
+const HAIR_STATE_ZH = /散发|披散|披着头发|散着头发|头发散|松挽|松松挽|散落下来|解开[^。，]{0,4}(?:发|髻)|拆[^。，]{0,3}髻|卸[^。，]{0,3}簪|湿发|湿透的[^。，]{0,6}发|发梢[^。，]{0,4}滴水|头发[^。，]{0,4}湿|(?:长发|头发|黑发|乌发|发丝)[^。，；]{0,2}(?:散|铺|乱|披|垂落)/
+/** 外貌最后一句写的是发型（梳成什么髻、束成马尾）。 */
+const HAIR_STYLE_SENTENCE = /(?:头发|长发|黑发|乌发|发)[^。]*?(?:髻|马尾|辫|束成|盘成|挽成|梳成)/
+/** 发型动词从哪里开始：之前是发色和长短，之后是梳成什么样。 */
+const HAIR_STYLE_VERB = /(?:平时)?(?:在脑后)?(?:高高|松松|斜)?(?:用[^，。]{0,6}?)?(?:束|梳|挽|盘|扎)/
+function hairOverridden(scene, wear) {
+  return HAIR_IN_WEAR_ZH.test(String(wear ?? '')) || HAIR_STATE_ZH.test(String(scene ?? ''))
+}
+
+/** 宏里的英文视角词在中文整句里的说法（TA 换成她/他）。 */
+const ZH_ANGLE = {
+  'from front': '镜头正对着TA', 'from behind': '镜头在TA身后，拍的是TA的背影', 'from back': '镜头在TA身后，拍的是TA的背影',
+  'from side': '镜头从侧面拍TA', 'from above': '镜头从上方俯视TA', 'from below': '镜头从下方仰视TA',
+  'from left': '镜头从TA的左侧拍过去', 'from right': '镜头从TA的右侧拍过去',
+}
+
+/**
+ * 中文人物资料（给读得懂中文的模型用）拼成几句完整的中文。
+ * 外貌各字段是独立的句子（「她是一位……」），服装各字段是接在「她」后面的分句（「上身穿着……」）。
+ */
+function chineseCharacterPhrase(person, traits, outfit, extras, wear, look, label) {
+  const zhWho = /女性|女子|女人|少女|妇人|\b(?:woman|girl|female|lady)\b/i.test(look) ? ['女子', '她']
+    : /男性|男子|男人|少年|\b(?:man|boy|male|gentleman)\b/i.test(look) ? ['男子', '他'] : ['人物', 'TA']
+  const zhName = String(person?.name ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, '') || label
+  const trim = t => String(t ?? '').trim().replace(/[，,。；;\s]+$/, '')
+  // 年龄放进第一句身份句（埋在外貌中间容易被模型忽略）：宏里写了 "age" 用宏里的，否则从外貌里找。
+  const ageText = zhAgeClause(extras.age) || zhAgeClause(person?.age) || zhAgeClause(look)
+  const sentences = ['画面中的' + zhWho[0] + '是' + zhName + (ageText ? '，' + ageText : '')]
+  // 这一刻的表情紧跟在身份句后面，和人绑在一起，不会被外貌里的常态神态盖过去。
+  const feeling = trim(extras.expression)
+  if (feeling) sentences.push(/^(?:此刻|她|他|TA)/.test(feeling) ? feeling : '此刻' + zhWho[1] + feeling)
+  // 年龄已经写进身份句：外貌开头那句「她是一位二十多岁的成年女子，」去掉，不说第二遍。
+  const dropAge = text => {
+    const clause = ageText ? zhAgeClause(text) : ''
+    if (!clause) return text
+    const head = new RegExp('^(?:她|他|TA)?\\s*(?:是|为)?\\s*' + clause.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*[，,。；;]?\\s*')
+    if (!head.test(text)) return text
+    const rest = text.replace(head, '')
+    return rest && !/^(?:她|他|TA)/.test(rest) ? zhWho[1] + rest : rest
+  }
+  // 外貌里「；平时……」是招牌发型：照常带上（去掉「平时」）；这一刻另有发型时不带。
+  const withHair = text => {
+    const at = HAIR_MARK.exec(text)
+    if (at) {
+      const main = text.slice(0, at.index), hair = trim(text.slice(at.index + at[0].length))
+      return extras.dropHair || !hair ? main : main + '，' + hair
+    }
+    // 发型写成外貌最后一句（「……。乌黑的长发挽成朝云近香髻」）：这一刻头发另有样子时只留发色和长短。
+    if (!extras.dropHair) return text
+    const cut = text.lastIndexOf('。')
+    const last = cut >= 0 ? text.slice(cut + 1) : ''
+    if (!last || !HAIR_STYLE_SENTENCE.test(last)) return text
+    const styled = HAIR_STYLE_VERB.exec(last)
+    const keep = styled ? trim(last.slice(0, styled.index)) : ''
+    return text.slice(0, cut + 1) + keep
+  }
+  sentences.push(...traits.map(t => trim(dropAge(withHair(trim(t))))).filter(Boolean))
+  const worn = outfit.length ? outfit.map(trim).filter(Boolean).join('，') : trim(wear)
+  // 服装库的分句本身以「上身穿着」「脚上穿着」之类开头；规划写的描述（「白色睡裙」）前面补「穿着」。
+  const wornState = trim(extras.outfitState)
+  if (worn) sentences.push(zhWho[1] + (/^(?:上身|下身|身上|脚上|腿上|腰间|头上|头发|发间|颈间|手腕|穿着|披着|裹着|套着|只穿|赤|光着|戴着|系着)/.test(worn) ? '' : '穿着') + worn + (wornState ? '，' + wornState : ''))
+  else if (wornState) sentences.push(zhWho[1] + wornState)
+  for (const e of extras) {
+    if (e === extras.outfitState) continue
+    const angle = ZH_ANGLE[String(e).trim().toLowerCase()]
+    sentences.push(angle ? angle.replaceAll('TA', zhWho[1]) : trim(e))
+  }
+  return sentences.filter(Boolean).join('。') + '。'
+}
+
+/**
+ * 画面里有几个人：取「人物宏里不同的名字数」和「画面里是三个人 / 三女一男」里写的人数中较大的那个。
+ */
+const ZH_DIGIT = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+export function sceneHeadcount(text) {
+  const raw = String(text ?? '')
+  const names = new Set([...repairMacros(raw).matchAll(MACRO_BLOCK)].map(m => {
+    try {
+      const c = JSON.parse('{' + m[1] + '}')
+      if (String(c.upperBody ?? c.body ?? '').toLowerCase() === 'visible') return ''
+      return String(c.name ?? c['名称'] ?? c['角色'] ?? '').trim().toLowerCase()
+    } catch { return '' }
+  }).filter(Boolean))
+  let said = 0
+  for (const m of stripMacros(raw).matchAll(/画面(?:里|中)(?:只有|是|有|共有|一共有)?([^。；;]{0,14}?)(?:个人|位|名|人)/g)) {
+    const phrase = m[1]
+    const parts = [...phrase.matchAll(/([一二两三四五六七八九十]|\d+)\s*(?:个|位|名)?\s*(男|女)/g)].reduce((n, x) => n + (ZH_DIGIT[x[1]] ?? Number(x[1]) ?? 0), 0)
+    const total = [...phrase.matchAll(/([一二两三四五六七八九十]|\d+)\s*(?:个|位|名)?\s*$/g)].reduce((n, x) => Math.max(n, ZH_DIGIT[x[1]] ?? Number(x[1]) ?? 0), 0)
+    said = Math.max(said, parts, total)
+  }
+  for (const m of stripMacros(raw).matchAll(/画面(?:里|中)是([一二两三四五六七八九十])(?:个|位|名)(?:女子|男子|女人|男人|姑娘)/g)) said = Math.max(said, ZH_DIGIT[m[1]] ?? 0)
+  return Math.max(names.size, said)
+}
+
+/** 三个人以上的画面竖图放不下：竖图（或没写画幅）改成横图。 */
+export function crowdSize(size, scene) {
+  const value = String(size ?? '').trim()
+  // 尺寸来自用户/规划器时一律尊重；只在未指定时替多人画面选横图。
+  if (value) return value
+  if (sceneHeadcount(scene) < 3) return value
+  return '横图'
+}
+
+/**
+ * 白天黑夜：画面描述没写时间时，从正文的状态栏 [时间|…|傍晚|酉时] 补一句；
+ * 夜里、傍晚的画面再补一句「窗外漆黑、没有日光」，否则模型常把夜景画成白天（画风前缀里的光线描述也偏白天）。
+ */
+const ZH_DAY_WORDS = /清晨|早晨|早上|一早|上午|晌午|正午|中午|午后|下午|白天|白日|日头|阳光|日光|天光|黎明|拂晓/
+const ZH_DUSK_WORDS = /傍晚|黄昏|日落|夕阳|擦黑|日暮|暮色/
+const ZH_NIGHT_WORDS = /深夜|半夜|午夜|夜里|夜间|夜晚|夜色|凌晨|月光|月色/
+const ZH_DARK_WORDS = /漆黑|黑沉沉|黑漆漆|黑黢黢|天已经黑|天黑透/
+const ZH_PERIOD_SENTENCE = {
+  night: '时间是夜里，画面里看得到的窗外、门外和天空都是漆黑的夜色，光线昏暗，只有近处被灯火照亮',
+  dusk: '时间是傍晚，天色正在暗下来，天空是昏暗的灰蓝色，光线发暗',
+  morning: '时间是清晨，天光清淡柔和',
+  forenoon: '时间是上午，白天明亮的自然光',
+  noon: '时间是正午，日光明亮',
+  afternoon: '时间是午后，白天的自然光',
+}
+function statusPeriod(body) {
+  const bars = [...String(body ?? '').matchAll(/\[时间[|｜]([^\]\n]{0,80})\]/g)]
+  if (!bars.length) return ''
+  const t = bars[bars.length - 1][1]
+  if (/深夜|半夜|午夜|夜|子时|丑时|寅时|亥时|戌时|凌晨/.test(t)) return 'night'
+  if (/黄昏|傍晚|日暮|酉时/.test(t)) return 'dusk'
+  if (/清晨|早晨|早上|黎明|拂晓|卯时|辰时/.test(t)) return 'morning'
+  if (/上午|巳时/.test(t)) return 'forenoon'
+  if (/中午|正午|晌午|午时/.test(t)) return 'noon'
+  if (/午后|下午|未时|申时/.test(t)) return 'afternoon'
+  return ''
+}
+export function addSceneTime(scene, body) {
+  const original = String(scene ?? '')
+  // 先把漏了 $ 的宏补全，否则认不出开头的人物宏，时间句会插进两个宏中间。
+  const text = repairMacros(original)
+  const plain = stripMacros(text)
+  if (!/[\u3400-\u9fff]/.test(plain)) return original
+  let period = ''
+  const explicit = pattern => [...plain.matchAll(new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g'))]
+    .some(match => {
+      const before = plain.slice(Math.max(0, match.index - 6), match.index)
+      const after = plain.slice(match.index + match[0].length, match.index + match[0].length + 3)
+      return !/(?:不|没|并非|不是|没有|并未|未)$/.test(before) && !/(?:般|似的)/.test(after) && !/(?:如|像|似|宛如|仿佛)$/.test(before)
+    })
+  const hasDay = explicit(ZH_DAY_WORDS)
+  const hasNight = explicit(ZH_NIGHT_WORDS)
+  const hasDusk = explicit(ZH_DUSK_WORDS)
+  const conflicting = Number(hasDay) + Number(hasNight) + Number(hasDusk) > 1
+  if (conflicting) period = ''
+  else if (hasNight) period = explicit(ZH_DARK_WORDS) ? '' : 'night'
+  else if (hasDusk) period = explicit(ZH_DARK_WORDS) ? '' : 'dusk'
+  else if (!hasDay) period = statusPeriod(body)
+  const sentence = ZH_PERIOD_SENTENCE[period]
+  if (!sentence) return original
+  // 插在开头的人物宏和镜头句之后：「${…}$, 半身近景，正面平视。」+ 时间句 + 其余画面。
+  const lead = /^(?:\s*[^\s$。]{0,8}?\s*[,，、]?\s*\$\{(?:(?!\$\{)[\s\S])*?\}\$\s*[,，、]?\s*)*/.exec(text)?.[0] ?? ''
+  const rest = text.slice(lead.length)
+  const firstEnd = rest.indexOf('。')
+  const camera = firstEnd > 0 && firstEnd <= 24 && SCENE_CAMERA_ZH.test(rest.slice(0, firstEnd)) ? rest.slice(0, firstEnd + 1) : ''
+  return lead + camera + sentence + '。' + rest.slice(camera.length)
+}
+
+/** 服装条目 → 一句完整描述。中文服装用中文逗号连成一句。 */
 function outfitDescription(outfit) {
-  return ['upper', 'lower', 'shoes', 'accessory'].map(k => String(outfit?.[k] ?? '').trim()).filter(v => v && !PLACEHOLDER_VALUE.test(v)).join(', ')
+  const parts = ['upper', 'lower', 'shoes', 'accessory'].map(k => String(outfit?.[k] ?? '').trim().replace(/[，,。\s]+$/, '')).filter(v => v && !PLACEHOLDER_VALUE.test(v))
+  return parts.join(parts.some(v => /[\u3400-\u9fff]/.test(v)) ? '，' : ', ')
 }
 
 /** 「当前穿着」记录可能是英文描述，也可能是服装库里的名字；是名字就展开成那套衣服。 */
@@ -472,18 +834,28 @@ function resolveWearText(person, text) {
   const find = piece => (person?.outfits ?? []).find(o => o && o.enabled !== false && n(o.name) && n(o.name) === n(piece))
   const whole = find(value)
   if (whole) return outfitDescription(whole) || value
+  // 中文人物的「当前穿着」记录本身就是一句中文描述：整句保留，不按逗号拆。
+  if (chinesePerson(person) && /[\u3400-\u9fff]/.test(value) && !value.split(/[,，、]/).some(piece => find(piece.trim()))) return value
   // 规划有时把服装名和补充的单品混着写（「酒红色挂脖包臀裙, black pantyhose」）：逐段展开服装名，
   // 其余英文原样保留，认不出的中文片段丢掉（模型看不懂，只会干扰画面）。
   const seen = new Set()
   const pieces = value.split(/[,，、]/).map(t => t.trim()).filter(Boolean).flatMap(piece => {
     const hit = find(piece)
     if (hit) return String(outfitDescription(hit) || '').split(',').map(t => t.trim()).filter(Boolean)
-    return /[\u3400-\u9fff]/.test(piece) ? [] : [piece]
+    return /[\u3400-\u9fff]/.test(piece) && !chinesePerson(person) ? [] : [piece]
   }).filter(t => { const k = t.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true })
   return pieces.length ? pieces.join(', ') : value
 }
 
 /** 人物宏展开 / 规范化用自然语言还是 tag 写法（与 prepareImagePrompt 的判断一致）。 */
+/**
+ * 清理提示词时保留中文：手动打开了 allowChinesePrompt，或当前工作流是读得懂中文的模型（如 MOSS-Image）
+ * 且用的是自然语言写法。
+ */
+function chineseAllowed(config, workflow = null) {
+  return config?.allowChinesePrompt === true || (rosterStyle(config, workflow) === 'natural' && acceptsChinese(promptBackendContext(config, workflow)))
+}
+
 function rosterStyle(config, workflow = null) {
   const mode = resolvePromptMode(config, promptBackendContext(config, workflow))
   return mode === 'structured' ? 'structured' : mode === 'natural' ? 'natural' : 'tags'
@@ -500,7 +872,9 @@ function characterTags(character, options = {}) {
   const full = options.full !== false
   // 「性格气质」(feature) 只给规划挑表情动作，不写进画图提示词：它每张都会带上，
   // 会把这一刻的神态压成同一种（泡澡放松的画面也带着 fierce）。
-  const keys = [back ? 'faceBack' : 'face']
+  // 只拍腿脚的画面（上身 hidden、下身没 hidden）看不到脸：不写五官，免得模型为了画脸把整个人拉进来。
+  const lowerOnly = String(options.upper ?? '').toLowerCase() === 'hidden' && !['hidden', ''].includes(String(options.lower ?? '').toLowerCase())
+  const keys = lowerOnly ? [] : [back ? 'faceBack' : 'face']
   // 宏里分别给了上下身状态时按部位挑：上身露、下身穿着，就只带上身的 NSFW 块，反之亦然；hidden 的部位不带。
   // 没分别给（或 traitMode 为 all）时和以前一样，整个人一起按 nsfw / sfw 挑。
   const part = value => { const v = String(value ?? '').toLowerCase(); return v === 'nsfw' || v === 'hidden' || v === 'sfw' ? v : '' }
@@ -525,9 +899,17 @@ function characterTags(character, options = {}) {
     else if (options.outfitName) { if (outfit.name !== options.outfitName) continue }
     else if (!isDefault && (character.outfits ?? []).some(o => o.default && o.enabled !== false)) continue
     for (const key of ['upper', 'lower', 'shoes', 'accessory', 'full']) {
-      if (options.barefoot && key === 'shoes') continue
+      // 宏里标了 hidden 或 nsfw 的部位，对应的衣服不写：hidden 是出了画框，nsfw 是那个部位露着，
+      // 写上衣或裤子会让模型把衣服画回去。半身、近景（只有下身 hidden）照样写下装，
+      // 不写的话模型常把下摆画到大腿、下面却什么都没穿；鞋照旧不写。
+      if (key === 'shoes' && (lowerPart === 'hidden' || lowerPart === 'nsfw')) continue
+      if (key === 'lower' && (lowerPart === 'nsfw' || (lowerPart === 'hidden' && upperPart === 'hidden'))) continue
+      if (key === 'upper' && (upperPart === 'hidden' || upperPart === 'nsfw')) continue
+      // full 是整套打扮的总述，任何一个部位裸露或出框都不能再用它，否则会画出「裸体但穿着夏日休闲装」。
+      if (key === 'full' && (upperPart === 'hidden' || upperPart === 'nsfw' || lowerPart === 'hidden' || lowerPart === 'nsfw')) continue
+      if (options.barefoot && !options.keepSocks && key === 'shoes') continue
       if (key === 'full' && options.tags && (String(outfit.upper ?? '').trim() || String(outfit.lower ?? '').trim())) continue
-      const value = options.barefoot ? dropFootwear(outfit[key]) : String(outfit[key] ?? '').trim()
+      const value = options.barefoot ? dropFootwear(outfit[key], options.keepSocks) : String(outfit[key] ?? '').trim()
       if (value && !PLACEHOLDER_VALUE.test(value)) { tags.push(value); origins.push({ field: 'outfit.' + key, outfitId: outfit.id, text: value }) }
     }
     if (options.back === true && String(outfit.back ?? '').trim()) {
@@ -1524,7 +1906,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const defsForTurn = applyCharacterSnapshot(definitions, rawParams?.characterSnapshot)
       const card = await currentCard(rawParams?.sessionId || lastSessionId, rawParams?.turn)
       let scopedDefs = card
-        ? { ...defsForTurn, characters: (defsForTurn.characters ?? []).filter(character => usableOnCard(character, card)) }
+        ? { ...defsForTurn, characters: scopeCharacters(defsForTurn.characters, card) }
         : defsForTurn
       let referenceState = null
       if (generationMode === 'reference') {
@@ -1543,7 +1925,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         params.subjects = structuredClone(referenceState.subjects)
         if (sectioned) params.referenceText = buildStructuredReferenceText(referenceState.references)
         const style = rosterStyle(jobConfig, workflow)
-        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: effectiveProvider, style, allowChinese: jobConfig.allowChinesePrompt })
+        params.tag = normalizePrompts(expandRosterCalls(params.rawTag, scopedDefs, jobConfig.traitMode, { style }), scopedDefs, { backend: effectiveProvider, style, allowChinese: chineseAllowed(jobConfig, workflow) })
       }
       // 这里可以打日志（runtime 里能拿到 logger）
       const compileConfig = forceWorkflow ? { ...jobConfig, imageBackend: 'comfyui' } : jobConfig
@@ -1755,7 +2137,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       try { card = await currentCard(session, turn) }
       catch (error) { error.submissionNotStarted = true; throw error }
       const defs = applyCharacterSnapshot(definitions, characterSnapshot)
-      const scoped = card ? { ...defs, characters: (defs.characters ?? []).filter(character => usableOnCard(character, card)) } : defs
+      const scoped = card ? { ...defs, characters: scopeCharacters(defs.characters, card) } : defs
       const keepComfySource = source.backend === 'comfyui' && jobConfig.imageBackend === 'comfyui'
       if (keepComfySource && source.workflowId?.startsWith('simple-')) throw Object.assign(new Error('该作业来自已停用的 ComfyUI 简易模式；原数据已保留，请导入完整 ComfyUI API workflow 后再重绘'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
       const workflow = keepComfySource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
@@ -1765,7 +2147,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let fresh
       try {
         fresh = await startJob({
-          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: effectiveConfiguredProvider(jobConfig), style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: jobConfig.allowChinesePrompt }),
+          tag: mode === 'reference' ? rawTag : normalizePrompts(expandRosterCalls(rawTag, scoped, jobConfig.traitMode, { style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)) }), scoped, { backend: effectiveConfiguredProvider(jobConfig), style: rosterStyle(jobConfig, workflow ?? styleWorkflow(jobConfig)), allowChinese: chineseAllowed(jobConfig, workflow ?? styleWorkflow(jobConfig)) }),
           rawTag, generationMode: mode,
           subjects: refreshReferences && submitted !== (source.params?.rawTag ?? source.params?.tag) ? undefined : (source.params?.subjects?.length ? source.params.subjects : undefined),
           characters: characterSource,
@@ -1902,6 +2284,14 @@ function createRuntime(ctx, overrides, logger, deps) {
         } catch { /* 这一轮拿不到就退回缓存 */ }
       }
       return cardCache.get(id) ?? null
+    }
+
+    /**
+     * 这张卡能用的角色。没绑卡的全局角色一直可用；但这张卡自己绑了一个玩家角色（备注写「玩家」）时，
+     * 全局的通用玩家让开，免得清单里出现两个玩家角色、规划不知道「我」是谁。
+     */
+    function scopeCharacters(list, card) {
+      return hideGlobalPlayers((list ?? []).filter(character => usableOnCard(character, card)))
     }
 
     /** 这个角色在这张卡下可用吗（没绑卡的全局角色一直可用）。 */
@@ -2085,7 +2475,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       let visualSnapshot = historySnapshot ?? emptyCharacterSnapshot()
       const scoped = {
         ...timelineDefinitions,
-        characters: (timelineDefinitions.characters ?? []).filter(character => usableOnCard(character, card)),
+        characters: scopeCharacters(timelineDefinitions.characters, card),
       }
       // 规划调用了、但人物库补不上外貌的角色：插件只能写个名字，长相每张都会不一样。
       // 以前这件事完全静默；现在收集起来，配图完成时提示用户。
@@ -2114,7 +2504,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             && [c.id, c.name, ...splitTags(c.match)].some(alias => norm(alias) && norm(alias) === norm(asked)))
           if (elsewhere) return '「' + (elsewhere.name || asked) + '」在人物库里绑定的是别的卡，这次没用上她的外貌；在人物库里给她勾上这张卡即可'
           return '「' + asked + '」不在人物库里，长相每张会不一样；把她加进人物库能固定外貌'
-        }).slice(0, 4).concat(missingMounts.size ? ['有 ' + missingMounts.size + ' 张图的挂载句在正文里找不到，没有画（例如「' + [...missingMounts][0] + '」）；可以重新配图'] : [])
+        }).slice(0, 4).concat(missingMounts.size ? ['有 ' + missingMounts.size + ' 张图的挂载句无法精确匹配，没有画（例如「' + [...missingMounts][0] + '」）；确认是单字错字时可在提示词设置中开启挂载句错字容错后重试'] : [])
       }
       // 世界书条目的 backends 里可以写 tags / natural / mixed，按默认工作流的写法只给规划看对应的规则。
       const plannerWorkflow = styleWorkflow()
@@ -2192,7 +2582,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             try { visualSnapshot = boundCharacterSnapshot({ ...visualSnapshot, gameId: String(sessionId ?? ''), turn: Number(turn) || 0, textVersion: String(textVersion ?? '') }) } catch {}
           }
           const updated = applyCharacterSnapshot(definitions, visualSnapshot)
-          scoped.characters = updated.characters.filter(character => usableOnCard(character, card))
+          scoped.characters = scopeCharacters(updated.characters, card)
         }
         return true
       }
@@ -2207,17 +2597,29 @@ function createRuntime(ctx, overrides, logger, deps) {
       // 只提交已经闭合的 <image> 块；提交仍排队，ComfyUI 保持自己的 GPU 执行队列。
       // 第一张可以在模型继续规划后续画面时开画，无需等整份规划结束。
       const submitImages = images => {
-        for (const image of images) {
+        for (let image of images) {
           if (!imageGeneration || submissionStopped) continue
           if (smart && (streamDecision !== 'draw' || !decisionFrozen || streamConflict)) continue
           const planCharacters = Array.isArray(image.characters) ? image.characters.filter(item => item && String(item.prompt ?? '').trim()) : []
-          const sceneText = String(image.prompts ?? '')
+          let sceneText = String(image.prompts ?? '')
           if (!sceneText.trim() && !planCharacters.length) continue
           if (!mountInBody(image.mount)) {
-            // 以前逐字比对、静默跳过：规划少抄一个 * 或换行就整张图不画，全部跳过时还报成「没有返回可用的 <image> 块」。
-            const mount = String(image.mount ?? '').trim()
-            if (mount) missingMounts.add(mount.slice(0, 24))
-            continue
+            // 规划抄挂载句时改了几个字：换成正文里最像的那一句，图照画、照样挂在那一句后面。
+            const nearest = resolveMountFallback(config, image.mount, body, anchorText)
+            if (nearest && mountInBody(nearest)) image = { ...image, mount: nearest, mountAsked: image.mount }
+            else {
+              // 以前逐字比对、静默跳过：规划少抄一个 * 或换行就整张图不画，全部跳过时还报成「没有返回可用的 <image> 块」。
+              const mount = String(image.mount ?? '').trim()
+              if (mount) missingMounts.add(mount.slice(0, 24))
+              continue
+            }
+          }
+          // 中文自然语言：画面没写时间时从正文状态栏补一句（夜里补「窗外漆黑」）；三个人以上把竖图改成横图。
+          if (rosterStyle(config, plannerWorkflow) === 'natural' && chineseAllowed(config, plannerWorkflow)) {
+            const timed = addSceneTime(image.prompts, body)
+            const size = crowdSize(image.size, image.prompts)
+            if (timed !== image.prompts || size !== String(image.size ?? '').trim()) image = { ...image, prompts: timed, size, sizeAsked: image.size }
+            sceneText = String(image.prompts ?? '')
           }
           const identity = JSON.stringify([image.mount, sceneText, planCharacters])
           const promptIdentity = [sceneText, ...planCharacters.map(item => item.prompt)].join(' ').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -2236,7 +2638,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             const expandOne = (text, keep = false) => {
               const expanded = expandRosterCalls(text, scoped, config.traitMode, { style: rosterStyle(config, plannerWorkflow), onMacro: entry => { macros?.push(entry); noteMacro(entry) } })
               if (keep) expandedScene = expanded
-              return normalizePrompts(expanded, scoped, { backend: effectiveConfiguredProvider(config), style: rosterStyle(config, plannerWorkflow), allowChinese: config.allowChinesePrompt })
+              return normalizePrompts(expanded, scoped, { backend: effectiveConfiguredProvider(config), style: rosterStyle(config, plannerWorkflow), allowChinese: chineseAllowed(config, plannerWorkflow) })
             }
             // Reference jobs must expand against the per-picture reference scope,
             // not the full library here (which would reintroduce conflicting traits).
@@ -2417,8 +2819,8 @@ function createRuntime(ctx, overrides, logger, deps) {
     /** 用「角色与服装设计规范」让 agent 产出 <人物> / <服装>。 */
     async function designCharacters({ brief, sessionId, useCard, photo, current }) {
       if (!deps.llm) throw new Error('当前 DSH 没有 llm 服务')
-      const rules = await readFile(join(ROOT, 'design-rules.md'), 'utf8').catch(() => '')
-      if (!rules) throw new Error('读不到 design-rules.md')
+      const baseRules = await readFile(join(ROOT, 'design-rules.md'), 'utf8').catch(() => '')
+      if (!baseRules) throw new Error('读不到 design-rules.md')
       const fallback = await backgroundModel(sessionId)
       const provider = config.plannerProvider || fallback?.provider || ''
       const model = config.plannerModel || fallback?.model || ''
@@ -2500,9 +2902,33 @@ function createRuntime(ctx, overrides, logger, deps) {
         ].join('\n')
       }
 
+      const hasCurrent = Boolean(current && typeof current === 'object' && current.name)
+      const designPromptMode = ['auto', 'chinese', 'tags'].includes(config.designPromptMode) ? config.designPromptMode : 'auto'
+      const chineseDesign = designPromptMode === 'chinese' || (designPromptMode === 'auto' && (hasCurrent ? chinesePerson(current) : chineseAllowed(config, styleWorkflow())))
+      const languageNote = chineseDesign ? [
+        '【语言要求】人物外貌各分块和服装各字段用中文完整短句，不写英文 Tag，不加 (( )) 权重括号。',
+        '- 人物外貌照人物库现有的写法，例如「她是一位二十二岁的年轻女子，身形纤细修长；脸是线条清晰的瓜子脸……」。',
+        '- 服装：上衣以「上身穿着」开头，下装以「下身是」开头，鞋袜以「脚上穿着」开头（光脚写「光着脚」）；每一件都写颜色、面料和款式，不写「素色」「深色」这种含糊的颜色。',
+        '- 旗袍、连衣裙、长袍这类连体的衣服：上衣写整件，下装写下摆的长度，不要把下装空着。不写开衩、裙摆分叉、「露出一截腿」：人一坐下，模型会从开衩里多画出一条腿。',
+        '- 发型不写进服装（发型属于人物外貌），发饰可以写在配饰里；不写否定句（「没有……」「不露……」），画图模型会把否定的东西画出来。',
+        '- 新服装名称简短好认；已有服装的名称、语言和内容原样保留，除非用户明确要求修改。',
+      ].join('\n') : ''
+      const languageRules = chineseDesign
+        ? '【生成语言：中文整句】所有新增人物外貌与服装描述均用中文完整短句；不得遵循下方规范中相冲突的英文 Tag 要求。已有资料只在用户明确要求时翻译或改写。'
+        : '【生成语言：英文 Tag】所有新增人物外貌与服装描述均用英文绘图 Tag；已有资料只在用户明确要求时翻译或改写。'
+      const roleRequirements = String(config.characterDesignRequirements ?? '').trim()
+      const outfitRequirements = String(config.outfitDesignRequirements ?? '').trim()
+      const rules = [baseRules,
+        roleRequirements ? '【用户自定义：角色生成要求】\n' + roleRequirements : '',
+        outfitRequirements ? '【用户自定义：服装生成要求】\n' + outfitRequirements : '',
+        languageRules + ' 语言选择优先于设计规范及自定义写法要求。',
+        '【结构要求】保留规范规定的 <人物>/<服装> 块和字段结构；自定义要求可覆盖默认风格、款式、命名和写法建议，但不能省略必要字段。',
+      ].filter(Boolean).join('\n\n')
+
       const ask = [
         // 有参考图时它排第一：模型对靠前的内容权重更高
         photoNote,
+        languageNote,
         improveNote,
         brief ? '用户的要求：' + brief : '',
         photoNote
@@ -2829,6 +3255,10 @@ function createRuntime(ctx, overrides, logger, deps) {
           styleNegative: String(config.styleNegative ?? ''),
           promptPresets: normalizePromptPresets(config.promptPresets),
           promptPresetLibrary: BUILTIN_PROMPT_PRESETS,
+          designPromptMode: ['auto', 'chinese', 'tags'].includes(config.designPromptMode) ? config.designPromptMode : 'auto',
+          closestMountTolerance: config.closestMountTolerance === true,
+          characterDesignRequirements: String(config.characterDesignRequirements ?? ''),
+          outfitDesignRequirements: String(config.outfitDesignRequirements ?? ''),
           activePromptPreset: String(config.activePromptPreset ?? ''),
           promptMode: ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode) ? config.promptMode : 'auto',
           allowChinesePrompt: config.allowChinesePrompt === true,
@@ -3544,8 +3974,12 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (typeof patch.comfyAuthPass === 'string' && patch.comfyAuthPass !== '') config.comfyAuthPass = patch.comfyAuthPass
         if (patch.clearComfyAuthToken === true) config.comfyAuthToken = ''
         if (patch.clearComfyAuthPass === true) config.comfyAuthPass = ''
-        for (const key of ['lockWorkflow', 'overrideSteps', 'autoImageGen', 'imageEnabled', 'plannerEnabled', 'jpegOutput', 'smartImageSelection', 'characterAutoUpdate']) if (typeof patch[key] === 'boolean') config[key] = patch[key]
+        for (const key of ['lockWorkflow', 'overrideSteps', 'autoImageGen', 'imageEnabled', 'plannerEnabled', 'jpegOutput', 'smartImageSelection', 'characterAutoUpdate', 'closestMountTolerance']) if (typeof patch[key] === 'boolean') config[key] = patch[key]
         if (typeof patch.promptMode === 'string' && ['auto', 'tags', 'natural', 'mixed', 'structured'].includes(patch.promptMode)) config.promptMode = patch.promptMode
+        if (typeof patch.designPromptMode === 'string' && ['auto', 'chinese', 'tags'].includes(patch.designPromptMode)) config.designPromptMode = patch.designPromptMode
+        for (const key of ['characterDesignRequirements', 'outfitDesignRequirements']) {
+          if (typeof patch[key] === 'string') config[key] = patch[key].slice(0, 4000)
+        }
         if (typeof patch.allowChinesePrompt === 'boolean') config.allowChinesePrompt = patch.allowChinesePrompt
         if (typeof patch.activePromptPreset === 'string') config.activePromptPreset = patch.activePromptPreset.slice(0, 80)
         if (Array.isArray(patch.promptPresets)) config.promptPresets = normalizePromptPresets(patch.promptPresets)
@@ -3669,7 +4103,11 @@ function createRuntime(ctx, overrides, logger, deps) {
       for (const key of wanted) {
         const character = characters.find(c => c && (c.id === key || c.name === key))
         if (!character) { missing.push(key); continue }
-        const prompt = buildOutfitPrompt({ character, preference, count: clamped.perCharacter, ageBand, nsfw })
+        const prompt = buildOutfitPrompt({
+          character, preference, count: clamped.perCharacter, ageBand, nsfw,
+          promptMode: config.designPromptMode,
+          requirements: config.outfitDesignRequirements,
+        })
         let text = ''
         try {
           const result = await runPlanner(deps.llm, {
@@ -3803,6 +4241,15 @@ function createRuntime(ctx, overrides, logger, deps) {
         preference,
         existing,
       })
+      const designPromptMode = ['auto', 'chinese', 'tags'].includes(config.designPromptMode) ? config.designPromptMode : 'auto'
+      const languageRules = designPromptMode === 'chinese'
+        ? '【语言要求：中文整句】新增角色外貌和服装描述全部使用中文完整短句；不得遵循上方冲突的英文 Tag 写法。'
+        : designPromptMode === 'tags'
+          ? '【语言要求：英文 Tag】新增角色外貌和服装描述全部使用英文绘图 Tag。'
+          : '【语言要求：自动】根据当前角色库/卡片已有写法及所选模型选择语言；已有资料不因本次生成而翻译。'
+      prompt.system += '\n\n' + languageRules
+      if (config.characterDesignRequirements) prompt.system += '\n\n【用户自定义：角色生成要求】\n' + config.characterDesignRequirements
+      if (config.outfitDesignRequirements) prompt.system += '\n\n【用户自定义：服装生成要求】\n' + config.outfitDesignRequirements
 
       let text = ''
       try {
@@ -4727,6 +5174,8 @@ async function loadConfig(overrides) {
   config.generationMode = config.generationMode === 'reference' ? 'reference' : 'text'
   config.promptPresets = normalizePromptPresets(config.promptPresets)
   if (!['auto', 'tags', 'natural', 'mixed', 'structured'].includes(config.promptMode)) config.promptMode = 'auto'
+  if (!['auto', 'chinese', 'tags'].includes(config.designPromptMode)) config.designPromptMode = 'auto'
+  for (const key of ['characterDesignRequirements', 'outfitDesignRequirements']) config[key] = String(config[key] ?? '').slice(0, 4000)
   config.activePromptPreset = validPromptPresetId(config, String(config.activePromptPreset ?? '').slice(0, 80))
   config.promptManualPositive = String(config.promptManualPositive ?? '').slice(0, 4000)
   config.promptManualNegative = String(config.promptManualNegative ?? '').slice(0, 4000)
@@ -5524,7 +5973,31 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   // 这里的文字已经展开了人物外貌，外貌里的 medium breasts 之类会让每张图都被当成裸露画面。
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
   const footText = stripMacros(options?.raw ?? source)
-  const barefoot = BAREFOOT.test(footText)
+  const barefoot = isBarefoot(footText)
+  const sourceMacros = [...repairMacros(options?.raw ?? source).matchAll(MACRO_BLOCK)].flatMap(match => {
+    try {
+      const row = JSON.parse('{' + match[1] + '}')
+      if (String(row.upperBody ?? row.body ?? '').toLowerCase() === 'visible') return []
+      return [String(row.name ?? row['名称'] ?? row['角色'] ?? '').trim()]
+    } catch { return [] }
+  }).filter(Boolean)
+  const normalizedName = value => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
+  const aliasesFor = character => [...new Set([character?.name, character?.id, ...splitTags(character?.match)].map(value => String(value ?? '').trim()).filter(Boolean))]
+  const matchesAlias = (character, value) => aliasesFor(character).some(alias => normalizedName(alias) === normalizedName(value))
+  const macroCharacters = sourceMacros.map(name => (definitions.characters ?? []).find(character => character && matchesAlias(character, name))).filter(Boolean)
+  const sceneCharacters = (definitions.characters ?? []).filter(character => character && character.enabled !== false && (
+    macroCharacters.includes(character) || aliasesFor(character).some(alias => containsNameToken(footText, alias))
+  ))
+  // 按名字注入时，鞋袜状态只作用于明确点名该角色的子句；同一子句出现多名角色也视为归属不明。
+  const footwearSceneFor = character => {
+    if (sceneCharacters.length === 1) return footText
+    const clauses = footText.split(/(?<=[，,。！？!?；;\n])/).map(value => value.trim()).filter(Boolean)
+    const own = aliasesFor(character)
+    return clauses.filter(clause => {
+      if (!own.some(alias => containsNameToken(clause, alias))) return false
+      return !sceneCharacters.some(other => other !== character && aliasesFor(other).some(alias => containsNameToken(clause, alias)))
+    }).join(' ')
+  }
   // 规划里的人物宏已经展开过的人，不再按名字重复注入；他的其他形态也不注入
   // （否则同一个人的两种外貌会同时出现）。
   const label = c => (splitTags(c?.match)[0] || String(c?.name ?? '')) + ' is '
@@ -5532,7 +6005,10 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const expanded = (definitions.characters ?? []).filter(c => c && c.enabled !== false && (
     ['the woman', 'the man', 'a character'].some(who => source.includes(label(c) + who + ' in this scene')) ||
     (structured && source.includes(`人物“${c.promptLabel || c.name || splitTags(c.match)[0] || c.id}”：`)) ||
-    fingerprint(c).some(f => source.includes(f))))
+    fingerprint(c).some(f => source.includes(f)) ||
+    // 中文整句展开会改写外貌开头（年龄挪进身份句、招牌发型改写），指纹可能认不出：认中文身份句「画面中的女子是X」。
+    // 认不出的话同一个人会被按名字再注入一遍，画面里就多出一个人。
+    ['女子', '男子', '人物'].some(who => source.includes('画面中的' + who + '是' + String(c?.name ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, '')))))
   // 人物的负面词作用于整张图：多人画面里 A 的「不要短发」会压掉 B 的短发。
   // 所以先按人收集，最后只在画面里只有一个库中人物时才用上。
   const personNegatives = []
@@ -5565,12 +6041,17 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     // 两套衣服同时进提示词会打架（brown leather boots 对上 black leather boots）。
     const dressedByPlanner = !natural && PLANNER_GARMENT.test(footText)
     const recordedRaw = bare || dressedByPlanner ? '' : resolveWearText(character, character.current?.outfit)
-    const recorded = barefoot ? dropFootwear(recordedRaw) : recordedRaw
-    const picked = characterTags(character, { nsfw, back, full, mode: config.traitMode, barefoot, noOutfit: Boolean(recordedRaw) || bare || dressedByPlanner, tags: !natural })
+    const footwearScene = footwearSceneFor(character)
+    const personBarefoot = isBarefoot(footwearScene)
+    const shoesOff = !personBarefoot && footwearOverridden(footwearScene, personWearText(character, recordedRaw))
+    const noShoes = personBarefoot || shoesOff
+    const recorded = noShoes ? dropFootwear(recordedRaw, shoesOff) : recordedRaw
+    const picked = characterTags(character, { nsfw, back, full, mode: config.traitMode, barefoot: noShoes, keepSocks: shoesOff, noOutfit: Boolean(recordedRaw) || bare || dressedByPlanner, tags: !natural })
     // options.provenance：诊断用，记录每段注入文字来自哪个人物的哪个字段、作用于正向还是整图负向。
     if (Array.isArray(options?.provenance)) for (const origin of picked.origins ?? []) options.provenance.push({ stage: 'definition-injection', characterId: String(character.id ?? ''), characterName: String(character.name ?? ''), matchedBy: keys.find(key => key && source.includes(key)) ?? '', appliedScope: origin.channel === 'negative' ? 'whole-image-negative' : 'whole-image-positive', ...origin })
     if (natural) {
-      const phrase = boundCharacterPhrase(character, picked, [], recorded, options?.style)
+      const hairExtras = Object.assign([], { dropHair: hairOverridden(source, recorded) })
+      const phrase = boundCharacterPhrase(character, picked, hairExtras, recorded, options?.style)
       if (phrase && !source.includes(phrase)) added.push(phrase)
     } else {
       // tag 写法：这个人的外貌紧跟在她的名字后面插入，而不是堆到整段末尾。
@@ -5592,7 +6073,7 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   }
   // 规划原文里调用了几个不同的库中人物（同一角色的不同形态算一个）。tag 写法下展开后的文字认不出人，所以看原文。
   const rawText = String(options?.raw ?? '')
-  const calledNames = [...rawText.matchAll(/\$\{([\s\S]*?)\}\$/g)].map(m => { try { return String(JSON.parse('{' + m[1] + '}').name ?? '').trim().toLowerCase() } catch { return '' } }).filter(Boolean)
+  const calledNames = [...repairMacros(rawText).matchAll(MACRO_BLOCK)].map(m => { try { return String(JSON.parse('{' + m[1] + '}').name ?? '').trim().toLowerCase() } catch { return '' } }).filter(Boolean)
   const called = (definitions.characters ?? []).filter(c => c && c.enabled !== false && [c.id, c.name, ...splitTags(c.match)].some(k => k && calledNames.includes(String(k).trim().toLowerCase())))
   const families = called.filter((c, i) => !called.slice(0, i).some(o => sameCharacterFamily(c, o)))
   // 画面里写着的东西不能出现在负面里（例如路人的 short black hair 对上负面的 short hair）。
@@ -5632,7 +6113,11 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     }
   }
   // 赤脚画面：负面里压一下鞋（鞋拿在手里时不压）。
-  if (barefoot && !SHOES_IN_HAND.test(footText)) for (const tag of ['shoes', 'footwear']) if (!negatives.includes(tag)) negatives.push(tag)
+  // 鞋是整图负面词。只有唯一识别到的人物明确赤脚、且文本未提到其他鞋类时才添加。
+  const footwearMentioned = FOOTWEAR.test(footText) || new RegExp(ZH_FOOTWEAR_NOUN.source).test(footText)
+  if (barefoot && sceneCharacters.length === 1 && !footwearMentioned && !SHOES_IN_HAND.test(footText)) {
+    for (const tag of ['shoes', 'footwear']) if (!negatives.includes(tag)) negatives.push(tag)
+  }
   // 按名字注入的外貌插在这个人名字所在的那一段后面；找不到名字时退回到末尾。
   const segments = source.split(',')
   for (const { keys, tags } of placed) {
