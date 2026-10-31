@@ -169,9 +169,15 @@ function tavernTextColorOverrides(host) {
 }
 function TavernColoredMarkdown(props) {
     const root = React.useRef(null);
+    // While a reply streams, every frame rewrites this block's text nodes. Colouring it
+    // then means a full subtree walk plus getComputedStyle per node, every Range thrown
+    // away and rebuilt, and a document-wide highlight refresh — tens of times a second
+    // for a cost that grows with the reply. Colour once, when the text stops changing.
+    const streaming = props.streaming === true;
     React.useEffect(function () {
+        if (streaming) return undefined;
         const colors = installTavernTextColors(root.current, {}, findTavernQuoteRanges);
         return () => colors.dispose();
-    }, []);
+    }, [streaming]);
     return React.createElement('div', { ref: root, className: 'dsh-tavern-colored-markdown' }, React.createElement(DshUi.MarkdownText, props));
 }

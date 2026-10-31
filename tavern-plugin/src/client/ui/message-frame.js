@@ -467,6 +467,32 @@
         // @include inline-fragment.js
         // @include html-sketch.js
 
+		// The host's MarkdownText memoizes its streaming renderer on the identity of
+		// `labels`: a new object each render throws that cache away and re-parses the
+		// whole reply from its first character on every frame. Handing out one object
+		// per distinct variant keeps the incremental parser alive while streaming.
+		const tavernCodeLabelVariants = new Map();
+		function tavernCodeLabels(translate) {
+			const copyLabel = String(translate("copy"));
+			const copiedLabel = String(translate("copied"));
+			const key = copyLabel + "\u0000" + copiedLabel;
+			let labels = tavernCodeLabelVariants.get(key);
+			if (labels === undefined) {
+				labels = { copyLabel: copyLabel, copiedLabel: copiedLabel };
+				tavernCodeLabelVariants.set(key, labels);
+			}
+			return labels;
+		}
+		const tavernMarkdownLabelVariants = new Map();
+		function tavernMarkdownLabels(codeLabels) {
+			let labels = tavernMarkdownLabelVariants.get(codeLabels);
+			if (labels === undefined) {
+				labels = { code: codeLabels, footnotes: "脚注" };
+				tavernMarkdownLabelVariants.set(codeLabels, labels);
+			}
+			return labels;
+		}
+
 		function renderTavernProjection(projection, options) {
 			const h = React.createElement;
 			const parts = projectionPartsOf(projection);
@@ -477,7 +503,7 @@
 				}).join("\n")) + '</div></div></div>';
 				return h(TavernMessageFrame, Object.assign({}, options, { key: "opening-runtime", content: content, partIndex: 0, eager: options.eagerFrame }));
 			}
-			const renderPlain = function (text, key) { return h(TavernColoredMarkdown, { key: key, text: text, streaming: options.streaming, labels: { code: options.codeLabels, footnotes: "脚注" }, codeLabels: options.codeLabels, fileMentions: options.mentions }); };
+			const renderPlain = function (text, key) { return h(TavernColoredMarkdown, { key: key, text: text, streaming: options.streaming, labels: tavernMarkdownLabels(options.codeLabels), codeLabels: options.codeLabels, fileMentions: options.mentions }); };
 			const renderMarkdown = function (text, key) { return renderTavernDialogueText(text, key, renderPlain, options.cast, options.streaming); };
 			return parts.map(function (part, index) {
 				if (part.kind === "markdown") {
@@ -531,7 +557,7 @@
 				if (key === "json.truncated") return "内容过长（共 " + String(values && values.total || 0) + " 项）";
 				return key;
 			};
-			const codeLabels = { copyLabel: translate("copy"), copiedLabel: translate("copied") };
+			const codeLabels = tavernCodeLabels(translate);
 			const rendered = [];
 			let projected = false;
 			for (let index = 0; index < blocks.length; index += 1) {
@@ -542,10 +568,10 @@
 					const projection = input.projection;
 					if (projection) rendered.push(h(React.Fragment, { key: index }, renderTavernProjection(projection, { streaming: input.streaming, codeLabels: codeLabels, mentions: input.mentions, sessionId: input.sessionId, turn: input.turn, frameSizing: input.frameSizing, helperContext: input.helperContext, helperContextReader: input.helperContextReader, trustedCardMode: input.trustedCardMode, eagerFrame: input.eagerFrame, frameOwner: input.frameOwner, executeSlash: input.executeSlash, scriptLayer: input.scriptLayer , plugin: input.plugin, cast: input.cast, deferHtml: input.deferHtml })));
 					else if (input.htmlSketches) rendered.push(h(React.Fragment, { key: index }, splitTavernHtmlSketches(block.text).map(function (part, partIndex) {
-						return part.kind === "sketch" ? h(TavernHtmlSketch, { key: partIndex, html: part.html }) : h(TavernColoredMarkdown, { key: partIndex, text: part.text, streaming: input.streaming, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels, fileMentions: input.mentions });
+						return part.kind === "sketch" ? h(TavernHtmlSketch, { key: partIndex, html: part.html }) : h(TavernColoredMarkdown, { key: partIndex, text: part.text, streaming: input.streaming, labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels, fileMentions: input.mentions });
 					})));
 					else {
-						const renderPlain = function (text, key) { return h(TavernColoredMarkdown, { key: key, text: text, streaming: input.streaming, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels, fileMentions: input.mentions }); };
+						const renderPlain = function (text, key) { return h(TavernColoredMarkdown, { key: key, text: text, streaming: input.streaming, labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels, fileMentions: input.mentions }); };
 						const renderMarkdown = function (text, key) { return renderTavernDialogueText(text, key, renderPlain, input.cast, input.streaming); };
 						rendered.push(input.plugin ? input.plugin.render(String(block.text || ""), index, renderMarkdown) : renderMarkdown(String(block.text || ""), index));
 					}
