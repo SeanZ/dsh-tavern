@@ -75,6 +75,24 @@ test('部位标了 nsfw 时那个部位的衣服不写，整套总述也不写',
   assert.match(out, /牛仔裤/)
 })
 
+test('上下身分别标注 NSFW 时按部位选择外貌与衣物，不串用另一部位', () => {
+  const adult = structuredClone(jing)
+  adult.traits.bodyNSFW = '上身NSFW外貌'
+  adult.traits.lowerNSFW = '下身NSFW外貌'
+  const library = { characters: [adult] }
+  const upperExposed = expandRosterCalls(call({ upperBody: 'nsfw', lowerBody: 'sfw', outfit: '格子衬衫牛仔裤' }, '全身，她站在床边。'), library, 'natural', natural)
+  assert.match(upperExposed, /上身NSFW外貌/)
+  assert.match(upperExposed, /她的双腿修长/)
+  assert.doesNotMatch(upperExposed, /下身NSFW外貌|白色纯棉短袖T恤|整体是/)
+  assert.match(upperExposed, /浅蓝色直筒牛仔裤/)
+
+  const lowerExposed = expandRosterCalls(call({ upperBody: 'sfw', lowerBody: 'nsfw', outfit: '格子衬衫牛仔裤' }, '全身，她站在床边。'), library, 'natural', natural)
+  assert.match(lowerExposed, /鹅蛋脸/)
+  assert.match(lowerExposed, /下身NSFW外貌/)
+  assert.doesNotMatch(lowerExposed, /上身NSFW外貌|浅蓝色直筒牛仔裤|白色运动鞋|整体是/)
+  assert.match(lowerExposed, /白色纯棉短袖T恤/)
+})
+
 test('已经展开过的中文人物，不会按名字再注入一遍', () => {
   const raw = call({ upperBody: 'sfw', lowerBody: 'sfw' }, '全身，许静好站在门口。')
   const expanded = expandRosterCalls(raw, defs, 'natural', natural)
