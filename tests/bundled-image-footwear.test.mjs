@@ -55,8 +55,10 @@ test('按名字注入（没用人物宏）时同样认中文换鞋', () => {
 
 test('鞋拿在手里时不算赤脚，也不往负面里加 shoes', () => {
   const raw = '1girl, Xu Jinghao, 光脚站着，手里拎着鞋'
-  const { negative = '' } = injectDefinitions(raw, defs, {}, { raw })
-  assert.doesNotMatch(String(negative), /\bshoes\b/)
+  const { negatives = [] } = injectDefinitions(raw, defs, {}, { raw })
+  assert.doesNotMatch(negatives.join(', '), /\bshoes\b/)
+  const soloBare = injectDefinitions('1girl, Xu Jinghao, 她赤脚站着', defs, {}, { raw: '1girl, Xu Jinghao, 她赤脚站着' })
+  assert.match(soloBare.negatives.join(', '), /\bshoes\b/)
   const handheld = expandRosterCalls('${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$ 她拎着鞋，脚上穿着白袜。', defs, 'sfw', { style: 'tags' })
   assert.doesNotMatch(handheld, /white sneakers/)
   assert.match(handheld, /white ankle socks/)
@@ -72,4 +74,42 @@ test('多人画面只按能归属到该角色的鞋袜描述处理', () => {
   assert.equal((out.match(/白色运动鞋/g) || []).length, 2, out, 'B retains the library shoes alongside the scene description')
   const ambiguous = '${"name":"Xu Jinghao","upperBody":"sfw","lowerBody":"sfw"}$ 她光着脚。${"name":"Song Yuxuan","upperBody":"sfw","lowerBody":"sfw"}$ 他站在一旁。'
   assert.match(expandRosterCalls(ambiguous, multi, 'sfw', { style: 'tags' }), /白色运动鞋/)
+})
+
+test('无宏多人按名字区分赤脚者与穿鞋者，不添加全图鞋类负面词', () => {
+  const lily = { id: 'lily', name: 'Lily', match: 'Lily', enabled: true, traits: { face: 'short dark hair' }, outfits: [
+    { id: 'lily-outfit', name: 'casual', upper: 'red shirt', lower: 'blue skirt', shoes: 'white sneakers, white ankle socks', default: true },
+  ] }
+  const rose = { id: 'rose', name: 'Rose', match: 'Rose', enabled: true, traits: { face: 'long brown hair' }, outfits: [
+    { id: 'rose-outfit', name: 'casual', upper: 'green blouse', lower: 'black jeans', shoes: 'black boots, black socks', default: true },
+  ] }
+  const multi = { characters: [lily, rose] }
+  const raw = 'Lily 光着脚站在地板上，Rose 站在门边。'
+  const { text, negatives = [] } = injectDefinitions(raw, multi, {}, { raw })
+  assert.match(text, /red shirt/)
+  assert.doesNotMatch(text, /white sneakers|white ankle socks/)
+  assert.match(text, /green blouse/)
+  assert.match(text, /black jeans/)
+  assert.match(text, /black boots/)
+  assert.match(text, /black socks/)
+  assert.doesNotMatch(negatives.join(', '), /\b(?:shoes|footwear)\b/)
+})
+
+test('宏与按名字注入混合时，赤脚宏人物不影响另一人的鞋袜', () => {
+  const lily = { id: 'lily', name: 'Lily', match: 'Lily', enabled: true, traits: { face: 'short dark hair' }, outfits: [
+    { id: 'lily-outfit', name: 'casual', upper: 'red shirt', lower: 'blue skirt', shoes: 'white sneakers, white ankle socks', default: true },
+  ] }
+  const rose = { id: 'rose', name: 'Rose', match: 'Rose', enabled: true, traits: { face: 'long brown hair' }, outfits: [
+    { id: 'rose-outfit', name: 'casual', upper: 'green blouse', lower: 'black jeans', shoes: 'black boots, black socks', default: true },
+  ] }
+  const multi = { characters: [lily, rose] }
+  const raw = '${"name":"Lily","upperBody":"sfw","lowerBody":"sfw"}$ Lily 光着脚站在地板上，Rose 站在门边。'
+  const expanded = expandRosterCalls(raw, multi, 'sfw', { style: 'tags' })
+  const { text, negatives = [] } = injectDefinitions(expanded, multi, {}, { raw })
+  assert.doesNotMatch(text, /white sneakers|white ankle socks/)
+  assert.match(text, /green blouse/)
+  assert.match(text, /black jeans/)
+  assert.match(text, /black boots/)
+  assert.match(text, /black socks/)
+  assert.doesNotMatch(negatives.join(', '), /\b(?:shoes|footwear)\b/)
 })

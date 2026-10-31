@@ -5974,6 +5974,30 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
   const bareScene = Boolean(options?.raw) && BARE_SCENE.test(stripMacros(options.raw))
   const footText = stripMacros(options?.raw ?? source)
   const barefoot = isBarefoot(footText)
+  const sourceMacros = [...repairMacros(options?.raw ?? source).matchAll(MACRO_BLOCK)].flatMap(match => {
+    try {
+      const row = JSON.parse('{' + match[1] + '}')
+      if (String(row.upperBody ?? row.body ?? '').toLowerCase() === 'visible') return []
+      return [String(row.name ?? row['名称'] ?? row['角色'] ?? '').trim()]
+    } catch { return [] }
+  }).filter(Boolean)
+  const normalizedName = value => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
+  const aliasesFor = character => [...new Set([character?.name, character?.id, ...splitTags(character?.match)].map(value => String(value ?? '').trim()).filter(Boolean))]
+  const matchesAlias = (character, value) => aliasesFor(character).some(alias => normalizedName(alias) === normalizedName(value))
+  const macroCharacters = sourceMacros.map(name => (definitions.characters ?? []).find(character => character && matchesAlias(character, name))).filter(Boolean)
+  const sceneCharacters = (definitions.characters ?? []).filter(character => character && character.enabled !== false && (
+    macroCharacters.includes(character) || aliasesFor(character).some(alias => containsNameToken(footText, alias))
+  ))
+  // 按名字注入时，鞋袜状态只作用于明确点名该角色的子句；同一子句出现多名角色也视为归属不明。
+  const footwearSceneFor = character => {
+    if (sceneCharacters.length === 1) return footText
+    const clauses = footText.split(/(?<=[，,。！？!?；;\n])/).map(value => value.trim()).filter(Boolean)
+    const own = aliasesFor(character)
+    return clauses.filter(clause => {
+      if (!own.some(alias => containsNameToken(clause, alias))) return false
+      return !sceneCharacters.some(other => other !== character && aliasesFor(other).some(alias => containsNameToken(clause, alias)))
+    }).join(' ')
+  }
   // 规划里的人物宏已经展开过的人，不再按名字重复注入；他的其他形态也不注入
   // （否则同一个人的两种外貌会同时出现）。
   const label = c => (splitTags(c?.match)[0] || String(c?.name ?? '')) + ' is '
@@ -6017,8 +6041,10 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     // 两套衣服同时进提示词会打架（brown leather boots 对上 black leather boots）。
     const dressedByPlanner = !natural && PLANNER_GARMENT.test(footText)
     const recordedRaw = bare || dressedByPlanner ? '' : resolveWearText(character, character.current?.outfit)
-    const shoesOff = !barefoot && footwearOverridden(footText, personWearText(character, recordedRaw))
-    const noShoes = barefoot || shoesOff
+    const footwearScene = footwearSceneFor(character)
+    const personBarefoot = isBarefoot(footwearScene)
+    const shoesOff = !personBarefoot && footwearOverridden(footwearScene, personWearText(character, recordedRaw))
+    const noShoes = personBarefoot || shoesOff
     const recorded = noShoes ? dropFootwear(recordedRaw, shoesOff) : recordedRaw
     const picked = characterTags(character, { nsfw, back, full, mode: config.traitMode, barefoot: noShoes, keepSocks: shoesOff, noOutfit: Boolean(recordedRaw) || bare || dressedByPlanner, tags: !natural })
     // options.provenance：诊断用，记录每段注入文字来自哪个人物的哪个字段、作用于正向还是整图负向。
@@ -6087,7 +6113,11 @@ export function injectDefinitions(text, definitions, config = {}, options = {}) 
     }
   }
   // 赤脚画面：负面里压一下鞋（鞋拿在手里时不压）。
-  if (barefoot && !SHOES_IN_HAND.test(footText)) for (const tag of ['shoes', 'footwear']) if (!negatives.includes(tag)) negatives.push(tag)
+  // 鞋是整图负面词。只有唯一识别到的人物明确赤脚、且文本未提到其他鞋类时才添加。
+  const footwearMentioned = FOOTWEAR.test(footText) || new RegExp(ZH_FOOTWEAR_NOUN.source).test(footText)
+  if (barefoot && sceneCharacters.length === 1 && !footwearMentioned && !SHOES_IN_HAND.test(footText)) {
+    for (const tag of ['shoes', 'footwear']) if (!negatives.includes(tag)) negatives.push(tag)
+  }
   // 按名字注入的外貌插在这个人名字所在的那一段后面；找不到名字时退回到末尾。
   const segments = source.split(',')
   for (const { keys, tags } of placed) {
