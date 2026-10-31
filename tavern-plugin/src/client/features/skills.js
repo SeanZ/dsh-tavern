@@ -1,3 +1,6 @@
+		// Stable identity: the host's MarkdownText memoizes on `labels`, and a fresh
+		// object per render throws away its render cache (same rule as the message frame).
+		const tavernSkillsMarkdownLabels = { code: { copyLabel: "复制", copiedLabel: "已复制" }, footnotes: "脚注" };
 		function TavernSkillsTab(props) {
             const askConfirm = useTavernConfirm(props.sessionId || props.scope?.sessionId);
 			const h = React.createElement;
@@ -46,7 +49,7 @@
 			}, [props.sessionId]);
             if (opened) {
                 const document = skillDraft || opened;
-                const markdown = text => h(DshUi.MarkdownText, { text, labels: { code: { copyLabel: "复制", copiedLabel: "已复制" }, footnotes: "脚注" } });
+                const markdown = text => h(DshUi.MarkdownText, { text, labels: tavernSkillsMarkdownLabels });
                 const editor = (label, value, onChange) => h("textarea", { className: "dsh-skill-editor", "aria-label": label, value, disabled: busy, spellCheck: false, onChange: e => onChange(e.target.value) });
                 return h("div", { className: "dsh-tavern-resources dsh-tavern-skills" },
                     h("div", { className: "dsh-tavern-status-head dsh-skill-toolbar" },

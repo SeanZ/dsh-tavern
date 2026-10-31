@@ -1,0 +1,257 @@
+// Mount the complete bundled client in real React; all plugin HTTP is stubbed.
+// node tests/browser/bundled-image-reference-settings-browser-smoke.mjs
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { chromium } from 'playwright'
+import { browserReactScript } from '../fixtures/browser-react.mjs'
+
+const executablePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path)) || chromium.executablePath()
+const screenshotPath = join(tmpdir(), 'dsh-tavern-pr421-image-settings.png')
+const clientSource = await readFile(new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/client.js', import.meta.url), 'utf8')
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jdbsAAAAASUVORK5CYII=', 'base64')
+const clone = value => JSON.parse(JSON.stringify(value))
+const calls = [], errors = []
+let uploads = 0
+const savedApiKeys = new Map()
+const workflowDetail = { file: 'workflow-a.json', prompt: {
+  '2': { class_type: 'LoadImage', inputs: { image: 'pose.png' }, _meta: { title: 'Pose input (not a character ref)' } },
+  '15': { class_type: 'LoadImage', inputs: { image: 'character.png' }, _meta: { title: 'Character reference input' } },
+  '18': { class_type: 'LoadImage', inputs: { image: 'outfit.png' }, _meta: { title: 'Outfit reference input' } },
+}, bindings: { positive: [], negative: [], loras: [] } }
+const books = format => [{ key: 'main', name: format + '规则', count: 1, entries: [{ index: 0, comment: format + '条目', content: format + ' content', enabled: true, activation: 'always' }] }, { key: 'outfits', name: format + '服装规则', count: 0, entries: [] }]
+const worldbooks = Object.fromEntries(['tags', 'natural', 'mixed', 'structured'].map(format => [format, books(format)]))
+const state = {
+  referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
+    designPromptMode: 'auto', characterDesignRequirements: '', outfitDesignRequirements: '',
+    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [{ id: 'legacy-entry', name: '旧提示词条目', positive: 'legacy positive', negative: 'legacy negative', enabled: true }] },
+  definitions: { characters: [{ id: 'person-a', name: '林月', match: 'Lin Yue', cards: [], traits: { face: 'keep original traits' }, outfits: [{ id: 'outfit-a', name: '白衬衫', upper: 'white shirt', enabled: true }] }], scenes: [], props: [] },
+  outfits: [{ id: 'shared-a', name: '通用外套', upper: 'coat', enabled: true }],
+  worldbookFormat: 'tags', worldbookBooks: clone(worldbooks.tags), tasks: [], workflows: [{ id: 'workflow-a', label: 'Reference workflow', file: 'workflow-a.json', enabled: true, current: true, summary: { nodeCount: 5 } }], imageProviders: [{ id: 'openai', label: 'OpenAI 兼容' }, { id: 'custom', label: '自定义 API' }],
+}
+const preservedWorldbooks = clone(worldbooks)
+const preservedPromptPresets = clone(state.config.promptPresets)
+const preservedCharacterEntry = clone(state.definitions.characters[0])
+function publicState() {
+  const next = clone(state)
+  for (const channel of next.config.imageChannels || []) {
+    channel.hasApiKey = savedApiKeys.has(channel.id)
+    delete channel.apiKey
+    delete channel.password
+  }
+  return next
+}
+const browser = await chromium.launch({ headless: true, executablePath })
+try {
+  const page = await browser.newPage()
+  page.setDefaultTimeout(8000)
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/*', async route => {
+    const url = new URL(route.request().url()), path = url.pathname.replace('/plugins/dsh-tavern-image', ''), method = route.request().method()
+    if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><div id="root"></div>' })
+    if (path === '/reference-image' && method === 'GET') return route.fulfill({ contentType: 'image/png', body: png })
+    const body = method === 'POST' ? route.request().postDataJSON() : null
+    calls.push({ path, method, query: Object.fromEntries(url.searchParams), body })
+    let response = { ok: true }
+    if (path === '/state') response = publicState()
+    else if (path === '/config') {
+      if (Array.isArray(body.config.imageChannels)) {
+        for (const channel of body.config.imageChannels) {
+          if (channel.apiKey) savedApiKeys.set(channel.id, channel.apiKey)
+          delete channel.apiKey
+          channel.hasApiKey = savedApiKeys.has(channel.id)
+        }
+      }
+      Object.assign(state.config, body.config)
+      state.referenceSupported = state.config.imageBackend === 'custom' ? ['openai', 'gemini', 'gemini-chat', 'atlascloud', 'seedream', 'grok', 'qwen', 'sdwebui'].includes(state.config.imageChannels.find(channel => channel.id === state.config.activeImageChannel)?.options?.apiProtocol || 'openai') : ['openai', 'atlascloud', 'comfyui'].includes(state.config.imageBackend)
+      state.imageProvider = state.config.imageBackend
+      if (body.config.comfyMode === 'workflow') state.configurationWarning = ''
+      response = { ok: true, state: publicState() }
+    }
+    else if (path === '/image-channel-test') response = { ok: true, status: 'reachable', message: 'mock connection' }
+    else if (path === '/comfy-test') response = { ok: true, version: 'mock' }
+    else if (path === '/reference-image') { uploads++; response.referenceImage = { id: uploads.toString(16).repeat(64), name: body.name, mediaType: body.mediaType, byteLength: png.length } }
+    else if (path === '/definitions') { state.definitions = clone(body.definitions); state.outfits = clone(body.definitions.outfits || []); response = { ok: true, state: clone(state) } }
+    else if (path === '/worldbook') { const format = url.searchParams.get('format'); assert.ok(worldbooks[format]); response = { ok: true, worldbookFormat: format, worldbook: { name: format, entries: clone(worldbooks[format].flatMap(book => book.entries)) }, worldbookBooks: clone(worldbooks[format]) } }
+    else if (path === '/worldbook-entry') { const book = worldbooks[body.format]?.find(book => book.key === body.book); assert.ok(book); Object.assign(book.entries[body.index], body.patch) }
+    else if (path === '/workflow-bindings') {
+      if (body.patch?.bindings?.referenceImages) Object.assign(workflowDetail.bindings, clone(body.patch.bindings))
+      response = { ok: true, workflow: clone(workflowDetail) }
+    }
+    else if (path === '/workflow-values') response = { ok: true, values: { positive: '', negative: '' } }
+    else if (path === '/loras-available') response = { ok: true, loras: [] }
+    else if (path === '/history') response = { ok: true, jobs: [] }
+    else if (path === '/tasks') response = { tasks: [] }
+    else if (path === '/cards') response = { ok: true, cards: [] }
+    else if (path === '/providers' || path === '/llm-models') response = { ok: true, providers: [], models: [] }
+    else if (path === '/report') response = { ok: true }
+    else { errors.push('unexpected HTTP ' + method + ' ' + path); response = { ok: false, error: 'unexpected request' } }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(response) })
+  })
+  await page.goto('http://reference-ui.test/')
+  await page.addScriptTag({ content: await browserReactScript() })
+  await page.addScriptTag({ content: 'window.__ModuleLoader__={load(spec){window.__plugin=spec.factory(name=>modules[name])}};' })
+  await page.addScriptTag({ content: clientSource })
+  await page.evaluate(() => {
+    let Settings
+    window.__plugin.apply({ slots: { inject(_name, install) { return install() }, register(spec, component) { if (spec.name === 'settings.section') Settings = component; return () => {} } }, inject() {} })
+    if (!Settings) throw new Error('SettingsPanel not registered')
+    const root = modules['react-dom/client'].createRoot(document.querySelector('#root'))
+    root.render(modules.react.createElement(Settings))
+  })
+  await page.getByLabel('默认生图模式').selectOption('reference')
+  await page.waitForFunction(() => document.querySelector('[aria-label="默认生图模式"]')?.value === 'reference')
+  await page.getByLabel('提示词格式', { exact: true }).selectOption('structured')
+  await page.waitForFunction(() => document.querySelector('[aria-label="提示词格式"]')?.value === 'structured')
+  assert.equal(state.config.generationMode, 'reference')
+  assert.equal(state.config.promptMode, 'structured')
+  assert.equal(state.config.imageChannels[0].model, 'keep-exact-model')
+  assert.ok(calls.filter(call => call.path === '/config').every(call => !Object.hasOwn(call.body.config, 'imageChannels')), 'mode switches never alter model/channel configuration')
+
+  const waitForConfigPatch = expected => page.waitForResponse(response => {
+    if (!response.url().endsWith('/config') || response.request().method() !== 'POST') return false
+    const patch = response.request().postDataJSON()?.config
+    return Object.entries(expected).every(([key, value]) => patch?.[key] === value)
+  })
+  const selectDesignMode = async value => {
+    const response = waitForConfigPatch({ designPromptMode: value })
+    await page.getByLabel('角色与服装生成写法', { exact: true }).selectOption(value)
+    await response
+    assert.equal(state.config.designPromptMode, value)
+  }
+  const saveDesignRequirements = async (characterText, outfitText) => {
+    const expected = { characterDesignRequirements: characterText, outfitDesignRequirements: outfitText }
+    const response = waitForConfigPatch(expected)
+    await page.getByRole('button', { name: '保存角色与服装要求', exact: true }).click()
+    const saved = await response
+    assert.deepEqual(saved.request().postDataJSON().config, expected, 'the save button POSTs both requirement fields')
+    assert.deepEqual({
+      characterDesignRequirements: state.config.characterDesignRequirements,
+      outfitDesignRequirements: state.config.outfitDesignRequirements,
+    }, expected)
+  }
+  const chineseCharacterRequirements = '人物外貌使用完整中文短句，保留角色已有特征。'
+  const chineseOutfitRequirements = '服装名称简洁；颜色与款式使用中文描述。'
+  await selectDesignMode('chinese')
+  await page.getByLabel('角色生成要求', { exact: true }).fill(chineseCharacterRequirements)
+  await page.getByLabel('服装生成要求', { exact: true }).fill(chineseOutfitRequirements)
+  await saveDesignRequirements(chineseCharacterRequirements, chineseOutfitRequirements)
+  await page.getByRole('button', { name: '人物库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'chinese', 'the saved language mode survives leaving and reopening settings')
+  assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), chineseCharacterRequirements)
+  assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), chineseOutfitRequirements)
+
+  const englishCharacterRequirements = 'Use concise English prose; preserve established character traits.'
+  const englishOutfitRequirements = 'Use descriptive English tags with explicit colors and garment shapes.'
+  await selectDesignMode('tags')
+  await page.getByLabel('角色生成要求', { exact: true }).fill(englishCharacterRequirements)
+  await page.getByLabel('服装生成要求', { exact: true }).fill(englishOutfitRequirements)
+  await saveDesignRequirements(englishCharacterRequirements, englishOutfitRequirements)
+  await page.getByRole('button', { name: '人物库', exact: true }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'tags', 'the English Tag mode survives leaving and reopening settings')
+  assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), englishCharacterRequirements)
+  assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), englishOutfitRequirements)
+  assert.deepEqual(state.config.promptPresets, preservedPromptPresets, 'saving design instructions does not rewrite an existing prompt preset entry')
+  assert.deepEqual(state.definitions.characters[0], preservedCharacterEntry, 'saving design instructions does not rewrite existing character/outfit records')
+  assert.deepEqual(worldbooks, preservedWorldbooks, 'saving design instructions does not rewrite existing worldbook entries')
+
+  await page.getByRole('button', { name: '人物库', exact: true }).click()
+  const saveLibrary = async label => {
+    await Promise.all([page.waitForResponse(response => response.url().endsWith('/definitions') && response.request().method() === 'POST'), page.getByRole('button', { name: label, exact: true }).click()])
+    await page.getByText('人物库已保存', { exact: false }).first().waitFor()
+  }
+  const upload = async (label, name) => {
+    await page.getByLabel(label, { exact: true }).setInputFiles({ name, mimeType: 'image/png', buffer: png })
+    const section = page.getByLabel(label.replace('上传参考图', '参考图设置'), { exact: true })
+    await section.getByRole('img').waitFor()
+  }
+  await upload('角色「林月」上传参考图', 'person.png')
+  await page.getByLabel('角色「林月」一致性补充', { exact: true }).fill('保持脸型，动作由正文决定')
+  await upload('服装「白衬衫」上传参考图', 'shirt.png')
+  await page.getByLabel('服装「白衬衫」一致性补充', { exact: true }).fill('保持领口设计')
+  assert.equal(state.definitions.characters[0].referenceImage, undefined, 'uploads remain drafts until library save')
+  await saveLibrary('保存人物库')
+  assert.equal(state.definitions.characters[0].referenceImage.name, 'person.png')
+  assert.equal(state.definitions.characters[0].outfits[0].referenceImage.name, 'shirt.png')
+  assert.equal(state.definitions.characters[0].consistencyText, '保持脸型，动作由正文决定')
+  assert.equal(state.definitions.characters[0].outfits[0].consistencyText, '保持领口设计')
+  assert.equal(state.definitions.characters[0].traits.face, 'keep original traits')
+
+  await upload('通用服装「通用外套」上传参考图', 'coat.png')
+  await page.getByLabel('通用服装「通用外套」一致性补充', { exact: true }).fill('保持袖口')
+  await saveLibrary('保存服装库')
+  assert.equal(state.outfits[0].referenceImage.name, 'coat.png')
+  assert.equal(state.outfits[0].consistencyText, '保持袖口')
+  await page.getByLabel('角色「林月」移除参考图', { exact: true }).click()
+  await saveLibrary('保存人物库')
+  assert.equal(state.definitions.characters[0].referenceImage, null)
+  assert.equal(state.definitions.characters[0].consistencyText, '保持脸型，动作由正文决定')
+  assert.equal(calls.some(call => call.method === 'DELETE'), false)
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByLabel('生图提供商').selectOption('custom')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('novelai')
+  await page.waitForFunction(() => document.querySelector('[aria-label="API 协议"]')?.value === 'novelai' && document.querySelector('[aria-label="默认生图模式"] option[value="reference"]')?.disabled === true)
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), true, 'NovelAI protocol cannot select reference mode')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('openai')
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), false, 'OpenAI protocol exposes reference mode')
+  await page.getByLabel('API 协议', { exact: true }).selectOption('atlascloud')
+  await page.getByLabel('尺寸参数格式', { exact: true }).waitFor()
+  assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), false, 'AtlasCloud compatibility protocol exposes reference mode')
+  await page.getByLabel('渠道名称', { exact: true }).fill('mock custom channel')
+  await page.getByLabel('API 根地址', { exact: true }).fill('https://images.mock.invalid/v1')
+  await page.getByLabel('模型', { exact: true }).fill('mock-image-model')
+  await page.getByLabel('渠道 API Key', { exact: true }).fill('fake-browser-test-key')
+  await Promise.all([page.waitForResponse(response => response.url().endsWith('/image-channel-test')), page.getByRole('button', { name: '保存并测试连接' }).click()])
+  const customChannel = state.config.imageChannels.find(channel => channel.provider === 'custom')
+  assert.ok(customChannel)
+  assert.equal(customChannel.baseUrl, 'https://images.mock.invalid/v1')
+  assert.equal(customChannel.model, 'mock-image-model')
+  assert.equal(customChannel.options.apiProtocol, 'atlascloud')
+  assert.equal(customChannel.hasApiKey, true)
+  assert.equal(savedApiKeys.get(customChannel.id), 'fake-browser-test-key')
+  assert.equal(Object.hasOwn(customChannel, 'apiKey'), false, 'saved state exposes only the key presence flag')
+  assert.equal(await page.getByLabel('渠道 API Key', { exact: true }).inputValue(), '', 'saved key is never rendered back into the UI')
+  await page.screenshot({ path: screenshotPath, fullPage: true })
+
+  await page.getByRole('button', { name: '本地部署', exact: true }).click()
+  await page.getByRole('button', { name: '启用选定的完整工作流' }).waitFor()
+  assert.match(await page.getByRole('status').filter({ hasText: '旧版 ComfyUI 简易模式' }).textContent(), /原配置和数据已保留/)
+  await page.getByRole('button', { name: /编辑 \/ LoRA/ }).click()
+  await page.getByLabel('参考图 1 接入节点').count().then(count => assert.equal(count, 0, 'multiple LoadImage nodes are never auto-selected'))
+  assert.match(await page.getByText(/尚未保存明确映射/).textContent(), /多个接图节点时不会猜测/)
+  await page.getByRole('button', { name: '＋ 添加接入节点' }).click()
+  assert.equal(await page.getByLabel('参考图 1 接入节点').inputValue(), '', 'new mappings require an explicit node choice')
+  await page.getByLabel('参考图 1 接入节点').selectOption('15')
+  await page.getByRole('button', { name: '＋ 添加接入节点' }).click()
+  await page.getByLabel('参考图 2 接入节点').selectOption('18')
+  assert.deepEqual(workflowDetail.bindings.referenceImages, [{ node: '15', input: 'image' }, { node: '18', input: 'image' }])
+  await page.getByRole('button', { name: '启用选定的完整工作流' }).click()
+  await page.waitForFunction(() => window.__plugin && document.querySelector('[aria-label="生图提供商"]')?.value === 'comfyui')
+  assert.equal(state.config.comfyMode, 'workflow')
+  assert.equal(state.config.defaultWorkflow, 'workflow-a')
+  assert.deepEqual(state.config.comfySimple, { checkpoint: 'keep-legacy-checkpoint' }, 'migration preserves the old settings as recovery data')
+  assert.equal(state.configurationWarning, '')
+
+  await page.getByRole('button', { name: '世界书', exact: true }).click()
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  await page.getByPlaceholder('条目内容（作为画图规则发给模型）').fill('tags pending draft')
+  await page.getByLabel('世界书格式', { exact: true }).selectOption('structured')
+  await page.getByText('1. structured条目', { exact: true }).waitFor()
+  assert.equal(worldbooks.tags[0].entries[0].content, 'tags pending draft')
+  assert.equal(worldbooks.structured[0].entries[0].content, 'structured content')
+  await page.getByRole('button', { name: '编辑', exact: true }).click()
+  await page.getByPlaceholder('条目内容（作为画图规则发给模型）').fill('中文结构化规则')
+  await page.getByLabel('世界书格式', { exact: true }).selectOption('natural')
+  await page.getByText('1. natural条目', { exact: true }).waitFor()
+  assert.equal(worldbooks.structured[0].entries[0].content, '中文结构化规则')
+  assert.equal(worldbooks.natural[0].entries[0].content, 'natural content')
+  assert.equal(state.config.promptMode, 'structured', 'browsing worldbooks does not switch the active prompt format')
+  assert.deepEqual(errors, [])
+  console.log('PASS Chromium full settings: custom URL/model/key save and masking, protocol reference capability, character/nested/shared reference drafts and saving, ordered Comfy LoadImage mapping, recoverable simple-mode migration, local-only unlink, worldbook format isolation')
+  console.log('SCREENSHOT ' + screenshotPath)
+} finally { await browser.close() }

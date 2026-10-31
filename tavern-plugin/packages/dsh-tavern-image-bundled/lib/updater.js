@@ -11,7 +11,7 @@ const LEGACY_PLUGIN_DIRECTORY = 'dsh-tavern-comfy'
 const PLUGIN_DIRECTORY = 'dsh-tavern-image'
 const BRANCH = 'master'
 const HASH = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/
-const PRIVATE_PATH = /^(?:config\.json|definitions\.json|worldbook(?:-outfits)?\.json|jobs-store\.json|plans-store\.json|backups(?:\/|$)|cache(?:\/|$)|workflows\/.*\.json$)/i
+const PRIVATE_PATH = /^(?:config\.json|definitions\.json|worldbook(?:-outfits)?\.json|jobs-store\.json|plans-store\.json|backups(?:\/|$)|cache(?:\/|$)|reference-images(?:\/|$)|format-worldbooks(?:\/|$)|workflows\/.*\.json$)/i
 
 async function runGit(root, args) {
   try {
@@ -165,7 +165,10 @@ export function createPluginUpdater({
       if (!available) return { ...result, canUpdate: false, reason: local.reason || '当前代码已是最新版本。' }
       const base = await git(['merge-base', 'HEAD', target])
       if (base !== local.head) return { ...result, canUpdate: false, reason: '本地提交与远端不同，请手动合并后更新。' }
-      const paths = (await git(['diff', '--name-only', local.head, target])).split(String.fromCharCode(10)).map(line => line.trim())
+      // NUL paths avoid Git's quoted filenames bypassing the private-directory
+      // check. Disabling rename detection includes both the deleted source and
+      // added destination, so moving a private file cannot hide its old path.
+      const paths = (await git(['diff', '--name-only', '--no-renames', '-z', local.head, target])).split('\0').filter(Boolean)
       if (paths.some(path => PRIVATE_PATH.test(path))) return { ...result, canUpdate: false, reason: '远端改动包含用户数据路径，已停止自动更新。' }
       checked = { ...result, canUpdate: local.canUpdate, base: local.head }
       return { ...result, canUpdate: local.canUpdate }

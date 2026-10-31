@@ -52,7 +52,7 @@ function TavernStoryStaticHtml(props) {
 	if (!parts) return h(TavernFloorStaticHtml, props);
 	return h(React.Fragment, null, parts.map(function (part, index) {
 		if (part.summary !== undefined) return h("details", { key: index, open: part.open }, h("summary", null, part.summary),
-			h(TavernColoredMarkdown, { text: part.text, labels: { code: { copyLabel: "复制", copiedLabel: "已复制" }, footnotes: "脚注" } }));
+			h(TavernColoredMarkdown, { text: part.text, labels: tavernMarkdownLabels(tavernCodeLabels(key => key === "copy" ? "复制" : "已复制")) }));
 		return part.html !== undefined ? h(TavernFloorStaticHtml, { key: index, html: part.html }) : part.text;
 	}));
 }
@@ -209,19 +209,19 @@ function createTavernStoryRender(options) {
 			return function () { tavernRetainedFrames.invalidateOwner(owner); };
 		}, [live, owner]);
 		const h = React.createElement;
-		const codeLabels = { copyLabel: "复制", copiedLabel: "已复制" };
+		const codeLabels = tavernCodeLabels(key => key === "copy" ? "复制" : "已复制");
 		let body;
 		if (!live && typeof props.snapshotHtml === "string") body = h(TavernStoryStaticHtml, { html: props.snapshotHtml });
 		else {
 			const floor = floorOf(state.view, storyTurn);
 			if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
-				: typeof props.fallbackText === "string" ? h(TavernColoredMarkdown, { text: props.fallbackText, labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels }) : null;
+				: typeof props.fallbackText === "string" ? h(TavernColoredMarkdown, { text: props.fallbackText, labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels }) : null;
 			else if (live) body = renderTavernProjection(floor.projection, { sessionId: sessionId, turn: storyTurn, codeLabels: codeLabels,
 				helperContext: floor.helperContext, helperContextReader: function () { return liveTavernView.getSnapshot(sessionId).view?.tavernHelper; },
 				frameSizing: floor.frameSizing, trustedCardMode: floor.trustedCardMode, eagerFrame: props.eager === true, frameOwner: owner, executeSlash: executeSlash });
 			else body = floor.parts.map(function (part, index) {
 				return part.kind === "markdown"
-					? h(TavernColoredMarkdown, { key: index, text: String(part.text || ""), labels: { code: codeLabels, footnotes: "脚注" }, codeLabels: codeLabels })
+					? h(TavernColoredMarkdown, { key: index, text: String(part.text || ""), labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels })
 					: h(TavernStoryStaticHtml, { key: index, html: String(part.content !== undefined ? part.content : part.html || "") });
 			});
 		}

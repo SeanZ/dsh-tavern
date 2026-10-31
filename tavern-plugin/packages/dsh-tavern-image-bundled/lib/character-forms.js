@@ -18,12 +18,24 @@ const TRANSITION = /\b(?:disappear\w*|vanish\w*|fad(?:e|es|ed|ing)|shifting|rece
 const norm = value => String(value ?? '').toLowerCase().replace(/[\s_\-.'"（）()]+/g, '')
 const split = value => String(value ?? '').split(/[,，、]/).map(s => s.trim()).filter(Boolean)
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// 「殷雪（人形）」和「殷雪（显形）」去掉括号后缀是同一个名字，也算同一角色的不同形态。
+const baseName = v => String(v ?? '').replace(/\s*[（(][^）)]*[）)]\s*$/, '')
 const sameFamily = (a, b) => {
   const x = String(a?.name ?? ''), y = String(b?.name ?? '')
-  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x)))
+  return Boolean(a && b && a !== b && x && y && (x.startsWith(y) || y.startsWith(x) || (baseName(x) && baseName(x) === baseName(y))))
+}
+const CHINESE_CUE_NEGATION = /(?:并不是|不是|并没有|没有|并无|并非|非|无|未曾|并未|不再|不带|不具有|不长|未见|看不到|看不见|不见)(?:[\u3400-\u9fff]{0,4})$/
+export const hasPositiveChineseCue = (scene, cue) => {
+  let at = scene.indexOf(cue)
+  while (at >= 0) {
+    const before = scene.slice(Math.max(0, at - 12), at)
+    if (!CHINESE_CUE_NEGATION.test(before)) return true
+    at = scene.indexOf(cue, at + cue.length)
+  }
+  return false
 }
 const cueHits = (scene, cues) => cues.filter(cue => (/[㐀-鿿]/.test(cue)
-  ? scene.includes(cue)
+  ? hasPositiveChineseCue(scene, cue)
   : new RegExp('(?<![\\w-])' + escape(cue) + '(?![\\w-])', 'i').test(scene))).length
 
 export function resolveCharacterForms(value, definitions) {
