@@ -255,7 +255,12 @@ export function isPlayerCharacter(character) {
     // 否定标签不能因为包含「玩家」/ player 子串而被当作肯定标记。
     .replace(/(?:并不是|并非|不是|非|不属于|不算)\s*玩家/gi, ' ')
     .replace(/\b(?:non[-\s]?player|(?:is\s+)?not\s+(?:a\s+|the\s+)?player|isn['’]?t\s+(?:a\s+|the\s+)?player|no\s+player)\b/gi, ' ')
-  return /玩家|\bplayer\b/i.test(note)
+  const chineseMarker = /^(?:玩家|玩家本人|玩家角色)(?:\s*[（(【\[].*[）)】\]])?\s*[。.!！?？]?$/u.test(note.trim()) ||
+    /(?:^|[\s,，;；|/([{（【])(?:身份|角色|标记)\s*[:：=]\s*玩家(?:$|[\s,，;；|/)\]})）】])/u.test(note)
+  const englishMarker = /^(?:the\s+)?player(?:\s*[（(【\[].*[）)】\]])?\s*[.!?]?$/i.test(note.trim()) ||
+    /\bplayer\s+(?:avatar|character|role)\b/i.test(note) ||
+    /\b(?:role|identity|type)\s*[:=]\s*(?:the\s+)?player\b/i.test(note)
+  return chineseMarker || englishMarker
 }
 
 /**
