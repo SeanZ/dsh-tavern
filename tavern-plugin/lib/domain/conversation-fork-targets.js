@@ -11,7 +11,7 @@ import { sessionEvents } from './session-events.js'
 // extra entries are harmless; the server validates every fork request again.
 // Earlier turns lose their history after save maintenance (only the latest
 // FORK_HISTORY_TURNS turns stay forkable), so they get no fork button.
-export const FORK_HISTORY_TURNS = 50
+export const FORK_HISTORY_TURNS = 200
 export function forkTurnsByMessageId(session, regeneratedDshTurns = {}, plan = null) {
   const storyByNative = new Map()
   for (const [story, native] of Object.entries(regeneratedDshTurns || {})) {

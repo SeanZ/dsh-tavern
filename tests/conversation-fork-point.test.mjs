@@ -61,3 +61,11 @@ test('失败尝试必须有同一轮已接纳投影才可分叉，且不能跨�
   session.events.forEach((event, index) => { event.seq = index })
   assert.throws(() => conversationForkBoundary(session, state, 2), /后续上下文/)
 })
+
+
+test('已清理快照的错误提示使用当前200回合窗口，不承诺恢复旧数据', async () => {
+  const h = history(3)
+  await assert.rejects(conversationStateAtTurn(h.source, 1, async () => {
+    throw Object.assign(new Error('missing'), { code: 'DSH_TAVERN_REVISION_NOT_FOUND' })
+  }), /历史状态已清理.*最近 200 个原生回合/)
+})

@@ -1,3 +1,4 @@
+import { FORK_HISTORY_TURNS } from './conversation-fork-targets.js'
 import { isRescuedHistoryMessage } from './chat-history-rescue.js'
 import { assistantResultForTurn } from './session-turn-result.js'
 import { sessionEvents } from './session-events.js'
@@ -30,7 +31,7 @@ export async function conversationStateAtTurn(source, requestedTurn, readRevisio
     const revision = next ? next.beforeRevision : parent?.stateRevision ?? parent?.storageRevision
     if (!chatId || !Number.isSafeInteger(revision)) throw new Error('该回合缺少完整历史状态快照，无法安全分叉')
     try { state = await readRevision(chatId, revision) } catch (error) {
-      if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') throw new Error('该回合太早，历史状态已清理（只保留最近 50 轮），无法从这一轮分叉')
+      if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') throw new Error(`该回合的历史状态已清理，无法从这一轮分叉（当前保留窗口：最近 ${FORK_HISTORY_TURNS} 个原生回合）`)
       throw error
     }
     if (!state || state._storageRevision !== revision) throw new Error('该回合历史状态快照不可用，无法安全分叉')
