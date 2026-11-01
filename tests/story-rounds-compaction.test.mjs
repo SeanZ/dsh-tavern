@@ -60,3 +60,16 @@ test('压缩前已被替换的正文不因展开摘要而复活', () => {
   assert.deepEqual(foldStoryRounds(f.events), before)
   assert.deepEqual(before.floors.map(floor => floor.story), [2])
 })
+
+
+test('千轮历史经多段压缩仍可从尾页逐步补齐到开场，不受50或100层限制', () => {
+  const f = fixture(), nodes = []
+  for (let turn = 1; turn <= 1000; turn++) { const row = f.play(turn); nodes.push(row.input, row.reply) }
+  const before = foldStoryRounds(f.events).floors
+  const first = f.replace(nodes.slice(0, 600), 'compact-checkpoint')
+  const second = f.replace([first, ...nodes.slice(600, 1200)], 'compact-checkpoint')
+  f.replace([second, ...nodes.slice(1200, 1800)], 'compact-checkpoint')
+  for (const start of [3600, 2400, 1200, 0]) {
+    assert.deepEqual(foldStoryRounds(f.events.slice(start)).floors, before.slice(start / 4))
+  }
+})

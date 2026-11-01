@@ -6,6 +6,7 @@ import { Session } from './fixtures/dsh-session-host.mjs'
 import { appendSessionEvent, sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import { replaceSessionSurface } from '../tavern-plugin/lib/domain/session-surface-mutations.js'
 import { reshadowRolledBackRounds, clearFailedTurnSurface, planRegenerationSurface, regenerationProjection, applyRegenerationProjection } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { restoreSurface } from '../tavern-plugin/lib/domain/surface-restoration.js'
 import { createStoryRoundsFold, foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 
 const MODEL = { kind: 'model', provider: 'test', model: 'test' }
@@ -298,4 +299,52 @@ test('被下一轮认领的玩家输入取代的打断回合标 superseded；主
   const regenerated = foldStoryRounds([...running.slice(0, 5), { type: 'turn/end', seq: 9, data: { turn: 4, reason: { kind: 'aborted' } } },
     splice(10, { start: 0, inserted: [regen] }), { type: 'turn/start', seq: 11, data: { turn: 5 } }, splice(12, { start: 0, removedCount: 1 })])
   assert.deepEqual(regenerated.abandoned.map(item => item.reason), ['aborted'])
+})
+
+
+test('反复重生成、切换结果、压缩、撤回和撤销回退交替后保持当前故事', () => {
+  const session = game('story-mixed-compaction')
+  const current = () => foldStoryRounds(sessionEvents(session))
+  const nextTurn = () => Math.max(...sessionEvents(session).map(event => Number(event.data?.turn) || 0)) + 1
+  function compact(nodes) {
+    const compactionId = 'compact-' + sessionEvents(session).length
+    const start = appendSessionEvent(session, 'compaction/start', { compactionId, turn: null })
+    const summary = appendSessionEvent(session, 'compaction/summary', { compactionId,
+      summary: [{ type: 'text', text: '摘要' }], shadowedRange: { start: nodes[0], end: nodes.at(-1) },
+      shadowedSeqs: nodes, shadowedTokenCount: 1000, provider: 'test', model: 'test' })
+    appendSessionEvent(session, 'user/message', { id: compactionId, role: 'user', content: [{ type: 'text', text: '摘要' }],
+      source: { kind: 'compact-checkpoint', compactionId } }, { surfaceOp: { op: 'replace', startSeq: nodes[0], endSeq: nodes.at(-1) }, sourceEventSeqs: [start.seq, summary.seq, ...nodes] })
+    appendSessionEvent(session, 'compaction/end', { compactionId, turn: null })
+  }
+  regenerate(session, 3, nextTurn(), '重写一', 'mixed-1')
+  regenerate(session, 3, nextTurn(), '重写二', 'mixed-2')
+  let floor = current().floors.at(-1)
+  const original = floor.history[0]
+  replaceSessionSurface(session, 'assistant/message', reply('mixed-switch', 3, original.text,
+    { ...MODEL, tavernStoryTurn: 3, tavernResultSeq: original.seq }), {
+      start: floor.reply.seq, end: floor.reply.seq, sourceEventSeqs: [floor.reply.seq]
+    })
+  // 压缩早期故事后再操作末轮：旧结果属于同一层，不能复活成额外楼层。
+  const input3 = current().floors.at(-1).inputs[0].seq
+  const nodes = [...session.surface.nodes]
+  const before = current()
+  compact(nodes.slice(0, nodes.indexOf(input3)))
+  assert.deepEqual(current(), before)
+  regenerate(session, 3, nextTurn(), '压缩后重写', 'mixed-3')
+  floor = current().floors.at(-1)
+  assert.deepEqual(floor.history.map(item => [item.text, item.current]), [
+    ['第三轮正文', false], ['重写一', false], ['重写二', false], ['压缩后重写', true]
+  ])
+  const savedNodes = [...session.surface.nodes]
+  assert.deepEqual(reshadowRolledBackRounds(session, new Set([3])), [3])
+  assert.deepEqual(shape(current()), [[1, '', '开场白'], [2, '你好', '第二轮正文']])
+  restoreSurface(session, savedNodes)
+  assert.deepEqual(shape(current()), [[1, '', '开场白'], [2, '你好', '第二轮正文'], [3, '继续', '压缩后重写']])
+  assert.deepEqual(current().floors.at(-1).history.map(item => [item.text, item.current]), floor.history.map(item => [item.text, item.current]))
+  const restored = current()
+  compact([...session.surface.nodes])
+  assert.deepEqual(current(), restored)
+  const incremental = createStoryRoundsFold()
+  for (const event of sessionEvents(session)) incremental.addEvents([event])
+  assert.deepEqual(incremental.result(), current())
 })
