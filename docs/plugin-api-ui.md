@@ -20,6 +20,8 @@
 
 Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`），版本字段 `apiVersion: 1`。楼层操作转调与输入框 dock 相同的请求和流程（`rollbackTurn`、`regenBody`、`replayTurn`、楼层快照 RPC），不另立规则。`sessionId` 即 `gameId`；楼层（floor）是 `subscribeRounds` 给出的对象，`story` 是楼层轮次。
 
+故事楼层从原生日志投影，`compact-checkpoint` 摘要只缩短模型上下文，展示时展开其覆盖的有效正文；多次压缩保留原楼层身份与结果选择，普通替换和撤回仍移除对应楼层。分页加载更早事件后重建同一投影。压缩前楼层可分叉，仍须通过存档快照及原生日志前缀一致性校验；源局模型上下文不回填旧正文。
+
 | 方法 | 说明 |
 |---|---|
 | `sessionMode(sessionId)` | 同步读取 `{ mode, known, isPlay, storyViewActive }`。未知时为 `{ mode: '', known: false, isPlay: false, storyViewActive: false }`，不把空模式猜成故事。`isPlay` 与 `storyViewActive` 由 Tavern 统一计算，消费方不重复维护模式列表 |

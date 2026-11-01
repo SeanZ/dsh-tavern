@@ -120,7 +120,7 @@ function createGame(name) {
 }
 
 // ---------- 宿主会话服务：真实 Session，按 session-controller 的方式分叉 ----------
-const host = await createPluginHost()
+const host = await createPluginHost({ withTools: true })
 const sessions = host.services.get('sessions'), agents = host.services.get('agents')
 sessions.flush = async () => {}
 const register = (id, session) => { sessions.set(id, session); agents.set(id, { session, phase: { kind: 'idle' } }) }
@@ -286,7 +286,7 @@ try {
   // 宿主分出的会话不是所选楼层（切点错了）时拒绝绑定。
   const wrong = hostFork(A.sessionId, (await host.rpc('prepareFloorFork', { sessionId: A.sessionId, turn: 2 })).atSeq)
   await assert.rejects(host.rpc('forkFloor', { sessionId: A.sessionId, turn: 3, targetSessionId: wrong, sourceRevision: plan.sourceRevision, atSeq: plan.atSeq }), /不一致|没有停在指定回合/)
-  await assert.rejects(host.rpc('prepareFloorFork', { sessionId: A.sessionId, turn: 10 }), /不在当前上下文/)
+  await assert.rejects(host.rpc('prepareFloorFork', { sessionId: A.sessionId, turn: 10 }), /不在当前故事/)
   await assert.rejects(host.rpc('prepareFloorFork', { sessionId: A.sessionId, turn: 0 }), /分叉楼层无效/)
   assert.equal(JSON.stringify(sessionEvents(sourceA)), before.events)
   assert.equal(await saveState(A.sessionId), before.save)
@@ -419,5 +419,37 @@ try {
   assert.match(modelText(branchPartial.session), /P部分正文/)
   assert.doesNotMatch(modelText(branchPartial.session), /P完整正文/)
   passed('13 部分正文结果切换与分叉保留不完整状态及变量边界')
+  // 压缩的原生替换与导出冷读：保留早期分叉，源局模型仍只看摘要。
+  const compactGame = createGame('game-compacted')
+  compactGame.opening('压缩前开场', 0)
+  for (let turn = 2; turn <= 45; turn++) compactGame.play(turn, '压缩输入' + turn, '压缩正文' + turn, turn)
+  compactGame.save()
+  const expected = floorsOf(compactGame.session)
+  const nodes = [...compactGame.session.surface.nodes]
+  const compactionId = 'test-compact', shadowed = nodes.slice(0, -2)
+  const start = appendSessionEvent(compactGame.session, 'compaction/start', { compactionId, turn: null })
+  const summary = appendSessionEvent(compactGame.session, 'compaction/summary', {
+    compactionId, summary: [{ type: 'text', text: '仅供模型的压缩摘要' }],
+    shadowedRange: { start: shadowed[0], end: shadowed.at(-1) }, shadowedSeqs: shadowed,
+    shadowedTokenCount: 1000, provider: 'test', model: 'test'
+  })
+  appendSessionEvent(compactGame.session, 'user/message', {
+    id: 'compact-checkpoint', role: 'user', source: { kind: 'compact-checkpoint', compactionId: 'test-compact' },
+    content: [{ type: 'text', text: '仅供模型的压缩摘要' }]
+  }, { surfaceOp: { op: 'replace', startSeq: nodes[0], endSeq: nodes.at(-3) }, sourceEventSeqs: [start.seq, summary.seq, ...shadowed] })
+  appendSessionEvent(compactGame.session, 'compaction/end', { compactionId, turn: null })
+  assert.deepEqual(floorsOf(compactGame.session), expected)
+  const compacted = await importGame(compactGame)
+  const sourceCompact = sessions.get(compacted.sessionId)
+  const beforeCompact = JSON.stringify(sessionEvents(sourceCompact))
+  const early = await forkAt(compacted.sessionId, 2)
+  assert.deepEqual(floorsOf(early.session).map(floor => floor.story), [1, 2])
+  assert.match(modelText(early.session), /压缩前开场[\s\S]*压缩正文2/)
+  assert.doesNotMatch(modelText(early.session), /压缩正文3|仅供模型的压缩摘要/)
+  assert.deepEqual((await exported(early.fork.sessionId)).chat.variables, { 金币: 2 })
+  assert.equal(JSON.stringify(sessionEvents(sourceCompact)), beforeCompact)
+  assert.match(modelText(sourceCompact), /仅供模型的压缩摘要/)
+  assert.doesNotMatch(modelText(sourceCompact), /压缩正文2/)
+  passed('14 压缩后早期楼层分叉且源局上下文不变')
   console.log('floor fork rpc passed')
 } finally { await host.dispose() }

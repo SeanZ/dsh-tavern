@@ -1,16 +1,7 @@
-// The story as it stands in the save, folded from the session log alone: the player's
-// inputs and the settled replies the model still sees, one floor per round, in order.
-// The host keeps every event forever; rollbacks, regenerations and failed-turn cleanups
-// are surface replacements over older ranges. Folding the surface the way the host does
-// (append to the tail, a replacement takes the place of the range it shadows) leaves
-// exactly the current story, so no save floors and no row plan are needed.
-//
-// Same rules as the row plan (transcript-row-plan.js): a reply's story round is its
-// `source.tavernStoryTurn` when a replacement wrote it, else its own native turn; a
-// player input is a `user/message` whose source kind is 'user'.
-//
-// Pure and self-contained: the browser bundle embeds it with `@include-domain`, so it
-// imports nothing and touches no Node or DOM API.
+// 故事楼层投影与模型上下文使用同一原生日志，但压缩摘要不替代用户可见的故事正文。
+// 保留真实 Surface 的替换关系；仅在输出楼层时展开压缩节点所覆盖的原节点。
+// 撤回或其它编辑若替换整个摘要，旧楼层也随之退出，不能简单忽略所有压缩事件。
+// 模块由浏览器构建内嵌，不依赖 Node 或 DOM。
 
 const STORY_SETTLED_ENDS = ['completed', 'max-tokens']
 
@@ -50,6 +41,7 @@ const storyRoundsIsModelReply = event => event && event.type === 'assistant/mess
 function createStoryRoundsFold() {
   const events = new Map()
   let nodes = []
+  const compacted = new Map() // 压缩节点 -> 当时被覆盖的 Surface 节点，可嵌套
   const turnOf = new Map() // player input seq -> native turn
   const ended = new Map() // native turn -> turn/end reason kind
   const replacedBy = new Map() // seq -> the replacement that shadowed it
@@ -82,6 +74,7 @@ function createStoryRoundsFold() {
       removed = nodes.filter(seq => sources ? sources.has(seq) : seq >= start && seq <= end)
       first = removed.length ? nodes.indexOf(removed[0]) : (nodes.length && start < nodes[0] ? 0 : nodes.length)
     }
+    if (event.type === 'user/message' && event.data?.source?.kind === 'compact-checkpoint') compacted.set(event.seq, removed)
     const gone = new Set(removed)
     nodes = nodes.slice(0, first).filter(seq => !gone.has(seq)).concat([event.seq], nodes.slice(first).filter(seq => !gone.has(seq)))
     for (const seq of removed) {
@@ -241,12 +234,25 @@ function createStoryRoundsFold() {
     return visible.has(seq) ? '' : 'replaced'
   }
 
+  // 迭代展开，避免多次压缩形成递归深栈；旧结果只沿当前有效 Surface 可达。
+  function storyNodes() {
+    const pending = nodes.slice().reverse(), visible = []
+    while (pending.length) {
+      const seq = pending.pop()
+      const children = compacted.get(seq)
+      if (children) { for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]) }
+      else visible.push(seq)
+    }
+    return visible
+  }
+
   function result() {
     if (cached) return cached
     const floors = [], abandoned = []
     let inputs = [], open = null
     const opened = () => (open = open || { turn: running, inputs: [], reply: null })
-    for (const seq of nodes) {
+    const renderedNodes = storyNodes()
+    for (const seq of renderedNodes) {
       const event = events.get(seq)
       if (storyRoundsIsPlayerInput(event)) {
         const input = { seq, turn: turnOf.has(seq) ? turnOf.get(seq) : null, text: textOf(event) }
@@ -274,7 +280,7 @@ function createStoryRoundsFold() {
       floors.push({ story, inputs, reply, history })
       inputs = []
     }
-    const visible = new Set(nodes)
+    const visible = new Set(renderedNodes)
     for (const [seq, turn] of turnOf) {
       const event = events.get(seq)
       if (storyRoundsIsReplace(event) || event.data.source.repair) continue

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { createInitializationNative } from './fixtures/conversation-initialization-native.mjs'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import { installCompactionRequestProjection } from '../tavern-plugin/lib/domain/compaction-request.js'
+import { foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 import { retainRecentStoryRounds } from '../tavern-plugin/lib/domain/story-compaction.js'
 
 const native = { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }
@@ -24,6 +25,8 @@ test('real DSH: manual story compaction commits the summary with the latest roun
     return next()
   })
   // DSH 0.2 reserves 64k output tokens by default, more than this fixture model's whole window.
+  const floorsBefore = foldStoryRounds(sessionEvents(agent.session)).floors
+  assert.ok(floorsBefore.length >= 5)
   const result = await new BasicCompactionEngine(h.ctx, { auto: false, maxTokens: 4096 }).compactNow(agent, new AbortController().signal)
   assert.ok(result)
   assert.equal(summarized.length, 1)
@@ -32,6 +35,7 @@ test('real DSH: manual story compaction commits the summary with the latest roun
   const text = checkpoint.data.content.map(block => block.text || '').join('\n')
   assert.match(text, /【最近 2 轮原文（未压缩，按时间顺序）】/)
   assert.match(text, /\[玩家\]\n第4轮行动/)
+  assert.deepEqual(foldStoryRounds(sessionEvents(agent.session)).floors, floorsBefore, '压缩只缩短模型上下文，故事楼层保留原始正文与身份')
 })
 
 test('real DSH: a second story compaction carries the first volume verbatim before the new one', native, async t => {
@@ -64,7 +68,10 @@ test('real DSH: a second story compaction carries the first volume verbatim befo
   const checkpointText = () => sessionEvents(agent.session).findLast(e => e.type === 'user/message' && e.data?.source?.compactionId).data.content.map(block => block.text || '').join('\n')
   await play(1); through = 3; assert.ok(await compact())
   assert.match(instructions[0], /第 1–3 轮剧情摘要/)
-  await play(5); through = 6; assert.ok(await compact())
+  await play(5)
+  const beforeSecond = foldStoryRounds(sessionEvents(agent.session)).floors
+  through = 6; assert.ok(await compact())
+  assert.deepEqual(foldStoryRounds(sessionEvents(agent.session)).floors, beforeSecond, '第二次真实压缩保留全部楼层')
   assert.match(instructions[1], /旧卷会原样保留[^]*第 4–6 轮剧情摘要/)
   const text = checkpointText()
   const order = [STORY_SUMMARY_NOTE, '【第 1–3 轮剧情摘要】\n甲在第二轮许下约定。', '【第 4–6 轮剧情摘要】\n乙离开了城镇。', '【最近 1 轮原文'].map(part => text.indexOf(part))

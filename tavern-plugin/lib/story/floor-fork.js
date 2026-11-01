@@ -31,7 +31,8 @@ export function createFloorFork({ sessions, prepare, bind, snapshots, logger = c
     const events = sessionEvents(session)
     const floors = foldStoryRounds(events).floors
     const index = floors.findIndex(floor => floor.story === turn)
-    if (index < 0 || !session.surface?.nodes?.includes(floors[index].reply.seq)) throw new Error('这一层已不在当前上下文中，无法创建分支')
+    // 压缩仅改变模型上下文；楼层是否仍有效由故事投影及下方原生前缀校验共同证明。
+    if (index < 0) throw new Error('这一层已不在当前故事中，无法创建分支')
     // Running, regenerating and settling games are refused here (assertConversationForkable).
     const prepared = await prepare(sessionId, turn)
     if (prepared.turn !== turn) throw new Error('分叉楼层与存档不一致，请刷新后重试')
