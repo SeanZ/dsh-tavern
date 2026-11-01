@@ -392,3 +392,17 @@ test('style instructions appear only with its offered tool, never inject polish 
   const off = await assemble()
   assert.ok(!off.sections.some(section => section.name === 'tavern:foreground-style-reference'))
 })
+
+
+test('alpha.2 提示词表示不带 tools 时复用已筛选列表，不补写宿主字段', async () => {
+  const strategy = createNativePlayOrchestrationStrategy({ modeFor: async () => 'story',
+    visibleTools: async () => ['style_reference_submit'], resolvePreset: async () => null,
+    controlledToolNames: new Set(['style_reference_submit']), styleReferencePrompt: () => '前台选段后继续写正文' })
+  const input = { sessionId: 'game', chat: { mode: 'story' }, fixedSystemSections: [] }
+  const empty = await strategy.assembleSystemPrompt({ sections: [] }, input)
+  assert.equal(Object.hasOwn(empty, 'tools'), false)
+  assert.ok(!empty.sections.some(section => section.name === 'tavern:foreground-style-reference'))
+  const offered = await strategy.assembleSystemPrompt({ sections: [] }, { ...input, tools: [{ name: 'style_reference_submit' }] })
+  assert.equal(Object.hasOwn(offered, 'tools'), false)
+  assert.ok(offered.sections.some(section => section.name === 'tavern:foreground-style-reference'))
+})
