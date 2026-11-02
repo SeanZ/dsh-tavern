@@ -1,3 +1,4 @@
+// Play sessions only; card workbenches retain native DSH process controls.
 // The host keeps a work-step row on screen for every round it ever ran: finished
 // rounds draw their group header, and an error round stays `alwaysOpen` so the failure
 // stays reachable. A chat that retried a few times ends up with a column of 已调用工具 /
@@ -48,12 +49,13 @@ function createStepFoldControls(root, options) {
         return toggle;
     }
     function apply() {
-        if (disposed) return;
+        if (disposed || options.play !== true) return;
         const rows = Array.from(root.querySelectorAll(STEP_FOLD_ROWS));
         // While a round is streaming, its live work-step row stays: that is the only
         // one carrying progress. Settled rounds leave nothing to watch.
         const flow = Array.from(root.querySelectorAll('[data-chat-flow-kind="turn-process"]'));
-        const live = root.querySelector('[data-chat-following-tail]') !== null;
+        // Scroll-following remains enabled after completion; only session state means running.
+        const live = options.running === true;
         const running = live ? flow[flow.length - 1] || null : null;
         const targets = new Set(rows.filter(row => !row.hidden && row !== running));
         for (const row of Array.from(owned.keys())) if (!targets.has(row)) release(row);

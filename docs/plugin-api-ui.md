@@ -4,6 +4,11 @@
 
 ## 故事视图契约（本 fork）
 
+实现边界：服务端 `lib/story/` 复用 Tavern 的存档与历史事务。浏览器端 `src/client/story/service.js` 和 `render.js` 是显式依赖工厂，`bindings.js` 集中接入上游能力。独立 new-ui 只消费 `tavernStory`，不读取存档、不深导入 Tavern 模块，也不复制重生成或分叉状态。调整上游接口时，先更新接线与契约回归；聊天历史读取规则不随界面拆分迁移。
+
+Tavern 3.2 的故事接口仍为 `apiVersion: 1`。共享高亮按文档批量读取后统一更新，静态楼层的样式保留在各自 Shadow DOM 内，页面隐藏或楼层离屏时只积累变更。此策略不改变楼层快照身份、脚本活窗口或历史分页。
+
+
 本 fork（`trunkbase`）为独立的故事视图插件（`dsh-tavern-new-ui`）提供的契约，上游没有。服务端部分（楼层折叠 `lib/story/story-rounds.js`、中断墓碑、楼层快照 RPC）见 `docs/design/transcript-row-plan.md`、`last-round-replacement.md`、`html-in-dsh-messages.md` 末尾小节。
 
 ### 故事视图模式：关闭 Tavern 的聊天行渲染（C4）

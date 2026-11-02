@@ -101,6 +101,8 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     // `condition`: its `if` in words; both only describe it on the 后台任务 page.
     const task = String(declaration?.task || '')
     const condition = String(declaration?.condition || '')
+    const taskInfo = declaration?.taskInfo ? Object.freeze({...structuredClone(declaration.taskInfo),task}) : null
+    if (taskInfo && (!task || catalog.has(task))) throw new Error('任务目录已存在或缺少标识: ' + task)
     // `flow`: a flow starts it at these moments itself and waits for it (变量结算), so it is
     // only declared here, to be listed with the rest; it has no run.
     const flow = declaration?.flow === true
@@ -119,18 +121,19 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     // with it off the run is kept as skipped, so the 后台任务 page shows it was not done.
     function attempt(payload, event) {
       const proceed = (ok, at) => {
-        if (!ok) return
+        if (!ok || jobs.get(id) !== entry) return
         const end = record(entry, payload, event, at)
         let value
         try { value = run(payload, event) } catch (error) { end('failed', error); throw error }
-        const done = result => { end('completed'); finished(id, payload.gameId, payload.turn, result) }
+        const done = result => { end('completed'); if (jobs.get(id) === entry) finished(id, payload.gameId, payload.turn, result) }
         if (typeof value?.then !== 'function') return done(value)
         return value.then(done, error => { end('failed', error); throw error })
       }
       const switched = ok => {
+        if (jobs.get(id) !== entry) return
         if (!ok || !enabled) return proceed(ok)
         const at = now()
-        return Promise.resolve(enabled(payload, event)).then(on => on ? proceed(true, at) : void record(entry, payload, event, at, 'skipped'))
+        return Promise.resolve(enabled(payload, event)).then(on => jobs.get(id) !== entry ? undefined : on ? proceed(true, at) : void record(entry, payload, event, at, 'skipped'))
       }
       const ok = when ? when(payload, event) : true
       return typeof ok?.then === 'function' ? ok.then(switched) : switched(ok)
@@ -155,9 +158,11 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     }
     for (const need of after) dependents.set(need, [...(dependents.get(need) || []), start])
     jobs.set(id, entry)
+    if (taskInfo) catalog.set(task,taskInfo)
     return () => {
       if (jobs.get(id) !== entry) return
       jobs.delete(id)
+      if (taskInfo && catalog.get(task) === taskInfo) catalog.delete(task)
       for (const stop of stops) stop()
       for (const need of after) dependents.set(need, (dependents.get(need) || []).filter(item => item !== start))
     }
@@ -193,5 +198,5 @@ export function createWorkflow({ events, tasks = [], logger = console, now = Dat
     await waitAll([...catalog.values()].filter(item => item.blocksNextTurn).map(item => item.task), chat)
   }
 
-  return Object.freeze({ job, table, waiter, needs, beforeNextTurn, output, runs })
+  return Object.freeze({ job, table, catalog:() => structuredClone([...catalog.values()]), waiter, needs, beforeNextTurn, output, runs })
 }

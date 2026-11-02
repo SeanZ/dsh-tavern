@@ -95,6 +95,7 @@ function harness(mode, options = {}) {
   }
   const orchestrator = createTurnOrchestrator({
     storyToolCall: async () => options.storyToolCall === true,
+    modEnabled: async (modId, cardPath) => (options.enabledMods || []).includes(modId) && cardPath === 'cards/阿芙拉.json',
     storyInputToolCall: async () => options.storyInputToolCall === true,
     store,
     planner: {
@@ -331,6 +332,7 @@ test('漏写的一轮可以按它自己的请求号补记进存档（#196 自愈
   assert.notEqual(adopted.duplicate, true)
   assert.deepEqual(run.chat().messages.map(message => message.text), ['推开窗', '雨水扑进房间。', '关上窗', '窗关上了。'])
   assert.equal(Number(run.chat().messages.at(-1).turn), 3)
+  assert.equal(run.chat().messages.at(-1).stagePageVersion, 2)
 })
 
 test('本局前台工具可逐项关闭，卡片模式不受影响', async () => {
@@ -364,4 +366,25 @@ test('本局前台工具可逐项关闭，卡片模式不受影响', async () =>
 
   const card = harness('card', { chatFields: { disabledForegroundTools: disabled } })
   assert.ok((await card.orchestrator.visibleTools('session-1')).includes('tavern_update_card'))
+
+  // 世界书检索与宿主 read 曾经不在设置目录里，勾不掉；现在目录能写这些名字，
+  // 白名单就必须真的按它们过滤。
+  const worldbookOff = harness('story', { storyToolCall: true, chatFields: { disabledForegroundTools: ['worldbook_list', 'worldbook_grep'] } })
+  const worldbookOffNames = await worldbookOff.orchestrator.visibleTools('session-1')
+  assert.equal(worldbookOffNames.includes('worldbook_list'), false)
+  assert.equal(worldbookOffNames.includes('worldbook_grep'), false)
+  assert.equal(worldbookOffNames.includes('read'), true, '只关检索工具时文件读取保留')
+
+  const readOff = harness('story', { chatFields: { disabledForegroundTools: ['read'] } })
+  const readOffNames = await readOff.orchestrator.visibleTools('session-1')
+  assert.equal(readOffNames.includes('read'), false)
+  assert.equal(readOffNames.includes('worldbook_grep'), true)
+})
+
+test('骰子工具只在本卡开了骰子 mod 时提供给正文模型，仍可逐项关闭', async () => {
+  assert.equal((await harness('story').orchestrator.visibleTools('session-1')).includes('tavern_roll'), false)
+  assert.equal((await harness('story', { enabledMods: ['dsh.dice'] }).orchestrator.visibleTools('session-1')).includes('tavern_roll'), true)
+  assert.equal((await harness('script', { enabledMods: ['dsh.dice'] }).orchestrator.visibleTools('session-1')).includes('tavern_roll'), true)
+  const off = harness('story', { enabledMods: ['dsh.dice'], chatFields: { disabledForegroundTools: ['tavern_roll'] } })
+  assert.equal((await off.orchestrator.visibleTools('session-1')).includes('tavern_roll'), false)
 })

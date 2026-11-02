@@ -24,7 +24,7 @@ async function setup(t) {
     return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, ...result }) }
   }
   win.fetch = fetch
-  vm.runInContext(source, vm.createContext({ window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, URLSearchParams, CustomEvent: win.CustomEvent }))
+  vm.runInContext(source, vm.createContext({ requestAnimationFrame: win.requestAnimationFrame.bind(win), cancelAnimationFrame: win.cancelAnimationFrame.bind(win), location: win.location, URL, Blob, window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, URLSearchParams, CustomEvent: win.CustomEvent }))
   const ui = { MarkdownText: props => React.createElement('p', { className: 'markdown' }, props.text), Tooltip: props => props.children }
   const client = descriptor.factory(name => name === 'react' ? React : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
   const stop = client.fixtureUi.registerIllustrator({ kinds: ['fixture/image'], draw: async value => { draws.push(value) }, redraw: async () => {} })
@@ -77,4 +77,20 @@ test('公开配图按钮使用故事轮号，遵循禁用和游玩模式', async
   assert.deepEqual(JSON.parse(JSON.stringify(f.draws)), [{ gameId: 'story', turn: 2 }])
   await act(async () => f.client.liveTavernView.setView('story', { mode: 'card' }))
   assert.equal(f.win.document.querySelectorAll('button').length, 0)
+})
+
+
+test('楼层变为忙碌时已打开的手动配图也遵循操作锁', async t => {
+  const f = await setup(t)
+  await f.show([{kind:'markdown',text:'正文'}])
+  await f.action(true)
+  await act(async()=>f.win.document.querySelector('button').dispatchEvent(new f.win.MouseEvent('contextmenu',{bubbles:true})))
+  assert.equal(f.win.document.querySelector('form'),null)
+  await f.action(false)
+  await act(async()=>f.win.document.querySelector('button').dispatchEvent(new f.win.MouseEvent('contextmenu',{bubbles:true})))
+  assert.ok(f.win.document.querySelector('form'))
+  await f.action(true)
+  assert.equal(f.win.document.querySelector('button[type="submit"]').disabled,true)
+  await act(async()=>f.win.document.querySelector('form').dispatchEvent(new f.win.Event('submit',{bubbles:true,cancelable:true})))
+  assert.deepEqual(f.draws,[])
 })

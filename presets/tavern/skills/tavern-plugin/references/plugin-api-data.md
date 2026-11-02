@@ -2,6 +2,35 @@
 
 宿主侧 `ctx.tavern` 中挂图片等媒体、保存插件数据、声明本局配置项的接口。
 
+## 把插件自己的图片列入对话画廊（`galleryProvider: 1`）
+
+`attach` 需要 `gameId`、`turn` 和正文版本，适合随剧情走的媒体。卡片工作台或插件自己的本地图库没有这些信息时，用 `registerGalleryProvider` 提供图片列表；这些图片只出现在当前 Tavern 会话的「画廊」里，不会伪装成某轮正文附件。
+
+```js
+if (ctx.tavern.capabilities?.galleryProvider >= 1) {
+  ctx.tavern.registerGalleryProvider({
+    async list({ sessionId }) {
+      // 从插件自己的图库读取元数据；可忽略 sessionId 来显示插件的本地全局图库。
+      return [{ id: 'image-123', caption: '试画', createdAt: Date.now() }]
+    },
+    async read({ sessionId, id }) {
+      const image = await readOwnImage(id)
+      return { data: image.bytes, mediaType: image.mediaType }
+    },
+    async remove({ sessionId, id }) {
+      return await deleteOwnImage(id) // 仅确实删除时返回 true
+    }
+  })
+}
+```
+
+- `list` 每项需要稳定的字符串 `id`，可选 `caption`、`createdAt`、`updatedAt`；所有来源合计最多展示 2000 项。画廊中的图片按来源名分组，不关联轮次。
+- Tavern 只把 `sessionId` 传给回调，不要求插件有 `gameId` 或 `turn`。但它会先确认这是 Tavern 已知会话；未知会话不调用 provider。卡内插件只在 `cardPath` 属于它自己的卡时可见。
+- 画廊返回的 ID 是 Tavern 生成的不透明值。每次读取或删除前，Tavern 都会核对该原始 ID 当前仍由同一个 provider 列出；批量删除每个 provider 只读取一次列表。
+- `read` 返回 `{ data, mediaType }` 或直接返回字节。只接受与字节签名相符的 PNG、JPEG、WebP、GIF，单图上限 32 MB；SVG、HTML、文件路径和 URL 不受理。图片由 Tavern 的同源媒体路由提供。
+- `remove` 仅收到该 provider 自己列表中的 ID；只有返回 `true` 才报告删除成功。回调超时、插件卸载或卡片作用域变化时，迟到结果会被丢弃。provider 出错只隐藏或跳过它自己的条目。
+- 注册随插件卸载自动撤销；每个插件最多注册一个画廊来源。provider 图片仍由插件自己的存储管理，Tavern 不复制文件，也不让它们进入剧情分叉或存档。
+
 ## `attach({ gameId, turn, textVersion, item })`
 
 把一个媒体项挂到某个版本上，返回 `{ id }`。`textVersion` 必须是 `onTurnSettled` 或 `getTurn` 给出的这一轮的版本，否则拒绝。用户在生成期间切换了版本也没关系：媒体项照样保存，切回那个版本时显示。
@@ -34,11 +63,25 @@ item = {
 
 修改自己挂的媒体项，`changes` 只需写要改的字段，返回修改后的媒体项。不能修改 `id`、`turn`、`textVersion`。
 
-图片换成新的 `attachment` 时（比如重画），旧图自动保留为早期版本，最多 8 个，在返回值的 `history` 里（`{ caption, prompt, createdAt }`）。玩家可以在插图卡上翻看和删除这些版本。
+图片换成新的 `attachment` 时（比如重画），旧图自动保留为早期版本，最多 8 个，在返回值的 `history` 里（`{ caption, prompt, createdAt, data? }`）。旧图当时的 `data` 也随版本保存（第 5 版），插件可据此找到要删的版本，玩家删除时也原样还给插件（见 `onMediaRemoved`）；删掉当前图、由上一版顶上时，`data` 也换回上一版的。玩家可以在插图卡上翻看和删除这些版本。
 
-## `remove(id)`
+## `remove(id, { version? })`
 
 删除自己挂的媒体项，删掉返回 `true`，不存在或不属于本插件返回 `false`。
+
+`version`（第 5 版）只删一张图：`'current'` 删当前图，由最近的早期版本顶上；数字是 `history` 里的下标。删掉最后一张时整项删除。
+
+## `onMediaRemoved(handler)`（第 5 版）
+
+玩家在对话或画廊里删掉本插件挂的图时调用，只通知这张图的主人；插件自己 `remove` 不会触发。收到：
+
+```js
+{ gameId, itemId, kind, turn, textVersion,
+  itemRemoved,  // 整项都没了时为 true；只删了一个版本时为 false
+  pictures: [{ caption, prompt, createdAt, data? }] }  // 被删的每张图，data 是挂图或重画时写入的那份
+```
+
+插件自己另存了图（生成记录、缓存文件）时，在这里一并删掉，让两边同进同退。
 
 ## `list({ gameId, turn? })`
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-profile-tavern",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "scripts": {
     "build:client": "node bin/build-tavern-client.mjs",
     "check:client": "node bin/build-tavern-client.mjs --check",
@@ -20,7 +20,9 @@
     "check:plugin-package": "node bin/build-plugin-package.mjs --check",
     "prepublishOnly": "npm run check:client && npm run check:plugin-package",
     "test:card-memory": "node --test tests/card-memory.test.mjs",
-    "test:e2e:card-memory": "node bin/build-tavern-client.mjs --check && node tests/e2e/gameplay.mjs --card-memory"
+    "test:e2e:card-memory": "node bin/build-tavern-client.mjs --check && node tests/e2e/gameplay.mjs --card-memory",
+    "build:mods": "node bin/build-tavern-mods.mjs",
+    "check:mods": "node bin/build-tavern-mods.mjs --check"
   },
   "dependencies": {
     "acorn": "8.15.0",
@@ -39,7 +41,8 @@
     "dsh-mnemon": "0.5.31",
     "dsh-mnemon-source-runtime": "0.5.14",
     "dsh-mnemon-source-documents": "0.5.10",
-    "undici": "6.29.1"
+    "undici": "6.29.1",
+    "sharp": "0.34.5"
   },
   "dsh": {
     "profile": {
@@ -50,7 +53,9 @@
         "dsh-better-sidebar",
         "dsh-dream-skin",
         "dsh-tavern-plugin",
-        "dsh-tavern-remote"
+        "dsh-tavern-remote",
+        "dsh-asset-library",
+        "dsh-tavern-stage"
       ]
     },
     "bundle": {
@@ -67,7 +72,10 @@
     "dsh-pocket": "2.12.0",
     "dsh-web-mobile": "3.1.0",
     "dsh-better-sidebar": "0.28.0",
-    "dsh-dream-skin": "link:./tavern-plugin/packages/dsh-dream-skin"
+    "dsh-dream-skin": "link:./tavern-plugin/packages/dsh-dream-skin",
+    "dsh-asset-library": "link:./tavern-plugin/packages/dsh-asset-library",
+    "esbuild": "0.25.12",
+    "dsh-tavern-stage": "link:./tavern-plugin/packages/dsh-tavern-stage"
   },
   "description": "DSH Tavern: standalone tavern Profile bundle",
   "files": [
@@ -85,9 +93,9 @@
     "!**/*.map",
     "!tavern-plugin/src/**",
     "tavern-plugin/src/client/bubble-line.cjs",
-    "!tavern-plugin/fonts/**/*.woff2",
-    "!tavern-plugin/fonts/**/*.ttf",
-    "!tavern-plugin/fonts/**/*.otf",
+    "!tavern-plugin/packages/dsh-dream-skin/fonts/**/*.woff2",
+    "!tavern-plugin/packages/dsh-dream-skin/fonts/**/*.ttf",
+    "!tavern-plugin/packages/dsh-dream-skin/fonts/**/*.otf",
     "!**/docs/**",
     "config/plugin-web.LICENSE",
     "tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html"

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 
 test('trusted inline prose installs quote highlights and releases them on replacement/unmount', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30);--dsw-alias-brand-primary:blue}</style><div id="root"></div>')
@@ -12,7 +12,7 @@ test('trusted inline prose installs quote highlights and releases them on replac
   await page.addScriptTag({ content: `
     const React = {useRef:()=>({current:document.querySelector('#root')}), useLayoutEffect:fn=>{window.cleanup=fn()}, createElement(){}};
     function bindTavernFontZoom(){return ()=>{}}
-    ${sources.join('\n')}
+    ${sources.map(s=>s.replace(/^export \{[^}]+\};?$/gm,'')).join('\n')}
     window.mount = content => TavernInlineFragment({content});
     window.ranges = () => [...CSS.highlights.values()].flatMap(h=>[...h].map(r=>r.toString()));
   ` })
@@ -31,7 +31,7 @@ test('trusted inline prose installs quote highlights and releases them on replac
 
 test('every message shares one stylesheet and four named highlights per document', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30)}</style>' + Array.from({ length: 30 }, (_, i) => `<p id="m${i}">她说：“第${i}句。”</p>`).join(''))
@@ -51,7 +51,7 @@ test('every message shares one stylesheet and four named highlights per document
 
 test('offscreen messages and hidden pages pause scanning, keep ranges and refresh on resume', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30)}</style><p id="near">“近处。”</p><div style="height:6000px"></div><p id="far">“远处。”</p>')
@@ -91,37 +91,38 @@ test('offscreen messages and hidden pages pause scanning, keep ranges and refres
 
 test('page-root layout changes do not re-read every message; a theme change does', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30)} html.dark body{color:rgb(220,220,220)}</style>' + Array.from({ length: 5 }, (_, i) => `<p>“第${i}句。”</p>`).join(''))
   await page.addScriptTag({ content: await readFile(new URL('../tavern-plugin/src/client/text-colors.js', import.meta.url), 'utf8') + `
     window.walks = 0; const walker = document.createTreeWalker; document.createTreeWalker = function (...args) { window.walks++; return walker.apply(this, args) };
-    window.ranges = name => CSS.highlights.get(name)?.size || 0;
+    window.ranges = name => [...CSS.highlights].filter(([key]) => key.endsWith(name)).reduce((n,[,h])=>n+h.size,0);
     Array.from(document.querySelectorAll('p'), p => installTavernTextColors(p, {}, findTavernQuoteRanges));
   ` })
-  await page.waitForFunction(() => window.ranges('dsh-tavern-text-quote-light') === 5)
+  await page.waitForFunction(() => window.ranges('-quote-light') === 5)
   const settle = () => page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)))
   await page.evaluate(() => { window.walks = 0; document.documentElement.style.setProperty('--layout-height', '220px'); document.body.style.setProperty('--font', '18px') })
   await settle()
   assert.equal(await page.evaluate(() => window.walks), 0)
   await page.evaluate(() => document.documentElement.classList.add('dark'))
-  await page.waitForFunction(() => window.ranges('dsh-tavern-text-quote-dark') === 5)
+  await page.waitForFunction(() => window.ranges('-quote-dark') === 5)
   assert.equal(await page.evaluate(() => window.walks), 5)
 })
 
 test('静态故事快照在 Shadow DOM 内恢复配色，随主题变化并在卸载时释放', { skip: !process.env.TAVERN_BROWSER_TESTS }, async t => {
   const { chromium } = await import('playwright')
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE })
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30);--dsw-alias-brand-primary:blue}</style><div id="root"></div>')
-  const sources = await Promise.all(['text-colors.js', 'features/story-render.js'].map(file => readFile(new URL('../tavern-plugin/src/client/' + file, import.meta.url), 'utf8')))
+  const sources = await Promise.all(['text-colors.js', 'story/render.js'].map(file => readFile(new URL('../tavern-plugin/src/client/' + file, import.meta.url), 'utf8')))
   await page.addScriptTag({ content: `
     const React = {useRef:()=>({current:document.querySelector('#root')}), useLayoutEffect:fn=>{window.cleanup=fn()}, createElement(){}};
     function bindTavernFontZoom(){return ()=>{}}
-    ${sources.join('\n')}
-    TavernFloorStaticHtml({html:'<p>“快照对白。”</p><p><em>快照动作</em></p><p style="color:red">“卡片颜色”</p><script>throw Error("不可执行")<\\/script>'});
+    ${sources.map(s=>s.replace(/^export \{[^}]+\};?$/gm,'')).join('\n')}
+    const render=createStoryRenderAdapter({window,React,bindTavernFontZoom,installTavernTextColors,findTavernQuoteRanges}).createTavernStoryRender({});
+    render.StaticHtml({html:'<p>“快照对白。”</p><p><em>快照动作</em></p><p style="color:red">“卡片颜色”</p><script>throw Error("不可执行")<\\/script>'});
     window.ranges = () => [...CSS.highlights.values()].flatMap(h=>[...h].map(r=>r.toString()));
   ` })
   await page.waitForFunction(() => ranges().length === 2)
@@ -129,7 +130,7 @@ test('静态故事快照在 Shadow DOM 内恢复配色，随主题变化并在�
   const colors = () => page.evaluate(() => {
     const root = document.querySelector('#root').shadowRoot
     return { styles: root.querySelectorAll('style[data-dsh-tavern-text-colors]').length, scripts: root.querySelectorAll('script').length,
-      color: getComputedStyle(root.querySelector('p'), '::highlight(dsh-tavern-text-quote-light)').color }
+      color: getComputedStyle(root.querySelector('p'), '::highlight('+[...CSS.highlights.keys()].find(name=>name.endsWith('-quote-light'))+')').color }
   })
   assert.deepEqual(await colors(), { styles: 1, scripts: 0, color: 'rgb(0, 0, 255)' })
   await page.evaluate(() => document.body.style.setProperty('--dsw-alias-brand-primary', 'rgb(0, 128, 0)'))

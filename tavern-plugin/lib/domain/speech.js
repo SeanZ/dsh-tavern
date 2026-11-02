@@ -340,7 +340,7 @@ export function createSpeech({ store, credentials, plugins = () => [], fetchImpl
     return { enabled: stored.enabled, provider: providers().some(item => item.id === stored.provider) ? stored.provider : 'browser', providers: list }
   }
 
-  /** Save one channel's settings (and key), which channel is used, and whether voicing is on. */
+  /** Save the channel, enabled state and channel settings (including its key and both voices). */
   async function save({ enabled, provider: id, config = {}, apiKey } = {}) {
     const stored = await readConfig()
     const target = id === undefined ? stored.provider : id

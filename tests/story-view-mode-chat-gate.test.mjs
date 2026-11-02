@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import vm from "node:vm";
+import vm from "./fixtures/client-vm.mjs";
 
 // Fork contract C4: storyViewMode on leaves the chat rows to the host.
 const source = await readFile(
@@ -60,7 +60,7 @@ function loadClient({
       "exports.tavernStoryViewMode = tavernStoryViewMode;",
       "exports.sessionModeListeners = tavernSessionModes.listeners; exports.publishSessionMode = publishSessionMode; exports.publishSessionModes = publishSessionModes; exports.tavernStorySessionState = tavernStorySessionState; exports.tavernStoryViewMode = tavernStoryViewMode;",
     ),
-    { window, fetch, performance, console },
+    { window, fetch, performance, console, URL, Blob },
   );
   return {
     client: descriptor.factory((name) => (name === "react" ? React : {})),
@@ -75,6 +75,8 @@ function register(client, sessions = sessionList("story").sessions) {
   const ctx = {
     sessions,
     get: () => null,
+    inject() {},
+    provide() {},
     effect(run, label) {
       if (label === "dsh-tavern: game script owner") return () => {};
       try {
@@ -189,6 +191,8 @@ function registerDock(client, sessions = sessionList("story").sessions) {
   const ctx = {
     sessions,
     get: () => null,
+    inject() {},
+    provide() {},
     betterSidebar: { registerTab: () => () => {} },
     effect(run) {
       try {

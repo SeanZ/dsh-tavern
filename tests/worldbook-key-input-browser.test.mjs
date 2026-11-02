@@ -12,11 +12,11 @@ test('世界书触发词输入框能在末尾输入中英文逗号并继续添�
   script+=`modules[${JSON.stringify(name)}]=(()=>{const module={exports:{}};const exports=module.exports;const require=name=>modules[name];\n${await readFile(join(dirname(require.resolve(name)),'cjs',file),'utf8')}\nreturn module.exports;})();\n`
  }
  const source=await readFile(new URL('../tavern-plugin/lib/client.js',import.meta.url),'utf8')
- script+=`const React=modules.react;const h=React.createElement;window.keys=['港口'];
+ script+=`const React=modules.react;window.keys=['港口'];
  ${sourceFunction(source,'WorldBookKeyInput')}
- function Host(){const [keys,setKeys]=React.useState(window.keys);return h(WorldBookKeyInput,{value:keys,placeholder:'逗号分隔',onChange:next=>{window.keys=next;setKeys(next)}})}
- modules['react-dom/client'].createRoot(document.querySelector('main')).render(h(Host));`
- const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{})})
+ function Host(){const [keys,setKeys]=React.useState(window.keys);return React.createElement(WorldBookKeyInput,{value:keys,placeholder:'逗号分隔',onChange:next=>{window.keys=next;setKeys(next)}})}
+ modules['react-dom/client'].createRoot(document.querySelector('main')).render(React.createElement(Host));`
+ const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE || undefined})
  try {
   const page=await browser.newPage();page.on('pageerror', error => { throw error });await page.setContent('<main></main>');await page.addScriptTag({content:script})
   const input=page.getByPlaceholder('逗号分隔')

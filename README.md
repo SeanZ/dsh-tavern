@@ -110,6 +110,28 @@
 
 ![公开灯塔案例的场景插画与完整产品界面](docs/images/readme/scene-image-product.png)
 
+## 卡片工作台
+
+**创造你自己的人物卡。**
+
+游玩模式兼容 SillyTavern 生态，导入人物卡就能玩；卡片工作台则把「写卡 / 改卡」做成对话式工作台——不会翻字段也能自己造卡、改卡，改完直接回游玩模式开玩。
+
+### 一句话改卡
+
+不用懂人物卡结构。告诉 Agent 哪里不喜欢、想改成什么样，它先给方案，你确认后再写入。预设、世界书也能用同样方式一起改，设定更容易绑在一起。
+
+### 从零创造人物卡
+
+从小说、设定，或一句想法出发，让 Agent 抽出人物、补全设定，做成能直接开玩的卡。自己写文字大卡也行：工作台能帮忙看出架构和人物设计矛盾，给出调整建议。
+
+### 改完就能玩
+
+卡片工作台和游玩模式是同一条产品线，不是两套工具。改完设定立刻回局里验证；游玩出了问题，也能把本局记录交给调试 Agent，边玩边修。
+
+![卡片模式：与 Agent 对话修改人物卡](docs/images/readme/card-editor.png)
+
+[了解如何用对话修改人物卡 →](https://github.com/flizzywine/dsh-tavern/wiki/%E4%BF%AE%E6%94%B9%E4%BA%BA%E7%89%A9%E5%8D%A1%E4%B8%AD%E4%B8%8D%E5%96%9C%E6%AC%A2%E7%9A%84%E5%86%85%E5%AE%B9)
+
 ## 快速开始
 
 > **请不要从 npm 下载或安装本项目。** 由于对 DSH 的定制改动较多，DSH Tavern 无法作为常规 DSH 插件安装使用。npm 上的 `dsh-profile-tavern` 已标记弃用，不再维护；请按下方对应平台的方式安装。
@@ -131,7 +153,7 @@
 
 ### Android
 
-Android 仅提供 **独立 APK**（Android 11+ / ARM64）：[下载 DSH Tavern Android APK](https://github.com/flizzywine/dsh-tavern/releases/latest/download/dsh-tavern-android-release.apk)。它内置 DSHA v0.2.0-rc2 与 DSH 0.2.0-rc.2，只运行酒馆自己的 `tavern` Profile，手机上只有一个 DSH 服务，内存和电量开销最低。首次按引导完成环境部署后自动安装并进入；酒馆更新在应用内完成。包名独立，可与旧版 v2.1 APK、原版 DSHA 并存，旧包数据需先导出再导入。详见 [Android 安装说明](https://github.com/flizzywine/dsh-tavern/wiki/Android-%E5%AE%89%E8%A3%85%E4%B8%8E%E6%9B%B4%E6%96%B0)。
+Android 仅提供 **独立 APK**（Android 11+ / ARM64）：[下载 DSH Tavern Android APK](https://github.com/flizzywine/dsh-tavern/releases/download/v3.1/dsh-tavern-android-release.apk)。它内置 DSHA v0.2.0-rc2 与 DSH 0.2.0-rc.2，只运行酒馆自己的 `tavern` Profile，手机上只有一个 DSH 服务，内存和电量开销最低。首次按引导完成环境部署后自动安装并进入；酒馆更新在应用内完成。包名独立，可与旧版 v2.1 APK、原版 DSHA 并存，旧包数据需先导出再导入。详见 [Android 安装说明](https://github.com/flizzywine/dsh-tavern/wiki/Android-%E5%AE%89%E8%A3%85%E4%B8%8E%E6%9B%B4%E6%96%B0)。
 
 不想装 APK、或想自己掌控运行环境（Node 版本、数据目录、与电脑上的命令行版共用一套玩法），也可以在 **Termux** 里跑命令行版：
 
@@ -169,6 +191,28 @@ curl -fsSL 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/install
 ```
 
 装好后用 `dsh-tavern start` 启动，按显示的地址在浏览器打开；`dsh-tavern stop` / `status` / `update` 停止、查看、更新。
+
+#### 在可信局域网 / VPN 内直接访问
+
+命令行版默认只监听 `127.0.0.1`。可用 `DSH_TAVERN_BIND` 指定**本机已有的具体 IP 地址**（示例地址需替换为电脑的局域网或 VPN 地址）：
+
+```sh
+DSH_TAVERN_BIND=192.168.1.10 dsh-tavern restart
+# IPv6 不加方括号；输出的访问链接会自动加上方括号
+DSH_TAVERN_BIND=fd00::1234 dsh-tavern restart
+```
+
+PowerShell：
+
+```powershell
+$env:DSH_TAVERN_BIND='192.168.1.10'; dsh-tavern restart
+```
+
+仅 CLI 生效，不改变桌面版 / Android 宿主。可与 `DSH_TAVERN_PORT` 一起使用；不支持通配地址（`0.0.0.0` / `::`）、域名、URL 或带作用域 ID 的 IPv6（如 `fe80::1%eth0`）。地址必须已分配给本机，否则启动失败，不会回退到其他网卡。
+
+`status`、`open`、重复 `start` 和 `stop` 使用进程记录里的实际地址，不需要重复设置变量。**每次新启动（包括 `restart`、更新后的重新启动）都读取当次环境变量**；希望持续使用同一地址，请在启动环境中保留它。取消变量后运行 `restart` 即恢复仅本机访问（PowerShell：`Remove-Item Env:DSH_TAVERN_BIND`）。旧版进程记录没有地址时仍按 `127.0.0.1` 处理。
+
+**安全：这个端口具有远程代码执行能力，token 是访问凭证。** 仅在可信内网或 VPN 使用，不要直接暴露到公网，不要分享完整 token 链接；普通 HTTP 不加密，跨不可信网络应使用可信加密 VPN。此配置不会关闭鉴权，也不会自动更改防火墙、路由或 VPN。其他设备应打开启动输出中的完整地址。如果启用了 Node 环境代理（`NODE_USE_ENV_PROXY=1`），请把绑定地址加入 `NO_PROXY`（IPv6 的 URL 主机为 `[地址]`），避免自检及带 token 的链接验证经过代理；工具不会替你修改代理配置。
 
 ### 手机远程访问
 

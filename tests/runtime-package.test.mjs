@@ -15,16 +15,23 @@ const workspace = parse(await readFile(new URL('../pnpm-workspace.yaml', import.
 const patches = Object.values(workspace.patchedDependencies || {}).map(value => typeof value === 'string' ? value : value.path)
 
 const required = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bin/dsh-compatibility.mjs', 'bin/dsh-tavern.mjs', 'bin/launcher-environment.mjs', 'bin/launcher-settings.mjs', 'bin/profile-installation.mjs', 'bin/service-lifecycle.mjs', 'bin/application-update.mjs', 'config/dsh-compatibility.json', ...patches]
+required.push(...['sprite','avatar','avatar-sheet','settei','identity-settei','background','redraw-note'].map(kind=>'tavern-plugin/presets/asset-gen/templates/'+kind+'.md'))
 required.push('bin/dsh-tavern-update-helper.mjs', 'bin/windows-update-launch.mjs', 'bin/update-diagnostics.mjs')
 const bundledWorldbooks = ['tavern-plugin/packages/dsh-tavern-image-bundled/世界书-通用生图规则.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/世界书-角色与服装库.json']
 required.push('bin/bundled-scene-image-plugin.mjs', 'tavern-plugin/packages/dsh-tavern-image-bundled/package.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/BUNDLED-VERSION.json', 'tavern-plugin/packages/dsh-tavern-image-bundled/cordis.patch.yml', 'tavern-plugin/packages/dsh-tavern-image-bundled/lib/index.js', 'tavern-plugin/packages/dsh-tavern-image-bundled/client.js', ...bundledWorldbooks)
 required.push('tavern-plugin/lib/domain/server-template-runtime.js', 'tavern-plugin/lib/domain/server-template-worker.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/engine.js', 'tavern-plugin/lib/vendor/st-prompt-template/server-artifact/manifest.json')
-required.push('tavern-plugin/lib/domain/tavern-client-assets.js', 'tavern-plugin/lib/client-assets/tavern.css')
-required.push('bin/build-tavern-client.mjs')
+required.push('tavern-plugin/lib/domain/card-export-settings.js', 'tavern-plugin/lib/domain/tavern-client-assets.js', 'tavern-plugin/lib/client-assets/tavern.css')
+required.push('bin/build-tavern-client.mjs', 'tavern-plugin/lib/optional-stage.js', 'tavern-plugin/lib/stage-switch.js')
+required.push(...['bubble-line.cjs', 'widget-contracts.cjs', 'stage-page-index.cjs', 'mod-projection.cjs', 'stage-performance-kinds.cjs', 'stage-auto-timing.cjs', 'stage-widgets.cjs', 'widget-definitions.cjs', 'widgets/countdown.cjs', 'widgets/notification.cjs', 'widgets/note.cjs', 'widgets/chat-thread.cjs'].map(file=>'tavern-plugin/src/client/'+file))
+required.push(...['package.json','cordis.patch.yml','lib/index.js','lib/client.js','lib/client-assets.js','lib/client/skin-overlay.mjs','lib/runtime.js','lib/module.js','lib/requests.js','lib/rpc.js','lib/workflow.js','lib/story-observer.js','lib/card-assets.js'].map(file=>'tavern-plugin/packages/dsh-tavern-stage/'+file))
+required.push(...['asset-engine.js', 'asset-runtime.js', 'card-zip-target.js', 'cg-gallery.js', 'domain/mods/core-media.js', 'domain/mods/models.js', 'domain/stage-director.js', 'domain/stage-projection.js', 'domain/performance-projection.js', 'domain/stage-playback.js', 'domain/widget-window-projection.js', 'domain/widget-variable-service.js', 'engine-judge.js', 'figure-voice-authoring.js', 'mod-config-host.js', 'mod-config.js', 'mod-service.js', 'mod-stage.js', 'mod-system-execution.js', 'mod-system-production.js'].map(file=>'tavern-plugin/packages/dsh-tavern-stage/lib/'+file))
+required.push(...['stage.js','stage-service.js','stage-clock.js'].map(file=>'tavern-plugin/packages/dsh-tavern-stage/lib/mods/timer/'+file))
+required.push(...['runtime-kernel.cjs', 'runtime-store.cjs', 'session.cjs', 'entry.cjs', 'skin-overlay-timing.cjs', 'timer-clock.cjs', 'lifetime.cjs', 'director-source.cjs', 'resources.cjs', 'resource-runner.cjs'].map(file=>'tavern-plugin/packages/dsh-tavern-stage/lib/client/'+file))
+required.push(...['tavern-plugin/packages/dsh-tavern-stage/lib/domain/asset-pack-presentation.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/cg-played-receipt.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-catalogue.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-director.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-pacing.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-tools.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-validation.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-cg.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-director-handles.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-director-schema.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-director-text.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-entrance.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-history-cache.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-items.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-judge-recall.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-opening-scene.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-sfx-categories.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-streaming-director.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-streaming-pack.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-video.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/card-stage.js', 'tavern-plugin/packages/dsh-tavern-stage/lib/card-bundle.js'])
 // In the repository and the Git package, but never read by an installed copy (lib/client.js is the
 // built client; only settings.html and the licenses of the vendored upstream sources are loaded).
 const developmentOnly = ['tavern-plugin/src/client/main.js', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/package.json', 'tavern-plugin/lib/vendor/magvarupdate/upstream/package.json']
-const lazyFontBinaries = ['tavern-plugin/fonts/example/face.woff2', 'tavern-plugin/fonts/example/face.ttf', 'tavern-plugin/fonts/example/face.otf']
+const lazyFontBinaries = ['tavern-plugin/fonts', 'tavern-plugin/packages/dsh-dream-skin/fonts'].flatMap(root => ['woff2', 'ttf', 'otf'].map(ext => root + '/example/face.' + ext))
 const fontMetadata = ['tavern-plugin/fonts/example/index.json', 'tavern-plugin/fonts/example/OFL.txt', 'tavern-plugin/fonts/example/LICENSE']
 const keptUpstream = ['tavern-plugin/lib/vendor/st-prompt-template/upstream/settings.html', 'tavern-plugin/lib/vendor/st-prompt-template/upstream/LICENSE', 'tavern-plugin/lib/vendor/magvarupdate/upstream/LICENSE']
 
@@ -132,6 +139,11 @@ for (const [name, paths] of [
     const files = await listTarFiles(archive)
     for (const file of required) assert.ok(files.includes(file), `运行包遗漏：${file}`)
     assert.ok(!files.some(file => /^(docs|tests|references)\//.test(file)))
+    if (name === 'Unix') {
+      const plugin = 'tavern-plugin/packages/dsh-tavern-stage'
+      execFileSync('tar', ['-xf', archive, '-C', directory, plugin])
+      execFileSync(process.execPath, [path.join(directory, plugin, 'build.mjs'), '--check'], {encoding:'utf8'})
+    }
   })
 }
 

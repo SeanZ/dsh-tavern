@@ -11,7 +11,6 @@
 			const panels = new Map();
 			const startGroups = [];
 			const cardListViews = [];
-			const stageViews = [];
 			const statusSections = [];
 			const turnViews = [];
 			const illustrators = [];
@@ -493,7 +492,10 @@
 					return owned(this, function () {
 						if (panels.has(tabId)) throw new Error("面板 " + input.id + " 已注册");
 						if (!host || !host.betterSidebar || typeof host.betterSidebar.registerTab !== "function") throw new Error("当前界面没有侧栏，无法注册插件面板");
+						// a plugin panel's tab carries the host plugin glyph like every other tab.
+						const PluginIcon = DshUi && DshUi.IconCordisPluginOutline14;
 						const dispose = host.betterSidebar.registerTab({ id: tabId, title: title, order: 60, single: true,
+							...(PluginIcon ? { icon: function (size) { return React.createElement(PluginIcon, { size: size || 16, width: size || 16, height: size || 16 }); } } : {}),
 							component: function (props) {
 								const gameId = props.scope && props.scope.sessionId || "";
 								if (gameId && !tavernPluginAllowed(owner, gameId)) return React.createElement("p", { className: "dsh-tavern-plugin-panel-empty" }, "这是另一张人物卡的插件面板。");
@@ -706,18 +708,14 @@
 						return function () { disposed = true; stopView(); stopCast(); };
 					}, "tavernUi.watchStage()");
 				},
-				// Another look for the stage, in the right panel and full screen. Tavern keeps the reading
-				// (paging, auto play, input); the view draws the scene, and Tavern's own is used when it fails.
-				registerStageView(input) {
-					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerStageView 的 id 只能用小写字母、数字、点、下划线和连字符");
-					if (typeof input.label !== "string" || !input.label.trim() || input.label.trim().length > 20) throw new TypeError("registerStageView 需要 1–20 字的 label");
-					if (typeof input.render !== "function") throw new TypeError("registerStageView 需要 render 函数");
-					const owner = ownerOf(this);
-					const entry = { key: owner + ":" + input.id, owner: owner, label: input.label.trim(), render: input.render };
-					return owned(this, function () {
-						if (stageViews.some(function (view) { return view.key === entry.key; })) throw new Error("舞台视图 " + input.id + " 已注册");
-						return addTo(stageViews, entry);
-					}, "tavernUi.registerStageView()");
+				// Retired with the old stage (#424): Tavern now draws the stage itself from the card's 素材包 and
+				// the director; a plugin can no longer replace its scene. Says so in the error notice instead of
+				// registering a view nothing would show. Never throws: a throw while a plugin applies fails the
+				// whole page's boot, not just that plugin.
+				registerStageView() {
+					const message = "插件 " + ownerOf(this) + " 调用了已停用的 registerStageView：舞台改由 Tavern 按人物卡绑定的素材包绘制，这个舞台视图不会显示。请给人物卡绑定素材包并打开对话气泡，改用 Tavern 的舞台。";
+					try { tavernErrorHub.report("舞台", new Error(message)); } catch (_) { console.warn(message); }
+					return function () {};
 				},
 				// This plugin's own settings in a game (declared on the host side with tavern.gameSettings):
 				// { key: value }, or null when it declared none or is off in that game.
@@ -873,8 +871,8 @@
 						return addTo(turnViews, entry);
 					}, "tavernUi.registerTurnView()");
 				},
-				// Another way to show the card library and the play picker (a grid, covers); Tavern keeps
-				// searching, groups and batch actions, and falls back to its own list when the view fails.
+				// Legacy registration API retained so existing plugins can load and dispose safely.
+				// Character surfaces now always use Tavern’s shared grid; custom views are not rendered.
 				registerCardListView(input) {
 					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerCardListView 的 id 只能用小写字母、数字、点、下划线和连字符");
 					if (typeof input.label !== "string" || !input.label.trim() || input.label.trim().length > 20) throw new TypeError("registerCardListView 需要 1–20 字的 label");
@@ -898,7 +896,6 @@
 				messageActions: function () { return messageActions.slice(); },
 				composerActions: function () { return composerActions.slice(); },
 				cardListViews: function () { return cardListViews.slice(); },
-				stageViews: function () { return stageViews.slice(); },
 				statusSections: function () { return statusSections.slice(); },
 				turnViews: function () { return turnViews.slice(); },
 				// The latest registered illustrator handling `kind`; without a kind, the latest one that can draw.
@@ -942,10 +939,9 @@
 			const h = React.createElement;
 			if (!props.choice.views.length) return null;
 			const current = props.choice.view ? props.choice.view.key : TAVERN_VIEW_BUILTIN;
-			return h("select", { className: props.className, value: current, "aria-label": props.label, onChange: function (event) { props.choice.choose(event.target.value); } },
-				[{ key: TAVERN_VIEW_BUILTIN, label: "内置" }].concat(props.choice.views).map(function (entry) {
-					return h("option", { key: entry.key, value: entry.key, title: entry.owner || undefined }, entry.label);
-				}));
+			// the shared inline menu, not a native select.
+			return h(InlineField, { kind: "menu", label: props.label, className: props.className, value: current, onCommit: props.choice.choose,
+				options: [{ key: TAVERN_VIEW_BUILTIN, label: "内置" }].concat(props.choice.views).map(function (entry) { return { value: entry.key, label: entry.label, title: entry.owner || undefined }; }) });
 		}
 
 		function useTavernTurnView(sessionId) {
@@ -1078,18 +1074,29 @@
 			};
 		})();
 		const TAVERN_ILLUSTRATION_NOTICE_MS = 8000;
-		async function runTavernIllustrator(illustrator, sessionId, turn) {
+		async function runTavernIllustrator(illustrator, sessionId, turn, instruction) {
+			let normalizedInstruction;
+			if (instruction !== undefined) {
+				if (typeof instruction !== "string") throw new TypeError("配图要求必须是文本");
+				normalizedInstruction = instruction.trim();
+				if (normalizedInstruction.length > 2000) throw new RangeError("配图要求不能超过 2000 字");
+			}
 			const planning = { planning: true };
 			tavernIllustrationDrafts.set(sessionId, turn, planning);
 			let draft = null;
+			let failure = null;
 			try {
-				const result = await illustrator.draw({ gameId: sessionId, turn: turn });
+				const request = { gameId: sessionId, turn: turn };
+				if (normalizedInstruction) request.instruction = normalizedInstruction;
+				const result = await illustrator.draw(request);
 				const notice = result && typeof result.notice === "string" ? result.notice.trim() : "";
 				if (notice) draft = { text: notice.slice(0, 200) };
-			} catch (error) { draft = { text: String(error && error.message || error).slice(0, 200), failed: true }; }
-			if (tavernIllustrationDrafts.get(sessionId, turn) !== planning) return;
-			tavernIllustrationDrafts.set(sessionId, turn, draft);
-			if (draft) setTimeout(function () { if (tavernIllustrationDrafts.get(sessionId, turn) === draft) tavernIllustrationDrafts.set(sessionId, turn, null); }, TAVERN_ILLUSTRATION_NOTICE_MS);
+			} catch (error) { failure = error; draft = { text: String(error && error.message || error).slice(0, 200), failed: true }; }
+			if (tavernIllustrationDrafts.get(sessionId, turn) === planning) {
+				tavernIllustrationDrafts.set(sessionId, turn, draft);
+				if (draft) setTimeout(function () { if (tavernIllustrationDrafts.get(sessionId, turn) === draft) tavernIllustrationDrafts.set(sessionId, turn, null); }, TAVERN_ILLUSTRATION_NOTICE_MS);
+			}
+			if (failure && instruction !== undefined) throw failure;
 		}
 		// `items` are the turn's plugin media: once the illustrator attaches a new one, planning is
 		// over and that item's own card shows the drawing, so the placeholder goes.
@@ -1158,9 +1165,9 @@
 					illustrator.editPrompt ? h("button", { type: "button", className: "dsh-tavern-btn", title: "自己改这张图的提示词再画", disabled: busy || working, onClick: function () { open("prompt"); } }, "改提示词") : null,
 					illustrator.add ? h("button", { type: "button", className: "dsh-tavern-btn", title: "为这一轮另选一个场景，再加一张插图", disabled: busy, onClick: function () { open("add"); } }, "新增插图") : null) : null,
 				panel === "redraw" ? h("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": "重画插图" },
-					h("textarea", { value: draft, maxLength: 2000, rows: 2, autoFocus: true, disabled: busy, "aria-label": "重画意见（选填）",
+					h(TextArea, { value: draft, maxLength: 2000, rows: 2, autoFocus: true, disabled: busy, "aria-label": "重画意见（选填）",
 						placeholder: "想怎么改？例如：改成雨夜，镜头拉近。留空则重新构思画面，或用同一份提示词再画一张",
-						onChange: function (event) { setDraft(event.target.value); },
+						onChange: function (value) { setDraft(value); },
 						onKeyDown: function (event) {
 							if (event.key === "Escape" && !busy) setPanel(null);
 							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !busy) { event.preventDefault(); run("revise", { instruction: draft.trim() }); }
@@ -1171,10 +1178,10 @@
 						h("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-image-repaint-submit", title: draft.trim() ? "按意见改写这张图的提示词后重画" : "重新整理这张图的提示词再画，多跑一次文字模型", disabled: busy,
 							onClick: function () { return run("revise", { instruction: draft.trim() }); } }, draft.trim() ? "按意见重画" : "重新整理提示词"))) : null,
 				panel === "prompt" || panel === "add" ? h("div", { className: "dsh-tavern-image-adjust dsh-tavern-image-repaint", role: "region", "aria-label": panel === "prompt" ? "改提示词重画" : "新增插图" },
-					h("textarea", { value: draft, maxLength: 12000, rows: panel === "prompt" ? 6 : 2, autoFocus: true, disabled: busy,
+					h(TextArea, { value: draft, maxLength: 12000, rows: panel === "prompt" ? 6 : 2, autoFocus: true, disabled: busy,
 						"aria-label": panel === "prompt" ? "画面提示词" : "新插图想画什么（选填）",
 						placeholder: panel === "prompt" ? "直接写画面提示词" : "想画哪个场景？留空由插件另选一个不同的场景",
-						onChange: function (event) { setDraft(event.target.value); },
+						onChange: function (value) { setDraft(value); },
 						onKeyDown: function (event) {
 							if (event.key === "Escape" && !busy) setPanel(null);
 							else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !busy) { event.preventDefault(); run(panel === "prompt" ? "editPrompt" : "add", panel === "prompt" ? { prompt: draft.trim() } : { instruction: draft.trim() }); }
@@ -1254,9 +1261,13 @@
 				render: function (text, key, renderText) {
 					const result = segmentPluginText(text, { markers: markers.map(function (marker) { return marker.pattern; }), anchors: anchors.filter(function (anchor) { return !placed.has(anchor.id); }) });
 					result.placed.forEach(function (id) { placed.add(id); });
-					if (result.segments.length === 1 && result.segments[0].kind === "text") return renderText(text, key);
+					if (result.segments.length === 1 && result.segments[0].kind === "text") return renderText(text, key, 0);
+					// retain source coordinates; media consumes no source text.
+					let sourceOffset = 0;
 					return React.createElement(React.Fragment, { key: key }, result.segments.map(function (segment, index) {
-						if (segment.kind === "text") return renderText(segment.text, index);
+						const offset = sourceOffset;
+						if (segment.kind === "text") { sourceOffset += segment.text.length; return renderText(segment.text, index, offset); }
+						if (segment.kind === "marker") sourceOffset += segment.match[0].length;
 						if (segment.kind === "media") return React.createElement(React.Fragment, { key: index }, segment.ids.map(function (id) {
 							if (extras.has(id)) return React.createElement(React.Fragment, { key: id }, extras.get(id).render());
 							return React.createElement(TavernPluginMediaItem, { key: id, item: byId.get(id), sessionId: input.sessionId, turn: input.turn });
@@ -1314,12 +1325,9 @@
 				disabled: props.running, context: { gameId: props.sessionId, turn: props.turn, busy: Boolean(props.running) } });
 		}
 
-		const TAVERN_CARD_LIST_VIEW_KEY = "dsh-tavern-card-list-view";
-		function readTavernCardListView() { try { return window.localStorage.getItem(TAVERN_CARD_LIST_VIEW_KEY) || ""; } catch (_) { return ""; } }
-
 		function tavernCardListViewCard(card) {
 			return {
-				path: card.path, name: card.name, fileName: String(card.path).replace(/\\/g, "/").split("/").pop(),
+				path: card.path, name: card.name || "未命名人物卡", fileName: String(card.path).replace(/\\/g, "/").split("/").pop(),
 				imageUrl: card.hasImage ? "/api/dsh-tavern/card-image?path=" + encodeURIComponent(card.path) : "",
 				script: card.script ? { title: card.script.title } : null,
 				group: card.group || "", starred: Boolean(card.starred), error: card.readError || ""
@@ -1335,8 +1343,15 @@
 			try {
 				// The plugin's own key, so its users keep their setting.
 				const stored = window.localStorage.getItem("dsh-tavern-card-grid-cols-" + place) || window.localStorage.getItem("tavern-card-grid-cols-" + place);
-				return Math.min(6, Math.max(2, Number(stored) || fallback));
+				return Math.min(6, Math.max(2, Math.round(Number(stored) || fallback)));
 			} catch (_) { return fallback; }
+		}
+		function TavernCardGridCover(props) {
+			const card = props.card;
+			const [failed, setFailed] = React.useState(false);
+			return card.imageUrl && !failed
+				? React.createElement("img", { className: "dsh-tavern-card-grid-cover", src: card.imageUrl, alt: "", loading: "lazy", onError: function () { setFailed(true); } })
+				: React.createElement("span", { className: "dsh-tavern-card-grid-cover placeholder", "aria-hidden": "true" }, Array.from(String(card.name || "").replace(/^[^\p{L}\p{N}]+/u, ""))[0] || "?");
 		}
 		function TavernCardGrid(props) {
 			const h = React.createElement;
@@ -1353,63 +1368,38 @@
 						return h("button", { key: count, type: "button", "aria-pressed": count === columns, "aria-label": count + " 列", onClick: function () { changeColumns(count); } }, String(count));
 					})),
 				h("span", { className: "dsh-tavern-card-grid-count" }, input.cards.length + " 张"));
-			if (!input.cards.length) return h("div", null, toolbar, h("div", { className: "dsh-tavern-card-grid-empty" }, "没有匹配的人物卡"));
-			return h("div", null, toolbar, h("div", { className: "dsh-tavern-card-grid" + (columns >= 5 ? " dense" : ""), style: { "--dsh-tavern-card-grid-cols": String(columns) } }, input.cards.map(function (card) {
+			if (!input.cards.length) return h("div", null, toolbar, h(EmptyState, { text: "没有匹配的人物卡", icon: "search" }));
+			return h("div", { className: "dsh-tavern-card-grid-container" }, toolbar, h("div", { className: "dsh-tavern-card-grid" + (columns >= 5 ? " dense" : ""), style: { "--dsh-tavern-card-grid-cols": String(columns) } }, input.cards.map(function (card) {
 				const selected = input.isSelected(card.path);
 				const corner = [input.mention(card.path), input.menu(card.path)].filter(Boolean);
 				const script = card.script && card.script.title ? card.script.title : "";
 				return h("div", { key: card.path, className: "dsh-tavern-card-grid-item" + (selected ? " selected" : "") + (card.error ? " broken" : "") },
-					h("button", { type: "button", className: "dsh-tavern-card-grid-open", title: card.error || [card.name, card.fileName ? "文件：" + card.fileName : "", script ? "剧本：" + script : "自由故事"].filter(Boolean).join("\n"), "aria-pressed": input.selecting ? selected : undefined,
+					h("button", { type: "button", className: "dsh-tavern-card-grid-open", title: card.error || [card.name, card.fileName ? "文件：" + card.fileName : "", script ? "剧本：" + script : "自由故事", card.group ? "分组：" + card.group : "未分组"].filter(Boolean).join("\n"), "aria-pressed": input.selecting ? selected : undefined,
 						disabled: input.busy || (!input.selecting && input.place === "play" && Boolean(card.error)), onClick: function () { input.open(card.path); } },
-						card.imageUrl ? h("img", { className: "dsh-tavern-card-grid-cover", src: card.imageUrl, alt: "", loading: "lazy" })
-							: h("span", { className: "dsh-tavern-card-grid-cover placeholder", "aria-hidden": "true" }, Array.from(String(card.name || "").replace(/^[^\p{L}\p{N}]+/u, ""))[0] || "?"),
+						h(TavernCardGridCover, { key: card.imageUrl, card: card }),
 						h("span", { className: "dsh-tavern-card-grid-copy" },
 							h("span", { className: "dsh-tavern-card-grid-name" }, card.name))),
-					input.selecting ? h("input", { type: "checkbox", className: "dsh-tavern-card-batch-checkbox dsh-tavern-card-grid-check", checked: selected, disabled: input.busy,
-						"aria-label": "选择人物卡：" + card.name, onChange: function () { input.toggle(card.path); } }) : null,
+					input.selecting ? h(Switch, { className: "dsh-tavern-card-grid-check", checked: selected, disabled: input.busy,
+                        label: "选择人物卡：" + card.name, onChange: function () { input.toggle(card.path); } }) : null,
 					corner.length ? h("span", { className: "dsh-tavern-card-grid-corner" }, corner) : null);
 			})));
 		}
-		function renderTavernCardGrid(input) {
-			return React.createElement(TavernCardGrid, { input: input });
-		}
-		const TAVERN_CARD_GRID_VIEW = { key: "dsh-tavern:grid", owner: "DSH Tavern", label: "宫格", render: renderTavernCardGrid };
-
-		function TavernCardListViewBody(props) {
-			const rendered = props.view.render(props.input);
-			return rendered === null || rendered === undefined ? props.fallback : rendered;
-		}
-
-		/**
-		 * The card rows of the library and the play picker: Tavern's own list or grid, or a
-		 * plugin view, picked by a switcher (remembered per browser).
-		 * props: place, cards (already searched and filtered), batch, busy, open(card), menu(card)?, mention(card)?, builtin().
-		 */
+		// One shared cover grid for the library and every character picker. Legacy
+		// registerCardListView registrations remain accepted, but cannot replace it.
 		function TavernCardList(props) {
-			useTavernUiExtensions();
-			const [chosen, setChosen] = React.useState(readTavernCardListView);
-			const h = React.createElement;
-			const views = [TAVERN_CARD_GRID_VIEW].concat(tavernUiExtensions.cardListViews());
-			const view = views.find(function (entry) { return entry.key === chosen; }) || null;
-			const builtin = props.builtin();
-			function choose(key) {
-				setChosen(key);
-				try { window.localStorage.setItem(TAVERN_CARD_LIST_VIEW_KEY, key); } catch (_) {}
-			}
-			const switcher = h("div", { className: "dsh-tavern-card-view-switch dsh-tavern-segmented", role: "group", "aria-label": "人物卡显示方式" },
-				[{ key: "", label: "列表" }].concat(views).map(function (entry) {
-					return h("button", { key: entry.key, type: "button", "aria-pressed": (view ? view.key : "") === entry.key, title: entry.owner && entry !== TAVERN_CARD_GRID_VIEW ? "来自插件 " + entry.owner : undefined, onClick: function () { choose(entry.key); } }, entry.label);
-				}));
-			if (!view) return h(React.Fragment, null, switcher, builtin);
 			const byPath = new Map(props.cards.map(function (card) { return [card.path, card]; }));
-			const batch = props.batch;
+			const batch = props.batch || {};
 			const input = {
 				place: props.place,
-				cards: props.cards.map(tavernCardListViewCard),
+				cards: props.cards.map(function (card) {
+					const view = tavernCardListViewCard(card);
+					if (props.displayName) view.name = props.displayName(card);
+					return view;
+				}),
 				busy: Boolean(props.busy),
 				selecting: Boolean(batch.managing),
 				isSelected: function (path) { return batch.managing && batch.isSelected(path); },
-				toggle: function (path) { if (batch.managing && byPath.has(path)) batch.toggle(path); },
+				toggle: function (path) { if (!props.busy && batch.managing && byPath.has(path)) batch.toggle(path); },
 				open: function (path) {
 					const card = byPath.get(path);
 					if (!card || props.busy) return;
@@ -1418,6 +1408,5 @@
 				menu: function (path) { const card = byPath.get(path); return card && props.menu && !batch.managing ? props.menu(card) : null; },
 				mention: function (path) { const card = byPath.get(path); return card && props.mention && !batch.managing ? props.mention(card) : null; }
 			};
-			return h(React.Fragment, null, switcher,
-				h(tavernPluginBoundary(), { key: view.key, owner: view.owner, fallback: builtin }, h(TavernCardListViewBody, { view: view, input: input, fallback: builtin })));
+			return React.createElement(TavernCardGrid, { key: props.place, input: input });
 		}

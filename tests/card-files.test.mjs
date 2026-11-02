@@ -4,20 +4,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createAssetPacks } from '../tavern-plugin/lib/domain/asset-packs.js'
+import { createMediaStore } from '../tavern-plugin/packages/dsh-asset-library/src/pack-v2/media-store.js'
 import { createCardFiles } from '../tavern-plugin/lib/domain/card-files.js'
 import { createCardPlugins } from '../tavern-plugin/lib/domain/card-plugins.js'
 import { createCardPreparation, projectCardSummary } from '../tavern-plugin/lib/domain/card-preparation.js'
 import { createCardSummaryCache } from '../tavern-plugin/lib/domain/card-summary-cache.js'
 import { createCastAssets } from '../tavern-plugin/lib/domain/cast-assets.js'
 import { createFileResourceStore } from '../tavern-plugin/lib/domain/file-resources.js'
-import { createStageMaterial } from '../tavern-plugin/lib/domain/stage-material.js'
-import { createAssetPackService } from '../tavern-plugin/lib/asset-library/pack-v2/service.js'
-import { readZipEntries } from '../tavern-plugin/lib/domain/zip-entries.js'
-import { crc32, deflateSync } from 'node:zlib'
 import { writeZipEntries } from '../tavern-plugin/lib/domain/zip-entries.js'
 import { createProfileDataStore } from '../tavern-plugin/lib/profile-data-store.js'
 
-async function library(t) {
+async function library(t, extra = {}) {
   const root = await mkdtemp(join(tmpdir(), 'card-files-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const profileData = createProfileDataStore({ dataRoot: root })
@@ -31,66 +28,13 @@ async function library(t) {
     return await fileResources.ensureCardWorkspace(cardPath, (working, payload) => cardPreparation.migrate({ working, payload }))
   }
   const cardSummaries = createCardSummaryCache({ absolute: cardPath => fileResources.absolute(cardPath), read: async cardPath => projectCardSummary(await readCardWorkspace(cardPath)) })
-  const assetLibrary = createAssetPackService({ assetRoot: join(root, 'asset-packs-v2'), authorizeLease: async () => true })
-  t.after(() => assetLibrary.dispose())
-  const stageMaterial = createStageMaterial({ library: assetLibrary, castAssets })
   const files = createCardFiles({
-    cardPreparation, fileResources, castAssets, stageMaterial, assetPacks: createAssetPacks({ root, store: profileData }), cardSummaries, readCardWorkspace,
+    cardPreparation, fileResources, castAssets, assetPacks: createAssetPacks({ root, store: profileData, mediaStore: createMediaStore({ root: join(root, 'asset-packs') }) }), cardSummaries, readCardWorkspace,
     worldBooks: { characterBookForCard: async () => undefined },
-    cardPlugins: createCardPlugins({ dataRoot: root, pluginsDir: join(root, 'plugins') }), presetLibrary: {}, importPreset: () => assert.fail('no start defaults'), pluginApi: () => assert.fail('not a plugin format')
+    cardPlugins: createCardPlugins({ dataRoot: root, pluginsDir: join(root, 'plugins') }), presetLibrary: {}, importPreset: () => assert.fail('no start defaults'), ...extra, pluginApi: () => assert.fail('not a plugin format')
   })
-  return { root, files, fileResources, castAssets, assetLibrary, stageMaterial }
+  return { root, files, fileResources, castAssets }
 }
-
-function png(r, g, b) {
-  const chunk = (type, data) => {
-    const body = Buffer.concat([Buffer.from(type), data]), result = Buffer.alloc(body.length + 8)
-    result.writeUInt32BE(data.length); body.copy(result, 4); result.writeUInt32BE(crc32(body), result.length - 4)
-    return result
-  }
-  const header = Buffer.alloc(13); header.writeUInt32BE(1); header.writeUInt32BE(1, 4); header.set([8, 6], 8)
-  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.from([0, r, g, b, 255]))), chunk('IEND', Buffer.alloc(0))])
-}
-function wav() {
-  const bytes = Buffer.alloc(16044)
-  bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8); bytes.writeUInt32LE(16, 16)
-  bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(16000, 28)
-  bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(16000, 40)
-  return bytes
-}
-
-test('a CHARX card\'s backgrounds and music go into the card\'s own pack; what a pack cannot hold is kept; export writes both back', async t => {
-  const { root, files, castAssets, assetLibrary, stageMaterial } = await library(t)
-  const gif = Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00;', 'latin1')
-  const card = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: '舞台', description: 'd', assets: [
-    { type: 'background', name: 'main', uri: 'embeded://assets/background/room.png', ext: 'png' },
-    { type: 'background', name: 'old', uri: 'embeded://assets/background/old.gif', ext: 'gif' },
-    { type: 'music', name: 'theme', uri: 'embeded://assets/music/theme.wav', ext: 'wav' }] } }
-  const charx = join(root, 'stage.charx')
-  await writeFile(charx, writeZipEntries([{ path: 'card.json', content: JSON.stringify(card) }, { path: 'assets/background/room.png', content: png(30, 70, 90) },
-    { path: 'assets/background/old.gif', content: gif }, { path: 'assets/music/theme.wav', content: wav() }]))
-  const imported = await files.importCardArchiveFile(charx, '舞台')
-  assert.deepEqual(imported.assets, { sprites: 0, backgrounds: 1, avatars: 0, kept: 1, unmatched: [], skipped: 0 })
-
-  const cast = await castAssets.read(imported.path)
-  assert.equal(cast.backgrounds, undefined)
-  assert.deepEqual(cast.extras.map(item => [item.type, item.name]), [['background', 'old']], 'GIF is not a stage format: kept for export')
-  assert.equal(cast.boundPackIds.length, 1)
-  const pack = await assetLibrary.getPackSnapshot({ packId: cast.boundPackIds[0] })
-  assert.equal(pack.manifest.name, '舞台 · 本卡素材包')
-  assert.deepEqual(pack.manifest.assets.map(asset => [asset.kind, asset.name, asset.enabled, asset.recall.mode]), [['backgrounds', 'main', true, 'constant'], ['music', 'theme', true, 'constant']])
-  assert.deepEqual((await stageMaterial.catalog(imported.path, '舞台')).background.map(item => item.name), ['main'])
-
-  const exported = await files.exportCardFile(imported.path)
-  assert.equal(exported.extension, 'charx')
-  const entries = readZipEntries(exported.bytes)
-  const assets = JSON.parse(entries.get('card.json').toString()).data.assets
-  assert.deepEqual(assets.map(asset => [asset.type, asset.name]), [['icon', 'main'], ['background', 'main'], ['background', 'old'], ['music', 'theme']])
-  const bytesOf = (type, name) => entries.get(assets.find(asset => asset.type === type && asset.name === name).uri.replace('embeded://', ''))
-  assert.deepEqual(bytesOf('background', 'main'), png(30, 70, 90))
-  assert.deepEqual(bytesOf('music', 'theme'), wav())
-  assert.deepEqual(bytesOf('background', 'old'), gif)
-})
 
 test('a CHARX imports once; the same file again opens the card already imported; a bare card exports as JSON', async t => {
   const { root, files } = await library(t)
@@ -131,4 +75,45 @@ test('invalid card plugin identity fails before persistence; retries stay failur
   assert.equal(imported.plugins[0].enabled, true)
   assert.equal((await castAssets.read(imported.path)).plugins[0].enabled, true)
   assert.equal((await files.importCardArchiveFile(archive, 'legacy.dshcard')).duplicate, true)
+})
+
+
+// The stage reads packs from the asset library: a card's packs install there too. A new pack is installed, an
+// identical one left as it is; a different installed version is not touched but reported. Importing the very same
+// file again still makes sure its packs are in the library (cards imported before the library carry none there).
+test('DSH 人物卡的素材包装进素材库：新包安装、相同的不动、不同版本只提示；重复导入也补装', async t => {
+  const { openZipFile } = await import('../tavern-plugin/lib/domain/zip-file.js')
+  const fresh = '55555555-5555-4555-8555-555555555555', changed = '66666666-6666-4666-8666-666666666666'
+  const installed = new Map([[changed, 'other-version']]), applied = []
+  const assetLibrary = () => ({
+    async inspectImportFile({ file }) {
+      const zip = await openZipFile(file)
+      try {
+        const manifest = JSON.parse((await zip.readBuffer(zip.entries.get('manifest.json'), 65536)).toString())
+        assert.ok(zip.entries.has('media/a.png'), 'the pack is re-rooted: its own files at the top')
+        const choices = !installed.has(manifest.id) ? ['install', 'keep-both', 'cancel'] : installed.get(manifest.id) === manifest.contentHash ? ['noop', 'cancel'] : ['update', 'keep-both', 'cancel']
+        return { inspectionId: manifest.id, packId: manifest.id, contentHash: manifest.contentHash, expectedRevision: null, choices, scriptRisk: [] }
+      } finally { await zip.close() }
+    },
+    async applyImport({ inspectionId, decision }) {
+      applied.push([inspectionId, decision])
+      if (decision === 'install') installed.set(inspectionId, 'v1')
+      return { status: decision }
+    },
+  })
+  const { root, files } = await library(t, { assetLibrary })
+  const card = join(root, '鱼.dshcard')
+  const pack = (id, name) => [[`assets/${name}/manifest.json`, JSON.stringify({ id, contentHash: 'v1' })], [`assets/${name}/media/a.png`, 'png']]
+  await writeFile(card, writeZipEntries([
+    { path: 'dsh.json', content: JSON.stringify({ format: 'dshcard', formatVersion: 1, packs: [{ id: fresh, path: 'assets/new/', title: '新包' }, { id: changed, path: 'assets/old/', title: '旧包' }] }) },
+    { path: 'card.json', content: JSON.stringify({ spec: 'chara_card_v3', data: { name: '鱼' } }) },
+    ...[...pack(fresh, 'new'), ...pack(changed, 'old')].map(([path, content]) => ({ path, content })),
+  ]))
+  const first = await files.importCardArchiveFile(card, '鱼.dshcard')
+  assert.deepEqual(applied, [[fresh, 'install'], [changed, 'cancel']])
+  assert.match(first.libraryNotices.join(''), /旧包.*不同的版本/)
+  applied.length = 0
+  const again = await files.importCardArchiveFile(card, '鱼.dshcard')
+  assert.equal(again.duplicate, true)
+  assert.deepEqual(applied, [[fresh, 'noop'], [changed, 'cancel']], 'the same file again checks its packs')
 })

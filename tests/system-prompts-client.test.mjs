@@ -1,6 +1,6 @@
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import vm from 'node:vm'
+import vm from './fixtures/client-vm.mjs'
 import assert from 'node:assert/strict'
 
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
@@ -23,7 +23,7 @@ for (const action of ['保存此项', '恢复默认']) test(action + '只清除�
     useEffect(fn) { if (initial) effects.push(fn) }
   }
   const Component = vm.runInNewContext(body + '\n; SystemPromptSidebarTab', {
-    React, useTavernConfirm: () => async () => true,
+    React, InlineField: 'inline-field', PanelLoading: 'panel-loading', useTavernConfirm: () => async () => true,
     rpc: async (method, args) => {
       if (method === 'updateSystemPrompt') persisted.find(row => row.name === args.name).text = args.text ?? 'default A'
       return { systemPrompts: { prompts: persisted.map(row => ({ ...row })) } }

@@ -29,9 +29,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildAutoImageGenPrompt } from './prompts.js'
 import { installTavernBridge, removeMountedPicture } from './tavern-bridge.js'
+import { readImageFileMetadata } from './image-file-metadata.js'
 import { createPluginUpdater } from './updater.js'
 import { IMAGE_PROVIDERS, generateImage, testImageChannel, supportsImageTaskResume } from './image-providers.js'
-import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences } from './image-provider-capabilities.js'
+import { IMAGE_API_PROTOCOLS, effectiveImageProvider, supportsImageReferences, imageReferenceLimit } from './image-provider-capabilities.js'
 import { normalizeChannels, publicChannels, activeChannel, channelConfigPatch, migrateLegacyImageConfig } from './image-channels.js'
 import { createCredentialStore } from './credential-store.js'
 import { patchWorkflowGraph, workflowRevision } from './workflow-graph.js'
@@ -1007,6 +1008,11 @@ export function apply(ctx, config = {}) {
             const off = tavern.onGameRemoved(event => deps.mediaActions?.gameRemoved(event))
             if (typeof off === 'function') lifecycleDisposes.push(off)
           }
+          // Tavern's own picture requests (stage asset packs) run on the current online channel.
+          if (typeof tavern.imageProvider === 'function') {
+            const off = tavern.imageProvider(stageImageProvider(() => engine.currentConfig()))
+            if (typeof off === 'function') lifecycleDisposes.push(off)
+          }
           logger.info?.('dsh-tavern-image: Tavern 官方接口桥已安装')
         }
         boot().catch(error => logger.warn?.('dsh-tavern-image: 官方接口桥安装失败 ' + (error?.message ?? error)))
@@ -1095,6 +1101,7 @@ route(`${BASE}/generate-characters-minor`, (request, response, url, engine) => e
   route(`${BASE}/jobs`, (request, response, url, engine) => handleJobs(request, response, url, engine))
   // 手动配图：浏览器侧「🎨 生图」按钮走这条，链路和自动配图完全一致
   route(`${BASE}/attach-turn`, handleAttachTurn)
+  route(`${BASE}/draw-turn`, handleAttachTurn)
 
   // 已停用（改用 Tavern 官方 promptSection + attach 链路）：installAutoImagePrompt(ctx, ready)
   logger.info?.('dsh-tavern-image: 已加载（控制台 ' + BASE + '/console）')
@@ -1121,11 +1128,20 @@ async function handleAttachTurn(request, response, _url, engine) {
     const gameId = String(body?.gameId ?? '')
     const turn = Number(body?.turn ?? 0)
     if (!gameId || !Number.isFinite(turn) || turn < 1) { sendJson(response, 400, { ok: false, error: '需要 gameId 与 turn' }); return }
-    const result = await engine.attachTurn({ gameId, turn })
+    const instruction = validateDrawInstruction(body)
+    const result = await engine.attachTurn({ gameId, turn, instruction })
     sendJson(response, 200, { ok: true, ...result })
   } catch (error) {
-    sendJson(response, 400, { ok: false, error: String(error?.message ?? error) })
+    sendJson(response, Number(error?.statusCode) || 400, { ok: false, error: String(error?.message ?? error) })
   }
+}
+
+function validateDrawInstruction(body) {
+  if (!body || !Object.prototype.hasOwnProperty.call(body, 'instruction')) return ''
+  if (typeof body.instruction !== 'string') throw new Error('instruction 必须是字符串')
+  const instruction = body.instruction.trim()
+  if (instruction.length > 2000) throw new Error('instruction 不能超过 2000 个字符')
+  return instruction
 }
 
 async function handleJobs(request, response, url, engine) {
@@ -1252,7 +1268,7 @@ function createRuntime(ctx, overrides, logger, deps) {
                 } catch { /* 文件真的不在就保持原样 */ }
               }
               if (!job.mediaType) {
-                try { job.mediaType = imageMediaTypeFromBytes(await readFile(job.file)) || 'image/png' }
+                try { job.mediaType = (await readImageFileMetadata(job.file)).mediaType || 'image/png' }
                 catch { job.mediaType = 'image/png' }
               }
               if (job.backend && job.backend !== 'comfyui' && ['pending', 'running'].includes(job.state)) {
@@ -1282,17 +1298,16 @@ function createRuntime(ctx, overrides, logger, deps) {
             // byteLength 必须填成文件的真实字节数：取图路由的门槛是 `if (!job.file || !job.byteLength)`，
             // 填 0 会让这个作业永远被判成「图片还没生成好」而返回 404 —— 列表里明明有图却打不开。
             let bytes = 0
-            let cached = Buffer.alloc(0)
+            let imageMetadata = null
             // 用文件修改时间当作生成时间：图库按 createdAt 排序，写 Date.now() 会让所有历史图每次重启都跑到最前面
             let createdAt = Date.now()
             try {
-              const buf = await readFile(join(dir, name))
-              cached = buf
-              bytes = buf.length
-              if (buf.length > 24 && buf[1] === 0x50 && buf[2] === 0x4e) size = { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
-              createdAt = (await stat(join(dir, name))).mtimeMs || createdAt
+              imageMetadata = await readImageFileMetadata(join(dir, name))
+              bytes = imageMetadata.byteLength
+              if (imageMetadata.width !== null && imageMetadata.height !== null) size = { width: imageMetadata.width, height: imageMetadata.height }
+              createdAt = imageMetadata.mtimeMs || createdAt
             } catch { /* 读不到尺寸就算了 */ }
-            jobs.set(id, { id, state: 'done', percent: 100, createdAt, fromCache: true, file: join(dir, name), size, params: {}, label: '历史图片', byteLength: bytes, mediaType: imageMediaTypeFromBytes(cached) || (/\.jpe?g$/i.test(name) ? 'image/jpeg' : /\.webp$/i.test(name) ? 'image/webp' : 'image/png') })
+            jobs.set(id, { id, state: 'done', percent: 100, createdAt, fromCache: true, file: join(dir, name), size, params: {}, label: '历史图片', byteLength: bytes, mediaType: imageMetadata?.mediaType || (/\.jpe?g$/i.test(name) ? 'image/jpeg' : /\.webp$/i.test(name) ? 'image/webp' : 'image/png') })
             added++
           }
           if (added) logger.info?.('dsh-tavern-image: 从 cache 补回 ' + added + ' 张历史图片')
@@ -2155,7 +2170,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const keepComfySource = source.backend === 'comfyui' && jobConfig.imageBackend === 'comfyui'
       if (keepComfySource && source.workflowId?.startsWith('simple-')) throw Object.assign(new Error('该作业来自已停用的 ComfyUI 简易模式；原数据已保留，请导入完整 ComfyUI API workflow 后再重绘'), { submissionNotStarted: true, code: 'COMFY_SIMPLE_RETIRED' })
       const workflow = keepComfySource ? workflows.find(item => item.id === source.workflowId && !item.error) : null
-      if (keepComfySource && source.workflowId && !isSimpleSource && !workflow) {
+      if (keepComfySource && source.workflowId && !workflow) {
         throw Object.assign(new Error('原 ComfyUI 工作流已不存在；请在控制台选择其他渠道后重绘'), { submissionNotStarted: true })
       }
       let fresh
@@ -2469,8 +2484,18 @@ function createRuntime(ctx, overrides, logger, deps) {
       }))
     }
 
-    async function planMessage({ text, messageId, turn, textVersion, count, sessionId, manual, force, smartSelection, imageGeneration = true, characterUpdates = false, historySnapshot, signal, onPlan, reusePlan }) {
+    async function planMessage({ text, messageId, turn, textVersion, count, sessionId, manual, force, smartSelection, imageGeneration = true, characterUpdates = false, historySnapshot, signal, onPlan, reusePlan, instruction = '' }) {
       signal?.throwIfAborted()
+      if (typeof instruction !== 'string') throw new Error('instruction 必须是字符串')
+      instruction = instruction.trim()
+      if (instruction.length > 2000) throw new Error('instruction 不能超过 2000 个字符')
+      if (instruction) {
+        manual = true
+        force = true
+        smartSelection = false
+        characterUpdates = false
+        reusePlan = false
+      }
       if (config.plannerEnabled === false && !manual && !characterUpdates) throw new Error('生图规划没打开（控制台 → 高级设置）')
       if (!deps.llm) throw new Error('当前 DSH 没有 llm 服务，无法做生图规划')
       const fallback = await backgroundModel(sessionId)
@@ -2540,9 +2565,10 @@ function createRuntime(ctx, overrides, logger, deps) {
       const system = buildPlannerSystem({
         rules: plannerContext.staticRules, dynamicRules: plannerContext.dynamicRules,
         roster, rosterIndex: plannerContext.rosterIndex, count: want,
-        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped, { structured: plannerMode === 'structured' }) : ''].filter(Boolean).join('\n\n'),
+        extra: [config.plannerExtra, guidance, imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(scoped, { structured: plannerMode === 'structured' }) : '', instruction ? '【本次生图要求的作用范围】\n以下本次生图要求只约束本次的画面规划；它不是正文内容，不得据此改写正文、人物库、角色历史、插件配置或生图设置。' : ''].filter(Boolean).join('\n\n'),
         smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode,
       })
+      const plannerInput = instruction ? `${body}\n\n<本次生图要求>\n${instruction}\n</本次生图要求>` : body
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
       lastPlannerContext = {
         ...plannerContext.diagnostics, at: Date.now(), turn: Number(turn) || null,
@@ -2557,7 +2583,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         const T = diag.text
         diag.record(traceId, 'planner-input', { body: T(body), card: card?.name ?? null, historySnapshotTurn: historySnapshot?.turn ?? null, config: { promptMode: config.promptMode, traitMode: config.traitMode, negativeMode: config.negativeMode, injectWeight: config.injectWeight, weightMode: config.weightMode, imageBackend: config.imageBackend, defaultWorkflow: config.defaultWorkflow, imageSize: config.imageSize, sizes: config.sizes, activePromptPreset: config.activePromptPreset, artistPosition: config.artistPosition } })
         diag.record(traceId, 'planner-context', { diagnostics: plannerContext.diagnostics, scopedCharacterIds: scoped.characters.map(c => String(c.id ?? '')), roster: T(roster), rosterIndex: T(plannerContext.rosterIndex) })
-        diag.record(traceId, 'planner-request', { layer: 'llm.stream arguments (not provider HTTP body)', provider, model, reasoningEffort: plannerEffort ?? null, temperature: Number(config.plannerTemperature) || 1, maxTokens: 12000, system: T(system), user: T(body) })
+        diag.record(traceId, 'planner-request', { layer: 'llm.stream arguments (not provider HTTP body)', provider, model, reasoningEffort: plannerEffort ?? null, temperature: Number(config.plannerTemperature) || 1, maxTokens: 12000, system: T(system), user: T(plannerInput) })
       }
 
       const task = beginTask('规划', imageGeneration ? '正文配图 · 最多 ' + want + ' 张' : '角色视觉历史更新')
@@ -2687,7 +2713,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           model,
           reasoningEffort: plannerEffort,
           system,
-          text: body,
+          text: plannerInput,
           temperature: Number(config.plannerTemperature) || 1,
           signal: task.controller.signal,
           onDelta: delta => {
@@ -4963,7 +4989,10 @@ function createRuntime(ctx, overrides, logger, deps) {
       planMessage,
       currentConfig: () => config,
       // 手动配图：读这一轮的 textVersion 与正文，再交给官方桥 attach
-      attachTurn: async ({ gameId, turn }) => {
+      attachTurn: async ({ gameId, turn, instruction = '' }) => {
+        if (typeof instruction !== 'string') throw new Error('instruction 必须是字符串')
+        instruction = instruction.trim()
+        if (instruction.length > 2000) throw new Error('instruction 不能超过 2000 个字符')
         // 桥是异步装配的（要等 runtime 起来），用户手快时它可能还没就绪 —— 最多等 20 秒
         for (let waited = 0; !deps.bridge?.attachTurn && waited < 20000; waited += 200) {
           await new Promise(resolve => setTimeout(resolve, 200))
@@ -5020,7 +5049,8 @@ function createRuntime(ctx, overrides, logger, deps) {
         if (!settled) return { attached: 0, error: '读不到这一轮（可能还没结算完，或轮次号不对）' }
         // 手动这条路也把「哪张卡」记下来（和自动那条共用一个缓存）
         rememberTurn(gameId, turn, settled.card)
-        return deps.bridge.attachTurn({ gameId, turn, textVersion: settled.textVersion, text: settled.text, manual: !waited || config.plannerEnabled === false })
+        return deps.bridge.attachTurn({ gameId, turn, textVersion: settled.textVersion, text: settled.text,
+          manual: Boolean(instruction) || !waited || config.plannerEnabled === false, instruction })
       },
     }
   })()
@@ -5056,15 +5086,6 @@ async function writeJsonAtomic(path, value) {
 }
 
 function cacheRoot(config) { return join(ROOT, String(config.cacheDir || DEFAULTS.cacheDir)) }
-
-function imageMediaTypeFromBytes(bytes) {
-  if (!bytes || bytes.length < 4) return ''
-  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png'
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
-  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
-  if (bytes.length >= 6 && /^GIF8[79]a$/.test(bytes.toString('ascii', 0, 6))) return 'image/gif'
-  return ''
-}
 
 /** 按配置生成 ComfyUI 的鉴权头。 */
 function comfyHeaders(config) {
@@ -5112,6 +5133,36 @@ function activePresetParams(config) {
   const preset = presets.find(item => item && String(item.id) === id && item.enabled !== false)
   const params = preset?.params
   return params && typeof params === 'object' ? params : {}
+}
+
+/**
+ * tavern.imageProvider：Tavern 的素材包（立绘、头像、背景）用当前「在线服务」渠道出图。
+ * 不套画风预设与画师串：素材提示词由 Tavern 写好，参考图按顺序原样交给渠道。
+ */
+export function stageImageProvider(getConfig, generate = generateImage) {
+  const current = () => {
+    const config = getConfig()
+    if (config?.imageBackend === 'comfyui') return { config, reason: '素材生图暂不支持 ComfyUI；请在 配图 设置里切到「在线服务」渠道' }
+    let channel = null
+    try { channel = activeChannel(config) } catch {}
+    if (!channel) return { config, reason: '请先在 配图 设置里添加并选中一个生图渠道' }
+    return { config, channel }
+  }
+  return {
+    id: 'online', label: '配图',
+    status() {
+      const { channel, reason } = current()
+      if (!channel) return { ready: false, reason, maxReferences: 0 }
+      return { ready: true, model: channel.model || '', maxReferences: imageReferenceLimit(channel) }
+    },
+    async generate({ prompt, references = [], width, height, background, quality, signal } = {}) {
+      const { config, channel, reason } = current()
+      if (!channel) throw Object.assign(new Error(reason), { requestMayHaveSucceeded: false })
+      const result = await generate(structuredClone(channel), { positive: String(prompt || ''), references, width, height, exactSize: true, background, quality },
+        { signal, maxImageBytes: config.maxImageBytes })
+      return { data: result.bytes, mediaType: result.mediaType }
+    },
+  }
 }
 
 /** 生图渠道 + 当前画风预设的参数覆盖；预设没写的键保持渠道原值。 */

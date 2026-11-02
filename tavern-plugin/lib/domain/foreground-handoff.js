@@ -24,7 +24,7 @@ export function createForegroundHandoff(options = {}) {
     if (typeof turns.prepare !== 'function') throw new Error('Foreground Handoff 缺少 prepare adapter')
     // A save being reconciled (#196) finishes that first; both write the story.
     await options.waitReconcile?.(input.sessionId)
-    await options.cancelDirector?.(input.sessionId)
+    await options.cancelPresentation?.(input.sessionId)
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
@@ -77,13 +77,14 @@ export function createForegroundHandoff(options = {}) {
     return true
   }
 
-  async function recover(chatIds) {
+  // startedBefore: when this process started; work begun since then is live, not left over.
+  async function recover(chatIds, { startedBefore } = {}) {
     if (typeof store.readChat !== 'function' || typeof tasks.recover !== 'function') return
     for (const chatId of chatIds || []) {
       try {
         const chat = await (store.readState || store.readChat)(chatId)
         if (chat === undefined) continue
-        await tasks.recover(chat)
+        await tasks.recover(chat, startedBefore ? { startedBefore } : {})
       } catch (error) {
         logger.error('dsh-tavern: 恢复后台周期失败 ' + str(chatId), error && error.message || error)
       }

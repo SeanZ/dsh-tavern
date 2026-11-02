@@ -1,3 +1,4 @@
+import { stripBubbleCodeQuote } from '../../src/client/bubble-line.cjs'
 import { mayHaveLegacyTemplateDamage, repairLegacyTemplateDisplay } from './legacy-template-display-repair.js'
 import { projectDisplayParts } from './display-source.js'
 export { editableReplyParts, projectDisplayParts, hasHtmlCodeBlock, displayModeOf } from './display-source.js'
@@ -45,7 +46,7 @@ export function projectReplyLayers(value, options = {}) {
   // Some cards encode dialogue inside now_plot. Recover an omitted wrapper
   // only when that card's own active renderer recognizes the repaired text.
   // Never persist this display repair into model context or editable source.
-  if (/^\s*@bubble:/m.test(projectionText) && !/<\/?now_plot\b/i.test(projectionText)) {
+  if (projectionText.split('\n').some(line => /^\s*@bubble:/.test(stripBubbleCodeQuote(line))) && !/<\/?now_plot\b/i.test(projectionText)) {
     const candidates = scripts.filter(script =>
       str(script.findRegex).includes('<now_plot>') &&
       str(script.replaceString).includes('@bubble')
@@ -76,10 +77,6 @@ export function projectReplyLayers(value, options = {}) {
       .concat(display.warnings.map(function (warning) { return '展示：' + warning }))
       .concat(displayProjection.warnings)
   }
-}
-
-function isNativeMarkdownProjection(parts, sessionText) {
-  return Array.isArray(parts) && parts.length === 1 && parts[0]?.kind === 'markdown' && str(parts[0].text) === str(sessionText)
 }
 
 /** Strip markup for equality checks; comments and tags contribute no text. */
@@ -145,7 +142,6 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
   }
   function projectHistory(messages, options = {}, signature = signatureOf(options)) {
     const projections = []
-    const forcedTurns = new Set(options.forcedTurns || [])
     let inferredTurn = 1
     let latestSourceBacked = false
 
@@ -190,19 +186,16 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
       const projected = ordinaryDisplay
         ? projectCached(sourceText, templateDisplay.formattingText, { ...options, regexScripts: [] }, signatureOf({ ...options, regexScripts: [] }))
         : projectCached(sourceText, projectionText, options, signature)
-      const sessionText = str(message.text)
-      if (forcedTurns.has(turn) || message.bodyEdit || !isNativeMarkdownProjection(projected.displayParts, sessionText) || (Array.isArray(message.swipes) && message.swipes.length > 1)) {
-        // Copy only emitted projections; callers must never mutate cached parts.
-        copies++
-        projections.push({
-          version: 2,
-          turn,
-          text: projected.displayText,
-          mode: projected.displayMode,
-          parts: ordinaryDisplay ? annotateTemplateStatusParts(projected.displayParts, templateDisplay.html) : structuredClone(projected.displayParts),
-          warnings: [...projected.warnings]
-        })
-      }
+      // Copy emitted projections; callers must never mutate cached parts.
+      copies++
+      projections.push({
+        version: 2,
+        turn,
+        text: projected.displayText,
+        mode: projected.displayMode,
+        parts: ordinaryDisplay ? annotateTemplateStatusParts(projected.displayParts, templateDisplay.html) : structuredClone(projected.displayParts),
+        warnings: [...projected.warnings]
+      })
       latestSourceBacked = hasSource
     }
 

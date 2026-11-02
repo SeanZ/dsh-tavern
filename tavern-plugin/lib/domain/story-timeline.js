@@ -387,11 +387,15 @@ export function createStoryTimeline(options = {}) {
   }
 
   function recoverBackground(chat, intent = {}) {
+    // startedBefore (startup recovery): only work an earlier process left running is orphaned. History recovery runs
+    // after the service is ready, so a turn played meanwhile already has live work of this process.
+    const orphan = operation => !(Number(intent.startedBefore) > 0) || Number(operation.createdAt) < Number(intent.startedBefore)
     let interruptedRole = ''
     let changed = false
     for (const operation of Object.values(chat.timeline.operations)) {
       if (operation.kind !== 'agent' || (operation.status !== 'running'
         && !(intent.cancelDelivery === true && operation.role === 'settlement' && operation.status === 'deferred'))) continue
+      if (!orphan(operation)) continue
       const target = (chat.messages || []).findLast(message => message.role === 'assistant')
       const delivery = target?.mvu?.pending ? target.mvu.delivery : null
       const recoverable = intent.cancelDelivery !== true && operation.role === 'settlement' && delivery?.version === 1
@@ -415,7 +419,7 @@ export function createStoryTimeline(options = {}) {
       // effect. Both can resume without applying the same variable change twice.
       // Also repair chats already converted to pending by older recovery code.
       const orphaned = background.status === 'completed' &&
-        ['pending', 'running'].includes(background.background.phase) && latest?.status !== 'deferred'
+        ['pending', 'running'].includes(background.background.phase) && latest?.status !== 'deferred' && (!latest || orphan(latest))
       if (interruptedRole !== '' || orphaned) {
         background.background = { phase: 'failed', role: 'settlement', reason: 'interrupted', updatedAt: now() }
         changed = true
@@ -526,6 +530,8 @@ export function createStoryTimeline(options = {}) {
       // 编辑正文不重算变量；已有的未重算标记须保留，直到结算成功或该轮被替换。
       // An edit is a new scene; only 自动精修 keeps the original one (body.polish).
       delete chat.messages[index].polishedFrom
+      // A plain edit is no longer the 精修's text; a manual 精修 (also a body.edit) sets it again.
+      if (intent.patch?.polished !== true) delete chat.messages[index].polished
       chat.timeline.revision++
       // Editing keeps the same committed round, but its next settlement must
       // bind to the edited revision. Old in-flight work still fails basedOn.

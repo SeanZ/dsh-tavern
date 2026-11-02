@@ -14,7 +14,7 @@ function setup(t){
   Object.assign(globalThis,{window:win,document:win.document,IS_REACT_ACT_ENVIRONMENT:true})
   let descriptor
   win.__ModuleLoader__={load(value){descriptor=value}}
-  vm.runInContext(source,vm.createContext({window:win,document:win.document,navigator:win.navigator,performance,console,setTimeout,clearTimeout,AbortController}))
+  vm.runInContext(source,vm.createContext({ location: win.location, URL, Blob, fetch, window:win,document:win.document,navigator:win.navigator,performance,console,setTimeout,clearTimeout,AbortController}))
   const calls=[]
   const ui={MarkdownText:props=>{calls.push(props.text);return React.createElement('p',{'data-markdown':''},props.text)}}
   const client=descriptor.factory(name=>name==='react'?React:name==='@deepseek-ai/dsh-client-ui-primitives'?ui:{})

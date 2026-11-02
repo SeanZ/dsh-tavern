@@ -226,3 +226,13 @@
 - insert:
     - id: dsh-tavern-remote
       name: ./tavern-plugin/packages/dsh-tavern-remote/lib/index.js
+
+- insert:
+    - id: dsh-asset-library
+      name: ./tavern-plugin/packages/dsh-asset-library/lib/index.js
+      config:
+        assetRoot: !!js dshHomePath('profile-data', 'tavern', 'asset-packs')
+
+- insert:
+    - id: dsh-tavern-stage
+      name: ./tavern-plugin/packages/dsh-tavern-stage/lib/index.js

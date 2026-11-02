@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import vm from 'node:vm'
+import vm from './fixtures/client-vm.mjs'
 
 // Fork contract C5: the tavernStory browser service forwards to the existing RPCs.
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
@@ -222,7 +222,7 @@ test('侧栏 floor 分叉走 prepareFloorFork → 宿主 fork → forkFloor，�
   assert.match(sidebar, /floor\n\t+\? await call\("prepareFloorFork", \{ sessionId: item\.sessionId, turn: Number\(turn\) \|\| 0 \}\)/)
   assert.match(sidebar, /await call\(floor \? "forkFloor" : "forkChat", \{/)
   assert.match(sidebar, /if \(floor\) throw err;/)
-  assert.match(sidebar, /forkConversation\(item, title, request\.turn, request\.floor === true\)/)
+  assert.match(sidebar, /forkConversation\(item, historyTitle\(item, summaries\[item\.sessionId\]\), request\.turn, request\.floor === true\)/)
 })
 
 test('subscribeRounds 的 open.liveText 拼接运行中回合的流式正文，节流回调，落定后换成楼层', async () => {

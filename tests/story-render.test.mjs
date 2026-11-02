@@ -18,7 +18,7 @@ function setup(t, { retained = false } = {}) {
   win.__ModuleLoader__ = { load(value) { descriptor = value } }
   const fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: 'not in test' }) })
   win.fetch = fetch
-  const context = vm.createContext({ window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, CustomEvent: win.CustomEvent })
+  const context = vm.createContext({ TextEncoder, location: win.location, URL, Blob, window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, CustomEvent: win.CustomEvent })
   vm.runInContext(source, context)
   const ui = { MarkdownText: props => React.createElement('p', { className: 'markdown' }, props.text) }
   const client = descriptor.factory(name => name === 'react' ? React : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})

@@ -171,7 +171,7 @@ export function createPlayHandlers(deps) {
         edits = [...review.edits, ...followed.edits]
       }
       if (!chosen.length && !guided.length) return { edits, guidance: '', view: null }
-      const view = await bodyEditor.save(sessionId, { token: edit.token, texts: polished })
+      const view = await bodyEditor.save(sessionId, { token: edit.token, texts: polished }, { polished: true })
       polishPrereview.settle(sessionId, polished)
       notifyPluginTimeline(sessionId, 'edit', { settled: true })
       // The record backs the 精修对比 page and its undo; one that cannot be kept never fails the 精修.
@@ -184,7 +184,8 @@ export function createPlayHandlers(deps) {
       return { progress: polishReviewer.progress(str(args?.sessionId)) }
     },
     async polishComparison(args) {
-      return { comparison: await polishRecords.latest(str(args?.sessionId)), prereview: (await readTavernSettings()).polishPrereview === true }
+      const settings = await readTavernSettings()
+      return { comparison: await polishRecords.latest(str(args?.sessionId)), prereview: settings.polishPrereview === true, polishModel: settings.polishModel || null }
     },
     // Undo the latest 精修, from the 精修对比 page: only while its turn still shows the polished text.
     async undoPolish(args) {
@@ -263,9 +264,10 @@ export function createPlayHandlers(deps) {
       return { progress: backgroundAgentRunner.progress(args && args.sessionId) || pluginSettlementProgress.snapshot(args && args.sessionId) }
     },
     async getBackgroundRuns(args) {
-      const names = Object.fromEntries(BACKGROUND_TASK_CATALOG.map(item => [item.task, item.name]))
+      const registered = workflow?.catalog?.() || BACKGROUND_TASK_CATALOG
+      const names = Object.fromEntries(registered.map(item => [item.task, item.name]))
       const runs = backgroundAgentRunner.runs(args && args.sessionId).map(run => ({ ...run, name: names[run.task] || run.task }))
-      const catalog = describeTasks([...BACKGROUND_TASK_CATALOG, ...(pluginApi?.taskCatalog?.() || [])], workflow?.table() || [], event => STORY_EVENTS[event] || event)
+      const catalog = describeTasks([...registered, ...(pluginApi?.taskCatalog?.() || [])], workflow?.table() || [], event => STORY_EVENTS[event] || event)
       const moments = storyEvents?.history(args && args.sessionId) || []
       const turns = buildRunTree({ moments, jobRuns: workflow?.runs(args && args.sessionId) || [], runs, catalog })
       return { runs, turns, catalog, members: listMembers(), moments, locks: backgroundAgentRunner.locks(args && args.sessionId) }
@@ -278,6 +280,34 @@ export function createPlayHandlers(deps) {
     },
     async retryMvuSettlement(args) {
       return { view: await retrySettlement(args && args.sessionId, args && args.turn, args && args.guidance) }
+    },
+    async interruptTurn(args, method, serverTemplate, authority) {
+      const { chatForSession, interruptTurn, notifyPluginTimeline, pluginApi, reconcileStory, storyEvents } = deps
+        await reconcileStory(args && args.sessionId)
+        const view = await interruptTurn(args && args.sessionId, args && args.chatId)
+        // The stopped reply's staging goes with it: a withdrawn turn's director (and its plugin tasks) would only be
+        // discarded as stale; a body that committed first keeps its text and is read with heuristic staging. MVU
+        // settlement and the choices are left alone (the committed round's state; the choices have their own 停止).
+        const stopped = await chatForSession(args && args.sessionId)
+        if (stopped) {
+          // Only the stopped turn's work (its latest body) follows it, e.g. the stage director; the previous turn's
+          // choices and 精修 keep running.
+          const turn = Object.values(stopped.timeline?.operations || {}).findLast(op => op?.kind === 'body')?.turn
+          storyEvents.emit('turn-interrupted', { sessionId: stopped.sessionId, turn, withdrawn: view.withdrawn === true })
+          if (view.withdrawn) pluginApi.stopTasks(stopped.sessionId)
+        }
+        if (view.withdrawn) notifyPluginTimeline(args && args.sessionId, 'rollback', { turn: null })
+        return { view }
+    },
+    async stopChoices(args, method, serverTemplate, authority) {
+      const { backgroundAgentRunner, backgroundTasks, candidateTasks, autoChoices, str } = deps
+        autoChoices.cancel(args && args.sessionId)
+        const stopped = await candidateTasks.cancel({ sessionId: args && args.sessionId, taskId: args && args.taskId })
+        if (stopped.operationId) {
+          backgroundAgentRunner.cancel(str(args && args.sessionId), { task: 'candidate' })
+          await backgroundTasks.recover({ id: stopped.chatId }, { operationId: stopped.operationId })
+        }
+        return { sync: stopped.sync }
     },
   }
 }

@@ -6,7 +6,8 @@ function TavernLedger(props) {
   const ledger = props.ledger || { items: [], npcs: [], scenes: [], itemLog: [], locationPath: [], updatedTurn: null };
   const [open, setOpen] = React.useState(false);
   const task = props.ledgerTask || { status: "idle", consolidatedTurn: 0, pendingRounds: 0 };
-  const consolidating = task.status === "running";
+  const queued = task.status === "queued";
+  const consolidating = task.status === "running" || queued;
   const [tab, setTab] = React.useState("items");
   const [editing, setEditing] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -24,7 +25,9 @@ function TavernLedger(props) {
     catch (e) { setError(String(e.message || e)); }
     finally { setBusy(false); }
   }
-  const progress = consolidating ? "正在更新第 " + (task.from + 1) + "–" + task.through + " 轮…"
+  // A busy 书记 queues the update instead of refusing it.
+  const progress = queued ? "排队中：书记忙完手上的事就更新第 " + (task.from + 1) + "–" + task.through + " 轮。"
+    : consolidating ? "正在更新第 " + (task.from + 1) + "–" + task.through + " 轮…"
     : (task.consolidatedTurn ? "已更新至第 " + task.consolidatedTurn + " 轮" : "尚未更新") + (task.pendingRounds ? "，还有 " + task.pendingRounds + " 轮未更新。" : "，已是最新。");
   const labels = { name: "名称", qty: "数量", desc: "描述", carried: "随身携带", location: "所在地", gender: "性别", age: "年龄", title: "身份", relation: "与玩家的关系", ties: "与其他角色的关系", personality: "性格", outfit: "当前穿着", condition: "当前状态", important: "主要角色", follow: "随行", path: "地点路径（用 / 分隔）" };
   const fields = { items: ["name", "qty", "desc", "carried", "location"], npcs: ["name", "title", "relation", "ties", "gender", "age", "desc", "personality", "outfit", "condition", "important", "follow", "location"], scenes: ["path", "desc"] };
@@ -105,7 +108,7 @@ function TavernLedger(props) {
     // The update button stays reachable while the notebook is collapsed.
     h("div", { className: "dsh-tavern-character-design-head" },
       h("button", { type: "button", className: "dsh-ledger-toggle", "aria-expanded": open, onClick: () => setOpen(!open) }, "游玩台账", h("span", null, open ? "收起" : "查看")),
-      h("button", { type: "button", className: "dsh-tavern-btn", disabled: blocked || !task.pendingRounds, onClick: consolidate }, consolidating ? "更新中…" : "更新游玩台账")),
+      h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || props.foregroundRunning || consolidating || !task.pendingRounds, onClick: consolidate }, queued ? "排队中…" : consolidating ? "更新中…" : "更新游玩台账")),
     h("p", { className: "dsh-tavern-status-empty", role: "status" }, progress),
     task.status === "failed" && task.error ? h("div", { className: "dsh-card-error", role: "alert" }, task.error) : null,
     open ? h("div", null,
@@ -122,7 +125,7 @@ function TavernLedger(props) {
           return h("label", { key: key }, labels[key], h("input", { type: bool ? "checkbox" : key === "qty" ? "number" : "text", min: key === "qty" ? 0 : undefined, disabled: blocked, ...(bool ? { checked: editing.draft[key] } : { value: editing.draft[key] }), onChange: e => setEditing({ ...editing, draft: { ...editing.draft, [key]: bool ? e.target.checked : e.target.value } }) }));
         }),
         h("div", { className: "dsh-ledger-actions" }, h("button", { type: "submit", disabled: blocked }, busy ? "保存中…" : "保存"), h("button", { type: "button", disabled: busy, onClick: () => setEditing(null) }, "取消"))) : null,
-      !ledger[tab].length ? h("p", { className: "dsh-tavern-status-empty" }, "尚无记录") : tab === "scenes" ? sceneTree([]) : tab === "npcs" ? ["主要角色", "在场", "同区域", "不在场"].map(function (group) {
+      !ledger[tab].length ? h(EmptyState, { compact: true, text: "还没有记录" }) : tab === "scenes" ? sceneTree([]) : tab === "npcs" ? ["主要角色", "在场", "同区域", "不在场"].map(function (group) {
         const rows = ledger.npcs.filter(n => npcGroup(n) === group);
         return rows.length ? h("div", { key: group }, h("h4", null, group), rows.map(r => card(r, group))) : null;
       }) : ledger.items.map(r => card(r)),

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import vm from 'node:vm'
+import vm from './fixtures/client-vm.mjs'
 import { deferred } from './fixtures/sync-clock.mjs'
 const source = fs.readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 function harness() {
@@ -11,11 +11,13 @@ function harness() {
     performanceRequests: [], performanceActiveRequests: 0, historyFromSessions: new Map(), rememberHistoryWindow() {},
     tavernRuntimeGenerationMonitor: { observe(value) { generations.push(value) } },
     readTavernJsonResponse: response => response.json(),
+    // The startup trace only records; rpc() also consults its per-key counts.
+    roundLoadCounts: new Map(), roundLoadTrace: { mark() {} },
     expandTavernOpeningWindow: view => view,
     fetch(url, request) { const task = deferred(); reads.push({ ...task, url, request,
       reply(value, status = 200) { task.resolve({ status, json: async () => value }) } }); return task.promise }
   })
-  const modules = ['../tavern-plugin/lib/domain/indexed-array.js', '../tavern-plugin/src/client/modules/session-view-sync.js']
+  const modules = ['../tavern-plugin/lib/domain/indexed-array.js', '../tavern-plugin/src/client/modules/session-view-sync.js', '../tavern-plugin/src/client/rpc-transport.cjs']
   vm.runInContext(modules.map(path => fs.readFileSync(new URL(path, import.meta.url), 'utf8').replace(/^export .*$/gm, '')).join('\n') + '\nconst beginSessionViewRead = createSessionViewReader(1);', scope)
   // Take exactly rpc(): from its declaration to its own closing brace, independent of neighbours.
   const start = source.indexOf('\t\tfunction rpc(method,')

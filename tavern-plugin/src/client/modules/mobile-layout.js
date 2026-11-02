@@ -14,6 +14,8 @@ function installVisualViewportPin(doc) {
     const properties = ["--dsh-vv-top", "--dsh-vv-height", "--dsh-composer-offset", "--dsh-sheet-max", "--dsh-header-bottom", "--dsh-composer-left", "--dsh-composer-width"];
     const previous = properties.map(name => [name, html.style.getPropertyValue(name), html.style.getPropertyPriority(name)]);
     let frame = 0, disposed = false, seat = null, header = null;
+    // classList.add/remove rewrite the class attribute even when nothing changes; that no-op mutation
+    // re-ran document-wide observers (surface styles, quote colours) on every focus change.
     const observer = typeof view.ResizeObserver === "function" ? new view.ResizeObserver(schedule) : null;
     function setPx(name, value) {
         const next = Math.max(0, Math.round(value)) + "px";
@@ -38,7 +40,7 @@ function installVisualViewportPin(doc) {
     }
     // classList.add/remove 状态不变也会重写 class 属性，惊动观察根节点 class 的主题/配色观察器；
     // toggle 带 force 只在状态变化时写入。
-    function setClass(name, on) { html.classList.toggle(name, on); }
+    function setClass(name, on) { if (html.classList.contains(name) !== on) html.classList.toggle(name, on); }
     function sync() {
         frame = 0;
         if (disposed) return;

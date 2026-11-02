@@ -38,13 +38,6 @@ function definitions(deps) {
       reads: '结算后的变量、最近剧情', writes: '候选项（对应当前这条回复）',
       manual: ['点「生成候选项」', '开启自动生成时，回合结束后自动提交'],
       needs: ['settlement'], lock: true },
-    { key: 'stage-director', name: '舞台导演',
-      does: '舞台模式下为正文安排演出：立绘、表情、BGM、音效、环境音、物品。每轮最多两次：边写边导开头，写完再导剩下的。',
-      reads: '本轮正文（边写边读）、卡里的演出素材', writes: '本轮舞台记录（按回合）',
-      on: 'reply-committed', condition: '开启对话气泡与舞台模式时',
-      enabled: ({ gameId }) => deps.stageOn(gameId), run: ({ gameId }) => deps.directRound(gameId),
-      cancelOn: 'turn-discarded', cancel: ({ gameId, turn }) => deps.cancelDirector(gameId, turn),
-      manual: ['正文生成过程中，先导开头几行'], note: '不等结算；下一轮开始时也会取消' },
     // The review reads the reply as written; settlement never waits for it. One start: a
     // regenerated reply is 正文写完 again, and starting twice for the same text is a no-op.
     { key: 'polish', name: '正文精修', member: 'polish',
@@ -61,10 +54,6 @@ function definitions(deps) {
       does: '为指定人物写人物档案，发布到这局的人物世界书。',
       reads: '人物世界书、最近剧情', writes: '人物档案、人物世界书；下一轮开始前同步进前台',
       manual: ['点「设计人物」'], idleForeground: true, lock: true },
-    { key: 'phone', name: '手机',
-      does: '扮演卡里的联系人，在手机聊天里回消息。',
-      reads: '最近 3 段正文、这条聊天记录', writes: '手机聊天记录',
-      manual: ['在手机里发消息'] },
     { key: 'plugin', name: '插件任务',
       does: '插件发起的一次性后台任务，提示词和工具由插件提供。',
       reads: '插件给的提示词与工具', writes: '插件数据（按回合）、插件变量',
@@ -73,9 +62,9 @@ function definitions(deps) {
       wait: chat => deps.settlementRun.pluginTaskJob(chat.id) },
 
     // Upkeep: no background Agent.
-    // Its dialogue bubbles came with the text.
-    { key: 'cast-bubbles', name: '台词气泡', agent: false, on: 'reply-committed', condition: '开启对话气泡时',
-      enabled: settingOn(deps, 'castPresentation'), run: ({ gameId }) => deps.castPresentation.announce(gameId) },
+    // Its dialogue bubbles came with the text; plugins read them with the settled turn.
+    { key: 'cast-bubbles', name: '台词气泡', agent: false, on: 'turn-settled', condition: '开启对话气泡时',
+      run: ({ gameId }) => deps.announceCast(gameId) },
     { key: 'game-title', name: '对局标题', agent: false, on: 'turn-settled',
       run: ({ gameId, latest }) => deps.gameTitles.afterTurn(gameId, latest.cardName) },
     { key: 'save-maintenance', name: '存档整理', agent: false, on: 'turn-settled',

@@ -1,3 +1,4 @@
+import {setupStageMedia,installStageAudioProbe} from './stage-media-fault.mjs'
 import { setupRealGameplay, realGameplayChecks } from './real-gameplay.mjs'
 import { refactorLifecycleChecks } from './refactor-lifecycle.mjs'
 import { installV3SaveFixture } from './session-upgrade-fixture.mjs'
@@ -38,7 +39,7 @@ import { compactionChecks } from './compaction.mjs'
 import assert from 'node:assert/strict'
 import { presetSwitch } from './preset-switch.mjs'
 import { playControls } from './play-controls.mjs'
-import { mkdtemp, mkdir, writeFile, readFile, symlink, rm, readdir, cp, access } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, symlink, rm, readdir, cp, access, realpath } from 'node:fs/promises'
 import { join, resolve, dirname } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -54,9 +55,24 @@ const helperApiScenario = process.argv.includes('--helper-api')
 // Story body submitted through the submit_story tool (global input/output switches, off by default).
 const storyToolScenario = process.argv.includes('--story-tool')
 // Dialogue avatars: settlement annotates speakers, quoted lines show as speaker rows.
-const castScenario = process.argv.includes('--cast')
+const stageDirectorFault=process.argv.includes('--stage-director-fault')
+const stageAudioFault = process.argv.includes('--stage-audio-fault')
+const stageAudioLifecycle = stageAudioFault || process.argv.includes('--stage-audio-lifecycle')
+const stageMediaFault = process.argv.includes('--stage-media-fault')
+const stageUserSwitch = process.argv.includes('--stage-user-switch')
+const stageRpcFault = process.argv.includes('--stage-rpc-fault')
+const stageSwitchOnly = process.argv.includes('--stage-session-switch')
+const stageRenderFault = stageSwitchOnly || process.argv.includes('--stage-render-fault')
+const stageAutomaticLifecycle = process.argv.includes('--stage-auto-lifecycle')
+const stageServerLifecycle = stageAutomaticLifecycle || process.argv.includes('--stage-server-lifecycle')
+const stageLifecycle = stageServerLifecycle || process.argv.includes('--stage-lifecycle')
+const stageIsolation = process.argv.find(arg=>arg.startsWith('--stage-isolation='))?.split('=')[1]
+if(stageIsolation && !['absent','activation'].includes(stageIsolation)) throw Error('Unknown stage isolation scenario')
+const stagePluginScenario = stageDirectorFault || stageAudioLifecycle || stageMediaFault || stageUserSwitch || stageRpcFault || stageRenderFault || stageLifecycle || !!stageIsolation || process.argv.includes('--stage-plugin')
+const castScenario = stagePluginScenario || process.argv.includes('--cast')
 const compactionScenario = process.argv.find(arg => arg.startsWith('--compaction='))?.split('=')[1]
 const source = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const applicationSource = resolve(process.env.TAVERN_E2E_APPLICATION_SOURCE || source)
 const runtime = resolve(process.env.TAVERN_E2E_RUNTIME || join(homedir(), '.dsh-tavern/runtime'))
 const modules = join(runtime, 'lib/node_modules')
 const cli = join(modules, '@deepseek-ai/dsh/lib/bin.js')
@@ -87,6 +103,7 @@ async function savedChat() {
   const store = createChatJournalStore({ dataRoot: data })
   const chats = await Promise.all(ids.map(id => store.read(id)))
   const games = chats.filter(chat => chat.mode !== 'card')
+  if(stageRenderFault && report.beforeReload) return games.find(chat=>chat.id===report.beforeReload.chatId)
   assert.equal(games.length, 1, '本次只应创建一局游戏')
   return games[0]
 }
@@ -134,7 +151,7 @@ async function inspectRound(name, gold, text, rounds = 2) {
   await page.screenshot({ path: join(output, name + '.png'), fullPage: true })
 }
 async function openStatus() {
-  await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).first().click()
+  await page.getByRole('tab', { name: /酒馆状态/ }).filter({ visible: true }).first().click()
 }
 async function inspectScreen() {
   await page.locator('.dsh-tavern-user-bubble').filter({ hasText: '领取任务奖励' }).first().waitFor({ state: 'visible' })
@@ -145,6 +162,7 @@ async function inspectScreen() {
     .locator('#e2e-gold').filter({ hasText: /^金币：10$/ }).waitFor()
 }
 try {
+  scenario: {
   await step('准备独立运行环境', async () => {
     if (compactionScenario) {
       await mkdir(data, { recursive: true })
@@ -155,33 +173,56 @@ try {
       await mkdir(data,{recursive:true})
       await writeFile(join(data,'tavern-extension-settings.json'),JSON.stringify({EjsTemplate:{enabled:true,render_enabled:true,raw_message_evaluation_enabled:false,preload_worldinfo_enabled:false,code_blocks_enabled:true}}))
     }
+    if(stageMediaFault||stageAudioLifecycle||stageDirectorFault)report.stageMedia=await setupStageMedia(root,{audio:stageAudioLifecycle,director:stageDirectorFault})
+    if(stageDirectorFault)await writeFile(join(output,'director-control.json'),JSON.stringify({mode:'fail'}))
     await access(cli).catch(() => { throw Error('找不到 DSH runtime；先安装酒馆，或设置 TAVERN_E2E_RUNTIME。') })
+    report.applicationSource=applicationSource
     report.runtimeVersion = JSON.parse(await readFile(join(modules, '@deepseek-ai/dsh/package.json'), 'utf8')).version
     await mkdir(join(profile, 'node_modules'), { recursive: true })
     for (const [name, target] of Object.entries({
       // An older plugin build can produce a save its bugs damaged; the scenario then switches to this one.
-      'dsh-tavern-plugin': process.env.TAVERN_E2E_PLUGIN_SOURCE || join(source, 'tavern-plugin'),
-      'dsh-tavern-remote': join(source, 'tavern-plugin/packages/dsh-tavern-remote'),
+      'dsh-tavern-plugin': process.env.TAVERN_E2E_PLUGIN_SOURCE || join(applicationSource, 'tavern-plugin'),
+      'dsh-tavern-stage': join(applicationSource, 'tavern-plugin/packages/dsh-tavern-stage'),
+      'dsh-tavern-remote': join(applicationSource, 'tavern-plugin/packages/dsh-tavern-remote'),
       'dsh-web-mobile': join(source, 'node_modules/dsh-web-mobile')
-    })) await symlink(target, join(profile, 'node_modules', name))
+    })) if (!(stageIsolation === 'absent' && name === 'dsh-tavern-stage')) await symlink(target, join(profile, 'node_modules', name))
     // This package resolves DSH imports relative to its directory, so give it
     // the isolated profile's runtime scope rather than the development scope.
     const sidebar = process.env.TAVERN_E2E_SIDEBAR || join(source, 'node_modules/dsh-better-sidebar')
     const sidebarVersion = JSON.parse(await readFile(join(sidebar, 'package.json'), 'utf8')).version
-    const expectedSidebar = JSON.parse(await readFile(join(source, 'package.json'), 'utf8')).devDependencies['dsh-better-sidebar']
+    const expectedSidebar = JSON.parse(await readFile(join(applicationSource, 'package.json'), 'utf8')).devDependencies['dsh-better-sidebar']
     if (!process.env.TAVERN_E2E_SIDEBAR) assert.equal(sidebarVersion, expectedSidebar, '侧栏依赖与仓库锁定版本不一致；安装锁定依赖或用 TAVERN_E2E_SIDEBAR 指向独立测试包')
     report.sidebarVersion = sidebarVersion
     await cp(sidebar, join(profile, 'node_modules/dsh-better-sidebar'), { recursive: true, dereference: true })
     await symlink(join(modules, '@deepseek-ai'), join(profile, 'node_modules/@deepseek-ai'))
+    const applicationPackage=JSON.parse(await readFile(join(applicationSource,'package.json'),'utf8'))
     for (const name of await readdir(join(source, 'node_modules'))) {
-      if (name.startsWith('.') || ['@deepseek-ai', 'dsh-tavern-plugin', 'dsh-tavern-remote', 'dsh-web-mobile', 'dsh-better-sidebar'].includes(name)) continue
-      await symlink(join(source, 'node_modules', name), join(profile, 'node_modules', name))
+      if (name.startsWith('.') || ['@deepseek-ai', 'dsh-tavern-plugin', 'dsh-tavern-stage', 'dsh-tavern-remote', 'dsh-web-mobile', 'dsh-better-sidebar'].includes(name)) continue
+      const local=applicationPackage.devDependencies?.[name]
+      const target=typeof local==='string'&&local.startsWith('link:') ? resolve(applicationSource,local.slice(5)) : join(source,'node_modules',name)
+      await symlink(target, join(profile, 'node_modules', name))
+    }
+    if(applicationSource!==source) {
+      report.packagedBundles={}
+      for(const [name,value] of Object.entries(applicationPackage.devDependencies||{})) {
+        if(typeof value!=='string'||!value.startsWith('link:')||(stageIsolation==='absent'&&name==='dsh-tavern-stage'))continue
+        const actual=await realpath(join(profile,'node_modules',name))
+        assert.equal(actual,await realpath(resolve(applicationSource,value.slice(5))),name+' must load from the delivery directory')
+        report.packagedBundles[name]=actual
+      }
     }
     await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'tavern-e2e', private: true,
-      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-web-mobile', 'dsh-better-sidebar', 'dsh-tavern-plugin', 'dsh-tavern-remote'] } } }))
+      dsh: { profile: { bundles: applicationPackage.dsh.profile.bundles.filter(name=>stageIsolation !== 'absent' || name !== 'dsh-tavern-stage') } } }))
     // The stage scenario runs with the sidebar a real install gets (no Tasks tab), as players see it.
     if (castScenario) await writeFile(join(root, 'settings.yaml'), stringifyYaml(applySidebarDefaults({})))
     await writeFile(join(profile, 'cordis.patch.yml'), `- id: agent-default-model\n  config:\n    provider: tavern-e2e\n    model: fixed\n- insert:\n    - id: tavern-e2e-model\n      name: ${JSON.stringify(join(source, 'tests/e2e/model.mjs'))}\n`)
+    if(stageServerLifecycle) {
+      const patch=join(profile,'cordis.patch.yml')
+      await writeFile(patch,(await readFile(patch,'utf8'))+`- insert:
+    - id: stage-lifecycle-test
+      name: ${JSON.stringify(join(source,'tests/e2e/stage-lifecycle-host.mjs'))}
+`)
+    }
     await mkdir(join(data, 'resources/presets'), { recursive: true })
     for (const key of ['A', 'B']) await writeFile(join(data, `resources/presets/E2E-${key}.json`), JSON.stringify({
       prompts: [{ identifier: 'main', name: `E2E ${key}`, role: 'system', content: `E2E_PRESET_${key}_ACTIVE`, enabled: true }],
@@ -219,6 +260,8 @@ try {
       const env = Object.fromEntries(['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT'].filter(key => process.env[key]).map(key => [key, process.env[key]]))
       child = spawn(process.execPath, [...(process.argv.includes('--settlement-performance') ? ['--import', join(source, 'tests/e2e/settlement-perf-register.mjs')] : []), cli, '--profile', 'tavern', '--host', '127.0.0.1', '--port', '0', '--no-open'], {
         cwd: source, env: { ...env, DSH_HOME: root, DSH_CWD: root,
+          TAVERN_E2E_DIRECTOR_DIR:stageDirectorFault?output:'',
+          TAVERN_E2E_STAGE_CONTROL: stageServerLifecycle ? output : '',
           TAVERN_E2E_COMPACTION_DIR: compactionScenario ? output : '',
           TAVERN_E2E_RECOVERY_DIR: recoveryScenario ? output : '',
           TAVERN_E2E_PERFORMANCE_DIR: process.argv.includes('--settlement-performance') || process.argv.includes('--storage-audit') ? output : '',
@@ -280,11 +323,29 @@ try {
       await openStatus()
       return {bootMs,openStarted,openSessionStarted}
     }
-    browser = await chromium.launch({ headless: true })
+    browser = await chromium.launch({ headless: true, ...(stagePluginScenario ? {args:['--use-angle=swiftshader', '--enable-unsafe-swiftshader']} : {}) })
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: process.env.TAVERN_E2E_LOCALE || 'en-US', ...(recoveryScenario ? { hasTouch: true } : {}) })
     context.setDefaultTimeout(timeout)
     if (!process.argv.includes('--settlement-performance')) await context.tracing.start({ screenshots: true, snapshots: true, sources: true })
+    if(stageAudioLifecycle)await context.addInitScript(installStageAudioProbe)
     page = await context.newPage()
+    if(stageRenderFault || stageLifecycle || stageIsolation === 'activation') await page.route('**/plugins/**',async route=>{
+      if(!route.request().url().includes('client.js')) return route.continue()
+      const response=await route.fetch(),body=await response.text()
+      if(stageLifecycle && body.includes("const host = ctx.get('tavernStageFrontend');")) {
+        return route.fulfill({response,body:body.replace("return ({\n        name: 'dsh-tavern-stage'","return (window.__stageLifecyclePlugin={\n        name: 'dsh-tavern-stage'").replace("const host = ctx.get('tavernStageFrontend');",`window.__stageLifecycleTest={disable:()=>ctx.fiber.dispose(),enable:async()=>{const fiber=ctx.fiber.parent.plugin(window.__stageLifecyclePlugin);await fiber.await();}}; const host = ctx.get('tavernStageFrontend');`)})
+      }
+      if(stageRenderFault) {
+        const marker='function GalStage(props) {'
+        if(body.includes(marker))report.renderFaultInstalled=true
+        return route.fulfill({response,body:body.replace(marker,marker+"if(window.__stageRenderFault)throw new Error('E2E stage render failure');")})
+      }
+      const marker='activeViews.sessions.start(host.sessionInputs());'
+      if(body.includes(marker)) {
+        report.injectedActivationFailure=true
+        await route.fulfill({response,body:body.replace(marker,"throw new Error('E2E stage activation failure');")})
+      } else await route.fulfill({response})
+    })
     if(process.argv.includes('--history-demand')) {
       await page.addInitScript(()=>{
         const open=XMLHttpRequest.prototype.open;let captured=0;
@@ -295,10 +356,12 @@ try {
       });
       page.on('console',message=>{if(message.text().startsWith('[history-read-stack]'))log+=message.text()+'\n'});
     }
-    page.on('pageerror', error => { errors.push(error.message); if (process.env.E2E_ERROR_STACK) console.log('[pageerror]', error.stack) })
+    page.on('pageerror', error => { if(stageRenderFault && error.message==='E2E stage render failure'){report.renderFaultObserved=true;return} errors.push(error.message); if (process.env.E2E_ERROR_STACK) console.log('[pageerror]', error.stack) })
     // Slot error boundaries catch React failures, so pageerror alone misses them.
     page.on('console', message => {
-      if (message.type() === 'error' && /slot entry crashed|Minified React error/.test(message.text())) errors.push(message.text())
+      if(stageRenderFault && message.type()==='error' && message.text().includes('E2E stage render failure')){report.renderFaultObserved=true;return}
+      if(stageIsolation === 'activation' && message.text().includes('[dsh-tavern-stage] activation failed') && message.text().includes('E2E stage activation failure')) {report.activationFailureObserved=true;return}
+      if (message.type() === 'error' && /slot entry crashed|Minified React error|activation failed|ReferenceError:/.test(message.text())) errors.push(message.text())
     })
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     await page.getByRole('button', { name: 'Continue', exact: true }).click()
@@ -515,17 +578,26 @@ try {
     for (const [name, value] of Object.entries(patch)) assert.equal(result.settings?.[name], value, JSON.stringify(result))
     return result
   }
+  // 对话气泡 / 舞台模式 are the card's own (stage.dialogue / stage.stage): turn them on for the fixture card the way
+  // 舞台设置 › 基础设置 does.
+  const setCardStage = async stage => page.evaluate(async ({stage,packId}) => {
+    const rpc = async (method, args) => (await fetch('/api/dsh-tavern/' + method, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) })).json()
+    const card = await rpc('getCardAssetBindings', { path: 'cards/e2e.json' })
+    const extension = card.extension || { assetBindings: { boundPackIds: [] } }
+    const saved = await rpc('saveCardAssetBindings', { path: 'cards/e2e.json', expectedRevision: card.revision,
+      patch: { assetBindings: packId ? {...extension.assetBindings,boundPackIds:[packId]} : extension.assetBindings, stage: { ...(extension.stage || {}), ...stage } } })
+    if (saved.ok === false) throw new Error(saved.error)
+  }, {stage,packId:report.stageMedia?.packId})
   if (storyToolScenario) await step('开启输入与输出走工具调用', async () => {
     const chatUrl = page.url()
     await setTavernSettings({ storyInputToolCall: true, storyOutputToolCall: true })
-    // 舞台模式 is global and needs 对话气泡 (舞台设置 › 基础设置).
-    await setTavernSettings({ castPresentation: true, stageToggles: { stage: true } })
+    await setCardStage({ enabled: true })
     await page.goto(chatUrl)
     await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
   })
-  if (castScenario) await step('开启对话头像', async () => {
+  if (castScenario && stageIsolation !== 'absent') await step('开启对话头像', async () => {
     const chatUrl = page.url()
-    await setTavernSettings({ castPresentation: true })
+    await setCardStage((stageAudioLifecycle||stageDirectorFault)?{enabled:true}:{dialogue:true})
     await page.goto(chatUrl)
     await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
   })
@@ -537,6 +609,283 @@ try {
     report.beforeReload = inspectSaved(await savedChat())
     await page.screenshot({ path: join(output, 'before-reload.png'), fullPage: true })
   })
+  if (stagePluginScenario) {
+    await step(stageIsolation ? '舞台不可用时普通聊天仍可生成、保存和刷新' : '真实舞台进入、退出，再回到普通聊天', async () => {
+      async function retryDirector() {
+        const chat=await savedChat(),turn=chat.messages.filter(row=>row.role==='assistant'&&!row.greeting).at(-1).turn
+        const result=await page.evaluate(async args=>(await fetch('/api/dsh-tavern/retryStageDirection',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(args)})).json(),{sessionId:chat.sessionId,turn})
+        assert.notEqual(result.ok,false,JSON.stringify(result))
+      }
+      if(stageIsolation) {
+        assert.equal(await page.getByRole('button',{name:'舞台',exact:true}).count(),0)
+        assert.equal(await page.locator('[data-plugin-css^="dsh-tavern-stage/"], .fork-gal-mount').count(),0)
+        if(stageIsolation === 'activation') assert.ok(report.injectedActivationFailure && report.activationFailureObserved,'必须触发真实插件激活失败')
+      } else {
+      await page.getByRole('button', { name: '舞台', exact: true }).click()
+      await page.locator('.fork-gal-stage[data-entry="ready"]').waitFor({ state: 'visible' })
+      if(stageMediaFault||stageAudioLifecycle||stageDirectorFault)await page.waitForFunction(()=>{const text=document.querySelector('[aria-label="舞台文本"]')?.textContent||'';return text.includes('店主笑着迎上来。')||text.includes('店主笑着说：“欢迎回来，这是你的奖励。”')})
+      else await page.getByRole('region', { name: '舞台文本' }).getByText('店主笑着迎上来。', { exact: false }).waitFor()
+      assert.equal(await page.getByText('画面载入失败', { exact: true }).count(), 0)
+      if(stageRpcFault) {
+        report.stageReadyBeforeRpcFault=true
+        await page.route('**/api/dsh-tavern/getStageDirection',route=>{
+          report.directionFailures=(report.directionFailures || 0)+1
+          return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:false,error:'E2E stage direction unavailable'})})
+        })
+        for(let attempt=0;attempt<100 && !report.directionFailures;attempt++)await page.waitForTimeout(100)
+        assert.ok(report.directionFailures,'必须在舞台正常显示后实际触发演出 RPC 失败')
+      }
+      if(stageDirectorFault) {
+        await retryDirector()
+        let attempts=[]
+        for(let i=0;i<100;i++) {
+          attempts=(await readFile(join(output,'director-attempts.jsonl'),'utf8').catch(()=>'' )).trim().split('\n').filter(Boolean).map(JSON.parse)
+          if(attempts.some(row=>row.mode==='fail'))break
+          await page.waitForTimeout(100)
+        }
+        assert.ok(attempts.some(row=>row.mode==='fail'),'必须实际触发导演模型任务失败')
+        let failed
+        for(let i=0;i<100;i++) {
+          failed=(await savedChat()).messages.filter(row=>row.role==='assistant'&&!row.greeting).at(-1)
+          if(failed?.stageDirectionAssetPacksFailure&&!failed.stageDirectionRunning)break
+          await page.waitForTimeout(100)
+        }
+        assert.match(failed?.stageDirectionAssetPacksFailure?.error||'',/E2E stage director unavailable/)
+        assert.equal(failed.stageDirectionRunning,undefined)
+        report.directorFailed=true
+        await writeFile(join(output,'director-control.json'),JSON.stringify({mode:'success'}))
+      }
+      if(stageAudioLifecycle) {
+        await page.keyboard.press('Escape')
+        await page.getByRole('button',{name:/^BGM(?:：.*)?$/}).filter({visible:true}).last().click()
+        await page.locator('.fork-bgm-track').filter({hasText:'正常音乐'}).click()
+        await page.waitForFunction(()=>window.__stageAudioProbe().looping===1&&window.__stageAudioProbe().audibleLooping===1)
+        report.realAudioPlaying=true
+        if(stageAudioFault) {
+          const initialLoopStarts=await page.evaluate(()=>window.__stageAudioProbe().loopStarts)
+          await page.route('**/api/dsh-asset-library/v2/lease/*/media',route=>{
+            report.audioFailures=(report.audioFailures||0)+1
+            return route.fulfill({status:404,contentType:'text/plain',body:'E2E missing stage audio'})
+          })
+          await page.locator('.fork-bgm-track').filter({hasText:'故障音乐'}).click()
+          await page.getByRole('dialog',{name:'BGM',exact:true}).getByRole('alert').filter({hasText:'载入失败'}).waitFor()
+          assert.ok(report.audioFailures,'必须实际触发音频文件加载失败')
+          assert.ok(await page.evaluate(()=>window.__stageAudioProbe().looping<=1),'音频失败不能产生重复循环音源')
+          await page.unroute('**/api/dsh-asset-library/v2/lease/*/media')
+          await page.locator('.fork-bgm-track').filter({hasText:'故障音乐'}).click()
+          await page.waitForFunction(started=>window.__stageAudioProbe().loopStarts>started&&window.__stageAudioProbe().looping===1&&window.__stageAudioProbe().audibleLooping===1&&!document.querySelector('.fork-bgm-panel [role=alert]'),initialLoopStarts)
+          report.audioRecovered=true
+        }
+        await page.keyboard.press('Escape')
+      }
+      if(stageMediaFault) {
+        await page.keyboard.press('Escape')
+        await page.getByRole('button',{name:/^背景(?:：.*)?$/}).filter({visible:true}).last().click()
+        await page.getByRole('button',{name:'正常背景',exact:true}).click()
+        await page.waitForFunction(()=>window.forkGalDebug?.stats().layers.some(layer=>!!layer.url))
+        const healthyBackgroundUrl=await page.evaluate(()=>window.forkGalDebug.stats().layers.find(layer=>layer.url).url)
+        report.healthyBackgroundShown=true
+        await page.screenshot({path:join(output,'stage-healthy-background.png'),fullPage:true})
+        await page.route('**/api/dsh-asset-library/v2/lease/*/media',route=>{
+          report.mediaFailures=(report.mediaFailures||0)+1
+          return route.fulfill({status:404,contentType:'text/plain',body:'E2E missing stage image'})
+        })
+        await page.getByRole('button',{name:'故障背景',exact:true}).click()
+        for(let attempt=0;attempt<100&&!report.mediaFailures;attempt++)await page.waitForTimeout(100)
+        assert.ok(report.mediaFailures,'必须实际触发绑定素材的文件加载失败')
+        await page.getByRole('alert').filter({hasText:'载入失败'}).waitFor()
+        assert.ok(await page.evaluate(url=>window.forkGalDebug.stats().layers.some(layer=>layer.url===url),healthyBackgroundUrl),'新背景失败后必须保留上一张已显示的背景')
+        report.failedBackgroundReported=true
+        await page.keyboard.press('Escape')
+      }
+      await page.screenshot({ path: join(output, 'stage-open.png'), fullPage: true })
+      if(stageLifecycle) for(let cycle=0;cycle<2;cycle++) {
+          async function command(action) {
+            const id=cycle+'-'+action
+            await writeFile(join(output,'stage-command.json'),JSON.stringify({id,action}))
+            for(let attempt=0;attempt<150;attempt++) {
+              const result=await readFile(join(output,'stage-result.json'),'utf8').then(JSON.parse).catch(()=>null)
+              if(result?.id===id){assert.equal(result.error,undefined);assert.equal(result.status,action==='disable'?'disabled':'ready');return}
+              await page.waitForTimeout(100)
+            }
+            throw Error('Stage server lifecycle did not settle: '+action)
+          }
+        if(stageAutomaticLifecycle) await command('disable')
+        else await page.evaluate(()=>window.__stageLifecycleTest.disable())
+        await page.locator('.fork-gal-stage').waitFor({state:'detached'})
+        assert.equal(await page.locator('[data-plugin-css^="dsh-tavern-stage/"], .fork-gal-mount').count(),0)
+        assert.equal(await page.getByRole('button',{name:'舞台',exact:true}).count(),0)
+        const input=page.getByRole('textbox',{name:/发消息|Message/})
+        await input.fill('热停用期间保留的草稿')
+        if(stageServerLifecycle) {
+          const readKinds=()=>page.evaluate(async()=> (await fetch('/api/dsh-tavern/getStagePerformanceKinds',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).json())
+          if(!stageAutomaticLifecycle) {assert.ok(Array.isArray((await readKinds()).kinds),'停用前 RPC 应可用');await command('disable')}
+          const unavailable=await readKinds()
+          assert.equal(unavailable.ok,false,'舞台服务停用后 RPC 应撤销')
+          assert.match(unavailable.error || unavailable.message || '',/未知方法|未启用/)
+          if(cycle===0) {
+            const before=(await savedChat()).messages.filter(row=>row.role==='assistant'&&!row.greeting).length
+            await input.fill('领取任务奖励')
+            await input.press('Enter')
+            let generated=false
+            for(let attempt=0;attempt<100;attempt++) {
+              generated=(await savedChat()).messages.filter(row=>row.role==='assistant'&&!row.greeting&&row.text?.includes('你获得了十枚金币')).length>before
+              if(generated)break
+              await page.waitForTimeout(200)
+            }
+            assert.ok(generated,'前后端均停用时普通聊天必须生成并保存')
+            report.generatedWithStageDisabled=true
+            await input.fill('热停用期间保留的草稿')
+          }
+          await command('enable')
+          assert.ok(Array.isArray((await readKinds()).kinds),'重启后 RPC 应恢复')
+        }
+
+        if(!stageAutomaticLifecycle) await page.evaluate(()=>window.__stageLifecycleTest.enable())
+        await page.getByRole('button',{name:'舞台',exact:true}).click()
+        await page.locator('.fork-gal-stage[data-entry="ready"]').waitFor()
+        assert.equal(await page.locator('.fork-gal-stage').count(),1)
+        assert.equal(await input.evaluate(node=>node.isContentEditable ? node.textContent : node.value),'热停用期间保留的草稿')
+      }
+
+      if(stageRenderFault) {
+        const preserved=(await savedChat()).messages.map(({role,text,turn,variables})=>({role,text,turn,variables}))
+        if(!stageSwitchOnly) {
+        assert.ok(report.renderFaultInstalled)
+        await page.evaluate(()=>{window.__stageRenderFault=true})
+        await page.keyboard.press('h')
+        await page.locator('[data-stage-failure]').waitFor({state:'visible'})
+        assert.ok(report.renderFaultObserved,'必须观测到注入的渲染故障')
+        await page.screenshot({path:join(output,'stage-render-failure.png'),fullPage:true})
+        await page.getByRole('button',{name:'返回普通聊天',exact:true}).click()
+        } else {
+          await page.keyboard.press('Escape')
+          await page.getByRole('button',{name:/返回主页面/}).filter({visible:true}).last().click()
+        }
+        assert.equal(await page.locator('.fork-gal-mount').count(),0)
+        assert.deepEqual((await savedChat()).messages.map(({role,text,turn,variables})=>({role,text,turn,variables})),preserved,'舞台故障不能修改剧情和变量')
+        await page.getByRole('button',{name:/选择人物卡.*新开游玩/}).click()
+        await page.locator('.dsh-tavern-picker-overlay').getByText('E2E 奖励验收',{exact:true}).click()
+        await page.getByRole('button',{name:'开始新游戏',exact:true}).click()
+        await page.getByRole('textbox',{name:/发消息|Message/}).waitFor()
+        await page.waitForFunction(()=>document.querySelectorAll('.dsh-tavern-side-row').length===2)
+        assert.equal(await page.locator('[data-stage-failure]').count(),0)
+        await openStatus()
+        await page.frameLocator('.dsh-tavern-status-runtime iframe.dsh-tavern-message-frame:not([aria-hidden="true"])').locator('#e2e-gold').filter({hasText:/^金币：0$/}).waitFor()
+        await page.locator('.dsh-tavern-side-row:not(.active) .dsh-tavern-side-row-main').click()
+        await inspectScreen()
+        assert.deepEqual((await savedChat()).messages.map(({role,text,turn,variables})=>({role,text,turn,variables})),preserved,'切换会话不能污染原存档')
+        report.sessionSwitchAfterFault=true
+
+      } else {
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: /返回主页面/ }).filter({ visible: true }).last().click()
+      }
+      await page.locator('.fork-gal-stage').waitFor({ state: 'hidden' })
+      }
+      if(stageUserSwitch) {
+        await page.getByRole('button',{name:'设置',exact:true}).click()
+        await page.getByText('Settings',{exact:true}).click()
+        await page.getByRole('button',{name:'舞台',exact:true}).last().click()
+        await page.getByRole('button',{name:'停用舞台',exact:true}).click()
+        await page.getByRole('button',{name:'启用舞台',exact:true}).waitFor()
+        await page.waitForFunction(()=>!document.querySelector('[data-plugin-css^="dsh-tavern-stage/"], .fork-gal-mount'))
+        await page.screenshot({path:join(output,'stage-disabled-settings.png'),fullPage:true})
+        assert.equal(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('dsh-tavern:error-history:v1')||'[]').some(row=>row.source==='对白气泡')),false,'停用舞台不能触发对白气泡错误')
+        report.userDisabledStage=true
+        await restartServer()
+        assert.equal(await page.getByRole('button',{name:'舞台',exact:true}).count(),0)
+        report.userDisableSurvivedRestart=true
+      }
+      if(stageAudioLifecycle){
+        await page.waitForFunction(()=>window.__stageAudioProbe().looping===0)
+        report.audioStoppedOnExit=true
+      }
+      const composer = page.getByRole('textbox', { name: /发消息|Message/ })
+      const priorReplies=(await savedChat()).messages.filter(row=>row.role==='assistant'&&!row.greeting).length
+      await composer.fill('领取任务奖励')
+      await composer.press('Enter')
+      await page.waitForFunction(() => [...document.querySelectorAll('.dsh-tavern-user-bubble')].filter(el => el.textContent.includes('领取任务奖励')).length >= 2)
+      let replies = []
+      for (let attempt = 0; attempt < 100; attempt++) {
+        replies = (await savedChat()).messages.filter(row => row.role === 'assistant' && !row.greeting && row.text?.includes('你获得了十枚金币'))
+        if (replies.length > priorReplies) break
+        await page.waitForTimeout(200)
+      }
+      assert.ok(replies.length > priorReplies, '舞台操作后的新一轮正文必须真实生成并保存')
+      if(stageDirectorFault) {
+        await retryDirector()
+        let recovered
+        for(let i=0;i<100;i++) {
+          recovered=(await savedChat()).messages.filter(row=>row.role==='assistant'&&!row.greeting).at(-1)
+          if(recovered?.stageDirectionAssetPacks&&!recovered.stageDirectionRunning)break
+          await page.waitForTimeout(150)
+        }
+        assert.ok(recovered?.stageDirectionAssetPacks,'恢复后的导演任务必须实际写入演出记录')
+        assert.equal(recovered.stageDirectionRunning,undefined)
+        assert.equal(recovered.stageDirectionAssetPacksFailure,undefined)
+        report.directorRecovered=true
+      }
+
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await composer.waitFor({ state: 'visible' })
+      if(stageAudioLifecycle)assert.equal(await page.evaluate(()=>window.__stageAudioProbe().looping),0,'普通聊天刷新后不能恢复舞台音乐')
+      await page.getByText('你获得了十枚金币。', { exact: false }).filter({ visible: true }).first().waitFor()
+      assert.deepEqual(errors, [], '舞台切换不得产生未捕获异常')
+      assert.equal(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('dsh-tavern:error-history:v1')||'[]').some(row=>row.source==='对白气泡')),false,'普通正文不能依赖舞台视图就绪')
+      await page.screenshot({ path: join(output, 'chat-after-stage.png'), fullPage: true })
+      if(stageAudioFault || stageMediaFault || stageUserSwitch || stageRpcFault || stageRenderFault || stageIsolation === 'activation') {
+        if(stageUserSwitch) {
+          await page.getByRole('button',{name:'设置',exact:true}).click()
+          await page.getByText('Settings',{exact:true}).click()
+          await page.getByRole('button',{name:'舞台',exact:true}).last().click()
+          await page.getByRole('button',{name:'启用舞台',exact:true}).click()
+          await page.getByRole('button',{name:'停用舞台',exact:true}).waitFor()
+          await restartServer()
+        }
+        await page.unroute('**/plugins/**')
+        if(stageMediaFault)await page.unroute('**/api/dsh-asset-library/v2/lease/*/media')
+        if(stageRpcFault)await page.unroute('**/api/dsh-tavern/getStageDirection')
+        await page.reload({waitUntil:'domcontentloaded'})
+        await page.getByRole('button',{name:'舞台',exact:true}).click()
+        await page.locator('.fork-gal-stage[data-entry="ready"]').waitFor()
+        if(stageAudioFault) {
+          await page.keyboard.press('Escape')
+          await page.getByRole('button',{name:/^BGM(?:：.*)?$/}).filter({visible:true}).last().click()
+          await page.locator('.fork-bgm-track').filter({hasText:'正常音乐'}).click()
+          await page.waitForFunction(()=>window.__stageAudioProbe().looping===1&&window.__stageAudioProbe().audibleLooping===1)
+          const disable=await page.evaluate(async()=>(await fetch('/api/dsh-tavern/setStageEnabled',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:false})})).json())
+          assert.equal(disable.status,'disabled')
+          await page.locator('.fork-gal-stage').waitFor({state:'hidden'})
+          await page.waitForFunction(()=>window.__stageAudioProbe().looping===0)
+          report.audioStoppedOnDisable=true
+          const enable=await page.evaluate(async()=>(await fetch('/api/dsh-tavern/setStageEnabled',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:true})})).json())
+          assert.notEqual(enable.ok,false)
+          await page.getByRole('button',{name:'舞台',exact:true}).click()
+          await page.locator('.fork-gal-stage[data-entry="ready"]').waitFor()
+        }
+        if(stageMediaFault){
+          await page.waitForFunction(()=>window.forkGalDebug?.stats().layers.some(layer=>!!layer.url))
+          await page.keyboard.press('Escape')
+          await page.getByRole('button',{name:/^背景(?:：.*)?$/}).filter({visible:true}).last().click()
+          assert.equal(await page.getByRole('button',{name:'故障背景',exact:true}).getAttribute('aria-current'),'true')
+          assert.equal(await page.getByRole('alert').filter({hasText:'载入失败'}).count(),0)
+          await page.screenshot({path:join(output,'stage-background-recovered.png'),fullPage:true})
+          await page.keyboard.press('Escape')
+          report.backgroundRecovered=true
+        }
+        await page.keyboard.press('Escape')
+        await page.getByRole('button',{name:/返回主页面/}).filter({visible:true}).last().click()
+        await composer.waitFor({state:'visible'})
+        if(stageAudioFault)await page.waitForFunction(()=>window.__stageAudioProbe().looping===0)
+        assert.deepEqual(errors,[])
+        report.stageRecovered=true
+      }
+    })
+    report.status = 'passed'
+    delete report.currentStep
+    break scenario
+  }
   // 工具提交的正文一次性落地，长正文必须从第一行开始读，而不是停在最后一行。
   if (storyToolScenario) await step('工具提交的长正文从开头显示', async () => {
     const reveal = await page.evaluate(() => {
@@ -931,6 +1280,7 @@ try {
   assert.doesNotMatch(log, /服务端模板进程异常|Unsupported or expired template RPC/, '验收期间模板子进程不得异常退出')
   report.status = 'passed'
   delete report.currentStep
+  }
 } catch (error) {
   report.status = 'failed'; report.error = error.stack; process.exitCode = 1
   if (page) {
