@@ -57,7 +57,7 @@ export function createStoryLifecycle({
       flush
     }),
     async rejectStaleTurn(input) {
-      if (input?.playerInput !== true) return
+      if (!input) return
       const chat = await latestChat(input.sessionId)
       const warning = chat?.suppressedDshTurns?.length
         ? compactedHistoryWarning(sessionEvents(sessionFor(input.sessionId)), chat.suppressedDshTurns) : ''

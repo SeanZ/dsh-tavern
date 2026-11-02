@@ -19,6 +19,7 @@ export function compactedHistoryWarning(events, suppressedTurns = []) {
   const suppressed = new Set(suppressedTurns.map(Number))
   const fold = createStoryRoundsFold()
   fold.addEvents(events)
-  return fold.compactedStories().some(turn => suppressed.has(turn))
-    ? '当前摘要仍包含已撤回的剧情。请从要保留的楼层创建分支后继续。' : ''
+  const settled = new Set(fold.result().floors.map(floor => floor.story))
+  return fold.compactedStories().some(turn => settled.has(turn) && suppressed.has(turn))
+    ? '当前摘要仍包含已撤回的剧情。请从首次撤回楼层之前创建分支后继续。' : ''
 }

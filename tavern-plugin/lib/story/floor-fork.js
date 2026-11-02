@@ -41,7 +41,7 @@ export function createFloorFork({ sessions, prepare, bind, snapshots, logger = c
     if (prepared.turn !== turn) throw new Error('分叉楼层与存档不一致，请刷新后重试')
     const expected = floors.slice(0, index + 1)
     if (!sameFloors(foldStoryRounds(events.filter(event => event.seq <= prepared.atSeq)).floors, expected)) {
-      throw new Error('分叉边界与当前楼层不一致，无法安全创建分支')
+      throw new Error(prepared.source?.suppressedDshTurns?.length ? '分叉前缀仍包含已撤回剧情，请选择首次撤回楼层之前的楼层' : '分叉边界与当前楼层不一致，无法安全创建分支')
     }
     return { ...prepared, sessionId, replySeq: floors[index].reply.seq, expected }
   }

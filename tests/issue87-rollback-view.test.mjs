@@ -37,3 +37,22 @@ test('cached rollback controls follow the stored Session surface without resumin
   loaded=false
   assert.equal((await run('s')).canRollback,true)
 })
+
+test('已结算剧情进入摘要后，失败尾部的清除入口仍可用', () => {
+  const events = [
+    { seq: 0, type: 'turn/start', data: { turn: 2 } },
+    { seq: 1, type: 'user/message', surfaceOp: 'append', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '行动' }] } },
+    { seq: 2, type: 'assistant/message', surfaceOp: 'append', data: { turn: 2, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '正文' }] } } },
+    { seq: 3, type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+    { seq: 4, type: 'user/message', surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 }, sourceEventSeqs: [1, 2], data: { source: { kind: 'compact-checkpoint' }, content: [{ type: 'text', text: '摘要' }] } },
+    { seq: 5, type: 'turn/start', data: { turn: 3 } },
+    { seq: 6, type: 'user/message', surfaceOp: 'append', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '失败输入' }] } },
+    { seq: 7, type: 'turn/end', data: { turn: 3, reason: { kind: 'error' } } }
+  ]
+  const session = { id: 's', events, surface: { nodes: [4, 6] } }
+  const fields = createSessionStateView({ activity: () => ({ busy: false }), evidence: () => ({ session, events, nodes: session.surface.nodes }) })
+  const chat = { id: 'c', sessionId: 's', mode: 'story', messages: [{ role: 'user', text: '行动' }, { role: 'assistant', turn: 2, text: '正文' }] }
+  const view = fields.rollback(chat)
+  assert.equal(view.canClearIncompleteReply, true)
+  assert.equal(view.canRollback, true)
+})

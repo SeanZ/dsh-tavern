@@ -322,7 +322,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       if (!session) throw new Error('无法访问 DSH 会话: ' + state.sessionId)
       // 多层回退先检查完整目标，避免先删掉尾部才发现跨摘要。
       assertRollbackCompaction(sessionEvents(session), target)
-      const rolledBackTurns = []
+      const rolledBackTurns = [], warnings = []
       let clearedInput
       let result, first, removed = 0, stopped = ''
       while (latest > target) {
@@ -330,12 +330,17 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
         catch (error) { if (!removed) throw error; stopped = str(error?.message || error); break }
         const next = await latestOf()
         if (!result.clearedIncompleteTurns && !(next < latest)) { stopped = '回退没有前进'; break }
-        if (result.rolledBack) { removed += 1; rolledBackTurns.push(latest) }
+        if (result.rollbackWarning) warnings.push(result.rollbackWarning)
+        if (result.rolledBack) {
+          removed += 1; rolledBackTurns.push(latest)
+          // 清理失败尾部不会创建撤销点，不能继承上一次回退留下的旧点。
+          first ||= (await recent())?.rollbackUndo
+        }
         if (typeof result.clearedInput === 'string') clearedInput = result.clearedInput
-        first ||= (await recent())?.rollbackUndo
         latest = next
       }
       if (removed > 1 && first) result = await mergeRollbackUndo(state.id, first, recent) || result
+      if (warnings.length) result.rollbackWarning = [...new Set(warnings)].join('；')
       if (stopped) result.rollbackWarning = [result.rollbackWarning, '已回退 ' + removed + ' 轮，停在第 ' + latest + ' 轮：更早的轮次已不在模型上下文中，不能原地回退（' + stopped + '）。想回到第 ' + target + ' 轮，请在那一轮的消息上点「从这一轮分叉」。'].filter(Boolean).join('；')
       result.rolledBackTo = { target, latest, removed, turns: rolledBackTurns }
       if (clearedInput !== undefined) result.clearedInput = clearedInput

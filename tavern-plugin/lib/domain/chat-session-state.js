@@ -227,7 +227,7 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       canReplayFailedTurn: replayTarget !== null,
       replayFailedTurn: replayTarget === null ? null : replayTarget.turn,
       // The save decides: a round the native surface lost is repaired, not refused.
-      canRollback: !compactionReason && (rollbackState.canRollback || hasRound),
+      canRollback: rollbackState.canClearIncompleteReply || !compactionReason && (rollbackState.canRollback || hasRound),
       canClearIncompleteReply: rollbackState.canClearIncompleteReply,
       undoRollbackTurn: canUndoRollback(chat, evidence.session) ? chat.rollbackUndo.turn : null,
       rollbackUnavailableReason: compactionReason || (rollbackState.canRollback || hasRound ? '' : rollbackState.reason)

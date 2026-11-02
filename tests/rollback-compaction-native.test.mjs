@@ -1,8 +1,9 @@
+import { compactedHistoryWarning } from '../tavern-plugin/lib/domain/rollback-compaction.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { pathToFileURL } from 'node:url'
 import { createInitializationNative } from './fixtures/conversation-initialization-native.mjs'
-import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
+import { sessionEvents, appendSessionEvent } from '../tavern-plugin/lib/domain/session-events.js'
 import { createRoundHistory } from '../tavern-plugin/lib/domain/round-history.js'
 import { createStoryTimeline } from '../tavern-plugin/lib/domain/story-timeline.js'
 import { createPlayHandlers } from '../tavern-plugin/lib/rpc/play.js'
@@ -25,6 +26,7 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   for (let turn = 1; turn <= 5; turn++) await play(turn)
   assert.ok(await new BasicCompactionEngine(h.ctx, { auto: false, maxTokens: 4096 }).compactNow(agent, new AbortController().signal))
   await play(6)
+  await play(7)
   const floors = foldStoryRounds(sessionEvents(session)).floors
   const messages = floors.flatMap((floor, index) => [
     ...(index ? [{ role: 'user', text: floor.inputs.map(input => input.text).join('\n') }] : []),
@@ -54,6 +56,7 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   const compactedThrough = folded.compactedStories().at(-1)
   const removed = await rpc.rollbackToTurn({ sessionId: session.id, chatId: before.id, turn: compactedThrough })
   assert.equal(removed.view.rolledBackTo.latest, compactedThrough)
+  assert.ok(removed.view.rolledBackTo.removed >= 2, '真实压缩后撤回多层并验证合并撤销点')
   const after = await read(), afterEvents = structuredClone(sessionEvents(session))
   await assert.rejects(rpc.rollbackTurn({ sessionId: session.id, chatId: before.id, expectedTurn: compactedThrough }), /压缩摘要/)
   assert.deepEqual(await read(), after)
@@ -61,7 +64,7 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   await rounds.undoRollback(session.id, before.id)
   assert.deepEqual((await read()).messages, before.messages)
   const restoredFloors = foldStoryRounds(sessionEvents(session)).floors
-  assert.deepEqual(restoredFloors.map(floor => floor.reply.text), floors.map(floor => floor.reply.text))
+  assert.deepEqual(restoredFloors.map(floor => [floor.story, floor.reply.text]), floors.map(floor => [floor.story, floor.reply.text]))
   await h.checkpoint()
   await h.restoreDetached()
   assert.deepEqual(foldStoryRounds(sessionEvents(h.target.session)).floors, restoredFloors)
@@ -70,4 +73,30 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   const lifecycle = createStoryLifecycle({ latestChat: async () => ({ ...before, suppressedDshTurns: [floors[2].story] }),
     sessionFor: () => h.target.session, agentFor: () => agent })
   await assert.rejects(lifecycle.rejectStaleTurn({ sessionId: session.id, playerInput: true }), /摘要仍包含已撤回.*分支/)
+  await assert.rejects(lifecycle.rejectStaleTurn({ sessionId: session.id, playerInput: false }), /摘要仍包含已撤回.*分支/)
+})
+
+for (const kind of ['error', 'regeneration']) test('真实压缩纳入未结算模型文本时不误报撤回：' + kind, native, async t => {
+  const h = await createInitializationNative(process.env.DSH_BOOT_MODULE, { contextWindow: 32768 })
+  t.after(() => h.dispose())
+  const { BasicCompactionEngine } = await import(new URL('../../dsh-compaction-basic/lib/index.js', pathToFileURL(process.env.DSH_BOOT_MODULE)))
+  const agent = h.target.agent, session = agent.session
+  for (let turn = 1; turn <= 3; turn++) {
+    agent.followup({ id: 'normal-' + turn, role: 'user', source: { kind: 'human' }, content: [{ type: 'text', text: '旧剧情'.repeat(200) }] })
+    await agent.whenIdle()
+  }
+  // 构造真实 Session 的多步尝试终态，再交由真实压缩引擎生成检查点。
+  // 这里只验证压缩产物与警告判定，不外推为云模型溢出重试已验收。
+  for (const turn of [4, 5]) {
+    appendSessionEvent(session, 'turn/start', { turn })
+    appendSessionEvent(session, 'step/start', { turn, step: 1 })
+    appendSessionEvent(session, 'user/message', { id: 'input-' + turn, role: 'user', source: { kind: turn === 4 && kind === 'regeneration' ? 'plugin:dsh-tavern-regen' : 'user' }, content: [{ type: 'text', text: '本轮输入' }] }, { surfaceOp: 'append' })
+    appendSessionEvent(session, 'assistant/message', { turn, step: 1, message: { id: 'reply-' + turn, role: 'assistant', source: { kind: 'model', provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '尝试文本'.repeat(200) }] } }, { surfaceOp: 'append' })
+    appendSessionEvent(session, 'step/end', { turn, step: 1 })
+    appendSessionEvent(session, 'turn/end', { turn, reason: { kind: turn === 4 && kind === 'error' ? 'error' : 'completed', ...(turn === 4 && kind === 'error' ? { error: { message: '第二步失败' } } : {}) } })
+  }
+  assert.ok(await new BasicCompactionEngine(h.ctx, { auto: false, maxTokens: 4096 }).compactNow(agent, new AbortController().signal))
+  const fold = createStoryRoundsFold(); fold.addEvents(sessionEvents(session))
+  assert.ok(fold.compactedStories().includes(4), '实际摘要确实覆盖被抑制的尝试文本')
+  assert.equal(compactedHistoryWarning(sessionEvents(session), [4]), '')
 })

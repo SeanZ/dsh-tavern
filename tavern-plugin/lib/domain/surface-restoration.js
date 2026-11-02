@@ -34,6 +34,11 @@ export function restoreSurface(session, targetNodes, formatVersion = 4) {
   for (let i = 0; i < sources.length; i++) {
     const original = sources[i]
     const data = structuredClone(original.data)
+    // 一次撤销可能恢复多层；原生编辑把它们写在同一回合，故事坐标仍取各自原始楼层。
+    if (original.type === 'assistant/message' && data.message?.source?.kind === 'model') {
+      const story = Number(data.message.source.tavernStoryTurn ?? original.data.turn)
+      if (Number.isSafeInteger(story) && story > 0) data.message.source.tavernStoryTurn = story
+    }
     let replaced = i === 0 ? shadowed : []
     if (!replaced.length) {
       // Empty append-origin placeholders keep restored copies out of the human

@@ -119,7 +119,7 @@ async function fixture(t, bounded, repair = false) {
         changedSince: (id, revision) => p.readChangedIndices(id, revision),
         rowsAt: (id, revision, indices) => readRowsAt(p.readWindow, id, revision, indices)
       } : {}) },
-    sessions: { get: () => agent, flush: async () => {} }, timeline,
+    sessions: { get: () => agent, flush: async () => { await hooks.flush?.() } }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
     ...(repair ? { repairNative: async () => { calls.push('repairNative'); await hooks.repairNative?.() } } : {}),
     replyCommitted: sessionId => directed.push('director:' + sessionId),
@@ -418,4 +418,37 @@ for (const bounded of [false, true]) test('多层撤回预检拒绝跨摘要目�
   assert.deepEqual(h.session.events, events)
   assert.equal(h.calls.some(call => /^(update:|patch:|repairNative)/.test(call)), false)
   delete h.session.events[1].data.message.source.tavernStoryTurn
+})
+
+for (const bounded of [false, true]) test('失败尾部不能把上一次撤销点并入本次多层撤回：' + bounded, async t => {
+  const h = await fixture(t, bounded)
+  await h.rounds.rollback('session', 'chat', 81)
+  const old = (await h.p.read('chat')).rollbackUndo
+  for (const text of ['继续一', '继续二', '继续三']) { h.agent.followup({ content: [{ type: 'text', text }] }); await h.agent.whenIdle() }
+  const before = await h.p.read('chat')
+  const latest = before.messages.at(-1).turn
+  // 有文本的失败尾部，复用现有宿主事件格式与失败清理路径。
+  const failed = ++h.agent.phase.lastTurn
+  h.session.append('turn/start', { turn: failed })
+  h.session.append('user/message', { turn: failed, source: { kind: 'user' }, role: 'user', content: [{ type: 'text', text: '失败输入' }] }, { surfaceOp: 'append' })
+  h.session.append('turn/end', { turn: failed, reason: { kind: 'error', error: { message: 'fixture' } } })
+  await h.rounds.rollbackTo('session', 'chat', latest - 2)
+  const after = await h.p.read('chat')
+  assert.ok(after.rollbackUndo.beforeRevision > old.beforeRevision)
+  assert.equal(after.rollbackUndo.turn, latest)
+  await h.rounds.undoRollback('session', 'chat')
+  assert.deepEqual((await h.p.read('chat')).messages, before.messages)
+  const visible = h.session.surface.nodes.map(seq => h.session.events[seq]).filter(event => event.type === 'assistant/message').map(event => event.data.message.content.map(block => block.text || '').join('')).filter(Boolean)
+  assert.ok(visible.includes('重写正文' + latest))
+  assert.ok(!visible.includes('新正文'), '上一次撤回的第81轮不能复活')
+})
+
+test('多层回退保留各层上下文保存失败的警告', async t => {
+  const h = await fixture(t, true)
+  for (const text of ['上楼', '开窗']) { h.agent.followup({ content: [{ type: 'text', text }] }); await h.agent.whenIdle() }
+  let calls = 0
+  h.hooks.flush = async () => { throw new Error('保存失败' + (++calls)) }
+  const result = await h.rounds.rollbackTo('session', 'chat', 81)
+  assert.match(result.rollbackWarning, /保存失败1/)
+  assert.match(result.rollbackWarning, /保存失败2/)
 })

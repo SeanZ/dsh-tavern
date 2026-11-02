@@ -1,3 +1,4 @@
+import { compactedHistoryWarning } from '../tavern-plugin/lib/domain/rollback-compaction.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createStoryRoundsFold, foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
@@ -91,4 +92,13 @@ for (const source of [
   f.replace([rewrite], 'plugin:rollback', '')
   fold.addEvents(f.events)
   assert.deepEqual(fold.compactedStories(), [])
+})
+
+for (const kind of ['error', 'regeneration']) test('压缩中的未结算回复不产生旧撤回警告：' + kind, () => {
+  const f = fixture(), a = f.play(1), b = f.play(2)
+  if (kind === 'error') f.events.at(-1).data.reason.kind = 'error'
+  else f.events[b.input].data.source = { kind: 'plugin:dsh-tavern-regen' }
+  f.replace([a.input, a.reply, b.input, b.reply], 'compact-checkpoint')
+  assert.equal(compactedHistoryWarning(f.events, [2]), '')
+  assert.notEqual(compactedHistoryWarning(f.events, [1]), '')
 })
