@@ -54775,6 +54775,18 @@ function createTurnRailFilter(root, options) {
 
 const STORY_SETTLED_ENDS = ['completed', 'max-tokens']
 
+const STRAY_CHECKPOINT_FORM = 'compaction-checkpoint-rewrite'
+// 服务端与浏览器共用来源识别，兼容旧日志及升级器改挂后的摘要。
+function isCompactionCheckpoint(event) {
+  const source = event?.type === 'user/message' ? event.data?.source : null
+  if (source?.kind === 'compact-checkpoint') return true
+  const producer = source?.kind === 'plugin' ? source.plugin
+    : typeof source?.kind === 'string' && source.kind.startsWith('plugin:') ? source.kind.slice(7) : ''
+  return producer === 'compact' || producer === 'dsh-compaction-basic'
+    || producer === 'dsh-tavern' && source.form === STRAY_CHECKPOINT_FORM
+}
+
+
 function storyRoundsText(content) {
   return (Array.isArray(content) ? content : []).filter(block => block && block.type === 'text').map(block => String(block.text || '')).join('')
 }
@@ -54844,7 +54856,7 @@ function createStoryRoundsFold() {
       removed = nodes.filter(seq => sources ? sources.has(seq) : seq >= start && seq <= end)
       first = removed.length ? nodes.indexOf(removed[0]) : (nodes.length && start < nodes[0] ? 0 : nodes.length)
     }
-    if (event.type === 'user/message' && event.data?.source?.kind === 'compact-checkpoint') compacted.set(event.seq, removed)
+    if (isCompactionCheckpoint(event)) compacted.set(event.seq, removed)
     const gone = new Set(removed)
     nodes = nodes.slice(0, first).filter(seq => !gone.has(seq)).concat([event.seq], nodes.slice(first).filter(seq => !gone.has(seq)))
     for (const seq of removed) {
@@ -55016,6 +55028,20 @@ function createStoryRoundsFold() {
     return visible
   }
 
+  // 只计算当前摘要实际覆盖的正文，不把已被普通撤回替换的摘要算进去。
+  function compactedStories() {
+    const pending = nodes.filter(seq => compacted.has(seq)), stories = new Set()
+    while (pending.length) {
+      const seq = pending.pop(), children = compacted.get(seq)
+      if (children) { for (const child of children) pending.push(child) }
+      else {
+        const event = events.get(seq)
+        if (storyRoundsIsModelReply(event) && textOf(event)) stories.add(storyOf(event))
+      }
+    }
+    return [...stories].filter(turn => Number.isSafeInteger(turn) && turn > 0).sort((a, b) => a - b)
+  }
+
   function result() {
     if (cached) return cached
     const floors = [], abandoned = []
@@ -55062,7 +55088,7 @@ function createStoryRoundsFold() {
     return cached
   }
 
-  return { addEvents, result, get folded() { return last } }
+  return { addEvents, result, compactedStories, get folded() { return last } }
 }
 
 /** The rounds of a whole log (or a page of it) at once. */
@@ -55070,6 +55096,12 @@ function foldStoryRounds(events) {
   const fold = createStoryRoundsFold()
   fold.addEvents(events)
   return fold.result()
+}
+
+// 旧版本可能只写了整轮作废标记；读取时不让摘要展开复活这些楼层。
+function filterStoryRounds(rounds, suppressedTurns = []) {
+  const suppressed = new Set(suppressedTurns.map(Number))
+  return suppressed.size ? { ...rounds, floors: rounds.floors.filter(floor => !suppressed.has(floor.story)) } : rounds
 }
 // 故事适配器只使用显式传入的上游能力；接线集中于 bindings.js。
 function createStoryServiceAdapter(dependencies) {
@@ -55090,6 +55122,7 @@ function createStoryServiceAdapter(dependencies) {
 		tavernErrorHub,
 		createStoryRoundsFold,
 		foldStoryRounds,
+		filterStoryRounds,
 	} = dependencies;
 
 
@@ -55097,9 +55130,6 @@ function createStoryServiceAdapter(dependencies) {
 	// a story-view plugin injects. Floor actions call the same RPCs and client flows as the dock
 	// controls (play-controls.js); this file adds no story rules of its own.
 	const TAVERN_STORY_FAILED_ENDS = ["error", "aborted", "interrupted"];
-	// One `rollbackTurn` removes one round (or first clears a failed tail); a jump of more
-	// floors than this is refused rather than looped through.
-	const TAVERN_STORY_MAX_ROLLBACK_STEPS = 100;
 	// 重新结算的指导意见上限，与旧聊天行「重新结算变量」对话框相同。
 	const TAVERN_STORY_GUIDANCE_MAX = 4000;
 
@@ -55251,7 +55281,7 @@ function createStoryServiceAdapter(dependencies) {
 			return binding.eventSource;
 		}
 		function foldNow(sessionId) {
-			const rounds = foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries));
+			const rounds = filterStoryRounds(foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries)), liveTavernView.getSnapshot(sessionId)?.view?.storySuppressedTurns);
 			return Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds) }));
 		}
 		// The Tavern view of the game (the dock reads the same one), loaded once if nothing holds it yet.
@@ -55277,15 +55307,6 @@ function createStoryServiceAdapter(dependencies) {
 		}
 		function clearPanels() {
 			flow.candidates.set(null); flow.regeneration.set(null); flow.guide.set(null);
-		}
-		// Same steps as the dock's 「回退本轮」 (TavernRollbackAction).
-		async function rollbackOnce(sessionId, expectedTurn) {
-			try {
-				const result = await rpc("rollbackTurn", { expectedTurn: expectedTurn }, sessionId) || {};
-				actions.historyProjection.rolledBack(sessionId, result.view);
-				clearPanels();
-				return result;
-			} finally { afterChange(sessionId); }
 		}
 		// regenBody always rewrites the latest floor: check it is the one asked for, on the live
 		// event window (current) and on the Tavern view (whether this floor may be regenerated).
@@ -55357,12 +55378,12 @@ function createStoryServiceAdapter(dependencies) {
 				function emit() {
 					if (timer !== null) { window.clearTimeout(timer); timer = null; }
 					if (stopped) return;
-					const snapshot = source.getSnapshot(), rounds = fold.result();
-					published = rounds; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
+					const snapshot = source.getSnapshot(), raw = fold.result(), rounds = filterStoryRounds(raw, view?.storySuppressedTurns);
+					published = raw; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
 					const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 					const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
 					listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
-						receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+						historyWarning: view?.storyHistoryWarning || "", receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 				}
 				function publish() {
 					if (stopped) return;
@@ -55388,6 +55409,7 @@ function createStoryServiceAdapter(dependencies) {
 					const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
 					const nextSettlement = tavernStorySettlement(next);
 					const changed = nextSettling !== settling || JSON.stringify(stale) !== JSON.stringify(staleVariables)
+						|| JSON.stringify(next?.storySuppressedTurns) !== JSON.stringify(view?.storySuppressedTurns) || next?.storyHistoryWarning !== view?.storyHistoryWarning
 						|| JSON.stringify(nextSettlement) !== JSON.stringify(settlement) || (next && next.mvuReceipts) !== (view && view.mvuReceipts);
 					view = next;
 					if (!changed) return false;
@@ -55397,7 +55419,7 @@ function createStoryServiceAdapter(dependencies) {
 				readView(liveTavernView.getSnapshot(sessionId));
 				const stopView = liveTavernView.subscribe(sessionId, function (state) {
 					if (readView(state) && fold) emit();
-				}, [["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
+				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
 				const unsubscribe = source.subscribe(publish);
 				publish();
 				return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };
@@ -55461,24 +55483,16 @@ function createStoryServiceAdapter(dependencies) {
 				const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
 				const floor = binding && binding.eventSource ? foldNow(sessionId).floors.find(function (item) { return item.story === turn; }) : null;
 				const input = floor && floor.inputs.length ? { text: floor.inputs.map(function (item) { return item.text; }).join("\n") } : null;
-				const rolledBack = [];
-				let clearedInput = null;
-				for (let step = 0; ; step++) {
-					const clearing = view.canClearIncompleteReply === true;
-					const target = Number(view.rollbackTargetTurn) || 0;
-					if (!clearing && target < turn) break;
-					if (step >= TAVERN_STORY_MAX_ROLLBACK_STEPS) throw new Error("一次最多回退 " + TAVERN_STORY_MAX_ROLLBACK_STEPS + " 层");
-					// A failed tail is cleared first (its input comes back); the next call removes a floor.
-					const result = await rollbackOnce(sessionId, clearing ? null : target);
-					const next = result.view || {};
-					if (clearing) { if (typeof next.clearedInput === "string") clearedInput = next.clearedInput; }
-					else rolledBack.push(target);
-					if (!clearing && (Number(next.rollbackTargetTurn) || 0) >= target && next.canClearIncompleteReply !== true) throw new Error("第 " + target + " 轮回退后仍是最新楼层");
-					if (clearing && next.canClearIncompleteReply === true) throw new Error("未能清除失败的回合");
-					view = next;
-					if (next.rollbackWarning) tavernErrorHub.report("回退提示", new Error(next.rollbackWarning));
-				}
-				return { view: view, rolledBack: rolledBack, clearedInput: clearedInput, input: input };
+				if (turn <= 1) throw new Error("不能撤回开场");
+				try {
+					// 服务端在同一操作锁内检查完整目标，再执行回退与合并撤销点。
+					const result = await rpc("rollbackToTurn", { turn: turn - 1 }, sessionId) || {};
+					view = result.view || {};
+					actions.historyProjection.rolledBack(sessionId, view);
+					clearPanels();
+					if (view.rollbackWarning) tavernErrorHub.report("回退提示", new Error(view.rollbackWarning));
+					return { view: view, rolledBack: view.rolledBackTo?.turns || [], clearedInput: typeof view.clearedInput === "string" ? view.clearedInput : null, input: input };
+				} finally { afterChange(sessionId); }
 			},
 			/** Resample the latest floor without guidance (the dock's 重新生成正文 with an empty box). */
 			regenerate: async function (sessionId, storyTurn) {
@@ -55970,6 +55984,7 @@ const { createTavernStoryService, tavernStoryTurnArgument, tavernStorySessionArg
 	tavernErrorHub,
 	createStoryRoundsFold,
 	foldStoryRounds,
+	filterStoryRounds,
 });
 
 const { createTavernStoryRender } = createStoryRenderAdapter({

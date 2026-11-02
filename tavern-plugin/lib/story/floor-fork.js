@@ -1,4 +1,4 @@
-import { foldStoryRounds } from './story-rounds.js'
+import { foldStoryRounds, filterStoryRounds } from './story-rounds.js'
 import { sessionEvents } from '../domain/session-events.js'
 
 /**
@@ -29,12 +29,15 @@ export function createFloorFork({ sessions, prepare, bind, snapshots, logger = c
     const session = sessions.get(sessionId)
     if (!session) throw new Error('会话尚未就绪，请刷新后重试')
     const events = sessionEvents(session)
-    const floors = foldStoryRounds(events).floors
-    const index = floors.findIndex(floor => floor.story === turn)
+    let floors = foldStoryRounds(events).floors
+    let index = floors.findIndex(floor => floor.story === turn)
     // 压缩仅改变模型上下文；楼层是否仍有效由故事投影及下方原生前缀校验共同证明。
     if (index < 0) throw new Error('这一层已不在当前故事中，无法创建分支')
     // Running, regenerating and settling games are refused here (assertConversationForkable).
     const prepared = await prepare(sessionId, turn)
+    floors = filterStoryRounds({ floors }, prepared.source?.suppressedDshTurns).floors
+    index = floors.findIndex(floor => floor.story === turn)
+    if (index < 0) throw new Error('这一层已被撤回，无法创建分支')
     if (prepared.turn !== turn) throw new Error('分叉楼层与存档不一致，请刷新后重试')
     const expected = floors.slice(0, index + 1)
     if (!sameFloors(foldStoryRounds(events.filter(event => event.seq <= prepared.atSeq)).floors, expected)) {

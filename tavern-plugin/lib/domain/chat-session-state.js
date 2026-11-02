@@ -1,3 +1,4 @@
+import { compactedRollbackReason, compactedHistoryWarning } from './rollback-compaction.js'
 import { staleVariablesOf } from '../story/state.js'
 import { createImmutableTurnFields } from './freeze-json.js'
 import { createMvuReceiptIndex } from './mvu-receipt-index.js'
@@ -172,6 +173,7 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
     }
     const replayTarget = Array.isArray(nodes) ? failedTurnReplayAvailability({ events: evidence.events || [], nodes, cleared: chat.suppressedDshTurns || [] }).target : null
     const hasRound = hasRollbackMessages(chat.messages)
+    const compactionReason = compactedRollbackReason(evidence.events || [], settlementTurn(chat) - 1)
     const failures = failedErrorTurnStates(evidence.events || [], chat.suppressedDshTurns)
     const replacingTurns = replacingDshTurnsOf(chat)
     // Native turns whose body was replaced by a projection. The host keeps painting
@@ -207,6 +209,8 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
     const result = {
       hiddenDshErrorTurns: chat.hiddenDshErrorTurns || [],
       suppressedDshTurns,
+      storySuppressedTurns: chat.suppressedDshTurns || [],
+      storyHistoryWarning: compactedHistoryWarning(evidence.events || [], chat.suppressedDshTurns || []),
       keptInputTurns,
       replacingDshTurns: replacingTurns,
       supersededDshTurns: supersededTurns,
@@ -223,10 +227,10 @@ export function createSessionStateView({ activity: activityOf, evidence: evidenc
       canReplayFailedTurn: replayTarget !== null,
       replayFailedTurn: replayTarget === null ? null : replayTarget.turn,
       // The save decides: a round the native surface lost is repaired, not refused.
-      canRollback: rollbackState.canRollback || hasRound,
+      canRollback: !compactionReason && (rollbackState.canRollback || hasRound),
       canClearIncompleteReply: rollbackState.canClearIncompleteReply,
       undoRollbackTurn: canUndoRollback(chat, evidence.session) ? chat.rollbackUndo.turn : null,
-      rollbackUnavailableReason: rollbackState.canRollback || hasRound ? '' : rollbackState.reason
+      rollbackUnavailableReason: compactionReason || (rollbackState.canRollback || hasRound ? '' : rollbackState.reason)
     }
     if (native && chat.id && Number.isSafeInteger(chat._storageRevision)
       && key.length + (sharedMappings ? JSON.stringify({...result,regeneratedDshTurns:undefined}).length + mappingFields.bytes(mappings) : JSON.stringify(result).length) < 1024*1024) {

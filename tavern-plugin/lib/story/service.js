@@ -3,7 +3,9 @@ import { createFloorResultSwitch } from './floor-result-switch.js'
 import { createFloorFork } from './floor-fork.js'
 import { interruptStoryQueue } from './interrupt-story-queue.js'
 import { createInterruptedRoundTombstone } from './interrupted-round-tombstone.js'
-import { createStaleVariablesGuard } from './stale-variables-guard.js'
+import { sessionEvents } from '../domain/session-events.js'
+import { compactedHistoryWarning } from '../domain/rollback-compaction.js'
+import { createStaleVariablesGuard, dropQueuedPlayerInputs } from './stale-variables-guard.js'
 
 // 故事操作复用同一套存档、历史事务和原生会话，不另建结算或分叉引擎。
 export function createStoryService({
@@ -54,18 +56,20 @@ export function createStoryLifecycle({
       latestChat,
       flush
     }),
-    rejectStaleTurn: createStaleVariablesGuard({
-      isStale: async (sessionId) => {
-        const chat = await latestChat(sessionId)
-        return Boolean(
-          chat &&
-          chat.mvu?.enabled === true &&
-          chat.mvu.owner === 'official' &&
-          staleVariablesOf(chat)
-        )
-      },
-      agentFor
-    }),
+    async rejectStaleTurn(input) {
+      if (input?.playerInput !== true) return
+      const chat = await latestChat(input.sessionId)
+      const warning = chat?.suppressedDshTurns?.length
+        ? compactedHistoryWarning(sessionEvents(sessionFor(input.sessionId)), chat.suppressedDshTurns) : ''
+      if (warning) {
+        dropQueuedPlayerInputs(agentFor(input.sessionId))
+        throw new Error(warning)
+      }
+      await createStaleVariablesGuard({
+        isStale: async () => Boolean(chat && chat.mvu?.enabled === true && chat.mvu.owner === 'official' && staleVariablesOf(chat)),
+        agentFor
+      })(input)
+    },
     async interruptQueued(input = {}) {
       const mode = await modeFor(input.sessionId)
       if (

@@ -5,6 +5,18 @@
 
 const STORY_SETTLED_ENDS = ['completed', 'max-tokens']
 
+const STRAY_CHECKPOINT_FORM = 'compaction-checkpoint-rewrite'
+// 服务端与浏览器共用来源识别，兼容旧日志及升级器改挂后的摘要。
+function isCompactionCheckpoint(event) {
+  const source = event?.type === 'user/message' ? event.data?.source : null
+  if (source?.kind === 'compact-checkpoint') return true
+  const producer = source?.kind === 'plugin' ? source.plugin
+    : typeof source?.kind === 'string' && source.kind.startsWith('plugin:') ? source.kind.slice(7) : ''
+  return producer === 'compact' || producer === 'dsh-compaction-basic'
+    || producer === 'dsh-tavern' && source.form === STRAY_CHECKPOINT_FORM
+}
+
+
 function storyRoundsText(content) {
   return (Array.isArray(content) ? content : []).filter(block => block && block.type === 'text').map(block => String(block.text || '')).join('')
 }
@@ -74,7 +86,7 @@ function createStoryRoundsFold() {
       removed = nodes.filter(seq => sources ? sources.has(seq) : seq >= start && seq <= end)
       first = removed.length ? nodes.indexOf(removed[0]) : (nodes.length && start < nodes[0] ? 0 : nodes.length)
     }
-    if (event.type === 'user/message' && event.data?.source?.kind === 'compact-checkpoint') compacted.set(event.seq, removed)
+    if (isCompactionCheckpoint(event)) compacted.set(event.seq, removed)
     const gone = new Set(removed)
     nodes = nodes.slice(0, first).filter(seq => !gone.has(seq)).concat([event.seq], nodes.slice(first).filter(seq => !gone.has(seq)))
     for (const seq of removed) {
@@ -246,6 +258,20 @@ function createStoryRoundsFold() {
     return visible
   }
 
+  // 只计算当前摘要实际覆盖的正文，不把已被普通撤回替换的摘要算进去。
+  function compactedStories() {
+    const pending = nodes.filter(seq => compacted.has(seq)), stories = new Set()
+    while (pending.length) {
+      const seq = pending.pop(), children = compacted.get(seq)
+      if (children) { for (const child of children) pending.push(child) }
+      else {
+        const event = events.get(seq)
+        if (storyRoundsIsModelReply(event) && textOf(event)) stories.add(storyOf(event))
+      }
+    }
+    return [...stories].filter(turn => Number.isSafeInteger(turn) && turn > 0).sort((a, b) => a - b)
+  }
+
   function result() {
     if (cached) return cached
     const floors = [], abandoned = []
@@ -292,7 +318,7 @@ function createStoryRoundsFold() {
     return cached
   }
 
-  return { addEvents, result, get folded() { return last } }
+  return { addEvents, result, compactedStories, get folded() { return last } }
 }
 
 /** The rounds of a whole log (or a page of it) at once. */
@@ -302,4 +328,10 @@ function foldStoryRounds(events) {
   return fold.result()
 }
 
-export { createStoryRoundsFold, foldStoryRounds }
+// 旧版本可能只写了整轮作废标记；读取时不让摘要展开复活这些楼层。
+function filterStoryRounds(rounds, suppressedTurns = []) {
+  const suppressed = new Set(suppressedTurns.map(Number))
+  return suppressed.size ? { ...rounds, floors: rounds.floors.filter(floor => !suppressed.has(floor.story)) } : rounds
+}
+
+export { createStoryRoundsFold, foldStoryRounds, filterStoryRounds, isCompactionCheckpoint, STRAY_CHECKPOINT_FORM }

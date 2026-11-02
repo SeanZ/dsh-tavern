@@ -1,3 +1,4 @@
+import { assertRollbackCompaction } from './rollback-compaction.js'
 import { createRoundRegeneration } from './round-regeneration.js'
 export { regenerationInputText, attemptStreamText } from './round-regeneration.js'
 import { projectPlayerContent } from './player-input-content.js'
@@ -317,19 +318,27 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
       const latestOf = async () => latestStoryTurn(await recent())
       let latest = await latestOf()
       if (!(latest > target)) throw new Error('第 ' + target + ' 轮已经是最新一轮')
+      const session = sessions.get(state.sessionId)?.session || restoredHandle?.agent?.session || sessions.getSession?.(state.sessionId)
+      if (!session) throw new Error('无法访问 DSH 会话: ' + state.sessionId)
+      // 多层回退先检查完整目标，避免先删掉尾部才发现跨摘要。
+      assertRollbackCompaction(sessionEvents(session), target)
+      const rolledBackTurns = []
+      let clearedInput
       let result, first, removed = 0, stopped = ''
       while (latest > target) {
         try { result = await rollbackChat(state, null, restoredHandle?.agent) }
         catch (error) { if (!removed) throw error; stopped = str(error?.message || error); break }
         const next = await latestOf()
         if (!result.clearedIncompleteTurns && !(next < latest)) { stopped = '回退没有前进'; break }
-        if (result.rolledBack) removed += 1
+        if (result.rolledBack) { removed += 1; rolledBackTurns.push(latest) }
+        if (typeof result.clearedInput === 'string') clearedInput = result.clearedInput
         first ||= (await recent())?.rollbackUndo
         latest = next
       }
       if (removed > 1 && first) result = await mergeRollbackUndo(state.id, first, recent) || result
       if (stopped) result.rollbackWarning = [result.rollbackWarning, '已回退 ' + removed + ' 轮，停在第 ' + latest + ' 轮：更早的轮次已不在模型上下文中，不能原地回退（' + stopped + '）。想回到第 ' + target + ' 轮，请在那一轮的消息上点「从这一轮分叉」。'].filter(Boolean).join('；')
-      result.rolledBackTo = { target, latest, removed }
+      result.rolledBackTo = { target, latest, removed, turns: rolledBackTurns }
+      if (clearedInput !== undefined) result.clearedInput = clearedInput
       return result
     } finally {
       try { await restoredHandle?.dispose?.() }
@@ -377,6 +386,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     const session = agent?.session || sessions.getSession?.(chat.sessionId)
     if (!session) throw new Error('无法访问 DSH 会话: ' + chat.sessionId)
     let availability = rollbackAvailability(chat, { events: sessionEvents(session), nodes: session.surface?.nodes || [] })
+    if (!availability.failedTurns.length) assertRollbackCompaction(sessionEvents(session), latestStoryTurn(chat) - 1)
     if (!availability.failedTurns.length && !surfaceShowsLatest(chat, availability)) {
       await repairSurface(chat.sessionId, session)
       availability = rollbackAvailability(chat, { events: sessionEvents(session), nodes: session.surface?.nodes || [] })
@@ -551,6 +561,7 @@ export function createRoundHistory({ chats, sessions, scripts, timeline, queueSe
     if (user === null || typeof user !== 'object' || user.role !== 'user') throw new Error('最后一组消息不是用户输入 + 正文')
     const expectedTurn = Number(msgs[assistantIndex].turn)
     if (Number(requestedTurn) > 0 && Number(requestedTurn) !== expectedTurn) throw new Error('回退目标已经变化，请刷新后确认实际轮次')
+    assertRollbackCompaction(events, expectedTurn - 1)
     // The complete path repairs a surface that shows another round.
     if (expectedTurn > 0 && hiddenTurn !== expectedTurn && hiddenTurn !== Number(regeneratedDshTurns[String(expectedTurn)])) return undefined
     const removedUserText = str(user.text).trim()

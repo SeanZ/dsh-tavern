@@ -95,18 +95,17 @@ test('readInterruptedInput 取回中断回合的原输入；玩家发了新输�
   assert.equal(service.readInterruptedInput('s1'), null, '玩家发出新输入后不再提示')
 })
 
-test('rollbackTo 先结清失败尾部再逐层回退到目标楼层', async () => {
-  const { client, calls } = loadClient({ rollbackTurn: [
-    { view: { mode: 'story', rollbackTargetTurn: 3, canClearIncompleteReply: false, clearedInput: '原输入' } },
-    { view: { mode: 'story', rollbackTargetTurn: 2 } },
-    { view: { mode: 'story', rollbackTargetTurn: 1 } }
-  ] })
+test('rollbackTo 用一次服务端请求检查完整目标并保留回填结果', async () => {
+  const { client, calls } = loadClient({ rollbackToTurn: { view: {
+    mode: 'story', rollbackTargetTurn: 1, clearedInput: '原输入', rolledBackTo: { turns: [3, 2] }
+  } } })
   const service = serviceOf(client, { s1: eventWindow(story(3)) })
   client.liveTavernView.setView('s1', { mode: 'story', rollbackTargetTurn: 3, canClearIncompleteReply: true })
   const result = await service.rollbackTo('s1', 2)
   assert.deepEqual(plain(result.input), { text: '输入2' }, '被撤回首层的原输入，供放回输入框')
-  assert.deepEqual(calls.filter(call => call.method === 'rollbackTurn').map(call => call.args), [
-    { expectedTurn: null, sessionId: 's1' }, { expectedTurn: 3, sessionId: 's1' }, { expectedTurn: 2, sessionId: 's1' }])
+  assert.deepEqual(calls.filter(call => call.method === 'rollbackToTurn').map(call => call.args), [
+    { turn: 1, sessionId: 's1' }])
+  assert.equal(calls.some(call => call.method === 'rollbackTurn'), false)
   assert.deepEqual([...result.rolledBack], [3, 2])
   assert.equal(result.clearedInput, '原输入')
   await assert.rejects(service.rollbackTo('s1', 5), /不是现有楼层/)
@@ -494,4 +493,17 @@ test('部分正文警告穿过实际客户端重生成契约', async () => {
   const service = serviceOf(client, { s1: eventWindow(story(3)) })
   client.liveTavernView.setView('s1', { mode: 'story', canRegenerate: true })
   assert.equal((await service.regenerate('s1', 3)).regenerationWarning, warning)
+})
+
+test('旧摘要展开后仍遵守已撤回楼层，存档变化无需事件追加即可更新', () => {
+  const { client } = loadClient(), window = eventWindow(story(3))
+  const service = serviceOf(client, { s1: window }), seen = []
+  const stop = service.subscribeRounds('s1', rounds => seen.push(rounds))
+  client.liveTavernView.setView('s1', { mode: 'story', storySuppressedTurns: [3], storyHistoryWarning: '摘要仍包含已撤回剧情' })
+  assert.deepEqual(plain(seen.at(-1).floors.map(floor => floor.story)), [1, 2])
+  assert.equal(seen.at(-1).historyWarning, '摘要仍包含已撤回剧情')
+  assert.equal(service.listResults('s1', 3), null)
+  client.liveTavernView.setView('s1', { mode: 'story', storySuppressedTurns: [] })
+  assert.deepEqual(plain(seen.at(-1).floors.map(floor => floor.story)), [1, 2, 3])
+  stop()
 })

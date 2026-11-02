@@ -37,7 +37,7 @@ test('回合准备先等后台结算完成再检查标记：刚点的重新结�
     store: { async chatForSession() { return { id: 'c1', mode: 'story', messages: [] } } },
     tasks: { activity() { return { phase: 'idle', busy: false, role: '' } } },
     async queueBackground() {},
-    waitBackground: async () => { order.push('wait'); stale = false },
+    beforeNextTurn: async () => { order.push('wait'); stale = false },
     rejectStaleTurn: createStaleVariablesGuard({ isStale: async () => { order.push('check:' + stale); return stale }, agentFor: () => undefined }),
     clearFailedTurns: async () => { order.push('clear') },
     turns: { async finalize() {}, async discard() {}, async prepare() { order.push('prepare') } }
@@ -89,7 +89,7 @@ test('真实宿主：变量未重算时新回合早期失败、排队的第二�
   const { LlmAdapter } = await import(new URL('../../dsh-llm/lib/index.js', bootUrl))
   const root = await mkdtemp(join(tmpdir(), 'stale-guard-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-session-query', 'dsh-subagent', 'dsh-token-meter', 'dsh-agent-loop', 'dsh-attachment-local', 'dsh-fs-local', 'dsh-working-directory']
+  const packages = ['dsh-system-prompt', 'dsh-tools', 'dsh-agent', 'dsh-llm', 'dsh-session', 'dsh-session-projection', 'dsh-session-query', 'dsh-subagent', 'dsh-token-meter', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-attachment-local', 'dsh-fs-local', 'dsh-working-directory']
   await writeFile(join(root, 'host.yml'), packages.map(name => '- name: ' + new URL('../../' + name + '/lib/index.js', bootUrl).href + '\n').join(''))
   const ctx = await boot('stale-guard-test', join(root, 'host.yml'))
   t.after(() => ctx.fiber.dispose())
@@ -114,7 +114,7 @@ test('真实宿主：变量未重算时新回合早期失败、排队的第二�
     tasks: { activity() { return { phase: 'idle', busy: false, role: '' } } },
     async queueBackground() {},
     // 第一条停在准备阶段等后台，让第二条进入排队。
-    waitBackground: async () => { if (gate) { entered(); await gate } },
+    beforeNextTurn: async () => { if (gate) { entered(); await gate } },
     rejectStaleTurn: createStaleVariablesGuard({ isStale: async () => stale, agentFor: () => agent }),
     turns: { async finalize() {}, async discard() {}, async prepare(input) { return { ready: true, frame: { frameId: 'f', userInput: { projectedText: input.userText } } } } }
   })

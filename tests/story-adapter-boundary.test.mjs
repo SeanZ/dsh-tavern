@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { parse } from 'acorn'
 import { createStoryServiceAdapter } from '../tavern-plugin/src/client/story/service.js'
 import { createStoryRenderAdapter } from '../tavern-plugin/src/client/story/render.js'
-import { createStoryRoundsFold, foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
+import { createStoryRoundsFold, foldStoryRounds, filterStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 
 // 保守的依赖扫描：声明、参数、属性名之外的标识符必须是语言内置值。
 // 独立模块测试再执行服务路径，避免靠大包的同名全局意外通过。
@@ -43,7 +43,7 @@ for (const name of ['service','render']) test('故事 ' + name + ' 适配器没�
 test('脱离 Tavern 大包运行故事服务：事件折叠与快照 RPC 使用各自注入的实例', async () => {
   const seen = []
   function create(id) {
-    const deps = { window: { setTimeout, clearTimeout }, createStoryRoundsFold, foldStoryRounds,
+    const deps = { window: { setTimeout, clearTimeout }, createStoryRoundsFold, foldStoryRounds, filterStoryRounds,
       rpc: async (method,args,sessionId) => { seen.push({id,method,args,sessionId}); return {interrupted:true} },
       liveTavernView: {getSnapshot:()=>({view:null})} }
     const {createTavernStoryService} = createStoryServiceAdapter(deps)

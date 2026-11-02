@@ -17,7 +17,7 @@ const model = { kind: 'model', provider: 'fixture', model: 'fixture' }
 // A long native save whose latest round was committed and settled through the real
 // timeline: settlement also edited an older floor and the chat variables, which a
 // rollback must restore exactly as the checkpoint revision held them.
-async function fixture(t, bounded) {
+async function fixture(t, bounded, repair = false) {
   const root = await mkdtemp(join(tmpdir(), 'rollback-bounded-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const p = createChatPersistence({ store: createChatJournalStore({ dataRoot: root, newConversations: true }) })
@@ -121,6 +121,7 @@ async function fixture(t, bounded) {
       } : {}) },
     sessions: { get: () => agent, flush: async () => {} }, timeline,
     scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: {} }) }, dispatchEvent: async event => { dispatched.push({ name: event.name, args: event.args, chat: Boolean(event.chat), recent: event.recent === true }) } },
+    ...(repair ? { repairNative: async () => { calls.push('repairNative'); await hooks.repairNative?.() } } : {}),
     replyCommitted: sessionId => directed.push('director:' + sessionId),
     queueSettlement: async () => { directed.push('settlement') }, cancelSettlement: async () => {},
     present: async value => { presented.push(isScopedMessages(value.messages) ? 'window' : 'full'); return { rolled: true } }
@@ -181,7 +182,7 @@ test('rollback to a turn removes every later round and one undo restores them al
     const before = await h.p.read('chat'), nodes = [...h.session.surface.nodes]
     assert.equal(before.messages.at(-1).turn, 83)
     const result = await h.rounds.rollbackTo('session', 'chat', 81)
-    assert.deepEqual(result.rolledBackTo, { target: 81, latest: 81, removed: 2 })
+    assert.deepEqual(result.rolledBackTo, { target: 81, latest: 81, removed: 2, turns: [83, 82] })
     assert.equal(result.rollbackWarning, undefined)
     const after = await h.p.read('chat')
     assert.equal(after.messages.at(-1).turn, 81)
@@ -201,7 +202,7 @@ test('rollback to a turn stops where the model context ends and keeps the rounds
   const h = await fixture(t, true)
   h.agent.followup({ content: [{ type: 'text', text: '上楼' }] }); await h.agent.whenIdle()
   const partial = await h.rounds.rollbackTo('session', 'chat', 70)
-  assert.deepEqual(partial.rolledBackTo, { target: 70, latest: 80, removed: 2 })
+  assert.deepEqual(partial.rolledBackTo, { target: 70, latest: 80, removed: 2, turns: [82, 81] })
   assert.match(partial.rollbackWarning, /已回退 2 轮，停在第 80 轮.*从这一轮分叉/)
   assert.equal((await h.p.read('chat')).messages.at(-1).turn, 80)
 })
@@ -387,4 +388,34 @@ test('完整路径提交前同一尝试的正文被重新投影时，采用落�
   const floor = foldStoryRounds(h.session.events).floors.at(-1)
   assert.equal(floor.reply.text, result.adopted.text)
   assert.equal(floor.reply.incomplete, true)
+})
+
+for (const bounded of [false, true]) test('跨摘要撤回在存档和原生修复写入前拒绝：' + (bounded ? '窗口' : '完整'), async t => {
+  const h = await fixture(t, bounded, true)
+  h.session.append('user/message', { source: { kind: 'compact-checkpoint' }, content: [{ type: 'text', text: '摘要包含第81轮' }] },
+    { surfaceOp: { op: 'replace', start: 0, end: 1 }, sourceEventSeqs: [0, 1] })
+  const before = await h.p.read('chat'), events = structuredClone(h.session.events), nodes = [...h.session.surface.nodes]
+  h.calls.length = 0
+  await assert.rejects(h.rounds.rollback('session', 'chat', 81), /压缩摘要.*分支/)
+  await assert.rejects(h.rounds.rollbackTo('session', 'chat', 79), /压缩摘要.*分支/)
+  assert.deepEqual(await h.p.read('chat'), before)
+  assert.deepEqual(h.session.events, events)
+  assert.deepEqual(h.session.surface.nodes, nodes)
+  assert.equal(h.calls.some(call => /^(update:|patch:|repairNative)/.test(call)), false)
+})
+
+for (const bounded of [false, true]) test('多层撤回预检拒绝跨摘要目标，未压缩尾部也不先删除：' + bounded, async t => {
+  const h = await fixture(t, bounded, true)
+  // 摘要覆盖旧故事80，最新81仍在当前Surface；源事件保留显式故事坐标。
+  h.session.events[1].data.message.source = { ...model, tavernStoryTurn: 80 }
+  h.session.append('user/message', { source: { kind: 'plugin:dsh-tavern', form: 'compaction-checkpoint-rewrite' }, content: [{ type: 'text', text: '旧剧情摘要' }] },
+    { surfaceOp: { op: 'replace', start: 0, end: 1 }, sourceEventSeqs: [0, 1] })
+  h.session.append('assistant/message', { turn: 81, message: { source: { ...model, tavernStoryTurn: 81 }, content: [{ type: 'text', text: '新正文' }] } }, { surfaceOp: 'append' })
+  const before = await h.p.read('chat'), events = structuredClone(h.session.events)
+  h.calls.length = 0
+  await assert.rejects(h.rounds.rollbackTo('session', 'chat', 79), /压缩摘要/)
+  assert.deepEqual(await h.p.read('chat'), before)
+  assert.deepEqual(h.session.events, events)
+  assert.equal(h.calls.some(call => /^(update:|patch:|repairNative)/.test(call)), false)
+  delete h.session.events[1].data.message.source.tavernStoryTurn
 })

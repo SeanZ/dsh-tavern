@@ -1,3 +1,4 @@
+import { foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -436,6 +437,7 @@ test('压缩结束后仍带检查点来源的摘要改写：保留内容，改�
   assert.notEqual(rewrite.data.source.kind, 'compact-checkpoint')
   assert.ok(isCompactionCheckpoint(rewrite), '酒馆仍把它当作压缩摘要节点，模板同步不会再改写它')
   assert.ok(texts(openSession(artifact)).includes('玩家原文'), '上下文与旧版完全一致')
+  assert.deepEqual(foldStoryRounds(artifact.events).floors.map(floor => floor.story), [1, 2], '真实升级产物展开改挂摘要，旧正文不消失')
 })
 
 test('回合结束后的正文编辑，下一回合没有任何步骤时不借用更后面回合的步骤', () => {

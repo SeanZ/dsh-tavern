@@ -73,3 +73,22 @@ test('千轮历史经多段压缩仍可从尾页逐步补齐到开场，不受50
     assert.deepEqual(foldStoryRounds(f.events.slice(start)).floors, before.slice(start / 4))
   }
 })
+
+for (const source of [
+  { kind: 'compact-checkpoint' }, { kind: 'plugin:compact' },
+  { kind: 'plugin', plugin: 'dsh-compaction-basic' },
+  { kind: 'plugin:dsh-tavern', form: 'compaction-checkpoint-rewrite' },
+  { kind: 'plugin', plugin: 'dsh-tavern', form: 'compaction-checkpoint-rewrite' }
+]) test('共享摘要来源保留楼层及压缩边界：' + JSON.stringify(source), () => {
+  const f = fixture(), a = f.play(1), b = f.play(2)
+  const before = foldStoryRounds(f.events)
+  const first = f.replace([a.input, a.reply, b.input, b.reply], 'compact-checkpoint')
+  const rewrite = f.replace([first], source.kind)
+  f.events[rewrite].data.source = source
+  const fold = createStoryRoundsFold(); fold.addEvents(f.events)
+  assert.deepEqual(fold.result(), before)
+  assert.deepEqual(fold.compactedStories(), [1, 2])
+  f.replace([rewrite], 'plugin:rollback', '')
+  fold.addEvents(f.events)
+  assert.deepEqual(fold.compactedStories(), [])
+})

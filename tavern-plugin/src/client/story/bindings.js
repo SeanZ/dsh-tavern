@@ -20,6 +20,7 @@ const { createTavernStoryService, tavernStoryTurnArgument, tavernStorySessionArg
 	tavernErrorHub,
 	createStoryRoundsFold,
 	foldStoryRounds,
+	filterStoryRounds,
 });
 
 const { createTavernStoryRender } = createStoryRenderAdapter({
