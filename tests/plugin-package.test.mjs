@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { parse } from 'acorn'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -21,12 +21,32 @@ test('standard package ships runtime resources without local links, host copies 
   for (const name of ['prepare', 'preinstall', 'install', 'postinstall']) assert.equal(manifest.scripts[name], undefined)
   const [packed] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: root, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }))
   const files = new Set(packed.files.map(file => file.path))
-  // Splitting the entry must not leave any directly imported runtime module out of the package.
-  const entryPath = 'tavern-plugin/lib/index.js'
-  for (const node of parse(read(entryPath), { ecmaVersion: 'latest', sourceType: 'module' }).body) {
-    if (node.type !== 'ImportDeclaration' || !node.source.value.startsWith('.')) continue
-    const target = path.posix.normalize(path.posix.join(path.posix.dirname(entryPath), node.source.value))
-    assert.ok(files.has(target), `entry imports missing runtime module: ${target}`)
+  // 沿服务端入口递归验证相对导入，防止二级模块引用被包裁剪遗漏。
+  const pending = ['tavern-plugin/lib/index.js',
+    'tavern-plugin/packages/dsh-asset-library/lib/index.js',
+    'tavern-plugin/packages/dsh-tavern-stage/lib/index.js']
+  const visited = new Set()
+  while (pending.length) {
+    const entryPath = pending.pop()
+    if (visited.has(entryPath)) continue
+    visited.add(entryPath)
+    const nodes = [parse(read(entryPath), { ecmaVersion: 'latest', sourceType: 'module', allowReturnOutsideFunction: true })]
+    while (nodes.length) {
+      const node = nodes.pop()
+      const specifier = ['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration', 'ImportExpression'].includes(node.type)
+        ? node.source?.value
+        : node.type === 'CallExpression' && node.callee?.name === 'require' ? node.arguments[0]?.value : undefined
+      if (typeof specifier === 'string' && specifier.startsWith('.')) {
+        const target = path.posix.normalize(path.posix.join(path.posix.dirname(entryPath), specifier))
+        const resolved = [target, target + '.js', target + '.cjs', target + '/index.js'].find(name => files.has(name))
+        assert.ok(resolved, `${entryPath} imports missing runtime module: ${target}`)
+        if (/\.(?:mjs|cjs|js)$/.test(resolved)) pending.push(resolved)
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) nodes.push(...value.filter(item => item && typeof item.type === 'string'))
+        else if (value && typeof value.type === 'string') nodes.push(value)
+      }
+    }
   }
   for (const name of [
     'plugin.patch.yml', 'bin/plugin-package-guard.mjs', 'bin/update-diagnostics.mjs',
@@ -50,7 +70,7 @@ test('standard package ships runtime resources without local links, host copies 
     'tavern-plugin/lib/vendor/runtime-assets/lodash/lodash.min.js',
   ]) assert.ok(files.has(name), `missing runtime resource: ${name}`)
   assert.ok(files.has('tavern-plugin/src/client/bubble-line.cjs'), '共享气泡解析器是服务端运行依赖')
-  assert.deepEqual([...files].filter(name => name.startsWith('tavern-plugin/src/')), ['tavern-plugin/src/client/bubble-line.cjs'])
+  assert.deepEqual([...files].filter(name => name.startsWith('tavern-plugin/src/')).sort(), [...visited].filter(name => name.startsWith('tavern-plugin/src/')).sort())
   const catalog = JSON.parse(read('tavern-plugin/packages/dsh-dream-skin/lib/font-catalog.json'))
   for (const family of catalog.families) {
     assert.ok(files.has(`tavern-plugin/packages/dsh-dream-skin/fonts/${family.id}/index.json`))
@@ -99,4 +119,12 @@ test('standard bundle and sidebar distribution match their maintained sources', 
     assert.equal(read(`tavern-plugin/packages/dsh-better-sidebar/lib/${name}`), read(`node_modules/dsh-better-sidebar/lib/${name}`))
   }
   assert.match(read('tavern-plugin/packages/dsh-better-sidebar/lib/index.js'), /function threadOwnLogEvents\(/)
+})
+
+
+test('素材库通过目标宿主兼容检查，不依赖用户豁免', async () => {
+  assert.ok(process.env.DSH_BOOT_MODULE, '需要实际宿主加载器')
+  const { evaluatePluginCompatibility } = await import(pathToFileURL(process.env.DSH_BOOT_MODULE))
+  const manifest = JSON.parse(read('tavern-plugin/packages/dsh-asset-library/package.json'))
+  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.2-alpha.2'), undefined)
 })
