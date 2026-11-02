@@ -148,3 +148,28 @@ test('失败轮输入即使已移出模型上下文，编辑也只写表头记�
   const again = await editor.readUser(session.id, { turn: 6, seq: failedInput })
   assert.deepEqual(again.parts, [{ kind: 'text', text: '改成生成图片' }])
 })
+
+
+test('显示缓存写入增加存储版本时，未变的玩家输入仍可编辑', async () => {
+  const h = fixture(), edit = await h.editor.readUser(h.session.id)
+  h.chat._storageRevision++
+  h.chat.messages.at(-1).displayRuntime = { captured: true }
+  await h.editor.saveUser(h.session.id, { token: edit.token, texts: ['新输入'] })
+  assert.equal(h.chat.messages[0].text, '新输入')
+  assert.deepEqual(h.session.deriveMessages().filter(message => message.role === 'user').map(message => message.content[0].text), ['新输入'])
+})
+
+for (const [name, change] of [
+  ['玩家输入', h => { h.chat.messages[0].text = '另一处编辑' }],
+  ['故事分支', h => { h.chat.timeline = { branchId: 'other' } }],
+  ['故事修订', h => { h.chat.timeline = { revision: 2 } }],
+  ['新增楼层', h => { h.chat.messages.push({ role: 'assistant', turn: 6, text: '后续' }) }],
+  ['原生输入替换', h => { replaceSessionSurface(h.session, 'user/message', { id: 'other-edit', role: 'user', content: [{ type: 'text', text: '原输入' }], source: { kind: 'user' } }, { start: 1, end: 1, sourceEventSeqs: [1] }) }]
+]) test(name + '变化后拒绝旧输入编辑令牌', async () => {
+  const h = fixture(), edit = await h.editor.readUser(h.session.id)
+  change(h)
+  const before = JSON.stringify(h.chat), events = JSON.stringify(sessionEvents(h.session))
+  await assert.rejects(h.editor.saveUser(h.session.id, { token: edit.token, texts: ['不应保存'] }), /重新打开|无法编辑/)
+  assert.equal(JSON.stringify(h.chat), before)
+  assert.equal(JSON.stringify(sessionEvents(h.session)), events)
+})

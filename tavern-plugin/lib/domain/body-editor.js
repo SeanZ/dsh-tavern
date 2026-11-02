@@ -290,7 +290,8 @@ export function createBodyEditor({ chats, sessions, timeline, activity, project,
     return { chat, agent, message: found?.message || null, index: found?.index ?? -1, turn, located, text, record, failed }
   }
   function userToken(chat, context) {
-    return createHash('sha256').update(JSON.stringify([chat.id, chat.timeline?.branchId, chat._storageRevision, context.turn, context.text,
+    // 显示缓存会独立推进存储版本；只让故事版本和目标输入的变化使编辑令牌失效。
+    return createHash('sha256').update(JSON.stringify([chat.id, chat.timeline?.branchId, chat.timeline?.revision, chat.messages.length, context.located.seq, context.turn, context.text,
       context.record?.id || '', context.message?.bodyEdit?.id || '', context.failed === true ? 'failed' : ''])).digest('hex')
   }
   async function readUser(sessionId, input) {
