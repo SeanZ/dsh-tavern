@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -22,13 +22,12 @@ test('实际标准 tgz 的三个服务端入口可冷导入，兼容声明无需
   const packageDir = path.join(temp, 'package')
   const modules = path.join(packageDir, 'node_modules')
   await mkdir(modules)
-  // 只复用外部依赖；插件入口和所有相对导入必须来自本次解包，不能回落到源码工作树。
-  for (const name of await readdir(path.join(root, 'node_modules'))) {
-    if (name.startsWith('.') || name === '@deepseek-ai' || name.startsWith('dsh-')) continue
-    await symlink(path.join(root, 'node_modules', name), path.join(modules, name))
-  }
-  for (const name of ['dsh-mnemon', 'dsh-mnemon-source-runtime', 'dsh-mnemon-source-documents']) {
-    await symlink(path.join(root, 'node_modules', name), path.join(modules, name))
+  // 仅连接标准包声明的生产依赖，开发依赖不能遮蔽漏声明。
+  const rootManifest = JSON.parse(await readFile(path.join(packageDir, 'package.json'), 'utf8'))
+  for (const name of Object.keys(rootManifest.dependencies || {})) {
+    const target = path.join(modules, name)
+    await mkdir(path.dirname(target), { recursive: true })
+    await symlink(path.join(root, 'node_modules', name), target)
   }
   await symlink(path.join(hostModules, '@deepseek-ai'), path.join(modules, '@deepseek-ai'))
   for (const relative of ['tavern-plugin', 'tavern-plugin/packages/dsh-asset-library', 'tavern-plugin/packages/dsh-tavern-stage']) {
@@ -37,5 +36,15 @@ test('实际标准 tgz 的三个服务端入口可冷导入，兼容声明无需
     const entry = path.join(packageDir, relative, 'lib/index.js')
     const imported = await import(pathToFileURL(entry))
     assert.equal(typeof imported.apply, 'function', relative)
+    if (manifest.name === 'dsh-tavern-stage') {
+      let loaded = false, disposed = false, cleanup
+      await imported.apply({
+        get: () => ({ install: async load => { const runtime = await load(); assert.equal(typeof runtime.createStageRuntime, 'function'); loaded = true }, uninstall: () => { disposed = true } }),
+        effect: factory => { cleanup = factory() }
+      })
+      assert.equal(loaded, true, '执行 apply 触发舞台懒加载；完整组件初始化另由实际宿主验证')
+      cleanup()
+      assert.equal(disposed, true)
+    }
   }
 })
