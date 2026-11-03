@@ -9,6 +9,7 @@ import { inspectWorldBookDocument, exportSillyTavernWorldBook } from './worldboo
 import { statusViewDeclaration } from './status-view-declaration.js'
 import { projectTavernHelperWorldbook } from './tavern-helper-worldbook.js'
 import { projectPersistentStatusView } from './persistent-status-view.js'
+import { invalidateOrdinaryDisplayCache } from './ordinary-display-cache.js'
 
 const clone = value => structuredClone(value)
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -245,13 +246,7 @@ export function createLiveCardUpdate({readGlobals = async () => ({}), readWorldB
       collectRemoved(oldShape, defaults)
     }
     const migrated = clone(chat)
-    // Explicit resource reload refreshes ordinary display formatting. Keep real
-    // template output and processing markers: replaying EJS could repeat effects.
-    for (const message of migrated.messages || []) {
-      if (typeof message.tavernPluginData?.template_display?.formattingText === 'string') {
-        delete message.tavernPluginData.template_display
-      }
-    }
+    invalidateOrdinaryDisplayCache(migrated)
     migrated.cardStateDefaults = clone(defaults)
     migrated.cardStateMigrationIds = plans.map(plan => plan.id)
     const selected=chat.messages.find(message=>message.greeting)?.swipeId||0

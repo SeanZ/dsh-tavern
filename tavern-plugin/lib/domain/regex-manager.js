@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { applyTavernRegexText } from './tavern-regex-display.js'
 import { regexScriptsFromImport } from './regex-library.js'
+import { invalidateOrdinaryDisplayCache } from './ordinary-display-cache.js'
 
 // One manager for every regex layer DSH applies to a Tavern session:
 // global rules live in tavern-extension-settings.json, preset rules come from the
@@ -342,6 +343,8 @@ export function createRegexManager({ regexSettings, legacyLibrary, chatForSessio
       })
       if (Object.keys(next.preset).length === 0 && Object.keys(next.card).length === 0) delete current.regexOverrides
       else current.regexOverrides = next
+      // 与覆盖一起在最新存档的更新事务内失效；不写回之前读取的消息列表。
+      if (changed) invalidateOrdinaryDisplayCache(current)
       return current
     }, { source: 'regex.override' })
     if (changed) await onOverridesChanged(chat.id)
