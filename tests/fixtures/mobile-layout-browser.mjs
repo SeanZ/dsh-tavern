@@ -111,6 +111,33 @@ export async function viewport(page, values) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 }
 
+// alpha.3 原生抽屉包含真实遮罩，不能仅用旧移动插件的 data-mobile-nav 夹具代替。
+export async function nativeDrawer(page) {
+  await page.evaluate(layoutPrefix => {
+    const frame = document.getElementById('frame')
+    frame.removeAttribute('data-mobile-nav')
+    frame.setAttribute('data-sidebar-drawer', '')
+    frame.style.gridTemplateColumns = '0px minmax(0px,1fr) minmax(0px,0px)'
+    const sidebar = frame.querySelector('[class*="_sidebarCol"]')
+    sidebar.style.width = '300px'
+    const mask = document.createElement('div')
+    mask.className = layoutPrefix + '_drawerMask'
+    mask.setAttribute('data-sidebar-mask', '')
+    frame.prepend(mask)
+    const leading = document.createElement('div')
+    leading.className = layoutPrefix + '_leadingSeat'
+    leading.innerHTML = '<button aria-label="展开会话栏">☰</button>'
+    frame.append(leading)
+    sidebar.querySelector('#drawer').innerHTML = '<button aria-label="收起会话栏">×</button><button aria-label="展开历史">历史</button><button aria-label="侧栏设置">设置</button><output></output>'
+    const close = () => { frame.setAttribute('data-sidebar-collapsed', ''); sidebar.inert = true; leading.inert = false }
+    leading.firstChild.onclick = () => { frame.removeAttribute('data-sidebar-collapsed'); sidebar.inert = false; leading.inert = true }
+    mask.onclick = close
+    sidebar.querySelector('[aria-label="收起会话栏"]').onclick = close
+    for (const name of ['展开历史', '侧栏设置']) sidebar.querySelector(`[aria-label="${name}"]`).onclick = () => { sidebar.querySelector('output').textContent = name }
+    close()
+  }, layoutPrefix)
+}
+
 // 补充宿主真实 InputBar 样式和 contenteditable 合约，避免仅测 textarea 漏掉实际输入器。
 export async function nativeComposer(page) {
   const inputCss = cssStrings.find(css => css.includes('_primary{') && css.includes('_overlayAnchor{'))
