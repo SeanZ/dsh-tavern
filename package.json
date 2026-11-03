@@ -75,7 +75,28 @@
     "dsh-dream-skin": "link:./tavern-plugin/packages/dsh-dream-skin",
     "dsh-asset-library": "link:./tavern-plugin/packages/dsh-asset-library",
     "esbuild": "0.25.12",
-    "dsh-tavern-stage": "link:./tavern-plugin/packages/dsh-tavern-stage"
+    "dsh-tavern-stage": "link:./tavern-plugin/packages/dsh-tavern-stage",
+    "@deepseek-ai/dsh": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-anonymous-user-id": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-attachment": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-bash-local": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-compaction": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-deepseek-account": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-fs": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-jobs": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-llm-deepseek": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-ptc-runtime": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-scope": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-sdk-protocol": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-session-persistence": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-session-query": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-session-telemetry": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-session-title-llm": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-shell": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-spill": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-util-workspace-path": "0.2.2-alpha.3",
+    "@deepseek-ai/dsh-workflow": "0.2.2-alpha.3"
   },
   "description": "DSH Tavern: standalone tavern Profile bundle",
   "files": [
@@ -121,5 +142,6 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
-  }
+  },
+  "packageManager": "pnpm@11.28.5"
 }
