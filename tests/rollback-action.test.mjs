@@ -21,6 +21,7 @@ function harness() {
         return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value }]
       }
     },
+    ReactDOM: { createPortal: child => child }, document: { body: {} },
     useCandidatePanel: () => null, useRegenPanel: () => regen,
     useTavernSessionMode: () => 'story', useTavernStoryViewMode: () => storyView, latestTavernAssistantMessageId: () => 'reply',
     useLiveTavernView: () => ({ view: { canRollback, undoRollbackTurn: undoTurn, ...extraView } }),
@@ -118,14 +119,14 @@ test('故事视图模式开启时 dock 只留生成候选项，关闭时照旧�
   h.storyView(true)
   assert.deepEqual(labels(h.buttons()), ['生成候选项'])
   h.view({ canReplayFailedTurn: true })
-  assert.deepEqual(labels(h.buttons()), ['生成候选项', 'TavernDebugButton'], '失败轮重放与撤回归输入框状态条')
+  assert.deepEqual(labels(h.buttons()), ['生成候选项'], '失败轮重放与撤回归输入框状态条，调试入口归更多菜单')
   h.storyView(false)
   assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成本轮', '撤回这条输入', 'TavernDebugButton'])
 })
 
-test('故事视图模式开启时「更多」不含编辑正文、回退本轮与恢复错误提示，其余照旧', () => {
+test('故事视图模式开启时「更多」不含编辑正文、回退本轮，其余照旧', () => {
   const h = harness()
-  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', '恢复全部错误提示', 'TavernDebugButton', 'TavernCompactionAction']
+  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', 'TavernDebugButton', 'TavernCompactionAction']
   assert.deepEqual(menuItems(h.more()), all)
   h.storyView(true)
   assert.deepEqual(menuItems(h.more()), ['TavernStopBackgroundAction', 'TavernUndoRollbackAction', 'TavernDebugButton', 'TavernCompactionAction'])

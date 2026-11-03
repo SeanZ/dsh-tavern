@@ -37504,7 +37504,7 @@ function useTavernStoryViewMode(sessionId) {
 					if (!turnRef || turnRef.status !== "closed" || !data.finalNode || !tail || !tail.closing || tail.closing.finalNode.seq !== data.finalNode.seq) return undefined;
 					return { turn: turnRef, seq: data.finalNode.seq, openFile: props.openFile };
 				}, [turnRef, data.finalNode, tail, props.openFile]);
-				const mentions = React.useMemo(function () { return owner === undefined ? undefined : props.fileMentions(owner); }, [owner, props.fileMentions]);
+				const mentions = React.useMemo(function () { return owner === undefined ? undefined : typeof props.fileMentions === "function" ? props.fileMentions(owner) : props.hostFileMentions(owner, props.sessionId); }, [owner, props.fileMentions, props.hostFileMentions, props.sessionId]);
 				const copyLabel = props.t ? props.t("copy") : "复制", copiedLabel = props.t ? props.t("copied") : "已复制";
 				const codeLabels = React.useMemo(() => ({ copyLabel, copiedLabel }), [copyLabel, copiedLabel]);
 				const superseded = galIsSuperseded(liveState.view, turn, storyTurn);
@@ -37807,6 +37807,8 @@ function useTavernStoryViewMode(sessionId) {
 				}
 				const scriptOwner = createTavernScriptSessionOwner({ sessions: createSessionCompat(input.ctx.sessions, resolveUiWorkspace()), executeSlash: createTavernFrameSlashExecutor(input.ctx) });
 				const executeSlash = createTavernFrameSlashExecutor(input.ctx);
+				// alpha.3 将文件引用移到公开服务；旧宿主仍优先使用行参数。
+				const hostFileMentions = (owner, sessionId, getFileTriggerProps) => input.ctx.get("chatFileMentions")?.forClosing(owner, sessionId, getFileTriggerProps);
 				input.ctx.effect(function () {
 					scriptOwner.start();
 					return function () { scriptOwner.dispose(); };
@@ -37831,7 +37833,7 @@ function useTavernStoryViewMode(sessionId) {
 						const data = props.node.data;
 						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
 							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
-							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash, hostFileMentions: hostFileMentions })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				chatEffect(function () {
@@ -53086,689 +53088,689 @@ function createTurnRailFilter(root, options) {
 				title: "卡不能玩、显示异常、太卡太慢，或有疑问：在卡片工作台打开调试 Agent，并附上这一局的记录" }, busy ? "正在打开调试 Agent…" : (props.label || "交给调试 Agent"));
 		}
 
-		function CandidateAction(props) {
-			const [busy, setBusy] = React.useState(false);
-			const candidatePanelState = useCandidatePanel();
-			const regenPanelState = useRegenPanel();
-			const sessionMode = useTavernSessionMode(props.sessionId);
-			const frontRunning = props.useSession(function (snapshot) { return snapshot.running === true; });
-			const latestMessageId = props.useChat(latestTavernAssistantMessageId);
-			const rollbackViewState = useLiveTavernView(props.sessionId, String(frontRunning) + ":" + String(latestMessageId || ""));
-			const activityState = useTavernCoordination(props.sessionId, String(frontRunning) + ":" + String(latestMessageId || ""));
-			const activity = describeTavernActivity(activityState.view && activityState.view.activity);
-			const settlementActive = activity.role === "settlement" && (activity.phase === "pending" || activity.phase === "running");
-			const canRollback = rollbackViewState.view && (rollbackViewState.view.canRegenerate ?? rollbackViewState.view.canRollback) === true;
-            const clearIncomplete = rollbackViewState.view && rollbackViewState.view.canClearIncompleteReply === true;
-			const canReplayFailed = rollbackViewState.view && rollbackViewState.view.canReplayFailedTurn === true;
-			// foreground and background compaction run in sequence; block generation until both finish.
-			const compacting = Boolean(rollbackViewState.view && rollbackViewState.view.contextCompaction && rollbackViewState.view.contextCompaction.operation && rollbackViewState.view.contextCompaction.operation.status === "running");
-			React.useEffect(function () {
-				if (!compacting) return;
-				const timer = window.setInterval(function () { liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }, 2000);
-				return function () {
-					window.clearInterval(timer);
-					const panel = interactions.candidates.getSnapshot();
-					if (panel && panel.sessionId === props.sessionId && panel.phase === "error" && /压缩/.test(String(panel.error || ""))) setCandidatePanel(null);
-				};
-			}, [compacting, props.sessionId]);
-			const candidateTask = activityState.view && activityState.view.task;
-			const taskForMessage = candidateTask && candidateTask.kind === "candidate" && candidateTask.input && String(candidateTask.input.messageId || "") === String(props.messageId || "") ? candidateTask : null;
-			const taskBusy = !!(taskForMessage && taskForMessage.busy);
-			const regenBusy = regenPanelState !== null && regenPanelState.sessionId === props.sessionId && regenPanelState.phase === "loading";
-			const [replayBusy, setReplayBusy] = React.useState(false);
-			const [withdrawBusy, setWithdrawBusy] = React.useState(false);
-			const draft = props.useInput(snapshot => snapshot.draft);
-			const storyView = useTavernStoryViewMode(props.sessionId);
-			const projectedTaskRef = React.useRef("");
-			React.useEffect(function () {
-				if (!taskForMessage) return;
-				const projection = String(taskForMessage.taskId || "") + ":" + String(taskForMessage.version || 0) + ":" + String(taskForMessage.status || "");
-				if (projectedTaskRef.current === projection) return;
-				projectedTaskRef.current = projection;
-				if (taskForMessage.busy) {
-					setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "loading", choices: [], error: "" });
-					return;
-				}
-				if (taskForMessage.status === "succeeded" && taskForMessage.result && taskForMessage.result.candidates) {
-					setCandidatePanel(readyCandidatePanel(props.sessionId, props.messageId, taskForMessage.result.candidates));
-					setCandidateGuidePanel(null);
-					return;
-				}
-				if (taskForMessage.terminal && !candidateErrorDismissed(projection)) {
-					setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "error", choices: [], taskKey: projection, error: playerErrorText(taskForMessage.error || "候选生成未完成", { fallback: "候选生成未完成" }) });
-				}
-			}, [props.sessionId, props.messageId, taskForMessage && taskForMessage.taskId, taskForMessage && taskForMessage.version, taskForMessage && taskForMessage.status]);
-			const reconciledActivityRef = React.useRef("");
-			React.useEffect(function () {
-				if (!activityState.view || activity.busy) return;
-				const revision = activity.phase + ":" + String(activityState.view.updatedAt || 0);
-				if (reconciledActivityRef.current === revision) return;
-				reconciledActivityRef.current = revision;
-				// The host list stream already carries running/activity/blank changes; a full
-				// session.list rescans every stored Session and cost seconds per turn.
-				liveTavernView.invalidate(props.sessionId);
-			}, [props.sessionId, activity.phase, activity.busy, activityState.view && activityState.view.updatedAt]);
-			async function generate(force, guidance) {
-				if (busy || activity.busy) return;
-				setBusy(true);
-				setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "loading", choices: [], error: "" });
-				try {
-					await submitCandidateTask(props.sessionId, props.messageId, guidance);
-				} catch (err) { tavernErrorHub.report("候选项生成", err); setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "error", choices: [], error: playerErrorText(err, { fallback: "候选生成未完成" }) }); }
-				finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
-			}
-			function regenerationPanelFor(event, phase) {
-				const tail = event && event.currentTarget ? event.currentTarget.closest('[data-chat-flow-kind="turn-tail"]') : null;
-				return { sessionId: props.sessionId, phase: phase, guidance: "", text: "", error: "", tail: tail };
-			}
-			function openRegeneration(event) {
-				if (!canRollback || frontRunning || (activity.busy && !settlementActive) || regenBusy) return;
-				setCandidatePanel(null);
-				setRegenPanel(regenerationPanelFor(event, "input"));
-			}
-			// A failed tail has nothing to replace: one click clears the
-			// interrupted reply and replays the same request, so no guidance box.
-			async function replayFailed() {
-				if (!canReplayFailed || frontRunning || replayBusy) return;
-				setReplayBusy(true);
-				try { await submitFailedTurnReplay(props.sessionId); }
-				catch (err) { tavernErrorHub.report("重新生成本轮", err); }
-				finally { setReplayBusy(false); liveTavernView.invalidate(props.sessionId); }
-			}
-			// Learned from huajiao1998/dsh-tavern-sqlite-v2: a failed or stopped round can also be
-			// dropped entirely, not only replayed.
-			async function withdrawFailed() {
-				if (!canReplayFailed || frontRunning || replayBusy || withdrawBusy) return;
-				setWithdrawBusy(true);
-				try { await withdrawFailedTavernTurn(props.sessionId, props.inputActions, draft); }
-				catch (err) { tavernErrorHub.report("撤回这条输入", err); }
-				finally {
-					setWithdrawBusy(false);
-					notifyTavernDataChanged(["sessions"], "play-controls");
-					liveTavernView.invalidate(props.sessionId);
-					tavernCoordination.invalidate(props.sessionId);
-				}
-			}
-			const h = React.createElement;
-			const isScript = sessionMode === "script";
-			const hasReadyPanel = candidatePanelState !== null && candidatePanelState.sessionId === props.sessionId && candidatePanelState.messageId === props.messageId && candidatePanelState.phase === "ready";
-			if (!isPlayMode(sessionMode) || latestMessageId !== props.messageId) return null;
-			// only="choices" in the composer, only="regen" under the latest reply.
-			return h(React.Fragment, null,
-				props.only === "regen" ? null : h("button", { className: "dsh-tavern-choice-trigger", "data-fork-action": hasReadyPanel ? "choices-again" : "choices", "data-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, "aria-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, disabled: busy || taskBusy || activity.busy || settlementActive || regenBusy || compacting, title: compacting ? "正在压缩上下文，完成后可生成候选项" : (busy || taskBusy) ? "正在生成候选项…" : settlementActive ? "当前正文正在后台结算，请等待完成" : (activity.busy ? activity.blockReason : (hasReadyPanel ? "重新生成候选项（可先填写意见）" : (isScript ? "手动生成候选项；由于跟随剧本，只有一个推荐候选项" : "手动生成候选项"))), onClick: function () {
-					setRegenPanel(null);
-					if (hasReadyPanel) {
-						const previous = candidatePanelState;
+				function CandidateAction(props) {
+					const [busy, setBusy] = React.useState(false);
+					const candidatePanelState = useCandidatePanel();
+					const regenPanelState = useRegenPanel();
+					const sessionMode = useTavernSessionMode(props.sessionId);
+					const frontRunning = props.useSession(function (snapshot) { return snapshot.running === true; });
+					const latestMessageId = props.useChat(latestTavernAssistantMessageId);
+					const rollbackViewState = useLiveTavernView(props.sessionId, String(frontRunning) + ":" + String(latestMessageId || ""));
+					const activityState = useTavernCoordination(props.sessionId, String(frontRunning) + ":" + String(latestMessageId || ""));
+					const activity = describeTavernActivity(activityState.view && activityState.view.activity);
+					const settlementActive = activity.role === "settlement" && (activity.phase === "pending" || activity.phase === "running");
+					const canRollback = rollbackViewState.view && (rollbackViewState.view.canRegenerate ?? rollbackViewState.view.canRollback) === true;
+		            const clearIncomplete = rollbackViewState.view && rollbackViewState.view.canClearIncompleteReply === true;
+					const canReplayFailed = rollbackViewState.view && rollbackViewState.view.canReplayFailedTurn === true;
+					// foreground and background compaction run in sequence; block generation until both finish.
+					const compacting = Boolean(rollbackViewState.view && rollbackViewState.view.contextCompaction && rollbackViewState.view.contextCompaction.operation && rollbackViewState.view.contextCompaction.operation.status === "running");
+					React.useEffect(function () {
+						if (!compacting) return;
+						const timer = window.setInterval(function () { liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }, 2000);
+						return function () {
+							window.clearInterval(timer);
+							const panel = interactions.candidates.getSnapshot();
+							if (panel && panel.sessionId === props.sessionId && panel.phase === "error" && /压缩/.test(String(panel.error || ""))) setCandidatePanel(null);
+						};
+					}, [compacting, props.sessionId]);
+					const candidateTask = activityState.view && activityState.view.task;
+					const taskForMessage = candidateTask && candidateTask.kind === "candidate" && candidateTask.input && String(candidateTask.input.messageId || "") === String(props.messageId || "") ? candidateTask : null;
+					const taskBusy = !!(taskForMessage && taskForMessage.busy);
+					const regenBusy = regenPanelState !== null && regenPanelState.sessionId === props.sessionId && regenPanelState.phase === "loading";
+					const [replayBusy, setReplayBusy] = React.useState(false);
+					const [withdrawBusy, setWithdrawBusy] = React.useState(false);
+					const draft = props.useInput(snapshot => snapshot.draft);
+					const storyView = useTavernStoryViewMode(props.sessionId);
+					const projectedTaskRef = React.useRef("");
+					React.useEffect(function () {
+						if (!taskForMessage) return;
+						const projection = String(taskForMessage.taskId || "") + ":" + String(taskForMessage.version || 0) + ":" + String(taskForMessage.status || "");
+						if (projectedTaskRef.current === projection) return;
+						projectedTaskRef.current = projection;
+						if (taskForMessage.busy) {
+							setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "loading", choices: [], error: "" });
+							return;
+						}
+						if (taskForMessage.status === "succeeded" && taskForMessage.result && taskForMessage.result.candidates) {
+							setCandidatePanel(readyCandidatePanel(props.sessionId, props.messageId, taskForMessage.result.candidates));
+							setCandidateGuidePanel(null);
+							return;
+						}
+						if (taskForMessage.terminal && !candidateErrorDismissed(projection)) {
+							setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "error", choices: [], taskKey: projection, error: playerErrorText(taskForMessage.error || "候选生成未完成", { fallback: "候选生成未完成" }) });
+						}
+					}, [props.sessionId, props.messageId, taskForMessage && taskForMessage.taskId, taskForMessage && taskForMessage.version, taskForMessage && taskForMessage.status]);
+					const reconciledActivityRef = React.useRef("");
+					React.useEffect(function () {
+						if (!activityState.view || activity.busy) return;
+						const revision = activity.phase + ":" + String(activityState.view.updatedAt || 0);
+						if (reconciledActivityRef.current === revision) return;
+						reconciledActivityRef.current = revision;
+						// The host list stream already carries running/activity/blank changes; a full
+						// session.list rescans every stored Session and cost seconds per turn.
+						liveTavernView.invalidate(props.sessionId);
+					}, [props.sessionId, activity.phase, activity.busy, activityState.view && activityState.view.updatedAt]);
+					async function generate(force, guidance) {
+						if (busy || activity.busy) return;
+						setBusy(true);
+						setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "loading", choices: [], error: "" });
+						try {
+							await submitCandidateTask(props.sessionId, props.messageId, guidance);
+						} catch (err) { tavernErrorHub.report("候选项生成", err); setCandidatePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "error", choices: [], error: playerErrorText(err, { fallback: "候选生成未完成" }) }); }
+						finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
+					}
+					function regenerationPanelFor(event, phase) {
+						const tail = event && event.currentTarget ? event.currentTarget.closest('[data-chat-flow-kind="turn-tail"]') : null;
+						return { sessionId: props.sessionId, phase: phase, guidance: "", text: "", error: "", tail: tail };
+					}
+					function openRegeneration(event) {
+						if (!canRollback || frontRunning || (activity.busy && !settlementActive) || regenBusy) return;
 						setCandidatePanel(null);
-						setCandidateGuidePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "input", error: "", previous: previous });
-					} else {
-						generate(false);
+						setRegenPanel(regenerationPanelFor(event, "input"));
 					}
-				} }, settlementActive ? "后台结算中…" : (activity.busy ? activity.label : ((busy || taskBusy) ? "生成中…" : (hasReadyPanel ? "重新生成候选项" : "生成候选项")))),
-				!storyView && props.only !== "choices" && (canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", "data-fork-action": canReplayFailed ? "replay" : "regen", "data-busy": (replayBusy || regenBusy) || undefined, "aria-busy": (replayBusy || regenBusy) || undefined, disabled: frontRunning || compacting || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: replayBusy ? "正在重放本轮请求…" : regenBusy ? "正在重新生成正文…" : compacting ? "正在压缩上下文，请稍候" : canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
-				!storyView && props.only !== "choices" && canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null,
-				!storyView && props.only !== "choices" && canReplayFailed ? h(TavernDebugButton, { sessionId: props.sessionId, className: "dsh-tavern-choice-trigger", label: "交给调试 Agent" }) : null
-			);
-		}
-
-		function TavernRollbackAction(props) {
-			const [rolling, setRolling] = React.useState(false);
-			const regenPanelState = useRegenPanel();
-			const frontRunning = props.useSession(function (snapshot) { return snapshot.running === true; });
-			const latestMessageId = props.useChat(latestTavernAssistantMessageId);
-			const rollbackViewState = useLiveTavernView(props.sessionId, "rollback:" + String(frontRunning) + ":" + String(latestMessageId || ""));
-			const activityState = useTavernCoordination(props.sessionId, "rollback:" + String(frontRunning) + ":" + String(latestMessageId || ""));
-			const activity = describeTavernActivity(activityState.view && activityState.view.activity);
-			const settlementActive = activity.role === "settlement" && (activity.phase === "pending" || activity.phase === "running");
-			const canRollback = rollbackViewState.view && rollbackViewState.view.canRollback === true;
-            const clearIncomplete = rollbackViewState.view && rollbackViewState.view.canClearIncompleteReply === true;
-			const regenBusy = regenPanelState !== null && regenPanelState.sessionId === props.sessionId && regenPanelState.phase === "loading";
-			const targetTurn = Number(rollbackViewState.view && rollbackViewState.view.rollbackTargetTurn) || 0;
-            const targetLabel = targetTurn > 0 ? "回退第 " + targetTurn + " 轮" : "回退本轮";
-			const blocked = rolling || frontRunning || regenBusy || activity.busy || settlementActive;
-			async function rollback() {
-				if (!canRollback || blocked) return;
-				setRolling(true);
-				try {
-					const result = await rpc("rollbackTurn", { expectedTurn: clearIncomplete ? null : targetTurn }, props.sessionId);
-					historyProjection.rolledBack(props.sessionId, result && result.view);
-					setCandidatePanel(null);
-					setRegenPanel(null);
-					setCandidateGuidePanel(null);
-					notifyTavernDataChanged(["sessions"], "play-controls");
-					if (result && result.view && result.view.rollbackWarning) tavernErrorHub.report("回退提示", new Error(result.view.rollbackWarning));
-				} catch (err) {
-					tavernErrorHub.report("回退本轮", err);
-				} finally { setRolling(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
-			}
-			if (!canRollback) {
-                // While a reply is streaming, the surface has no settled target yet; the
-                // server's "not in the message stream" reason would wrongly read as permanent.
-                const reason = blocked && !rolling ? "正在生成或后台处理中，完成或停止后才能回退" : rollbackViewState.view && rollbackViewState.view.rollbackUnavailableReason;
-                return reason ? React.createElement("button", { type: "button", role: "menuitem", disabled: true, className: "dsh-tavern-menu-unavailable", title: reason },
-                    React.createElement("span", null, "回退本轮"),
-                    React.createElement("small", null, reason.includes("没有可回退") ? "暂无可回退轮次" : reason)) : null;
-            }
-			return React.createElement("button", { className: "danger", role: "menuitem", disabled: blocked, title: blocked ? "请等待当前生成或后台处理完成后再回退" : clearIncomplete ? "清除未完成回复，保留已完成剧情" : "删除最近一次用户输入和这段 LLM 输出", onClick: rollback }, rolling ? "处理中…" : clearIncomplete ? "清除未完成回复" : targetLabel);
-		}
-
-        function TavernUndoRollbackAction(props) {
-            const [busy, setBusy] = React.useState(false);
-            const running = props.useSession(function (state) { return state.running === true; });
-            const live = useLiveTavernView(props.sessionId, "undo:" + String(running));
-            const turn = Number(live.view && live.view.undoRollbackTurn) || 0;
-            if (!turn) return null;
-            async function undo() {
-                if (busy || running) return;
-                setBusy(true);
-                try {
-                    const result = await rpc("undoRollbackTurn", {}, props.sessionId);
-                    historyProjection.restored(props.sessionId, result && result.view);
-                    setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
-                    notifyTavernDataChanged(["sessions"], "play-controls");
-                } catch (error) { tavernErrorHub.report("撤销回退", error); }
-                finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
-            }
-            return React.createElement("button", { role: "menuitem", disabled: busy || running, onClick: undo,
-                title: "恢复第 " + turn + " 轮正文和状态；新的操作会使此恢复点失效" }, busy ? "恢复中…" : "撤销回退（恢复第 " + turn + " 轮）");
-        }
-
-        // 每轮消息上的「回退到这一轮」：一次删掉它之后的所有轮次，一次撤销即可全部恢复。
-        function TavernRollbackToAction(props) {
-            const messageId = String(props.messageId || "");
-            const liveState = useScopedLiveTavernView(props.sessionId, "rollback-to:" + messageId, [["mode"], ["canRollback"], ["rollbackTargetTurn"], ["forkTurnsByMessageId", messageId]]);
-            const [busy, setBusy] = React.useState(false);
-            // 故事视图接管回退入口（与菜单「回退本轮」一致），原生审计视图不再重复提供。
-            const storyView = useTavernStoryViewMode(props.sessionId);
-            const view = liveState.view;
-            const turn = Number(view && view.forkTurnsByMessageId && view.forkTurnsByMessageId[messageId]) || 0;
-            const latest = Number(view && view.rollbackTargetTurn) || 0;
-            if (storyView || !view || !isPlayMode(view.mode) || view.canRollback !== true || !(turn > 0) || !(latest > turn)) return null;
-            async function rollbackTo() {
-                if (busy) return;
-                if (!await askTavernConfirm("回退到第 " + turn + " 轮？\n\n第 " + turn + " 轮之后的所有输入和正文都会删除，剧情状态回到第 " + turn + " 轮结束时。之后可在菜单里「撤销回退」一次全部恢复。", { confirmText: "回退", cancelText: "取消" })) return;
-                setBusy(true);
-                try {
-                    const result = await rpc("rollbackToTurn", { turn: turn }, props.sessionId);
-                    historyProjection.rolledBack(props.sessionId, result && result.view);
-                    setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
-                    notifyTavernDataChanged(["sessions"], "play-controls");
-                    if (result && result.view && result.view.rollbackWarning) tavernErrorHub.report("回退提示", new Error(result.view.rollbackWarning));
-                } catch (error) { tavernErrorHub.report("回退到这一轮", error); }
-                finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
-            }
-            const label = busy ? "正在回退…" : "回退到这一轮";
-            return React.createElement(DshUi.Tooltip, { label: label, side: "bottom" },
-                React.createElement("button", { type: "button", className: "dsh-tavern-message-fork dsh-tavern-message-rollback", "aria-label": label, disabled: busy, onClick: rollbackTo },
-                    React.createElement("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
-                        React.createElement("path", { d: "M5 5v14" }), React.createElement("path", { d: "M19 12H9m4-5-5 5 5 5" }))));
-        }
-
-		const bodyEditPanel = { value: null, listeners: new Set() };
-		function setBodyEditPanel(value) {
-			bodyEditPanel.value = value;
-			bodyEditPanel.listeners.forEach(function (listener) { listener(value); });
-		}
-		function useBodyEditPanel() {
-			const [value, setValue] = React.useState(bodyEditPanel.value);
-			React.useEffect(function () { bodyEditPanel.listeners.add(setValue); return function () { bodyEditPanel.listeners.delete(setValue); }; }, []);
-			return value;
-		}
-		function TavernEditBodyAction(props) {
-			const [busy, setBusy] = React.useState(false);
-			const running = props.useSession(function (snapshot) { return snapshot.running === true; });
-			const latestMessageId = props.useChat(latestTavernAssistantMessageId);
-			const live = useLiveTavernView(props.sessionId, "edit:" + String(running) + ":" + String(latestMessageId));
-			const coordination = useTavernCoordination(props.sessionId, String(running));
-			const activity = describeTavernActivity(coordination.view && coordination.view.activity);
-			async function openEditor() {
-				setBusy(true);
-				try {
-					const result = await rpc("getBodyEdit", {}, props.sessionId);
-					setRegenPanel(null); setCandidatePanel(null); setCandidateGuidePanel(null);
-					setBodyEditPanel({ sessionId: props.sessionId, edit: result.edit, texts: result.edit.parts.filter(function (part) { return part.kind === "text"; }).map(function (part) { return part.text; }), busy: false, error: "" });
-				} catch (error) { tavernErrorHub.report("编辑正文", error); }
-				finally { setBusy(false); }
-			}
-			if (!live.view || !(live.view.canEditBody ?? live.view.canRollback)) return null;
-			return React.createElement("button", { role: "menuitem", disabled: busy || running || activity.busy, onClick: openEditor }, busy ? "读取中…" : "编辑正文");
-		}
-		function BodyEditPanel(props) {
-			const panel = useBodyEditPanel();
-			const running = props.useSession(function (snapshot) { return snapshot.running === true; });
-			const h = React.createElement;
-			// The user-message edit button lives in another feature module; it opens
-			// this panel through a page event instead of reaching into this closure.
-			React.useEffect(function () {
-				function open(event) {
-					const detail = event && event.detail ? event.detail : {};
-					if (!detail.edit || detail.sessionId !== props.sessionId) return;
-					setBodyEditPanel({ sessionId: detail.sessionId, edit: detail.edit, texts: Array.isArray(detail.texts) ? detail.texts : [], busy: false, error: "" });
-				}
-				window.addEventListener("dsh-tavern-open-body-edit", open);
-				return function () { window.removeEventListener("dsh-tavern-open-body-edit", open); };
-			}, [props.sessionId]);
-			if (!panel || panel.sessionId !== props.sessionId) return null;
-			const label = panel.edit.role === "user" ? "编辑这条输入" : "编辑正文";
-			const failed = panel.edit.failed === true;
-			async function save() {
-				setBodyEditPanel(Object.assign({}, panel, { busy: true, error: "" }));
-				try {
-					const result = await rpc("saveBodyEdit", { token: panel.edit.token, role: panel.edit.role, index: panel.edit.index, turn: panel.edit.turn, seq: panel.edit.seq, texts: panel.texts }, props.sessionId);
-					if (result && typeof result.composerText === "string") {
-						// A failed turn was withdrawn; hand the edited text back to the composer.
-						if (result.view) liveTavernView.setView(props.sessionId, result.view);
-						notifyTavernDataChanged(["sessions"], "play-controls");
-						tavernCoordination.invalidate(props.sessionId);
-						setBodyEditPanel(null);
-						if (result.composerText.trim() !== "" && props.inputActions && typeof props.inputActions.setDraft === "function") props.inputActions.setDraft(result.composerText);
-						return;
+					// A failed tail has nothing to replace: one click clears the
+					// interrupted reply and replays the same request, so no guidance box.
+					async function replayFailed() {
+						if (!canReplayFailed || frontRunning || replayBusy) return;
+						setReplayBusy(true);
+						try { await submitFailedTurnReplay(props.sessionId); }
+						catch (err) { tavernErrorHub.report("重新生成本轮", err); }
+						finally { setReplayBusy(false); liveTavernView.invalidate(props.sessionId); }
 					}
-					liveTavernView.setView(props.sessionId, result.view);
-					notifyTavernDataChanged(["sessions"], "play-controls");
-					tavernCoordination.invalidate(props.sessionId);
-					setBodyEditPanel(null);
-				} catch (error) { setBodyEditPanel(Object.assign({}, panel, { busy: false, error: String(error.message || error) })); }
-			}
-			let textIndex = 0;
-			return h("div", { className: "dsh-tavern-question fork-body-edit", role: "region", "aria-label": label },
-				h("div", { className: "dsh-tavern-question-head" }, h("span", null, label)),
-				panel.edit.role === "user" ? h("div", { className: "dsh-tavern-question-sub" }, failed
-					? "这是失败轮的输入。保存只改文字，不会自动重试或撤回；之后点「重新生成本轮」会按新文字重发，点「撤回这条输入」会把它放回输入框。"
-					: "只改这一条输入，不会自动重写已生成的回复；需要新回复时保存后再点「重新生成正文」。") : null,
-				panel.error ? h("div", { className: "dsh-tavern-choice-error", role: "alert" }, panel.error) : null,
-				h("div", { style: { maxHeight: "50vh", overflowY: "auto" } }, panel.edit.parts.map(function (part, index) {
-					if (part.kind === "html") return h("div", { key: index, className: "dsh-tavern-question-sub" }, "HTML 内容保持原样");
-					if (part.kind !== "text") return null;
-					const current = textIndex++;
-					return h("textarea", { key: index, className: "dsh-tavern-regen-input", "aria-label": "正文文本 " + (current + 1), rows: Math.min(60, Math.max(3, panel.texts[current].split("\n").length)), value: panel.texts[current], disabled: panel.busy, onChange: function (event) {
-						const texts = panel.texts.slice(); texts[current] = event.target.value;
-						setBodyEditPanel(Object.assign({}, panel, { texts: texts }));
-					} });
-				})),
-				h("div", { className: "dsh-tavern-question-foot" },
-					h("button", { className: "dsh-tavern-question-primary", disabled: panel.busy || running, onClick: save }, panel.busy ? "保存中…" : "保存"),
-					h("button", { className: "dsh-tavern-question-free", disabled: panel.busy, onClick: function () { setBodyEditPanel(null); } }, "取消")));
-		}
-
-        function backgroundWaitMessage(progress, now) {
-            if (!progress || now - progress.startedAt < 60000) return "";
-            const plugin = progress.plugin ? "插件「" + progress.plugin + "」正在结算。" : "";
-            return plugin + backgroundPhaseMessage(progress, now);
-        }
-        function backgroundPhaseMessage(progress, now) {
-            if (progress.phase === "model") {
-                return now - progress.lastProgressAt < 15000
-                    ? "模型仍在输出思考、正文或工具参数，后台任务尚未完成。可以继续等待或停止后台；已生成的正文会保留。"
-                    : "正在等待模型 API 的有效输出。连续 5 分钟没有有效输出会停止并报错；也可以现在停止后台，保留已生成的正文。";
-            }
-            return progress.phase === "tool"
-                ? "正在执行后台工具或等待人物卡变量处理。若长时间没有完成，可以停止后台；已生成的正文会保留。"
-                : "正在准备后台请求。若长时间没有完成，可以停止后台；已生成的正文会保留。";
-        }
-        function TavernBackgroundWait(props) {
-            const [progress, setProgress] = React.useState(null);
-            const [now, setNow] = React.useState(Date.now);
-            const active = props.activity?.busy || props.activity?.phase === "pending";
-            React.useEffect(function () {
-                let disposed = false, loading = false;
-                setProgress(null);
-                if (!active) return;
-                async function refresh() {
-                    setNow(Date.now());
-                    if (loading) return;
-                    loading = true;
-                    try {
-                        const result = await rpc("getBackgroundProgress", {}, props.sessionId);
-                        if (!disposed) setProgress(result.progress);
-                    } catch (_) { /* Existing task status and stop controls remain usable. */ }
-                    finally { loading = false; }
-                }
-                void refresh();
-                const timer = window.setInterval(refresh, 5000);
-                return function () { disposed = true; window.clearInterval(timer); };
-            }, [active, props.sessionId, props.activity?.operationId]);
-            const message = backgroundWaitMessage(progress || {phase:"preparing",startedAt:props.activity?.updatedAt || now}, now);
-            if (!active || !message) return null;
-            return React.createElement("div", {className:"dsh-tavern-status-section", role:"status"},
-                React.createElement("p", null, message),
-                React.createElement(TavernStopBackgroundAction, {sessionId:props.sessionId}));
-        }
-        const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消", skipped: "跳过（功能没开）" };
-        function backgroundRunName(run) {
-            return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : run.name || run.task;
-        }
-        function backgroundRunSeconds(run, now) {
-            const from = run.startedAt || run.queuedAt, to = run.endedAt || now;
-            return Math.max(0, Math.round((to - from) / 1000)) + " 秒";
-        }
-        function backgroundRunsSummary(runs) {
-            const count = status => runs.filter(run => run.status === status).length;
-            return [["running", "运行"], ["queued", "排队"], ["failed", "失败"]].filter(([status]) => count(status)).map(([status, label]) => label + " " + count(status)).join(" · ");
-        }
-        // Every background run of this game since the server started, polled while shown.
-        function useTavernBackgroundRuns(sessionId) {
-            const [runs, setRuns] = React.useState(null);
-            const [now, setNow] = React.useState(Date.now);
-            const [turns, setTurns] = React.useState([]);
-            const [moments, setMoments] = React.useState([]);
-            const [catalog, setCatalog] = React.useState([]);
-            const [locks, setLocks] = React.useState([]);
-            const [members, setMembers] = React.useState([]);
-            React.useEffect(function () {
-                let disposed = false, loading = false;
-                setRuns(null);
-                async function refresh() {
-                    setNow(Date.now());
-                    if (loading) return;
-                    loading = true;
-                    try {
-                        const result = await rpc("getBackgroundRuns", {}, sessionId);
-                        if (disposed) return;
-                        setRuns(Array.isArray(result.runs) ? result.runs : []);
-                        setTurns(Array.isArray(result.turns) ? result.turns : []);
-                        setMoments(Array.isArray(result.moments) ? result.moments : []);
-                        setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
-                        setLocks(Array.isArray(result.locks) ? result.locks : []);
-                        setMembers(Array.isArray(result.members) ? result.members : []);
-                    } catch (_) { /* Diagnostic only; the next poll retries. */ }
-                    finally { loading = false; }
-                }
-                void refresh();
-                const timer = window.setInterval(refresh, 2000);
-                return function () { disposed = true; window.clearInterval(timer); };
-            }, [sessionId]);
-            return { runs, now, turns, moments, catalog, locks, members };
-        }
-        // A plugin's member is shown with its plugin: 插件「npc」·露娜.
-        function backgroundMemberLabel(member) {
-            return member ? (member.plugin ? "插件「" + member.plugin + "」·" : "") + member.name : "";
-        }
-        // One turn's timeline: one row per member (书记, 润色师, plugin members; fresh Agents share
-        // a row, overlapping runs stacked), time left to right across the panel's width, the
-        // turn's moments as vertical lines. A member runs one task at a time, so its row is its lock;
-        // a task turned away by the lock is a ✕ on the row.
-        function TavernTurnTimeline(props) {
-            const h = React.createElement, turn = props.turn, now = props.now;
-            const flat = list => list.flatMap(node => [node, ...flat(node.then)]);
-            const blocks = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others))
-                .flatMap(node => node.agents.map(run => ({ ...run, name: node.name, key: node.key + ":" + run.id })));
-            const from = turn.at, to = Math.max(from + 1000, ...blocks.map(run => run.endedAt || now), ...turn.moments.map(moment => moment.at), props.until || 0);
-            const pct = time => Math.max(0, Math.min(100, (time - from) / (to - from) * 100)) + "%";
-            const width = (a, b) => Math.max(0.8, (b - a) / (to - from) * 100) + "%";
-            const memberIds = (props.members || []).map(member => member.id);
-            const rows = (props.members || []).map(member => ({ key: member.id, label: backgroundMemberLabel(member), runs: blocks.filter(run => run.member === member.id) }));
-            // Fresh Agents: each takes the first sub-row free at its start.
-            const fresh = [];
-            for (const run of blocks.filter(run => !memberIds.includes(run.member)).sort((a, b) => a.queuedAt - b.queuedAt)) {
-                const row = fresh.find(item => item.end <= run.queuedAt) || (fresh.push({ end: 0, runs: [] }), fresh[fresh.length - 1]);
-                row.runs.push(run); row.end = run.endedAt || now;
-            }
-            fresh.forEach((row, index) => rows.push({ key: "fresh:" + index, label: index ? "" : "临时 Agent", runs: row.runs }));
-            if (!fresh.length) rows.push({ key: "fresh", label: "临时 Agent", runs: [] });
-            const refused = (props.locks || []).filter(item => item.kind === "refused" && item.at >= from && item.at <= to);
-            const seconds = Math.round((to - from) / 1000);
-            const bar = run => {
-                const start = run.startedAt || now, end = run.endedAt || now;
-                const title = run.name + " · " + (BACKGROUND_RUN_STATUS[run.status] || run.status) + (run.model ? " · " + run.model : "") +
-                    "\n" + backgroundClock(run.queuedAt) + " 起，排队 " + Math.round((start - run.queuedAt) / 1000) + " 秒，运行 " + Math.round((end - start) / 1000) + " 秒" + (run.error ? "\n" + run.error : "");
-                return [
-                    start - run.queuedAt >= 500 ? h("div", { key: run.key + ":wait", className: "dsh-tavern-tl-wait", style: { left: pct(run.queuedAt), width: width(run.queuedAt, start) }, title }) : null,
-                    run.startedAt ? h("div", { key: run.key, className: "dsh-tavern-tl-bar " + run.status, style: { left: pct(start), width: width(start, end) }, title }, run.name) : null];
-            };
-            const marks = turn.moments.filter(moment => moment.event !== "turn-started");
-            return h("div", { className: "dsh-tavern-tl" },
-                h("div", { className: "dsh-tavern-tl-row dsh-tavern-tl-head" },
-                    h("div", { className: "dsh-tavern-tl-label" }, backgroundClock(from)),
-                    h("div", { className: "dsh-tavern-tl-track" }, marks.map((moment, index) =>
-                        h("span", { key: index, className: "dsh-tavern-tl-mark-label" + (index % 2 ? " low" : ""), style: { left: pct(moment.at) }, title: moment.name + " " + backgroundClock(moment.at) }, moment.name)),
-                        h("span", { className: "dsh-tavern-tl-end" }, "+" + seconds + " 秒"))),
-                rows.map(row => h("div", { key: row.key, className: "dsh-tavern-tl-row" },
-                    h("div", { className: "dsh-tavern-tl-label", title: row.label }, row.label),
-                    h("div", { className: "dsh-tavern-tl-track" },
-                        marks.map((moment, index) => h("i", { key: "m" + index, className: "dsh-tavern-tl-line", style: { left: pct(moment.at) } })),
-                        row.runs.flatMap(bar),
-                        refused.filter(item => (item.slot || "background") === row.key).map((item, index) => h("i", { key: "x" + index, className: "dsh-tavern-tl-refused", style: { left: pct(item.at) },
-                            title: "被锁挡回：" + item.role + "（" + item.holder + " 正在跑）" }, "✕"))))),
-                h("p", { className: "dsh-tavern-settings-desc" }, "一行一个成员，同一成员一次只跑一个任务；竖线是剧情时刻，斜纹是排队，✕ 是被锁挡回。鼠标停在块上看详情。"));
-        }
-        const BACKGROUND_STATUS_MARK = { queued: "…", running: "●", completed: "✓", discarded: "⊘", failed: "✕", cancelled: "⊘", skipped: "–" };
-        function backgroundClock(time) {
-            return new Date(time).toTimeString().slice(0, 8);
-        }
-        function backgroundSpan(from, to, now) {
-            const seconds = Math.max(0, Math.round(((to || now) - from) / 1000));
-            return seconds < 1 ? "" : seconds + " 秒";
-        }
-        // One task of a turn: what it is, how it went, the Agent runs it made; click for what it does.
-        // Under it, the tasks that ran because it finished (任务完成, needs).
-        function TavernBackgroundTaskNode(props) {
-            const h = React.createElement, node = props.node, now = props.now;
-            const [open, setOpen] = React.useState(false);
-            const memberName = id => backgroundMemberLabel((props.members || []).find(member => member.id === id));
-            const info = (props.catalog || []).find(item => item.task === node.task);
-            const agent = node.agents[0];
-            const facts = node.status === "skipped" ? ["跳过：" + (node.condition ? "只在" + node.condition + "运行" : "功能没开")] : [backgroundSpan((agent && (agent.startedAt || agent.queuedAt)) || node.at, (agent && agent.endedAt) || node.endedAt, now),
-                node.agents.map(run => memberName(run.member) || (run.lane === "resident" ? "常驻 Agent" : "临时 Agent")).join("、"),
-                agent && agent.model, agent && agent.startedAt && agent.startedAt - agent.queuedAt >= 1000 ? "排队 " + Math.round((agent.startedAt - agent.queuedAt) / 1000) + " 秒" : ""].filter(Boolean);
-            return h("li", { className: "dsh-tavern-run-node " + node.status },
-                h("button", { type: "button", className: "dsh-tavern-run-node-head", onClick: () => setOpen(!open), "aria-expanded": open,
-                    title: BACKGROUND_RUN_STATUS[node.status] || node.status },
-                    h("span", { className: "dsh-tavern-run-mark" }, BACKGROUND_STATUS_MARK[node.status] || "·"),
-                    h("span", { className: "dsh-tavern-run-name" }, node.name),
-                    h("span", { className: "dsh-tavern-run-facts" }, facts.join(" · "))),
-                node.error ? h("div", { className: "dsh-tavern-run-error" }, node.error) : null,
-                node.status === "discarded" ? h("div", { className: "dsh-tavern-run-note" }, "跑完时剧情已变化（回退、重写或编辑），结果没有保存。") : null,
-                open ? h("div", { className: "dsh-tavern-run-detail" },
-                    info ? [["做什么", info.does], ["何时启动", info.trigger], ["读", info.reads], ["写", info.writes], ["等待", info.waits]].filter(([, text]) => text)
-                        .map(([label, text]) => h("div", { key: label }, h("b", null, label + "："), text)) : h("div", null, "这一项没有登记在任务目录里（它不调用后台 Agent）。"),
-                    node.agents.map(run => h("div", { key: run.id }, h("b", null, "Agent 运行："),
-                        (BACKGROUND_RUN_STATUS[run.status] || run.status) + " · " + backgroundClock(run.queuedAt) + (run.error ? " · " + run.error : "")))) : null,
-                node.then.length ? h("ul", { className: "dsh-tavern-run-then" }, node.then.map(child => h(TavernBackgroundTaskNode, { ...props, key: child.key, node: child }))) : null);
-        }
-        // One turn, like one run of a GitHub Actions workflow: its story moments in order, each with
-        // the tasks it started.
-        function TavernBackgroundTurn(props) {
-            const h = React.createElement, turn = props.turn;
-            const count = list => list.reduce((sum, node) => sum + 1 + count(node.then), 0);
-            const flat = list => list.flatMap(node => [node, ...flat(node.then)]);
-            const nodes = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others));
-            const busy = nodes.filter(node => node.status === "running" || node.status === "queued").length;
-            const failed = nodes.filter(node => node.status === "failed").length;
-            const skipped = nodes.filter(node => node.status === "skipped").length;
-            const summary = [count(nodes.filter(node => !nodes.some(other => other.then.includes(node)))) - skipped + " 项任务", skipped ? skipped + " 项跳过" : "", busy ? busy + " 项进行中" : "", failed ? failed + " 项失败" : ""].filter(Boolean).join(" · ");
-            const list = tasks => h("ul", { className: "dsh-tavern-run-tasks" }, tasks.map(node => h(TavernBackgroundTaskNode, { key: node.key, node, now: props.now, catalog: props.catalog, members: props.members })));
-            const [timeline, setTimeline] = React.useState(false);
-            return h("details", { className: "dsh-tavern-run-turn", open: props.open },
-                h("summary", null, h("b", null, turn.turn ? "第 " + turn.turn + " 轮" : "更早"), " · " + backgroundClock(turn.at) + " · " + summary),
-                h("button", { type: "button", className: "dsh-tavern-run-tl-toggle", onClick: () => setTimeline(!timeline), "aria-expanded": timeline }, timeline ? "收起时序 ▴" : "时序 ▾"),
-                timeline ? h(TavernTurnTimeline, { turn, now: props.now, members: props.members, locks: props.locks }) : null,
-                h("ol", { className: "dsh-tavern-run-moments" },
-                    turn.moments.map((moment, index) => h("li", { key: moment.event + index },
-                        h("div", { className: "dsh-tavern-run-moment" }, h("span", null, moment.name), h("time", null, backgroundClock(moment.at))),
-                        moment.tasks.length ? list(moment.tasks) : null)),
-                    turn.others.length ? h("li", null,
-                        h("div", { className: "dsh-tavern-run-moment" }, h("span", null, "手动或插件启动")),
-                        list(turn.others)) : null));
-        }
-        // One task's definition, like a GitHub Actions job: member, what starts it (on, if), its
-        // other starts, needs, what needs it, what the next turn and cancelling make of it, what it does.
-        function TavernBackgroundTaskSpec(props) {
-            const h = React.createElement, item = props.item, spec = item.spec || {};
-            const member = backgroundMemberLabel((props.members || []).find(entry => entry.id === item.member));
-            const none = "—";
-            const rows = [
-                ["成员", (member || (item.lane === "resident" ? "常驻 Agent" : "临时 Agent")) + (item.lane === "resident" ? "（常驻，保留历史）" : "（每次新开）") + (spec.lock ? "，占锁：同成员的任务一次只跑一个" : "")],
-                ["启动", (spec.on || []).length ? h("ul", null, spec.on.map((start, index) => h("li", { key: index },
-                    [start.moments.join("、"), start.needs.length ? start.needs.join("、") + " 完成后" : ""].filter(Boolean).join("，"),
-                    start.condition ? h("span", { className: "dsh-tavern-task-spec-if" }, "if " + start.condition) : null,
-                    start.flow ? h("span", { className: "dsh-tavern-task-spec-if" }, "流程直接启动") : null))) : none],
-                ["其他入口", (spec.manual || item.manual || []).length ? h("ul", null, (spec.manual || item.manual).map(text => h("li", { key: text }, text))) : none],
-                ["需要", (spec.needs || []).length ? spec.needs.join("、") + " 完成" : none],
-                ["被需要", (spec.neededBy || []).length ? spec.neededBy.join("、") + " 等它" : none],
-                ["下一轮", spec.blocksNextTurn ? "开始前要等它做完" : "不等它"],
-                ["前台", spec.idleForeground ? "不在生成正文时才开始" : none],
-                ["取消", (spec.cancelOn || []).length ? spec.cancelOn.join("、") + " 时" : none],
-                ["做什么", item.does],
-                ["读", item.reads || none],
-                ["写", item.writes || none],
-                spec.note ? ["备注", spec.note] : null,
-                item.waits && !item.spec ? ["等待", item.waits] : null
-            ].filter(Boolean);
-            return h("div", { className: "dsh-tavern-task-spec", id: "dsh-tavern-task-spec-" + item.task },
-                h("div", { className: "dsh-tavern-task-spec-name" }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name, h("code", null, item.task)),
-                h("dl", null, rows.flatMap(([label, value]) => [h("dt", { key: label + ":k" }, label), h("dd", { key: label + ":v" }, value)])));
-        }
-        // Who does what: each resident member with its tasks and what it does now; fresh Agents
-        // (one new session per run, may run side by side) last.
-        function TavernBackgroundMembers(props) {
-            const h = React.createElement, catalog = props.catalog || [], runs = props.runs || [];
-            const ids = (props.members || []).map(member => member.id);
-            const groups = (props.members || []).map(member => ({ key: member.id, name: backgroundMemberLabel(member),
-                kind: "常驻，保留历史" + (member.timeline ? "，随剧情回退" : ""), tasks: catalog.filter(item => item.member === member.id), runs: runs.filter(run => run.member === member.id) }))
-                .concat([{ key: "fresh", name: "临时 Agent", kind: "每次新开，可同时运行", tasks: catalog.filter(item => !ids.includes(item.member)), runs: runs.filter(run => !ids.includes(run.member)) }]);
-            const now = group => {
-                const running = group.runs.filter(run => run.status === "running"), queued = group.runs.filter(run => run.status === "queued");
-                return [running.length ? "正在跑：" + running.map(run => run.name || run.task).join("、") : "", queued.length ? queued.length + " 个排队" : ""].filter(Boolean).join("，") || "空闲";
-            };
-            return h("div", { className: "dsh-tavern-members" }, groups.map(group => h("div", { key: group.key, className: "dsh-tavern-member" },
-                h("div", { className: "dsh-tavern-member-head" }, h("b", null, group.name), h("span", null, group.kind), h("span", { className: "dsh-tavern-member-now" }, now(group))),
-                group.tasks.length ? h("div", { className: "dsh-tavern-member-tasks" }, group.tasks.map(item => h("button", { key: item.task, type: "button", onClick: () => props.openSpec(item.task), title: item.does },
-                    (item.plugin && !group.name.includes(item.plugin) ? "插件「" + item.plugin + "」" : "") + item.name))) : h("div", { className: "dsh-tavern-member-tasks" }, "还没有登记任务"))));
-        }
-        // The 后台任务 sidebar page, for development: per turn, which moment started which task and
-        // what ran after what; the timeline and the full task list are folded below.
-        function TavernBackgroundTasksTab(props) {
-            const h = React.createElement;
-            const { runs, now, turns, moments, catalog, locks, members } = useTavernBackgroundRuns(props.sessionId);
-            const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
-            // A task named elsewhere on the page opens its definition under 全部任务.
-            const specs = React.useRef(null);
-            const openSpec = task => {
-                if (specs.current) specs.current.open = true;
-                window.requestAnimationFrame(() => document.getElementById("dsh-tavern-task-spec-" + task)?.scrollIntoView({ block: "start", behavior: "smooth" }));
-            };
-            return h("aside", { className: "dsh-tavern-status dsh-tavern-status-dashboard dsh-tavern-background-tasks" },
-                h("div", { className: "dsh-tavern-status-head" },
-                    h("div", { className: "dsh-tavern-status-title" }, "后台任务"),
-                    h("div", { className: "dsh-tavern-status-settle" }, runs === null ? "正在读取…" : backgroundRunsSummary(runs) || "空闲")),
-                h("div", { className: "dsh-tavern-status-body" },
-                    active.length ? h(TavernStopBackgroundAction, { sessionId: props.sessionId }) : null,
-                    h("section", { className: "dsh-tavern-status-section" },
-                        h("div", { className: "dsh-tavern-status-label" }, "每轮流程"),
-                        runs === null ? null : turns.length
-                            ? turns.map((turn, index) => h(TavernBackgroundTurn, { key: turn.at, turn, open: index === 0, now, catalog, members, locks }))
-                            : h("div", { className: "dsh-tavern-status-empty" }, "服务启动以来这局还没有玩过。"),
-                        h("p", { className: "dsh-tavern-settings-desc" }, "✓ 完成　● 运行中　… 排队　✕ 失败　⊘ 取消或作废　– 跳过（功能没开）。缩进的任务在上一项做完后才开始；点任务名看它做什么、等什么。只保留重启服务以来的最近几轮。")),
-                    h("section", { className: "dsh-tavern-status-section" },
-                        h("div", { className: "dsh-tavern-status-label" }, "成员"),
-                        h(TavernBackgroundMembers, { members, catalog, runs: runs || [], openSpec })),
-                    catalog.length ? h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold", ref: specs },
-                        h("summary", null, "全部任务（" + catalog.length + "）"),
-                        catalog.map(item => h(TavernBackgroundTaskSpec, { key: item.task, item, members })),
-                        h("p", { className: "dsh-tavern-settings-desc" }, "成员：书记、润色师等是每局常驻的后台 Agent，保留历史；临时 Agent 每次新开，可同时运行。")) : null));
-        }
-
-		function TavernStopBackgroundAction(props) {
-			const [busy, setBusy] = React.useState(false);
-			const state = useTavernCoordination(props.sessionId);
-			const activity = state.view && state.view.activity;
-			// The game's own background work only: a director runs beside it and is not stopped here.
-			if (!activity || (!activity.busy && activity.phase !== "pending")) return null;
-			async function stop() {
-				if (busy) return;
-				setBusy(true);
-				try {
-					await rpc("stopBackground", { operationId: activity.operationId }, props.sessionId);
-					liveTavernView.invalidate(props.sessionId);
-					tavernCoordination.invalidate(props.sessionId);
-				} catch (error) { tavernErrorHub.report("停止后台", error); }
-				finally { setBusy(false); }
-			}
-			return React.createElement("button", { type: "button", className: "dsh-tavern-choice-trigger", role: props.inMenu ? "menuitem" : undefined, disabled: busy, onClick: stop }, busy ? "正在停止…" : "停止后台");
-		}
-
-        // Manual plugin tasks (tavern.manualTask): one button each, run as an exclusive background task.
-        function TavernPluginTasks(props) {
-            const h = React.createElement;
-            const [tasks, setTasks] = React.useState(null);
-            const [starting, setStarting] = React.useState("");
-            const [error, setError] = React.useState("");
-            const running = Boolean(props.activity?.busy && props.activity.role === "plugin-task");
-            const load = React.useCallback(async function () {
-                try { setTasks((await rpc("listGamePlugins", {}, props.sessionId)).plugins?.tasks || null); }
-                catch (_) { /* The game's own controls stay usable. */ }
-            }, [props.sessionId]);
-            React.useEffect(function () { void load(); }, [load, running]);
-            React.useEffect(function () {
-                if (!running) return;
-                const timer = setInterval(() => { liveTavernView.invalidate(props.sessionId); void load(); }, 2000);
-                return () => clearInterval(timer);
-            }, [props.sessionId, running, load]);
-            if (!tasks || !tasks.manual.length) return null;
-            async function start(task, input) {
-                await rpc("startPluginTask", { key: task.key, input }, props.sessionId);
-                liveTavernView.invalidate(props.sessionId);
-                await load();
-            }
-            async function run(task) {
-                if (task.input) {
-                    await askTavernText({ title: task.title, description: task.input.label, placeholder: task.input.placeholder, allowEmpty: true, maxLength: 4000, confirmLabel: "开始", onSubmit: input => start(task, input) });
-                    return;
-                }
-                setStarting(task.key); setError("");
-                try { await start(task); }
-                catch (err) { setError(String(err.message || err)); }
-                finally { setStarting(""); }
-            }
-            return h("section", { className: "dsh-tavern-status-section" },
-                h("div", { className: "dsh-tavern-status-label" }, "插件任务"),
-                tasks.running ? h("div", { className: "dsh-tavern-status-empty", role: "status" }, "正在运行：" + tasks.running.title + "（插件 " + tasks.running.plugin + "）") : null,
-                h("div", { className: "dsh-tavern-plugin-tasks" }, tasks.manual.map(task => h("button", { key: task.key, type: "button", className: "dsh-tavern-btn",
-                    title: task.description || "插件 " + task.plugin, disabled: props.busy || running || Boolean(starting), onClick: () => void run(task) }, starting === task.key ? "启动中…" : task.title))),
-                error ? h("div", { className: "dsh-card-error", role: "alert" }, error) : null);
-        }
-
-		function TavernMoreActions(props) {
-			const [open, setOpen] = React.useState(false);
-			const [placement, setPlacement] = React.useState(null);
-			const root = React.useRef(null);
-			const trigger = React.useRef(null);
-			const storyView = useTavernStoryViewMode(props.sessionId);
-			// The mobile composer seat scrolls (overflow-y: auto), which clipped an absolutely
-			// positioned menu to a thin strip. Anchor it to the viewport above the trigger instead.
-			React.useLayoutEffect(function () {
-				if (!open) { setPlacement(null); return; }
-				function place() {
-					const rect = trigger.current && trigger.current.getBoundingClientRect();
-					if (!rect) return;
-					const width = document.documentElement.clientWidth || window.innerWidth;
-					setPlacement({ position: "fixed", top: "auto", left: "auto", right: Math.max(8, width - rect.right) + "px", bottom: (window.innerHeight - rect.top + 6) + "px", maxHeight: Math.max(120, rect.top - 12) + "px", overflowY: "auto" });
+					// Learned from huajiao1998/dsh-tavern-sqlite-v2: a failed or stopped round can also be
+					// dropped entirely, not only replayed.
+					async function withdrawFailed() {
+						if (!canReplayFailed || frontRunning || replayBusy || withdrawBusy) return;
+						setWithdrawBusy(true);
+						try { await withdrawFailedTavernTurn(props.sessionId, props.inputActions, draft); }
+						catch (err) { tavernErrorHub.report("撤回这条输入", err); }
+						finally {
+							setWithdrawBusy(false);
+							notifyTavernDataChanged(["sessions"], "play-controls");
+							liveTavernView.invalidate(props.sessionId);
+							tavernCoordination.invalidate(props.sessionId);
+						}
+					}
+					const h = React.createElement;
+					const isScript = sessionMode === "script";
+					const hasReadyPanel = candidatePanelState !== null && candidatePanelState.sessionId === props.sessionId && candidatePanelState.messageId === props.messageId && candidatePanelState.phase === "ready";
+					if (!isPlayMode(sessionMode) || latestMessageId !== props.messageId) return null;
+					// only="choices" in the composer, only="regen" under the latest reply.
+					return h(React.Fragment, null,
+						props.only === "regen" ? null : h("button", { className: "dsh-tavern-choice-trigger", "data-fork-action": hasReadyPanel ? "choices-again" : "choices", "data-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, "aria-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, disabled: busy || taskBusy || activity.busy || settlementActive || regenBusy || compacting, title: compacting ? "正在压缩上下文，完成后可生成候选项" : (busy || taskBusy) ? "正在生成候选项…" : settlementActive ? "当前正文正在后台结算，请等待完成" : (activity.busy ? activity.blockReason : (hasReadyPanel ? "重新生成候选项（可先填写意见）" : (isScript ? "手动生成候选项；由于跟随剧本，只有一个推荐候选项" : "手动生成候选项"))), onClick: function () {
+							setRegenPanel(null);
+							if (hasReadyPanel) {
+								const previous = candidatePanelState;
+								setCandidatePanel(null);
+								setCandidateGuidePanel({ sessionId: props.sessionId, messageId: props.messageId, phase: "input", error: "", previous: previous });
+							} else {
+								generate(false);
+							}
+						} }, settlementActive ? "后台结算中…" : (activity.busy ? activity.label : ((busy || taskBusy) ? "生成中…" : (hasReadyPanel ? "重新生成候选项" : "生成候选项")))),
+						!storyView && props.only !== "choices" && (canReplayFailed || canRollback) ? h("button", { className: "dsh-tavern-choice-trigger", "data-fork-action": canReplayFailed ? "replay" : "regen", "data-busy": (replayBusy || regenBusy) || undefined, "aria-busy": (replayBusy || regenBusy) || undefined, disabled: frontRunning || compacting || (!canReplayFailed && activity.busy && !settlementActive) || regenBusy || replayBusy, title: replayBusy ? "正在重放本轮请求…" : regenBusy ? "正在重新生成正文…" : compacting ? "正在压缩上下文，请稍候" : canReplayFailed ? "移除被中断的回复并原样重放本轮请求（复用模型缓存）" : (settlementActive ? "重新生成将取消当前正文的后台结算" : (activity.busy ? activity.blockReason : "可选择填写意见，再重新生成并替换当前正文")), onClick: canReplayFailed ? replayFailed : openRegeneration }, replayBusy ? "重放中…" : regenBusy ? "重生成中…" : canReplayFailed ? "重新生成本轮" : "重新生成正文") : null,
+						!storyView && props.only !== "choices" && canReplayFailed ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-withdraw-failed", disabled: frontRunning || replayBusy || withdrawBusy, title: "清除这一轮：恢复到这一轮开始前，此前的剧情和变量不变，原输入放回输入框", onClick: withdrawFailed }, withdrawBusy ? "撤回中…" : "撤回这条输入") : null,
+						!storyView && props.only !== "choices" && canReplayFailed ? h(TavernDebugButton, { sessionId: props.sessionId, className: "dsh-tavern-choice-trigger", label: "交给调试 Agent" }) : null
+					);
 				}
-				place();
-				window.addEventListener("resize", place);
-				if (window.visualViewport) window.visualViewport.addEventListener("resize", place);
-				return function () { window.removeEventListener("resize", place); if (window.visualViewport) window.visualViewport.removeEventListener("resize", place); };
-			}, [open]);
-			React.useEffect(function () {
-				if (!open) return;
-				function closeOutside(event) { if (!root.current || !root.current.contains(event.target)) setOpen(false); }
-				function closeOnEscape(event) { if (event.key === "Escape") setOpen(false); }
-				document.addEventListener("pointerdown", closeOutside, true);
-				document.addEventListener("keydown", closeOnEscape);
-				return function () { document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("keydown", closeOnEscape); };
-			}, [open]);
-			return React.createElement("div", { className: "dsh-tavern-more-actions", ref: root },
-				React.createElement("button", { ref: trigger, type: "button", className: "dsh-tavern-choice-trigger", "data-fork-action": "more", title: "更多操作：编辑正文、回退、压缩上下文…", "aria-haspopup": "menu", "aria-expanded": open, onClick: function () { setOpen(function (value) { return !value; }); } }, "更多 ▾"),
-				React.createElement("div", { className: "dsh-tavern-more-menu", role: "menu", hidden: !open, style: placement || undefined, onClick: function (event) { if (event.target && event.target.closest && event.target.closest("button:not(:disabled)")) setOpen(false); } },
-                    React.createElement(TavernStopBackgroundAction, Object.assign({}, props, { inMenu: true })),
-					storyView ? null : React.createElement(TavernEditBodyAction, props),
-					storyView ? null : React.createElement(TavernRollbackAction, props),
-                    React.createElement(TavernUndoRollbackAction, props),
-					React.createElement(TavernDebugButton, { sessionId: props.sessionId, role: "menuitem", label: "遇到问题？交给调试 Agent" }),
-					React.createElement(TavernCompactionAction, Object.assign({}, props, { inMenu: true })))
-			);
-		}
+
+				function TavernRollbackAction(props) {
+					const [rolling, setRolling] = React.useState(false);
+					const regenPanelState = useRegenPanel();
+					const frontRunning = props.useSession(function (snapshot) { return snapshot.running === true; });
+					const latestMessageId = props.useChat(latestTavernAssistantMessageId);
+					const rollbackViewState = useLiveTavernView(props.sessionId, "rollback:" + String(frontRunning) + ":" + String(latestMessageId || ""));
+					const activityState = useTavernCoordination(props.sessionId, "rollback:" + String(frontRunning) + ":" + String(latestMessageId || ""));
+					const activity = describeTavernActivity(activityState.view && activityState.view.activity);
+					const settlementActive = activity.role === "settlement" && (activity.phase === "pending" || activity.phase === "running");
+					const canRollback = rollbackViewState.view && rollbackViewState.view.canRollback === true;
+		            const clearIncomplete = rollbackViewState.view && rollbackViewState.view.canClearIncompleteReply === true;
+					const regenBusy = regenPanelState !== null && regenPanelState.sessionId === props.sessionId && regenPanelState.phase === "loading";
+					const targetTurn = Number(rollbackViewState.view && rollbackViewState.view.rollbackTargetTurn) || 0;
+		            const targetLabel = targetTurn > 0 ? "回退第 " + targetTurn + " 轮" : "回退本轮";
+					const blocked = rolling || frontRunning || regenBusy || activity.busy || settlementActive;
+					async function rollback() {
+						if (!canRollback || blocked) return;
+						setRolling(true);
+						try {
+							const result = await rpc("rollbackTurn", { expectedTurn: clearIncomplete ? null : targetTurn }, props.sessionId);
+							historyProjection.rolledBack(props.sessionId, result && result.view);
+							setCandidatePanel(null);
+							setRegenPanel(null);
+							setCandidateGuidePanel(null);
+							notifyTavernDataChanged(["sessions"], "play-controls");
+							if (result && result.view && result.view.rollbackWarning) tavernErrorHub.report("回退提示", new Error(result.view.rollbackWarning));
+						} catch (err) {
+							tavernErrorHub.report("回退本轮", err);
+						} finally { setRolling(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
+					}
+					if (!canRollback) {
+		                // While a reply is streaming, the surface has no settled target yet; the
+		                // server's "not in the message stream" reason would wrongly read as permanent.
+		                const reason = blocked && !rolling ? "正在生成或后台处理中，完成或停止后才能回退" : rollbackViewState.view && rollbackViewState.view.rollbackUnavailableReason;
+		                return reason ? React.createElement("button", { type: "button", role: "menuitem", disabled: true, className: "dsh-tavern-menu-unavailable", title: reason },
+		                    React.createElement("span", null, "回退本轮"),
+		                    React.createElement("small", null, reason.includes("没有可回退") ? "暂无可回退轮次" : reason)) : null;
+		            }
+					return React.createElement("button", { className: "danger", role: "menuitem", disabled: blocked, title: blocked ? "请等待当前生成或后台处理完成后再回退" : clearIncomplete ? "清除未完成回复，保留已完成剧情" : "删除最近一次用户输入和这段 LLM 输出", onClick: rollback }, rolling ? "处理中…" : clearIncomplete ? "清除未完成回复" : targetLabel);
+				}
+
+		        function TavernUndoRollbackAction(props) {
+		            const [busy, setBusy] = React.useState(false);
+		            const running = props.useSession(function (state) { return state.running === true; });
+		            const live = useLiveTavernView(props.sessionId, "undo:" + String(running));
+		            const turn = Number(live.view && live.view.undoRollbackTurn) || 0;
+		            if (!turn) return null;
+		            async function undo() {
+		                if (busy || running) return;
+		                setBusy(true);
+		                try {
+		                    const result = await rpc("undoRollbackTurn", {}, props.sessionId);
+		                    historyProjection.restored(props.sessionId, result && result.view);
+		                    setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
+		                    notifyTavernDataChanged(["sessions"], "play-controls");
+		                } catch (error) { tavernErrorHub.report("撤销回退", error); }
+		                finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
+		            }
+		            return React.createElement("button", { role: "menuitem", disabled: busy || running, onClick: undo,
+		                title: "恢复第 " + turn + " 轮正文和状态；新的操作会使此恢复点失效" }, busy ? "恢复中…" : "撤销回退（恢复第 " + turn + " 轮）");
+		        }
+
+		        // 每轮消息上的「回退到这一轮」：一次删掉它之后的所有轮次，一次撤销即可全部恢复。
+		        function TavernRollbackToAction(props) {
+		            const messageId = String(props.messageId || "");
+		            const liveState = useScopedLiveTavernView(props.sessionId, "rollback-to:" + messageId, [["mode"], ["canRollback"], ["rollbackTargetTurn"], ["forkTurnsByMessageId", messageId]]);
+		            const [busy, setBusy] = React.useState(false);
+		            // 故事视图接管回退入口（与菜单「回退本轮」一致），原生审计视图不再重复提供。
+		            const storyView = useTavernStoryViewMode(props.sessionId);
+		            const view = liveState.view;
+		            const turn = Number(view && view.forkTurnsByMessageId && view.forkTurnsByMessageId[messageId]) || 0;
+		            const latest = Number(view && view.rollbackTargetTurn) || 0;
+		            if (storyView || !view || !isPlayMode(view.mode) || view.canRollback !== true || !(turn > 0) || !(latest > turn)) return null;
+		            async function rollbackTo() {
+		                if (busy) return;
+		                if (!await askTavernConfirm("回退到第 " + turn + " 轮？\n\n第 " + turn + " 轮之后的所有输入和正文都会删除，剧情状态回到第 " + turn + " 轮结束时。之后可在菜单里「撤销回退」一次全部恢复。", { confirmText: "回退", cancelText: "取消" })) return;
+		                setBusy(true);
+		                try {
+		                    const result = await rpc("rollbackToTurn", { turn: turn }, props.sessionId);
+		                    historyProjection.rolledBack(props.sessionId, result && result.view);
+		                    setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
+		                    notifyTavernDataChanged(["sessions"], "play-controls");
+		                    if (result && result.view && result.view.rollbackWarning) tavernErrorHub.report("回退提示", new Error(result.view.rollbackWarning));
+		                } catch (error) { tavernErrorHub.report("回退到这一轮", error); }
+		                finally { setBusy(false); liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }
+		            }
+		            const label = busy ? "正在回退…" : "回退到这一轮";
+		            return React.createElement(DshUi.Tooltip, { label: label, side: "bottom" },
+		                React.createElement("button", { type: "button", className: "dsh-tavern-message-fork dsh-tavern-message-rollback", "aria-label": label, disabled: busy, onClick: rollbackTo },
+		                    React.createElement("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+		                        React.createElement("path", { d: "M5 5v14" }), React.createElement("path", { d: "M19 12H9m4-5-5 5 5 5" }))));
+		        }
+
+				const bodyEditPanel = { value: null, listeners: new Set() };
+				function setBodyEditPanel(value) {
+					bodyEditPanel.value = value;
+					bodyEditPanel.listeners.forEach(function (listener) { listener(value); });
+				}
+				function useBodyEditPanel() {
+					const [value, setValue] = React.useState(bodyEditPanel.value);
+					React.useEffect(function () { bodyEditPanel.listeners.add(setValue); return function () { bodyEditPanel.listeners.delete(setValue); }; }, []);
+					return value;
+				}
+				function TavernEditBodyAction(props) {
+					const [busy, setBusy] = React.useState(false);
+					const running = props.useSession(function (snapshot) { return snapshot.running === true; });
+					const latestMessageId = props.useChat(latestTavernAssistantMessageId);
+					const live = useLiveTavernView(props.sessionId, "edit:" + String(running) + ":" + String(latestMessageId));
+					const coordination = useTavernCoordination(props.sessionId, String(running));
+					const activity = describeTavernActivity(coordination.view && coordination.view.activity);
+					async function openEditor() {
+						setBusy(true);
+						try {
+							const result = await rpc("getBodyEdit", {}, props.sessionId);
+							setRegenPanel(null); setCandidatePanel(null); setCandidateGuidePanel(null);
+							setBodyEditPanel({ sessionId: props.sessionId, edit: result.edit, texts: result.edit.parts.filter(function (part) { return part.kind === "text"; }).map(function (part) { return part.text; }), busy: false, error: "" });
+						} catch (error) { tavernErrorHub.report("编辑正文", error); }
+						finally { setBusy(false); }
+					}
+					if (!live.view || !(live.view.canEditBody ?? live.view.canRollback)) return null;
+					return React.createElement("button", { role: "menuitem", disabled: busy || running || activity.busy, onClick: openEditor }, busy ? "读取中…" : "编辑正文");
+				}
+				function BodyEditPanel(props) {
+					const panel = useBodyEditPanel();
+					const running = props.useSession(function (snapshot) { return snapshot.running === true; });
+					const h = React.createElement;
+					// The user-message edit button lives in another feature module; it opens
+					// this panel through a page event instead of reaching into this closure.
+					React.useEffect(function () {
+						function open(event) {
+							const detail = event && event.detail ? event.detail : {};
+							if (!detail.edit || detail.sessionId !== props.sessionId) return;
+							setBodyEditPanel({ sessionId: detail.sessionId, edit: detail.edit, texts: Array.isArray(detail.texts) ? detail.texts : [], busy: false, error: "" });
+						}
+						window.addEventListener("dsh-tavern-open-body-edit", open);
+						return function () { window.removeEventListener("dsh-tavern-open-body-edit", open); };
+					}, [props.sessionId]);
+					if (!panel || panel.sessionId !== props.sessionId) return null;
+					const label = panel.edit.role === "user" ? "编辑这条输入" : "编辑正文";
+					const failed = panel.edit.failed === true;
+					async function save() {
+						setBodyEditPanel(Object.assign({}, panel, { busy: true, error: "" }));
+						try {
+							const result = await rpc("saveBodyEdit", { token: panel.edit.token, role: panel.edit.role, index: panel.edit.index, turn: panel.edit.turn, seq: panel.edit.seq, texts: panel.texts }, props.sessionId);
+							if (result && typeof result.composerText === "string") {
+								// A failed turn was withdrawn; hand the edited text back to the composer.
+								if (result.view) liveTavernView.setView(props.sessionId, result.view);
+								notifyTavernDataChanged(["sessions"], "play-controls");
+								tavernCoordination.invalidate(props.sessionId);
+								setBodyEditPanel(null);
+								if (result.composerText.trim() !== "" && props.inputActions && typeof props.inputActions.setDraft === "function") props.inputActions.setDraft(result.composerText);
+								return;
+							}
+							liveTavernView.setView(props.sessionId, result.view);
+							notifyTavernDataChanged(["sessions"], "play-controls");
+							tavernCoordination.invalidate(props.sessionId);
+							setBodyEditPanel(null);
+						} catch (error) { setBodyEditPanel(Object.assign({}, panel, { busy: false, error: String(error.message || error) })); }
+					}
+					let textIndex = 0;
+					return h("div", { className: "dsh-tavern-question fork-body-edit", role: "region", "aria-label": label },
+						h("div", { className: "dsh-tavern-question-head" }, h("span", null, label)),
+						panel.edit.role === "user" ? h("div", { className: "dsh-tavern-question-sub" }, failed
+							? "这是失败轮的输入。保存只改文字，不会自动重试或撤回；之后点「重新生成本轮」会按新文字重发，点「撤回这条输入」会把它放回输入框。"
+							: "只改这一条输入，不会自动重写已生成的回复；需要新回复时保存后再点「重新生成正文」。") : null,
+						panel.error ? h("div", { className: "dsh-tavern-choice-error", role: "alert" }, panel.error) : null,
+						h("div", { style: { maxHeight: "50vh", overflowY: "auto" } }, panel.edit.parts.map(function (part, index) {
+							if (part.kind === "html") return h("div", { key: index, className: "dsh-tavern-question-sub" }, "HTML 内容保持原样");
+							if (part.kind !== "text") return null;
+							const current = textIndex++;
+							return h("textarea", { key: index, className: "dsh-tavern-regen-input", "aria-label": "正文文本 " + (current + 1), rows: Math.min(60, Math.max(3, panel.texts[current].split("\n").length)), value: panel.texts[current], disabled: panel.busy, onChange: function (event) {
+								const texts = panel.texts.slice(); texts[current] = event.target.value;
+								setBodyEditPanel(Object.assign({}, panel, { texts: texts }));
+							} });
+						})),
+						h("div", { className: "dsh-tavern-question-foot" },
+							h("button", { className: "dsh-tavern-question-primary", disabled: panel.busy || running, onClick: save }, panel.busy ? "保存中…" : "保存"),
+							h("button", { className: "dsh-tavern-question-free", disabled: panel.busy, onClick: function () { setBodyEditPanel(null); } }, "取消")));
+				}
+
+		        function backgroundWaitMessage(progress, now) {
+		            if (!progress || now - progress.startedAt < 60000) return "";
+		            const plugin = progress.plugin ? "插件「" + progress.plugin + "」正在结算。" : "";
+		            return plugin + backgroundPhaseMessage(progress, now);
+		        }
+		        function backgroundPhaseMessage(progress, now) {
+		            if (progress.phase === "model") {
+		                return now - progress.lastProgressAt < 15000
+		                    ? "模型仍在输出思考、正文或工具参数，后台任务尚未完成。可以继续等待或停止后台；已生成的正文会保留。"
+		                    : "正在等待模型 API 的有效输出。连续 5 分钟没有有效输出会停止并报错；也可以现在停止后台，保留已生成的正文。";
+		            }
+		            return progress.phase === "tool"
+		                ? "正在执行后台工具或等待人物卡变量处理。若长时间没有完成，可以停止后台；已生成的正文会保留。"
+		                : "正在准备后台请求。若长时间没有完成，可以停止后台；已生成的正文会保留。";
+		        }
+		        function TavernBackgroundWait(props) {
+		            const [progress, setProgress] = React.useState(null);
+		            const [now, setNow] = React.useState(Date.now);
+		            const active = props.activity?.busy || props.activity?.phase === "pending";
+		            React.useEffect(function () {
+		                let disposed = false, loading = false;
+		                setProgress(null);
+		                if (!active) return;
+		                async function refresh() {
+		                    setNow(Date.now());
+		                    if (loading) return;
+		                    loading = true;
+		                    try {
+		                        const result = await rpc("getBackgroundProgress", {}, props.sessionId);
+		                        if (!disposed) setProgress(result.progress);
+		                    } catch (_) { /* Existing task status and stop controls remain usable. */ }
+		                    finally { loading = false; }
+		                }
+		                void refresh();
+		                const timer = window.setInterval(refresh, 5000);
+		                return function () { disposed = true; window.clearInterval(timer); };
+		            }, [active, props.sessionId, props.activity?.operationId]);
+		            const message = backgroundWaitMessage(progress || {phase:"preparing",startedAt:props.activity?.updatedAt || now}, now);
+		            if (!active || !message) return null;
+		            return React.createElement("div", {className:"dsh-tavern-status-section", role:"status"},
+		                React.createElement("p", null, message),
+		                React.createElement(TavernStopBackgroundAction, {sessionId:props.sessionId}));
+		        }
+		        const BACKGROUND_RUN_STATUS = { queued: "排队中", running: "运行中", completed: "完成", discarded: "已作废", failed: "失败", cancelled: "已取消", skipped: "跳过（功能没开）" };
+		        function backgroundRunName(run) {
+		            return run.task === "plugin" ? "插件「" + (run.plugin || "未知") + "」" : run.name || run.task;
+		        }
+		        function backgroundRunSeconds(run, now) {
+		            const from = run.startedAt || run.queuedAt, to = run.endedAt || now;
+		            return Math.max(0, Math.round((to - from) / 1000)) + " 秒";
+		        }
+		        function backgroundRunsSummary(runs) {
+		            const count = status => runs.filter(run => run.status === status).length;
+		            return [["running", "运行"], ["queued", "排队"], ["failed", "失败"]].filter(([status]) => count(status)).map(([status, label]) => label + " " + count(status)).join(" · ");
+		        }
+		        // Every background run of this game since the server started, polled while shown.
+		        function useTavernBackgroundRuns(sessionId) {
+		            const [runs, setRuns] = React.useState(null);
+		            const [now, setNow] = React.useState(Date.now);
+		            const [turns, setTurns] = React.useState([]);
+		            const [moments, setMoments] = React.useState([]);
+		            const [catalog, setCatalog] = React.useState([]);
+		            const [locks, setLocks] = React.useState([]);
+		            const [members, setMembers] = React.useState([]);
+		            React.useEffect(function () {
+		                let disposed = false, loading = false;
+		                setRuns(null);
+		                async function refresh() {
+		                    setNow(Date.now());
+		                    if (loading) return;
+		                    loading = true;
+		                    try {
+		                        const result = await rpc("getBackgroundRuns", {}, sessionId);
+		                        if (disposed) return;
+		                        setRuns(Array.isArray(result.runs) ? result.runs : []);
+		                        setTurns(Array.isArray(result.turns) ? result.turns : []);
+		                        setMoments(Array.isArray(result.moments) ? result.moments : []);
+		                        setCatalog(Array.isArray(result.catalog) ? result.catalog : []);
+		                        setLocks(Array.isArray(result.locks) ? result.locks : []);
+		                        setMembers(Array.isArray(result.members) ? result.members : []);
+		                    } catch (_) { /* Diagnostic only; the next poll retries. */ }
+		                    finally { loading = false; }
+		                }
+		                void refresh();
+		                const timer = window.setInterval(refresh, 2000);
+		                return function () { disposed = true; window.clearInterval(timer); };
+		            }, [sessionId]);
+		            return { runs, now, turns, moments, catalog, locks, members };
+		        }
+		        // A plugin's member is shown with its plugin: 插件「npc」·露娜.
+		        function backgroundMemberLabel(member) {
+		            return member ? (member.plugin ? "插件「" + member.plugin + "」·" : "") + member.name : "";
+		        }
+		        // One turn's timeline: one row per member (书记, 润色师, plugin members; fresh Agents share
+		        // a row, overlapping runs stacked), time left to right across the panel's width, the
+		        // turn's moments as vertical lines. A member runs one task at a time, so its row is its lock;
+		        // a task turned away by the lock is a ✕ on the row.
+		        function TavernTurnTimeline(props) {
+		            const h = React.createElement, turn = props.turn, now = props.now;
+		            const flat = list => list.flatMap(node => [node, ...flat(node.then)]);
+		            const blocks = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others))
+		                .flatMap(node => node.agents.map(run => ({ ...run, name: node.name, key: node.key + ":" + run.id })));
+		            const from = turn.at, to = Math.max(from + 1000, ...blocks.map(run => run.endedAt || now), ...turn.moments.map(moment => moment.at), props.until || 0);
+		            const pct = time => Math.max(0, Math.min(100, (time - from) / (to - from) * 100)) + "%";
+		            const width = (a, b) => Math.max(0.8, (b - a) / (to - from) * 100) + "%";
+		            const memberIds = (props.members || []).map(member => member.id);
+		            const rows = (props.members || []).map(member => ({ key: member.id, label: backgroundMemberLabel(member), runs: blocks.filter(run => run.member === member.id) }));
+		            // Fresh Agents: each takes the first sub-row free at its start.
+		            const fresh = [];
+		            for (const run of blocks.filter(run => !memberIds.includes(run.member)).sort((a, b) => a.queuedAt - b.queuedAt)) {
+		                const row = fresh.find(item => item.end <= run.queuedAt) || (fresh.push({ end: 0, runs: [] }), fresh[fresh.length - 1]);
+		                row.runs.push(run); row.end = run.endedAt || now;
+		            }
+		            fresh.forEach((row, index) => rows.push({ key: "fresh:" + index, label: index ? "" : "临时 Agent", runs: row.runs }));
+		            if (!fresh.length) rows.push({ key: "fresh", label: "临时 Agent", runs: [] });
+		            const refused = (props.locks || []).filter(item => item.kind === "refused" && item.at >= from && item.at <= to);
+		            const seconds = Math.round((to - from) / 1000);
+		            const bar = run => {
+		                const start = run.startedAt || now, end = run.endedAt || now;
+		                const title = run.name + " · " + (BACKGROUND_RUN_STATUS[run.status] || run.status) + (run.model ? " · " + run.model : "") +
+		                    "\n" + backgroundClock(run.queuedAt) + " 起，排队 " + Math.round((start - run.queuedAt) / 1000) + " 秒，运行 " + Math.round((end - start) / 1000) + " 秒" + (run.error ? "\n" + run.error : "");
+		                return [
+		                    start - run.queuedAt >= 500 ? h("div", { key: run.key + ":wait", className: "dsh-tavern-tl-wait", style: { left: pct(run.queuedAt), width: width(run.queuedAt, start) }, title }) : null,
+		                    run.startedAt ? h("div", { key: run.key, className: "dsh-tavern-tl-bar " + run.status, style: { left: pct(start), width: width(start, end) }, title }, run.name) : null];
+		            };
+		            const marks = turn.moments.filter(moment => moment.event !== "turn-started");
+		            return h("div", { className: "dsh-tavern-tl" },
+		                h("div", { className: "dsh-tavern-tl-row dsh-tavern-tl-head" },
+		                    h("div", { className: "dsh-tavern-tl-label" }, backgroundClock(from)),
+		                    h("div", { className: "dsh-tavern-tl-track" }, marks.map((moment, index) =>
+		                        h("span", { key: index, className: "dsh-tavern-tl-mark-label" + (index % 2 ? " low" : ""), style: { left: pct(moment.at) }, title: moment.name + " " + backgroundClock(moment.at) }, moment.name)),
+		                        h("span", { className: "dsh-tavern-tl-end" }, "+" + seconds + " 秒"))),
+		                rows.map(row => h("div", { key: row.key, className: "dsh-tavern-tl-row" },
+		                    h("div", { className: "dsh-tavern-tl-label", title: row.label }, row.label),
+		                    h("div", { className: "dsh-tavern-tl-track" },
+		                        marks.map((moment, index) => h("i", { key: "m" + index, className: "dsh-tavern-tl-line", style: { left: pct(moment.at) } })),
+		                        row.runs.flatMap(bar),
+		                        refused.filter(item => (item.slot || "background") === row.key).map((item, index) => h("i", { key: "x" + index, className: "dsh-tavern-tl-refused", style: { left: pct(item.at) },
+		                            title: "被锁挡回：" + item.role + "（" + item.holder + " 正在跑）" }, "✕"))))),
+		                h("p", { className: "dsh-tavern-settings-desc" }, "一行一个成员，同一成员一次只跑一个任务；竖线是剧情时刻，斜纹是排队，✕ 是被锁挡回。鼠标停在块上看详情。"));
+		        }
+		        const BACKGROUND_STATUS_MARK = { queued: "…", running: "●", completed: "✓", discarded: "⊘", failed: "✕", cancelled: "⊘", skipped: "–" };
+		        function backgroundClock(time) {
+		            return new Date(time).toTimeString().slice(0, 8);
+		        }
+		        function backgroundSpan(from, to, now) {
+		            const seconds = Math.max(0, Math.round(((to || now) - from) / 1000));
+		            return seconds < 1 ? "" : seconds + " 秒";
+		        }
+		        // One task of a turn: what it is, how it went, the Agent runs it made; click for what it does.
+		        // Under it, the tasks that ran because it finished (任务完成, needs).
+		        function TavernBackgroundTaskNode(props) {
+		            const h = React.createElement, node = props.node, now = props.now;
+		            const [open, setOpen] = React.useState(false);
+		            const memberName = id => backgroundMemberLabel((props.members || []).find(member => member.id === id));
+		            const info = (props.catalog || []).find(item => item.task === node.task);
+		            const agent = node.agents[0];
+		            const facts = node.status === "skipped" ? ["跳过：" + (node.condition ? "只在" + node.condition + "运行" : "功能没开")] : [backgroundSpan((agent && (agent.startedAt || agent.queuedAt)) || node.at, (agent && agent.endedAt) || node.endedAt, now),
+		                node.agents.map(run => memberName(run.member) || (run.lane === "resident" ? "常驻 Agent" : "临时 Agent")).join("、"),
+		                agent && agent.model, agent && agent.startedAt && agent.startedAt - agent.queuedAt >= 1000 ? "排队 " + Math.round((agent.startedAt - agent.queuedAt) / 1000) + " 秒" : ""].filter(Boolean);
+		            return h("li", { className: "dsh-tavern-run-node " + node.status },
+		                h("button", { type: "button", className: "dsh-tavern-run-node-head", onClick: () => setOpen(!open), "aria-expanded": open,
+		                    title: BACKGROUND_RUN_STATUS[node.status] || node.status },
+		                    h("span", { className: "dsh-tavern-run-mark" }, BACKGROUND_STATUS_MARK[node.status] || "·"),
+		                    h("span", { className: "dsh-tavern-run-name" }, node.name),
+		                    h("span", { className: "dsh-tavern-run-facts" }, facts.join(" · "))),
+		                node.error ? h("div", { className: "dsh-tavern-run-error" }, node.error) : null,
+		                node.status === "discarded" ? h("div", { className: "dsh-tavern-run-note" }, "跑完时剧情已变化（回退、重写或编辑），结果没有保存。") : null,
+		                open ? h("div", { className: "dsh-tavern-run-detail" },
+		                    info ? [["做什么", info.does], ["何时启动", info.trigger], ["读", info.reads], ["写", info.writes], ["等待", info.waits]].filter(([, text]) => text)
+		                        .map(([label, text]) => h("div", { key: label }, h("b", null, label + "："), text)) : h("div", null, "这一项没有登记在任务目录里（它不调用后台 Agent）。"),
+		                    node.agents.map(run => h("div", { key: run.id }, h("b", null, "Agent 运行："),
+		                        (BACKGROUND_RUN_STATUS[run.status] || run.status) + " · " + backgroundClock(run.queuedAt) + (run.error ? " · " + run.error : "")))) : null,
+		                node.then.length ? h("ul", { className: "dsh-tavern-run-then" }, node.then.map(child => h(TavernBackgroundTaskNode, { ...props, key: child.key, node: child }))) : null);
+		        }
+		        // One turn, like one run of a GitHub Actions workflow: its story moments in order, each with
+		        // the tasks it started.
+		        function TavernBackgroundTurn(props) {
+		            const h = React.createElement, turn = props.turn;
+		            const count = list => list.reduce((sum, node) => sum + 1 + count(node.then), 0);
+		            const flat = list => list.flatMap(node => [node, ...flat(node.then)]);
+		            const nodes = flat(turn.moments.flatMap(moment => moment.tasks).concat(turn.others));
+		            const busy = nodes.filter(node => node.status === "running" || node.status === "queued").length;
+		            const failed = nodes.filter(node => node.status === "failed").length;
+		            const skipped = nodes.filter(node => node.status === "skipped").length;
+		            const summary = [count(nodes.filter(node => !nodes.some(other => other.then.includes(node)))) - skipped + " 项任务", skipped ? skipped + " 项跳过" : "", busy ? busy + " 项进行中" : "", failed ? failed + " 项失败" : ""].filter(Boolean).join(" · ");
+		            const list = tasks => h("ul", { className: "dsh-tavern-run-tasks" }, tasks.map(node => h(TavernBackgroundTaskNode, { key: node.key, node, now: props.now, catalog: props.catalog, members: props.members })));
+		            const [timeline, setTimeline] = React.useState(false);
+		            return h("details", { className: "dsh-tavern-run-turn", open: props.open },
+		                h("summary", null, h("b", null, turn.turn ? "第 " + turn.turn + " 轮" : "更早"), " · " + backgroundClock(turn.at) + " · " + summary),
+		                h("button", { type: "button", className: "dsh-tavern-run-tl-toggle", onClick: () => setTimeline(!timeline), "aria-expanded": timeline }, timeline ? "收起时序 ▴" : "时序 ▾"),
+		                timeline ? h(TavernTurnTimeline, { turn, now: props.now, members: props.members, locks: props.locks }) : null,
+		                h("ol", { className: "dsh-tavern-run-moments" },
+		                    turn.moments.map((moment, index) => h("li", { key: moment.event + index },
+		                        h("div", { className: "dsh-tavern-run-moment" }, h("span", null, moment.name), h("time", null, backgroundClock(moment.at))),
+		                        moment.tasks.length ? list(moment.tasks) : null)),
+		                    turn.others.length ? h("li", null,
+		                        h("div", { className: "dsh-tavern-run-moment" }, h("span", null, "手动或插件启动")),
+		                        list(turn.others)) : null));
+		        }
+		        // One task's definition, like a GitHub Actions job: member, what starts it (on, if), its
+		        // other starts, needs, what needs it, what the next turn and cancelling make of it, what it does.
+		        function TavernBackgroundTaskSpec(props) {
+		            const h = React.createElement, item = props.item, spec = item.spec || {};
+		            const member = backgroundMemberLabel((props.members || []).find(entry => entry.id === item.member));
+		            const none = "—";
+		            const rows = [
+		                ["成员", (member || (item.lane === "resident" ? "常驻 Agent" : "临时 Agent")) + (item.lane === "resident" ? "（常驻，保留历史）" : "（每次新开）") + (spec.lock ? "，占锁：同成员的任务一次只跑一个" : "")],
+		                ["启动", (spec.on || []).length ? h("ul", null, spec.on.map((start, index) => h("li", { key: index },
+		                    [start.moments.join("、"), start.needs.length ? start.needs.join("、") + " 完成后" : ""].filter(Boolean).join("，"),
+		                    start.condition ? h("span", { className: "dsh-tavern-task-spec-if" }, "if " + start.condition) : null,
+		                    start.flow ? h("span", { className: "dsh-tavern-task-spec-if" }, "流程直接启动") : null))) : none],
+		                ["其他入口", (spec.manual || item.manual || []).length ? h("ul", null, (spec.manual || item.manual).map(text => h("li", { key: text }, text))) : none],
+		                ["需要", (spec.needs || []).length ? spec.needs.join("、") + " 完成" : none],
+		                ["被需要", (spec.neededBy || []).length ? spec.neededBy.join("、") + " 等它" : none],
+		                ["下一轮", spec.blocksNextTurn ? "开始前要等它做完" : "不等它"],
+		                ["前台", spec.idleForeground ? "不在生成正文时才开始" : none],
+		                ["取消", (spec.cancelOn || []).length ? spec.cancelOn.join("、") + " 时" : none],
+		                ["做什么", item.does],
+		                ["读", item.reads || none],
+		                ["写", item.writes || none],
+		                spec.note ? ["备注", spec.note] : null,
+		                item.waits && !item.spec ? ["等待", item.waits] : null
+		            ].filter(Boolean);
+		            return h("div", { className: "dsh-tavern-task-spec", id: "dsh-tavern-task-spec-" + item.task },
+		                h("div", { className: "dsh-tavern-task-spec-name" }, (item.plugin ? "插件「" + item.plugin + "」" : "") + item.name, h("code", null, item.task)),
+		                h("dl", null, rows.flatMap(([label, value]) => [h("dt", { key: label + ":k" }, label), h("dd", { key: label + ":v" }, value)])));
+		        }
+		        // Who does what: each resident member with its tasks and what it does now; fresh Agents
+		        // (one new session per run, may run side by side) last.
+		        function TavernBackgroundMembers(props) {
+		            const h = React.createElement, catalog = props.catalog || [], runs = props.runs || [];
+		            const ids = (props.members || []).map(member => member.id);
+		            const groups = (props.members || []).map(member => ({ key: member.id, name: backgroundMemberLabel(member),
+		                kind: "常驻，保留历史" + (member.timeline ? "，随剧情回退" : ""), tasks: catalog.filter(item => item.member === member.id), runs: runs.filter(run => run.member === member.id) }))
+		                .concat([{ key: "fresh", name: "临时 Agent", kind: "每次新开，可同时运行", tasks: catalog.filter(item => !ids.includes(item.member)), runs: runs.filter(run => !ids.includes(run.member)) }]);
+		            const now = group => {
+		                const running = group.runs.filter(run => run.status === "running"), queued = group.runs.filter(run => run.status === "queued");
+		                return [running.length ? "正在跑：" + running.map(run => run.name || run.task).join("、") : "", queued.length ? queued.length + " 个排队" : ""].filter(Boolean).join("，") || "空闲";
+		            };
+		            return h("div", { className: "dsh-tavern-members" }, groups.map(group => h("div", { key: group.key, className: "dsh-tavern-member" },
+		                h("div", { className: "dsh-tavern-member-head" }, h("b", null, group.name), h("span", null, group.kind), h("span", { className: "dsh-tavern-member-now" }, now(group))),
+		                group.tasks.length ? h("div", { className: "dsh-tavern-member-tasks" }, group.tasks.map(item => h("button", { key: item.task, type: "button", onClick: () => props.openSpec(item.task), title: item.does },
+		                    (item.plugin && !group.name.includes(item.plugin) ? "插件「" + item.plugin + "」" : "") + item.name))) : h("div", { className: "dsh-tavern-member-tasks" }, "还没有登记任务"))));
+		        }
+		        // The 后台任务 sidebar page, for development: per turn, which moment started which task and
+		        // what ran after what; the timeline and the full task list are folded below.
+		        function TavernBackgroundTasksTab(props) {
+		            const h = React.createElement;
+		            const { runs, now, turns, moments, catalog, locks, members } = useTavernBackgroundRuns(props.sessionId);
+		            const active = (runs || []).filter(run => run.status === "queued" || run.status === "running");
+		            // A task named elsewhere on the page opens its definition under 全部任务.
+		            const specs = React.useRef(null);
+		            const openSpec = task => {
+		                if (specs.current) specs.current.open = true;
+		                window.requestAnimationFrame(() => document.getElementById("dsh-tavern-task-spec-" + task)?.scrollIntoView({ block: "start", behavior: "smooth" }));
+		            };
+		            return h("aside", { className: "dsh-tavern-status dsh-tavern-status-dashboard dsh-tavern-background-tasks" },
+		                h("div", { className: "dsh-tavern-status-head" },
+		                    h("div", { className: "dsh-tavern-status-title" }, "后台任务"),
+		                    h("div", { className: "dsh-tavern-status-settle" }, runs === null ? "正在读取…" : backgroundRunsSummary(runs) || "空闲")),
+		                h("div", { className: "dsh-tavern-status-body" },
+		                    active.length ? h(TavernStopBackgroundAction, { sessionId: props.sessionId }) : null,
+		                    h("section", { className: "dsh-tavern-status-section" },
+		                        h("div", { className: "dsh-tavern-status-label" }, "每轮流程"),
+		                        runs === null ? null : turns.length
+		                            ? turns.map((turn, index) => h(TavernBackgroundTurn, { key: turn.at, turn, open: index === 0, now, catalog, members, locks }))
+		                            : h("div", { className: "dsh-tavern-status-empty" }, "服务启动以来这局还没有玩过。"),
+		                        h("p", { className: "dsh-tavern-settings-desc" }, "✓ 完成　● 运行中　… 排队　✕ 失败　⊘ 取消或作废　– 跳过（功能没开）。缩进的任务在上一项做完后才开始；点任务名看它做什么、等什么。只保留重启服务以来的最近几轮。")),
+		                    h("section", { className: "dsh-tavern-status-section" },
+		                        h("div", { className: "dsh-tavern-status-label" }, "成员"),
+		                        h(TavernBackgroundMembers, { members, catalog, runs: runs || [], openSpec })),
+		                    catalog.length ? h("details", { className: "dsh-tavern-status-section dsh-tavern-run-fold", ref: specs },
+		                        h("summary", null, "全部任务（" + catalog.length + "）"),
+		                        catalog.map(item => h(TavernBackgroundTaskSpec, { key: item.task, item, members })),
+		                        h("p", { className: "dsh-tavern-settings-desc" }, "成员：书记、润色师等是每局常驻的后台 Agent，保留历史；临时 Agent 每次新开，可同时运行。")) : null));
+		        }
+
+				function TavernStopBackgroundAction(props) {
+					const [busy, setBusy] = React.useState(false);
+					const state = useTavernCoordination(props.sessionId);
+					const activity = state.view && state.view.activity;
+					// The game's own background work only: a director runs beside it and is not stopped here.
+					if (!activity || (!activity.busy && activity.phase !== "pending")) return null;
+					async function stop() {
+						if (busy) return;
+						setBusy(true);
+						try {
+							await rpc("stopBackground", { operationId: activity.operationId }, props.sessionId);
+							liveTavernView.invalidate(props.sessionId);
+							tavernCoordination.invalidate(props.sessionId);
+						} catch (error) { tavernErrorHub.report("停止后台", error); }
+						finally { setBusy(false); }
+					}
+					return React.createElement("button", { type: "button", className: "dsh-tavern-choice-trigger", role: props.inMenu ? "menuitem" : undefined, disabled: busy, onClick: stop }, busy ? "正在停止…" : "停止后台");
+				}
+
+		        // Manual plugin tasks (tavern.manualTask): one button each, run as an exclusive background task.
+		        function TavernPluginTasks(props) {
+		            const h = React.createElement;
+		            const [tasks, setTasks] = React.useState(null);
+		            const [starting, setStarting] = React.useState("");
+		            const [error, setError] = React.useState("");
+		            const running = Boolean(props.activity?.busy && props.activity.role === "plugin-task");
+		            const load = React.useCallback(async function () {
+		                try { setTasks((await rpc("listGamePlugins", {}, props.sessionId)).plugins?.tasks || null); }
+		                catch (_) { /* The game's own controls stay usable. */ }
+		            }, [props.sessionId]);
+		            React.useEffect(function () { void load(); }, [load, running]);
+		            React.useEffect(function () {
+		                if (!running) return;
+		                const timer = setInterval(() => { liveTavernView.invalidate(props.sessionId); void load(); }, 2000);
+		                return () => clearInterval(timer);
+		            }, [props.sessionId, running, load]);
+		            if (!tasks || !tasks.manual.length) return null;
+		            async function start(task, input) {
+		                await rpc("startPluginTask", { key: task.key, input }, props.sessionId);
+		                liveTavernView.invalidate(props.sessionId);
+		                await load();
+		            }
+		            async function run(task) {
+		                if (task.input) {
+		                    await askTavernText({ title: task.title, description: task.input.label, placeholder: task.input.placeholder, allowEmpty: true, maxLength: 4000, confirmLabel: "开始", onSubmit: input => start(task, input) });
+		                    return;
+		                }
+		                setStarting(task.key); setError("");
+		                try { await start(task); }
+		                catch (err) { setError(String(err.message || err)); }
+		                finally { setStarting(""); }
+		            }
+		            return h("section", { className: "dsh-tavern-status-section" },
+		                h("div", { className: "dsh-tavern-status-label" }, "插件任务"),
+		                tasks.running ? h("div", { className: "dsh-tavern-status-empty", role: "status" }, "正在运行：" + tasks.running.title + "（插件 " + tasks.running.plugin + "）") : null,
+		                h("div", { className: "dsh-tavern-plugin-tasks" }, tasks.manual.map(task => h("button", { key: task.key, type: "button", className: "dsh-tavern-btn",
+		                    title: task.description || "插件 " + task.plugin, disabled: props.busy || running || Boolean(starting), onClick: () => void run(task) }, starting === task.key ? "启动中…" : task.title))),
+		                error ? h("div", { className: "dsh-card-error", role: "alert" }, error) : null);
+		        }
+
+				function TavernMoreActions(props) {
+					const [open, setOpen] = React.useState(false);
+					const [placement, setPlacement] = React.useState(null);
+					const root = React.useRef(null);
+					const trigger = React.useRef(null);
+					const menu = React.useRef(null);
+					const storyView = useTavernStoryViewMode(props.sessionId);
+					// composer 的滚动与 transform 会改变 fixed 包含块；菜单挂到 body，按视口定位。
+					React.useLayoutEffect(function () {
+						if (!open) { setPlacement(null); return; }
+						function place() {
+							const rect = trigger.current && trigger.current.getBoundingClientRect();
+							if (!rect) return;
+							const width = document.documentElement.clientWidth || window.innerWidth;
+							setPlacement({ position: "fixed", top: "auto", left: "auto", right: Math.max(8, width - rect.right) + "px", bottom: (window.innerHeight - rect.top + 6) + "px", maxHeight: Math.max(120, rect.top - 12) + "px", overflowY: "auto" });
+						}
+						place();
+						window.addEventListener("resize", place);
+						if (window.visualViewport) window.visualViewport.addEventListener("resize", place);
+						return function () { window.removeEventListener("resize", place); if (window.visualViewport) window.visualViewport.removeEventListener("resize", place); };
+					}, [open]);
+					React.useEffect(function () {
+						if (!open) return;
+						function closeOutside(event) { if (!root.current?.contains(event.target) && !menu.current?.contains(event.target)) setOpen(false); }
+						function closeOnEscape(event) { if (event.key === "Escape") setOpen(false); }
+						document.addEventListener("pointerdown", closeOutside, true);
+						document.addEventListener("keydown", closeOnEscape);
+						return function () { document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("keydown", closeOnEscape); };
+					}, [open]);
+					return React.createElement("div", { className: "dsh-tavern-more-actions", ref: root },
+						React.createElement("button", { ref: trigger, type: "button", className: "dsh-tavern-choice-trigger", "data-fork-action": "more", title: "更多操作：编辑正文、回退、压缩上下文…", "aria-haspopup": "menu", "aria-expanded": open, onClick: function () { setOpen(function (value) { return !value; }); } }, "更多 ▾"),
+						ReactDOM.createPortal(React.createElement("div", { ref: menu, className: "dsh-tavern-more-menu", role: "menu", hidden: !open, style: placement || undefined, onClick: function (event) { if (event.target && event.target.closest && event.target.closest("button:not(:disabled)")) setOpen(false); } },
+		                    React.createElement(TavernStopBackgroundAction, Object.assign({}, props, { inMenu: true })),
+							storyView ? null : React.createElement(TavernEditBodyAction, props),
+							storyView ? null : React.createElement(TavernRollbackAction, props),
+		                    React.createElement(TavernUndoRollbackAction, props),
+							React.createElement(TavernDebugButton, { sessionId: props.sessionId, role: "menuitem", label: "遇到问题？交给调试 Agent" }),
+							React.createElement(TavernCompactionAction, Object.assign({}, props, { inMenu: true }))), document.body)
+					);
+				}
 
 		// the variable receipt dialog.
 		// Works for any MVU shape: the first path segment is the section ("剧情角色"), the

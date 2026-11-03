@@ -623,7 +623,7 @@
 					if (!turnRef || turnRef.status !== "closed" || !data.finalNode || !tail || !tail.closing || tail.closing.finalNode.seq !== data.finalNode.seq) return undefined;
 					return { turn: turnRef, seq: data.finalNode.seq, openFile: props.openFile };
 				}, [turnRef, data.finalNode, tail, props.openFile]);
-				const mentions = React.useMemo(function () { return owner === undefined ? undefined : props.fileMentions(owner); }, [owner, props.fileMentions]);
+				const mentions = React.useMemo(function () { return owner === undefined ? undefined : typeof props.fileMentions === "function" ? props.fileMentions(owner) : props.hostFileMentions(owner, props.sessionId); }, [owner, props.fileMentions, props.hostFileMentions, props.sessionId]);
 				const copyLabel = props.t ? props.t("copy") : "复制", copiedLabel = props.t ? props.t("copied") : "已复制";
 				const codeLabels = React.useMemo(() => ({ copyLabel, copiedLabel }), [copyLabel, copiedLabel]);
 				const superseded = galIsSuperseded(liveState.view, turn, storyTurn);
@@ -926,6 +926,8 @@
 				}
 				const scriptOwner = createTavernScriptSessionOwner({ sessions: createSessionCompat(input.ctx.sessions, resolveUiWorkspace()), executeSlash: createTavernFrameSlashExecutor(input.ctx) });
 				const executeSlash = createTavernFrameSlashExecutor(input.ctx);
+				// alpha.3 将文件引用移到公开服务；旧宿主仍优先使用行参数。
+				const hostFileMentions = (owner, sessionId, getFileTriggerProps) => input.ctx.get("chatFileMentions")?.forClosing(owner, sessionId, getFileTriggerProps);
 				input.ctx.effect(function () {
 					scriptOwner.start();
 					return function () { scriptOwner.dispose(); };
@@ -950,7 +952,7 @@
 						const data = props.node.data;
 						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
 							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
-							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash })));
+							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash, hostFileMentions: hostFileMentions })));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				chatEffect(function () {

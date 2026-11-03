@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import vm from 'node:vm'
+import vm from './fixtures/client-vm.mjs'
 
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const element = (type, props, ...children) => ({ type, props: { ...props, ...(children.length ? { children: children.length === 1 ? children[0] : children } : {}) } })
@@ -15,9 +15,9 @@ function loadClient(host = {}) {
   vm.runInNewContext(source, { window: { __ModuleLoader__: { load(value) { descriptor = value } }, setTimeout, clearTimeout, ...host }, console })
   return descriptor.factory(name => name === 'react' ? React : {})
 }
-function chatRows(client) {
+function chatRows(client, services = {}) {
   const rows = {}
-  const ctx = { sessions: {}, get: () => null, effect(run) { try { run() } catch (_) {} } }
+  const ctx = { sessions: {}, get: name => services[name], effect(run) { try { run() } catch (_) {} } }
   const slots = { inject: (_name, run) => run(), register(options, component) { if (options.name === 'conversation.chat.node') rows[options.key] = component; return () => {} } }
   client.createTavernAssistantRendererFeatureModule().register({ ctx, slots })
   return rows
@@ -123,7 +123,7 @@ test('会话级行投影只在聊天行挂载时观察 DOM，其他视图下不�
   // The projection observes document.body; the bundle itself loads without a page.
   context.document = { body: {}, querySelectorAll: () => [] }
   const docks = {}
-  const ctx = { sessions: { subagentAddress: () => null }, get: () => null, effect(run) { try { run() } catch (_) {} } }
+  const ctx = { inject: () => () => {}, provide() {}, sessions: { subagentAddress: () => null }, get: () => null, effect(run) { try { run() } catch (_) {} } }
   const slots = { inject: (_name, run) => run(), register(options, component) { docks[options.id || options.key] = component; return () => {} } }
   client.createPlayControlsFeatureModule().register({ ctx, slots })
   const projection = docks['dsh-tavern-question']({ sessionId: 's5' }).props.children.find(child => String(child.props.key).startsWith('history:'))
@@ -135,4 +135,24 @@ test('会话级行投影只在聊天行挂载时观察 DOM，其他视图下不�
   gate.type(gate.props)
   projection.type(dockProps)
   assert.equal(observers.length, 1, '聊天行挂载后恢复观察')
+})
+
+for (const legacy of [false, true]) test(`聊天正文文件引用兼容 ${legacy ? '旧行参数' : 'alpha.3 公开服务'}`, () => {
+  const client = loadClient(), calls = []
+  client.liveTavernView.setView('files', { mode: 'create', transcriptTurns: null })
+  const mentions = { resolve: () => null }
+  const rows = chatRows(client, { chatFileMentions: { forClosing(...args) { calls.push(['service', ...args]); return mentions } } })
+  const openFile = () => {}, finalNode = { seq: 12, messageId: 'file-answer' }
+  const gate = rows['assistant-step']({
+    sessionId: 'files', node: { kind: 'assistant-step', data: { status: 'completed', blocks: [{ kind: 'text', text: '查看 report.txt' }], finalNode }, location: at(2) },
+    useTurnData: () => ({ closing: { finalNode } }), openFile,
+    ...(legacy ? { fileMentions(owner) { calls.push(['legacy', owner]); return mentions } } : {})
+  })
+  const row = gate.props.children
+  row.type(row.props)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], legacy ? 'legacy' : 'service')
+  assert.equal(calls[0][1].seq, 12)
+  assert.equal(calls[0][1].openFile, openFile)
+  if (!legacy) assert.equal(calls[0][2], 'files')
 })
