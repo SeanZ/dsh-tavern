@@ -56,14 +56,18 @@ test('原生目录收录重试留下的空轮次，裁剪后只剩表面还有�
   assert.deepEqual(outline(), [1, 2, 3], '卸载后回到原生目录')
 })
 
-test('变更推送也裁：新的一轮还没有正文时，它的输入已经算数', native, async t => {
+for (const channel of ['onChanged', 'onEventChanged']) test(channel + ' 真实推送裁掉空轮次并保留新输入', native, async t => {
   const { registry, Session } = await harness(t)
   const session = threeTurns(Session)
   session.append('turn/start', { turn: 4 })
   session.append('user/message', { id: 'user-4', role: 'user', content: [{ type: 'text', text: '第 4 轮' }], source: { kind: 'user' }, turn: 4, step: 1 }, { surfaceOp: 'append' })
   const frames = []
   const dispose = installHostTurnRailFilter(registry)
-  const off = registry.onChanged((current, key, value) => { if (key === 'turnOutline') frames.push(value.map(entry => entry.turn)) })
+  if (typeof registry[channel] !== 'function') { dispose(); return t.skip('旧宿主不提供批量通知') }
+  const record = (key, value) => { if (key === 'turnOutline') frames.push(value.map(entry => entry.turn)) }
+  const off = channel === 'onChanged'
+    ? registry.onChanged((current, key, value) => record(key, value))
+    : registry.onEventChanged((current, changes) => { for (const { key, val } of changes) record(key, val) })
   for (const event of session.snapshotEvents()) registry.drive(session, event)
   assert.ok(frames.length > 0, '推送确实发生')
   assert.ok(frames.at(-1).includes(4), '正在进行的第 4 轮留在目录里：' + JSON.stringify(frames.at(-1)))

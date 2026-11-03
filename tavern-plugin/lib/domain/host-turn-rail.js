@@ -162,6 +162,65 @@ function withTrimmedValues(result, session, memo) {
   return { ...result, values: { ...result.values, [KEY]: next } }
 }
 
+function trimmedChanges(session, changes, memo) {
+  if (!Array.isArray(changes)) return changes
+  let changed = false
+  const next = changes.map(item => {
+    if (item?.key !== KEY) return item
+    const val = trimmed(session, item.val, memo)
+    if (val === item.val) return item
+    changed = true
+    return { ...item, val }
+  })
+  return changed ? next : changes
+}
+
+// 两种通知共用安装/释放协议；已登记的 disposer 仍可按原函数取消订阅。
+function filterListeners(registry, method, collection, transform) {
+  const original = registry[method]
+  const listeners = registry[collection] instanceof Set ? registry[collection] : null
+  if (typeof original !== 'function') return () => {}
+  const own = Object.hasOwn(registry, method), wrapped = new Map(), listening = new Map()
+  function wrap(listener) {
+    if (typeof listener !== 'function') return listener
+    if (!wrapped.has(listener)) wrapped.set(listener, function (...args) { return listener.apply(this, transform(args)) })
+    const filter = wrapped.get(listener)
+    listening.set(filter, listener)
+    return filter
+  }
+  let originalDelete, ownDelete
+  if (listeners) {
+    const before = [...listeners]
+    listeners.clear()
+    for (const listener of before) listeners.add(wrap(listener))
+    ownDelete = Object.hasOwn(listeners, 'delete')
+    originalDelete = listeners.delete
+    listeners.delete = function (listener) {
+      const filter = wrapped.get(listener) || listener
+      listening.delete(filter)
+      return originalDelete.call(this, filter)
+    }
+  }
+  registry[method] = function (listener) {
+    const filter = wrap(listener)
+    const off = original.call(this, filter)
+    return function () {
+      off()
+      listening.delete(filter)
+      if (listeners) { listeners.delete(filter); listeners.delete(listener) }
+    }
+  }
+  return function () {
+    if (own) registry[method] = original
+    else delete registry[method]
+    if (listeners) {
+      remapListeners(listeners, listening)
+      if (ownDelete) listeners.delete = originalDelete
+      else delete listeners.delete
+    }
+  }
+}
+
 /**
  * 把发出去的 `turnOutline` 裁到表面里还有内容的轮次。
  * 只包装快照入口和变更推送的监听器；原生定义、state 和检查点都不替换。
@@ -177,20 +236,6 @@ export function installHostTurnRailFilter(registry) {
     const memo = new WeakMap()
     const originals = new Map()
     const own = new Map()
-    const listeners = registry.listeners instanceof Set ? registry.listeners : null
-    const wrapped = new Map()
-    const listening = new Map()
-    const wrapListener = listener => {
-      if (typeof listener !== 'function') return listener
-      let filter = wrapped.get(listener)
-      if (filter) return filter
-      filter = function (session, key, value, seq) {
-        const next = key === KEY && session ? trimmed(session, value, memo) : value
-        return listener(session, key, next, seq)
-      }
-      wrapped.set(listener, filter)
-      return filter
-    }
     for (const name of methods) {
       const original = registry[name]
       own.set(name, Object.hasOwn(registry, name))
@@ -200,44 +245,19 @@ export function installHostTurnRailFilter(registry) {
       originals.set(name, original)
       registry[name] = wrapper
     }
-    const originalOnChanged = typeof registry.onChanged === 'function' ? registry.onChanged : null
-    if (originalOnChanged) {
-      own.set('onChanged', Object.hasOwn(registry, 'onChanged'))
-      originals.set('onChanged', originalOnChanged)
-      registry.onChanged = function (listener) {
-        const filter = wrapListener(listener)
-        if (listeners) listening.set(filter, listener)
-        const off = originalOnChanged.call(this, filter)
-        // 卸载后集合里换回原监听器，lib 的 disposer 只认它注册的那个：两个都删。
-        return function () {
-          off()
-          listening.delete(filter)
-          if (listeners) { listeners.delete(filter); listeners.delete(listener) }
-        }
-      }
-    }
-    if (listeners) {
-      const before = [...listeners]
-      listeners.clear()
-      for (const listener of before) {
-        const filter = wrapListener(listener)
-        if (filter !== listener) listening.set(filter, listener)
-        listeners.add(filter)
-      }
-    }
+    const stopSingle = filterListeners(registry, 'onChanged', 'listeners', ([session, key, value, ...rest]) =>
+      [session, key, key === KEY ? trimmed(session, value, memo) : value, ...rest])
+    const stopBatch = filterListeners(registry, 'onEventChanged', 'eventListeners', ([session, changes, ...rest]) =>
+      [session, trimmedChanges(session, changes, memo), ...rest])
     installed = {
       users: 0,
       dispose() {
         for (const [name, original] of originals) {
-          if (name === 'onChanged') continue
           if (own.get(name)) registry[name] = original
           else delete registry[name]
         }
-        if (originalOnChanged) {
-          if (own.get('onChanged')) registry.onChanged = originalOnChanged
-          else delete registry.onChanged
-        }
-        if (listeners) remapListeners(listeners, listening)
+        stopSingle()
+        stopBatch()
       },
     }
     installations.set(registry, installed)
