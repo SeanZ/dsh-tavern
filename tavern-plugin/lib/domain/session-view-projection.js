@@ -75,8 +75,10 @@ export function createSessionViewProjection({
       && Number.isSafeInteger(resourceRevision) && !!chat.cardDefinitionSnapshot
       && chat.openingWorldbookSnapshot?.version === 1
 
-    if (!options.openingWindow) scheduleTemplateSync(chat)
-    else void warmCandidates(chat.sessionId)
+    if (!options.displayOnly) {
+      if (!options.openingWindow) scheduleTemplateSync(chat)
+      else void warmCandidates(chat.sessionId)
+    }
     const runtimeSettings = await requestPerformance.stage('settings', () => readTavernSettings())
     let scriptProgress = null
     if ((chat.mode || 'story') === 'script') {
@@ -104,7 +106,7 @@ export function createSessionViewProjection({
     const forkTurnsByMessageId = forkTurnsForChat(chat, transcriptPlan)
     const {inputSources,inputTemplateDisplays}=inputFieldsProjection.project(persistedProjection ? chat : {...chat,_storageRevision:undefined}, options.inputChanges)
     const cardUpdate = ['story', 'script'].includes(chat.mode || 'story') && chat.requestMode !== 'sillytavern'
-      ? await cardUpdateStatus(chat, { card, fresh: options.freshSnapshot === true, busy: activity.busy || ['pending', 'running', 'waiting-runtime'].includes(chat.settleStatus)
+      ? await cardUpdateStatus(chat, { card, fresh: options.freshSnapshot === true, displayOnly: options.displayOnly === true, busy: activity.busy || ['pending', 'running', 'waiting-runtime'].includes(chat.settleStatus)
         || agentRegistry.get(chat.sessionId)?.phase?.kind === 'running', settings: runtimeSettings })
       : { available: false }
     // Card Stage reads the live card so stage edits show without a card update.
@@ -482,7 +484,7 @@ export function createSessionViewProjection({
     }
     return next
   }
-  async function projectFullSessionView(chat, { windowHelperMessages = false, inputChanges, deferResources } = {}) {
+  async function projectFullSessionView(chat, { windowHelperMessages = false, inputChanges, deferResources, displayOnly = false } = {}) {
     const mode = chat.mode || 'story', isCard = mode === 'card', cardPath = str(chat.cardPath)
     let card = null, cardReadError = null
     try { card = isCard && cardPath === '' ? null : await requestPerformance.stage('readCard', () => readChatCard(chat)) }
@@ -492,7 +494,7 @@ export function createSessionViewProjection({
       card = { name: chat.cardName || chat.cardPath }
     }
     const result = await requestPerformance.stage('projectView', () => view(chat, card, true, {
-      skeletonUntil: windowHelperMessages === true, inputChanges, deferResources
+      skeletonUntil: windowHelperMessages === true, inputChanges, deferResources, displayOnly
     }))
     if (cardReadError) result.cardReadError = cardReadError
     if (isCard) result.workspace = workspaceViewOf(chat)
@@ -520,5 +522,6 @@ export function createSessionViewProjection({
   }
 
   return Object.freeze({ view, replyDisplay: replyDisplayForChat, status: chat => sessionStateView.status(chat), stats: () => incrementalReplyView.stats(),
-    project: Object.freeze({ full: projectFullSessionView, cached: projectCachedSessionView, dirty: projectDirtySessionView, opening: projectOpeningWindow }) })
+    project: Object.freeze({ full: projectFullSessionView, cached: projectCachedSessionView, dirty: projectDirtySessionView, opening: projectOpeningWindow,
+      invalidate: chatId => incrementalReplyView.invalidate(chatId) }) })
 }

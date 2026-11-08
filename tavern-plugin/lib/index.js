@@ -1839,7 +1839,7 @@ export async function apply(ctx) {
       if (context.fresh === true) return playCardSnapshots.libraryBoundStatus(chat, context.card)
       const status = await playCardSnapshots.currentStatus(chat, { busy: context.busy === true })
       // An edited card or world book enters an idle game by itself; the page only hears about it.
-      if (context.busy !== true) cardAutoReload.schedule(chat.sessionId, status)
+      if (context.busy !== true && context.displayOnly !== true) cardAutoReload.schedule(chat.sessionId, status)
       return { ...status, autoReloading: cardAutoReload.running(chat.sessionId), autoReloadError: cardAutoReload.failure(chat.sessionId) }
     } catch (error) { return {available:true,error:String(error.message || error)} }
   }
@@ -2001,6 +2001,15 @@ export async function apply(ctx) {
   }
   const sessionViews = createSessionViewReader({
     readState: sessionStateForSession, readChat: chatForSession, readOpeningWindow,
+    // 手动刷新只读当前原始存档，不进入旧档迁移、原生历史修复或后台任务同步。
+    readRefreshChat: async sessionId => {
+      const chatId = (await readSessionMap())[sessionId]
+      return chatId ? readChat(chatId) : undefined
+    },
+    readRefreshState: async sessionId => {
+      const chatId = (await readSessionMap())[sessionId]
+      return chatId ? chatPersistence.readSessionState(chatId) : undefined
+    },
     resourceVersion: async chat => {
       if (!chat.cardPath || chat.mode === 'card') return ''
       const binding = await fileResources.worldBookBindingForCard(chat.cardPath)
@@ -3672,7 +3681,7 @@ export async function apply(ctx) {
     createPluginHandlers(rpcDeps),
     createConversationHandlers(rpcDeps),
     createPlayHandlers(rpcDeps),
-    createStoryHandlers({ ...storyService, interruptQueued: storyLifecycle.interruptQueued, notifyTimeline: notifyPluginTimeline }),
+    createStoryHandlers({ ...storyService, refreshDisplay: sessionId => sessionViews.refresh(sessionId), interruptQueued: storyLifecycle.interruptQueued, notifyTimeline: notifyPluginTimeline }),
     createTransferHandlers(rpcDeps))
   const stageSwitch = await createStageSwitch({runtime:stageRuntime,store:profileData,builtin:true})
   rpcHandlers.getStageRuntimeStatus = async () => stageSwitch.read()

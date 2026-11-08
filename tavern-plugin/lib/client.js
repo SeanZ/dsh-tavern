@@ -51896,6 +51896,20 @@ function createTurnRailFilter(root, options) {
 }
 		function createPlayControlsFeatureModule() {
 			const historyProjection = createTurnHistoryProjection();
+            const displayRefreshes = new Map();
+            function refreshDisplay(sessionId) {
+                if (displayRefreshes.has(sessionId)) return displayRefreshes.get(sessionId);
+                const work = rpc("refreshSessionDisplay", {}, sessionId).then(function (result) {
+                    if (!result || !result.view) throw new Error("刷新显示未返回当前会话");
+                    // setView 取消此前在途刷新，防止旧响应覆盖手动重算的结果。
+                    liveTavernView.setView(sessionId, result.view);
+                    return result;
+                });
+                displayRefreshes.set(sessionId, work);
+                const clear = function () { if (displayRefreshes.get(sessionId) === work) displayRefreshes.delete(sessionId); };
+                work.then(clear, clear);
+                return work;
+            }
             const { TavernConversationSettingsTab, TavernConversationSettingsAction } = createConversationSettingsModule({
                 React, rpc, useLiveTavernView, useTavernSessionMode, isPlayMode,
                 invalidateView: sessionId => liveTavernView.invalidate(sessionId),
@@ -51906,10 +51920,14 @@ function createTurnRailFilter(root, options) {
                 // The header only needs session membership. Building a complete
                 // Tavern view here delays the button behind templates and history.
                 const owner = props.sessions.subagentAddress(props.sessionId)?.parentSessionId || props.sessionId;
-                const available = Boolean(useTavernSessionMode(owner));
+                const mode = useTavernSessionMode(owner);
+                const available = Boolean(mode);
                 const [busy, setBusy] = React.useState(false);
                 const [open, setOpen] = React.useState(false);
+                const [refreshLabel, setRefreshLabel] = React.useState("刷新显示");
                 const root = React.useRef(null);
+                const currentSession = React.useRef(props.sessionId);
+                currentSession.current = props.sessionId;
                 // 「底部面板」 opens or folds the bottom workbench (collapsed on a phone at load);
                 // listed only while it holds tabs, since the host's own toggle is hidden in Tavern.
                 const sidebar = props.sidebar;
@@ -51919,6 +51937,7 @@ function createTurnRailFilter(root, options) {
                 const phone = usePhonePlay(props.sessionId, props.sessions);
                 React.useEffect(function () {
                     setOpen(false);
+                    setRefreshLabel("刷新显示");
                 }, [props.sessionId]);
                 React.useLayoutEffect(function () {
                     if (open && phone && root.current) root.current.querySelectorAll(".dsh-tavern-more-menu button").forEach(function (node) { if (!node.closest(".fork-phone-readout")) node.setAttribute("role", "menuitem"); });
@@ -51967,6 +51986,15 @@ function createTurnRailFilter(root, options) {
 					} catch (err) { tavernErrorHub.report("导出日志", err); }
 					finally { setBusy(false); }
 				}
+                async function refreshCurrentDisplay() {
+                    if (busy) return;
+                    const sessionId = props.sessionId;
+                    setBusy(true); setRefreshLabel("正在刷新…");
+                    try { await refreshDisplay(sessionId); if (currentSession.current === sessionId) setRefreshLabel("显示已刷新"); }
+                    catch (error) { if (currentSession.current === sessionId) { setRefreshLabel("刷新显示"); tavernErrorHub.report("刷新显示", error); } }
+                    finally { setBusy(false); }
+                }
+                const refreshItem = owner === props.sessionId && isPlayMode(mode) ? React.createElement("button", { key: "refresh-display", type: "button", role: "menuitem", "data-keep-open": "", disabled: busy, title: "重新读取这一局的存档并计算显示，保留剧情和变量", onClick: refreshCurrentDisplay }, refreshLabel) : null;
 				const exportItems = [
                         React.createElement("button", { key: "save", type: "button", role: "menuitem", disabled: busy, title: "导出这一局的存档，可在其他电脑的酒馆里导入继续玩", onClick: exportSave }, "存档"),
                         React.createElement("button", { key: "logs", type: "button", role: "menuitem", "data-tavern-log-export": "", disabled: busy, "aria-label": "日志", title: "下载 Session、MVU、生图与更新日志；含私人剧情，分享前请检查隐私", onClick: exportLogs }, "日志（用于排查错误）"),
@@ -51976,8 +52004,8 @@ function createTurnRailFilter(root, options) {
                     React.createElement("button", { type: "button", className: "dsh-tavern-export-action", "aria-haspopup": "menu", "aria-expanded": open, "aria-busy": busy, "aria-label": "更多", title: phone ? "更多" : "更多：导出存档、日志、纯对话 TXT", "data-fork-more": "", onClick: function () { setOpen(value => !value); } }, busy ? "…" : "⋯"), // low-frequency, folded behind ⋯
                     React.createElement("div", { className: "dsh-tavern-more-menu" + (phone ? " fork-phone-more-menu" : ""), role: "menu", "aria-label": phone ? "更多" : "导出", hidden: !open, onKeyDown: phone ? phoneModMenuKeys : undefined,
                         onClick: function (event) { if (event.target.closest("button:not(:disabled)") && !event.target.closest("[data-keep-open]")) setOpen(false); } },
-                        phone ? React.createElement(PhonePlayMoreItems, { open, sessionId: props.sessionId, exportItems, extraItems: bottomItem, renderSlot: open ? props.renderSlot : null, openStatus: function () { props.openStatus(owner); } })
-                            : React.createElement(React.Fragment, null, exportItems, bottomItem)
+                        phone ? React.createElement(PhonePlayMoreItems, { open, sessionId: props.sessionId, exportItems, extraItems: [refreshItem, bottomItem], renderSlot: open ? props.renderSlot : null, openStatus: function () { props.openStatus(owner); } })
+                            : React.createElement(React.Fragment, null, refreshItem, exportItems, bottomItem)
                     ));
             }
 
@@ -54765,7 +54793,7 @@ function createTurnRailFilter(root, options) {
 			)), ctx.sessions), "dsh-tavern: regen body panel");
 		}
 		// Fork contract C5: the story service (story/service.js) reuses these flows.
-		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, replayFailedTurn: submitFailedTurnReplay }) });
+		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, refreshDisplay: refreshDisplay, replayFailedTurn: submitFailedTurnReplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();
@@ -55337,6 +55365,10 @@ function createStoryServiceAdapter(dependencies) {
 
 		const service = {
 			apiVersion: 1,
+            // 单会话完整重算显示；不生成正文、不重算变量，不改变楼层身份。
+            refreshDisplay: function (sessionId) {
+                return actions.refreshDisplay(tavernStorySessionArgument(sessionId, "refreshDisplay"));
+            },
 			// 模式与接管规则是同一来源；UI 不通过楼层或存档推测会话身份。
 			sessionMode: function (sessionId) { return tavernStorySessionState(tavernStorySessionArgument(sessionId, "sessionMode")); },
 			readSessionMode: function (sessionId) { tavernStorySessionArgument(sessionId, "readSessionMode"); return readTavernStorySessionMode(sessionId).then(function () { return tavernStorySessionState(sessionId); }); },
@@ -55385,7 +55417,7 @@ function createStoryServiceAdapter(dependencies) {
 					const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 					const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
 					listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
-						historyWarning: view?.storyHistoryWarning || "", receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+						historyWarning: view?.storyHistoryWarning || "", displayRevision: view?.displayRevision || 0, receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 				}
 				function publish() {
 					if (stopped) return;
@@ -55411,6 +55443,7 @@ function createStoryServiceAdapter(dependencies) {
 					const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
 					const nextSettlement = tavernStorySettlement(next);
 					const changed = nextSettling !== settling || JSON.stringify(stale) !== JSON.stringify(staleVariables)
+						|| next?.displayRevision !== view?.displayRevision
 						|| JSON.stringify(next?.storySuppressedTurns) !== JSON.stringify(view?.storySuppressedTurns) || next?.storyHistoryWarning !== view?.storyHistoryWarning
 						|| JSON.stringify(nextSettlement) !== JSON.stringify(settlement) || (next && next.mvuReceipts) !== (view && view.mvuReceipts);
 					view = next;
@@ -55421,7 +55454,7 @@ function createStoryServiceAdapter(dependencies) {
 				readView(liveTavernView.getSnapshot(sessionId));
 				const stopView = liveTavernView.subscribe(sessionId, function (state) {
 					if (readView(state) && fold) emit();
-				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
+				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["displayRevision"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
 				const unsubscribe = source.subscribe(publish);
 				publish();
 				return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };

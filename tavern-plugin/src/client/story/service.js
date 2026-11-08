@@ -230,6 +230,10 @@ function createStoryServiceAdapter(dependencies) {
 
 		const service = {
 			apiVersion: 1,
+            // 单会话完整重算显示；不生成正文、不重算变量，不改变楼层身份。
+            refreshDisplay: function (sessionId) {
+                return actions.refreshDisplay(tavernStorySessionArgument(sessionId, "refreshDisplay"));
+            },
 			// 模式与接管规则是同一来源；UI 不通过楼层或存档推测会话身份。
 			sessionMode: function (sessionId) { return tavernStorySessionState(tavernStorySessionArgument(sessionId, "sessionMode")); },
 			readSessionMode: function (sessionId) { tavernStorySessionArgument(sessionId, "readSessionMode"); return readTavernStorySessionMode(sessionId).then(function () { return tavernStorySessionState(sessionId); }); },
@@ -278,7 +282,7 @@ function createStoryServiceAdapter(dependencies) {
 					const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
 					const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
 					listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
-						historyWarning: view?.storyHistoryWarning || "", receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+						historyWarning: view?.storyHistoryWarning || "", displayRevision: view?.displayRevision || 0, receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
 				}
 				function publish() {
 					if (stopped) return;
@@ -304,6 +308,7 @@ function createStoryServiceAdapter(dependencies) {
 					const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
 					const nextSettlement = tavernStorySettlement(next);
 					const changed = nextSettling !== settling || JSON.stringify(stale) !== JSON.stringify(staleVariables)
+						|| next?.displayRevision !== view?.displayRevision
 						|| JSON.stringify(next?.storySuppressedTurns) !== JSON.stringify(view?.storySuppressedTurns) || next?.storyHistoryWarning !== view?.storyHistoryWarning
 						|| JSON.stringify(nextSettlement) !== JSON.stringify(settlement) || (next && next.mvuReceipts) !== (view && view.mvuReceipts);
 					view = next;
@@ -314,7 +319,7 @@ function createStoryServiceAdapter(dependencies) {
 				readView(liveTavernView.getSnapshot(sessionId));
 				const stopView = liveTavernView.subscribe(sessionId, function (state) {
 					if (readView(state) && fold) emit();
-				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
+				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["displayRevision"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
 				const unsubscribe = source.subscribe(publish);
 				publish();
 				return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };

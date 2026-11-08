@@ -48,3 +48,19 @@ test('card save stays readable as turn/path after full, cached and dirty project
   const play = await f.projection.project.full({ ...f.chat, lastCardSave: undefined })
   assert.equal(play.cardSave, null)
 })
+
+
+test('显示重算不调度模板写入或候选生成，持久化正文与变量不变', async () => {
+ const checks=[]
+ const f=projectionFixture({cardUpdateStatus:async (_chat,context)=>{checks.push(context.displayOnly);return {available:false}}})
+ f.chat.variables={计数:7}
+ const before=structuredClone(f.chat)
+ await f.projection.project.full({...f.chat,messages:[{role:'assistant',turn:1,greeting:true}]})
+ f.calls.length=0
+ f.projection.project.invalidate(f.chat.id)
+ const refreshed=await f.projection.project.full(f.chat,{displayOnly:true})
+ assert.equal(refreshed.replyProjections[0].text,'开场白')
+ assert.deepEqual(f.calls,[])
+ assert.equal(checks.at(-1),true,'卡片状态检查不得自动应用资源更新')
+ assert.deepEqual(f.chat,before)
+})

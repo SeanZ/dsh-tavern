@@ -507,3 +507,19 @@ test('旧摘要展开后仍遵守已撤回楼层，存档变化无需事件追�
   assert.deepEqual(plain(seen.at(-1).floors.map(floor => floor.story)), [1, 2, 3])
   stop()
 })
+
+test('刷新显示只请求指定会话，更新投影并通知楼层重新扫描，合并重复点击', async () => {
+  const { client, calls } = loadClient({ refreshSessionDisplay: { view: { mode:'story',displayRevision:4,replyProjections:[{turn:2,text:'恢复的正文',parts:[]}] } } })
+  const service = serviceOf(client, { s1:eventWindow(story(2)) })
+  const seen=[]
+  const stop=service.subscribeRounds('s1',rounds=>seen.push(rounds))
+  const first=service.refreshDisplay('s1')
+  assert.equal(service.refreshDisplay('s1'),first)
+  await first
+  assert.equal(client.liveTavernView.getSnapshot('s1').view.replyProjections[0].text,'恢复的正文')
+  assert.equal(seen.at(-1).displayRevision,4)
+  assert.equal(calls.filter(call=>call.method==='refreshSessionDisplay').length,1)
+  assert.deepEqual(calls.find(call=>call.method==='refreshSessionDisplay').args,{sessionId:'s1'})
+  assert.throws(()=>service.refreshDisplay(''),/sessionId/)
+  stop()
+})

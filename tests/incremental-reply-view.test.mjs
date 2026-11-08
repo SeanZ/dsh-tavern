@@ -49,3 +49,35 @@ test('正则的 maxDepth 按每一楼自己的深度生效：重美化状态栏�
  assert.deepEqual(heavyTurns(await cache.project(chat,opts,opts)),[4,5])
  assert.equal(cache.stats().incremental,1,'a new round re-projects only the floors within the bound')
 })
+
+
+test('单会话失效重算同revision的空投影，保留其它会话与有意隐藏规则', async () => {
+ const cache=createIncrementalReplyView()
+ const chat={id:'refresh',_storageRevision:1,messages:[{role:'assistant',turn:2,text:'正文'}]}
+ await cache.project({...chat,messages:[{role:'assistant',turn:2}]},options)
+ const other={...chat,id:'other'}
+ const kept=await cache.project(other,options,options,{shared:true})
+ assert.equal((await cache.project(chat,options)).projections[0].text,'')
+ cache.invalidate(chat.id)
+ assert.equal((await cache.project(chat,options)).projections[0].text,'正文')
+ assert.equal((await cache.project(other,options,options,{shared:true})).projections,kept.projections)
+ const hidden={...options,regexScripts:[{findRegex:'正文',replaceString:'',placement:[2],markdownOnly:true}]}
+ cache.invalidate(chat.id)
+ assert.equal((await cache.project(chat,hidden)).projections[0].text,'')
+})
+
+test('失效前迟到的增量任务不能重新污染同版本缓存', async () => {
+ let release,entered
+ const ready=new Promise(resolve=>{entered=resolve})
+ const wait=new Promise(resolve=>{release=resolve})
+ const cache=createIncrementalReplyView({readChanges:async()=>{entered();await wait;return undefined}})
+ const chat={id:'race',_storageRevision:1,messages:[{role:'assistant',turn:2,text:'旧正文'}]}
+ await cache.project(chat,options)
+ const old=cache.project({...chat,_storageRevision:2},options)
+ await ready
+ cache.invalidate(chat.id)
+ const fresh={...chat,_storageRevision:2,messages:[{role:'assistant',turn:2,text:'新正文'}]}
+ await cache.project(fresh,options)
+ release();await old
+ assert.equal((await cache.project(fresh,options)).projections[0].text,'新正文')
+})

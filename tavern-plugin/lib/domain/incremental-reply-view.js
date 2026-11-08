@@ -31,6 +31,7 @@ function depthBound(options) {
 // Derived, disposable state only. The journal remains the authority for changed indices.
 export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 1024, maxEntries = 4, onIndexVisit = () => {}, onStatusMatch = () => {}, onStatusFilter = () => {}, onStatusFallback = () => {} } = {}) {
   const cache = new Map()
+  const inFlight = new Map()
   const sourceIndex = createIndexedArrayApi({measure:value=>48+String(value).length*2})
   const rowIndex = createIndexedArrayApi({eligible:value=>Boolean(value),measure:value=>JSON.stringify(value).length*2,visit:onIndexVisit})
   const metadataIndex = createIndexedArrayApi({visit:onIndexVisit})
@@ -44,7 +45,22 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
   function output(result, shared) { return shared ? {...result} : structuredClone({...result,projections:Array.from(result.projections)}) }
   let bytes = 0
   const stats = { rebuilt: 0, incremental: 0, reused: 0, projectedMessages: 0 }
-  async function project(chat, options = {}, statusOptions = options, {shared = false} = {}) {
+  async function project(chat, options = {}, statusOptions = options, outputOptions = {}) {
+    let work = inFlight.get(chat.id)
+    if (!work) { work = { token: {}, count: 0 }; inFlight.set(chat.id, work) }
+    const token = work.token
+    work.count++
+    try { return await projectCurrent(chat, options, statusOptions, outputOptions, () => work.token === token) }
+    finally { if (--work.count === 0) inFlight.delete(chat.id) }
+  }
+  function invalidate(chatId) {
+    const previous = cache.get(chatId)
+    if (previous) { bytes -= previous.size; cache.delete(chatId) }
+    // 刷新前已开始的投影可以返回给旧调用方，但不能再写入新缓存。
+    const work = inFlight.get(chatId)
+    if (work) work.token = {}
+  }
+  async function projectCurrent(chat, options, statusOptions, {shared = false}, isCurrent) {
     const signature = createHash('sha256').update(JSON.stringify([displayDependencies(options), displayDependencies(statusOptions), chat.timeline?.branchId])).digest('hex')
     const previous = cache.get(chat.id)
     const revision = chat._storageRevision
@@ -64,7 +80,7 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
     // Check only the declared dirty sources, then retain the immutable result.
     if (compatible && messages.length === previous.roles.length
       && changes.indices.every(id => sourceKey(messages[id]) === previous.sources[id])) {
-      if (cache.get(chat.id) === previous) previous.revision = revision
+      if (isCurrent() && cache.get(chat.id) === previous) previous.revision = revision
       stats.reused++
       return output(previous.result,shared)
     }
@@ -132,7 +148,7 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
       : sourceIndex.from(messages.map(sourceKey))
     const resultSize = hasStatusRules ? statusSummary.filteredBytes + JSON.stringify(result.statusViews).length*2 : projectionIndex.info(projections).bytes + 256
     const size = targetIndex.info(targets).bytes + rowIndex.info(rows).bytes + metadataIndex.info(roles).bytes + metadataIndex.info(before).bytes + resultSize + 512 + sourceIndex.info(sources).bytes
-    if (Number.isSafeInteger(revision) && size <= maxBytes && maxEntries > 0 && !(cache.get(chat.id)?.revision > revision)) {
+    if (isCurrent() && Number.isSafeInteger(revision) && size <= maxBytes && maxEntries > 0 && !(cache.get(chat.id)?.revision > revision)) {
       if (cache.has(chat.id)) { bytes -= cache.get(chat.id).size; cache.delete(chat.id) }
       while (cache.size && (bytes + size > maxBytes || cache.size >= maxEntries)) {
         const oldest = cache.keys().next().value; bytes -= cache.get(oldest).size; cache.delete(oldest)
@@ -141,5 +157,5 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
     }
     return output(result,shared)
   }
-  return { project, stats: () => ({...stats, entries: cache.size, estimatedBytes: bytes}) }
+  return { project, invalidate, stats: () => ({...stats, entries: cache.size, estimatedBytes: bytes}) }
 }

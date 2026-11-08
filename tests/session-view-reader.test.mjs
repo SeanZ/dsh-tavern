@@ -73,3 +73,45 @@ test('新客户端只接收一份世界书；旧客户端与缓存原视图保�
   assert.equal(old.view.tavernHelperWorldbook, worldbook)
   assert.ok(JSON.stringify(old).length > JSON.stringify(modern).length + 2000)
 })
+
+
+test('手动刷新完整重读同版本存档、合并点击并禁止旧在途读取覆盖', async () => {
+ const f=fixture(), started=gate(), blocked=gate(), invalidated=[]
+ f.deps.project.invalidate=id=>invalidated.push(id)
+ const full=f.deps.project.full
+ let first=true
+ f.deps.project.full=async (chat,options)=>{
+  if(first){first=false;started.resolve();await blocked.promise}
+  if(options.displayOnly)assert.equal(options.windowHelperMessages,undefined)
+  return full(chat)
+ }
+ const old=f.reader.read('s');await started.promise
+ f.chat.messages[0].text='重算正文'
+ const fresh=f.reader.refresh('s')
+ assert.equal(f.reader.refresh('s'),fresh)
+ const later=f.reader.read('s')
+ blocked.resolve();await old
+ const result=await fresh
+ assert.equal(result.tavernHelper.messages[0].text,'重算正文')
+ assert.ok(result.displayRevision>0)
+ assert.equal((await later).displayRevision,result.displayRevision)
+ assert.deepEqual(invalidated,['c'])
+ assert.equal(f.calls.fullRead,2)
+})
+
+test('刷新拒绝生成中的会话，计算时存档变化则不缓存过期结果', async () => {
+ const f=fixture()
+ f.deps.project.invalidate=()=>{}
+ f.chat.settleStatus='running'
+ await assert.rejects(f.reader.refresh('s'),/正在生成或结算/)
+ f.chat.settleStatus='idle'
+ const full=f.deps.project.full
+ f.deps.project.full=async (chat,options)=>{
+  const view=await full(chat)
+  if(options.displayOnly){f.chat={...f.chat,_storageRevision:2};f.chat.messages[0].text='后续正文'}
+  return view
+ }
+ await assert.rejects(f.reader.refresh('s'),/已有变化/)
+ assert.equal((await f.reader.read('s')).tavernHelper.messages[0].text,'后续正文')
+ await assert.rejects(f.reader.refresh(''),/sessionId/)
+})

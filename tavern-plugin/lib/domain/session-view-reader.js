@@ -30,17 +30,28 @@ function canProjectDirty(previous, chat, indices, changedHeaderFields) {
  * Projections consume detached inputs; callers never receive a partial Chat.
  */
 export function createSessionViewReader({ readState, readChat, readChanges, readViewDelta, readOpeningWindow, project, activity,
-  trace, foregroundRunning, synchronize, resourceVersion = async () => '' }) {
+  trace, foregroundRunning, synchronize, resourceVersion = async () => '', readRefreshChat = readChat, readRefreshState = readState }) {
   const cache = new Map()
   const helperWindows = new Map()
   const pending = new Map()
+  const inFlight = new Map(), refreshes = new Map()
+  let displayRevision = 0
   async function changes(chat, revision) {
     const target = Number(chat._storageRevision) || 0
     if (revision === target) return new Set()
     const changed = await readChanges(chat.id, revision)
     return changed?.revision === target ? new Set(changed.indices) : null
   }
-  async function load(sessionId, options = {}) {
+  function load(sessionId, options = {}) {
+    const id = String(sessionId)
+    const refreshing = refreshes.get(id)
+    if (refreshing) return refreshing.catch(() => {}).then(() => load(sessionId, options))
+    const work = Promise.resolve().then(() => loadCurrent(sessionId, options))
+    const reads = inFlight.get(id) || new Set()
+    reads.add(work); inFlight.set(id, reads)
+    return work.finally(() => { reads.delete(work); if (!reads.size) inFlight.delete(id) })
+  }
+  async function loadCurrent(sessionId, options) {
     const state=await readState(sessionId)
     const resources=(state ? await resourceVersion(state) : '') + (options.deferResources ? '\ndeferred-resources' : '')
     const key=JSON.stringify([String(sessionId),state?.id,state && identity(state),resources,options])
@@ -109,6 +120,41 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     return { view, revision: next.revision, chat }
   }
   async function read(sessionId, options) { return (await load(sessionId, options)).view }
+  function refresh(sessionId) {
+    const id = String(sessionId || '')
+    if (!id) return Promise.reject(new Error('刷新显示需要 sessionId'))
+    if (refreshes.has(id)) return refreshes.get(id)
+    const work = Promise.resolve().then(async () => {
+      // 等待此前完整读取落定；新读取在入口等待本次刷新，不复用旧视图。
+      await Promise.allSettled([...(inFlight.get(id) || [])])
+      const chat = await readRefreshChat(id)
+      if (!chat || chat.sessionId !== id || !['story', 'script'].includes(chat.mode || 'story')) throw new Error('找不到当前游玩存档')
+      const busy = value => {
+        const state = activity(value)
+        return foregroundRunning(id) || state?.busy || state?.phase === 'pending' || value.regenInProgress
+          || ['pending', 'running', 'waiting-runtime'].includes(value.settleStatus)
+      }
+      if (busy(chat)) throw new Error('正在生成或结算，请完成后再刷新显示')
+      const resources = await resourceVersion(chat)
+      cache.delete(chat.id); helperWindows.delete(chat.id)
+      project.invalidate(chat.id)
+      const view = await project.full(chat, { displayOnly: true })
+      const current = await readRefreshState(id)
+      if (!current || current.id !== chat.id || JSON.stringify(identity(current)) !== JSON.stringify(identity(chat))
+        || busy(current) || await resourceVersion(current) !== resources) {
+        project.invalidate(chat.id)
+        throw new Error('刷新期间存档或显示规则已有变化，请稍后重试')
+      }
+      const result = { ...view, displayRevision: ++displayRevision }
+      cache.set(chat.id, { ...identity(chat), resourceVersion: resources, view: result })
+      while (cache.size > 8) cache.delete(cache.keys().next().value)
+      return result
+    })
+    refreshes.set(id, work)
+    const clear = () => { if (refreshes.get(id) === work) refreshes.delete(id) }
+    work.then(clear, clear)
+    return work
+  }
   async function response(args = {}) {
     const sessionId = args.sessionId
     // New clients read the worldbook from Helper context; old clients keep the alias.
@@ -149,7 +195,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     while (cache.size > 8) cache.delete(cache.keys().next().value)
     return true
   }
-  return Object.freeze({ read, response, acceptHelperMessages })
+  return Object.freeze({ read, response, refresh, acceptHelperMessages })
 }
 
 /** Partial state is never handed to a migration that can persist a Chat. */

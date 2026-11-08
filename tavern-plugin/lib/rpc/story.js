@@ -3,10 +3,15 @@ export function createStoryHandlers({
   snapshots,
   resultSwitch,
   fork,
+  refreshDisplay,
   interruptQueued,
   notifyTimeline
 }) {
   return {
+    async refreshSessionDisplay(args) {
+      if (typeof args?.sessionId !== 'string' || !args.sessionId) throw new Error('刷新显示需要 sessionId')
+      return { view: await refreshDisplay(args.sessionId) }
+    },
     async saveFloorSnapshot(args) {
       return await snapshots.save(args || {})
     },
