@@ -337,7 +337,8 @@ export function createNativePlayOrchestrationStrategy(options) {
     }
     if (Number(payload.step) === 1) {
       const prepared = await options.prepareTurn({ sessionId, turn: payload.turn, requestId: input.requestId,
-        userText: userTextOf(payload.messages), userContent: userContentOf(payload.messages), runtimePresetSnapshot: snapshot })
+        userText: userTextOf(payload.messages), userContent: userContentOf(payload.messages),
+        playerInput: (payload.messages || []).some(isOriginalPlayerInput), runtimePresetSnapshot: snapshot })
       if (prepared && prepared.duplicate) throw new Error('该消息已由酒馆处理，请勿重复发送')
       if (mode === 'story' || mode === 'script') {
         agentMessages = replaceTurnInput(agentMessages, prepared.frame.userInput.projectedText)
