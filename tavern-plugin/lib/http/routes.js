@@ -1,3 +1,5 @@
+import { MAX_PLUGIN_DATA } from '../domain/plugin-data-store.js'
+import { bodyGenerationFailure } from '../domain/body-generation-failure.js'
 import { createReadStream } from 'node:fs'
 import { FULL_PROMPT_TEMPLATE_ASSET_PREFIX, readFullPromptTemplateAsset } from '../domain/full-prompt-template-assets.js'
 import { OFFICIAL_MVU_VERSION, readOfficialMvuBundle } from '../domain/official-mvu-assets.js'
@@ -5,14 +7,17 @@ import { TAVERN_CLIENT_ASSET_PREFIX, readTavernClientAsset } from '../domain/tav
 import { serveAssetFile } from '../http-file.js'
 import { TAVERN_RUNTIME_ASSET_PREFIX, resolveTavernRuntimeAsset } from '../domain/tavern-runtime-assets.js'
 import { observeHttpRequests } from '../domain/http-performance-diagnostics.js'
-import { projectCachedResourceBody } from '../domain/tavern-static-resource-cache.js'
+import { projectCachedResourceBody, StaticAssetError } from '../domain/tavern-static-resource-cache.js'
 import { redactMvuLoadError } from '../domain/mvu-diagnostics.js'
 import { pluginMediaRange, slicePluginMediaStream } from '../domain/plugin-media.js'
 import { PLUGIN_ASSET_PREFIX } from '../domain/plugin-assets.js'
 import { isTrustedHostRequest } from './host-fence.js'
+import { isSameOriginRequest, requestAuthorityOrigin } from './request-origin.js'
 
 // A 50 MiB save/skill ZIP expands to 69,905,068 base64 bytes, plus its JSON envelope.
 export const DEFAULT_RPC_BODY_LIMIT = 80 * 1024 * 1024
+// Plugin data is already JSON, with a small allowance for owner/op and envelope.
+export const PLUGIN_DATA_RPC_BODY_LIMIT = MAX_PLUGIN_DATA + 64 * 1024
 
 function waitForWritable(res) {
   return new Promise(resolve => {
@@ -46,7 +51,6 @@ export function registerTavernHttpRoutes({
   tavernRemoteAssets,
   tavernStaticResources,
   castAssets,
-  speech,
   exportCardFile,
   assetPacks,
   uploads,
@@ -104,8 +108,7 @@ export function registerTavernHttpRoutes({
           if (rejection) { res.writeHead(rejection); res.end('forbidden'); return }
         }
         const origin = req.headers.origin
-        const sameOrigin = origin === 'http://' + req.headers.host || origin === 'https://' + req.headers.host
-        if (origin && !sameOrigin && !(cookieFree && origin === 'null')) {
+        if (!isSameOriginRequest({ host: req.headers.host, origin }) && !(cookieFree && origin === 'null')) {
           res.writeHead(403); res.end('forbidden'); return
         }
         if (pathname === '/api/dsh-tavern/session-resource' && req.method === 'GET') {
@@ -129,10 +132,11 @@ export function registerTavernHttpRoutes({
           } catch (_) { res.writeHead(403,headers); res.end(JSON.stringify({error:'History unavailable; refresh the session'})) }
           return
         }
-        // Voice grants and paid asset generation still require an explicit same-origin carrier.
+        // Voice grants and paid asset generation also refuse any cross-site browser marker.
+        // The desktop app forwards authenticated requests without Origin or Sec-Fetch-Site.
         const figureVoiceRoute = /^\/api\/dsh-tavern\/(?:getFigureVoiceEditor|listFigureVoiceChoices|assignFigureVoice|previewFigureVoice|openFigureVoicePreview|closeFigureVoicePreview)$/.test(pathname)
         const assetGenerationRoute = /^\/api\/dsh-tavern\/(?:prepareAssetGeneration|generateAssetCandidate|getAssetGenerationJob|cancelAssetGenerationJob|listAssetCandidates|readAssetCandidate|rejectAssetCandidate|retryAssetCandidateSave|acceptAssetCandidate|getAssetGenPrompts|setAssetGenPrompt)$/.test(pathname)
-        if ((figureVoiceRoute || assetGenerationRoute) && (!sameOrigin || req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+        if ((figureVoiceRoute || assetGenerationRoute) && !isSameOriginRequest({ host: req.headers.host, origin, fetchSite: req.headers['sec-fetch-site'] })) {
           res.writeHead(403); res.end('forbidden'); return
         }
         const gameplayRoute = pathname.startsWith('/api/dsh-tavern/gameplay.')
@@ -198,9 +202,9 @@ export function registerTavernHttpRoutes({
           }
           if (readsRuntimeAsset) {
             const asset = await resolveTavernRuntimeAsset(pathname)
-            // The stage kit is unversioned fork code; pinned vendor files stay immutable.
+            // The stage kit is unversioned fork code and user-installed runtimes (Spine, Live2D) may be replaced; pinned vendor files stay immutable.
             await serveAssetFile(req, res, asset.file, asset.mediaType,
-              pathname.includes('/stage-kit/') || pathname.endsWith('/pixi-spine.js') ? 'no-cache' : 'public, max-age=31536000, immutable',
+              pathname.includes('/stage-kit/') || pathname.endsWith('/pixi-spine.js') || pathname.includes('/runtime-assets/live2d/') ? 'no-cache' : 'public, max-age=31536000, immutable',
               { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' })
             return
           }
@@ -214,13 +218,6 @@ export function registerTavernHttpRoutes({
             // Content-addressed file names: a URL never changes what it serves.
             res.writeHead(200, { 'Content-Type': image.mediaType, 'Content-Length': image.bytes.byteLength, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
             res.end(image.bytes)
-            return
-          }
-          if (req.method === 'GET' && pathname === '/api/dsh-tavern/speech-audio') {
-            const audio = speech ? await speech.readAudio(new URL(req.url, 'http://x').searchParams.get('id')) : undefined
-            if (audio === undefined) { res.writeHead(404, { 'X-Content-Type-Options': 'nosniff' }); res.end('not found'); return }
-            res.writeHead(200, { 'Content-Type': audio.mediaType, 'Content-Length': audio.bytes.byteLength, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
-            res.end(audio.bytes)
             return
           }
           // Big files (DSH cards) arrive as a raw body and wait on disk for the call that uses them.
@@ -277,14 +274,32 @@ export function registerTavernHttpRoutes({
             stream.on('error', () => res.destroy()).pipe(res)
             return
           }
+          // The DSH card export (card-files.js exportCardFile): packIds (JSON array) chooses the packs that go along, absent
+          // means every bound pack; excludeFigures (JSON array) leaves figures out. The spool file streams and is removed after.
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-export') {
             let file
-            try { file = await exportCardFile(new URL(req.url, 'http://x').searchParams.get('path')) }
-            catch (error) { res.writeHead(error?.code === 'TAVERN_NOT_FOUND' || /路径|不存在/.test(String(error?.message)) ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' }); res.end(String(error?.message || error)); return }
+            try {
+              const query = new URL(req.url, 'http://x').searchParams
+              let excludeFigures, packIds
+              try { packIds = query.has('packIds') ? JSON.parse(query.get('packIds')) : undefined }
+              catch { throw Object.assign(new Error('packIds 不是有效的 JSON 数组'), { code: 'TAVERN_EXPORT_INVALID' }) }
+              try { excludeFigures = JSON.parse(query.get('excludeFigures') || '[]') }
+              catch { throw Object.assign(new Error('excludeFigures 不是有效的 JSON 数组'), { code: 'TAVERN_EXPORT_INVALID' }) }
+              file = await exportCardFile(query.get('path'), { excludeFigures, packIds })
+            } catch (error) {
+              const status = error?.code === 'TAVERN_EXPORT_INVALID' ? 400 : error?.code === 'TAVERN_NOT_FOUND' || /路径|不存在/.test(String(error?.message)) ? 404 : error?.code === 'REVISION_CONFLICT' ? 409 : 500
+              res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+              res.end(String(error?.message || error)); return
+            }
             const name = file.name.replace(/[\\/:*?"<>|\r\n]/g, '_') + '.' + file.extension
-            res.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.bytes.byteLength, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+            if (res.destroyed) { await file.dispose(); return }
+            const stream = file.stream()
+            res.once('close', () => stream.destroy())
+            stream.once('close', () => { void file.dispose() })
+            stream.once('error', () => res.destroy())
+            res.writeHead(200, { 'Content-Type': file.contentType, 'Content-Length': file.size, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
               'Content-Disposition': 'attachment; filename="card.' + file.extension + '"; filename*=UTF-8\'\'' + encodeURIComponent(name) })
-            res.end(file.bytes)
+            stream.pipe(res)
             return
           }
           if (req.method === 'GET' && pathname === '/api/dsh-tavern/card-image') {
@@ -415,12 +430,13 @@ export function registerTavernHttpRoutes({
           }
           // Scene-image calls carry ids only: a gallery batch delete of 500 items fits easily.
           const sceneImageBodyLimit = 256 * 1024
+          const rpcBodyLimit = method === 'pluginData' ? PLUGIN_DATA_RPC_BODY_LIMIT : DEFAULT_RPC_BODY_LIMIT
           const bodyChunks = []
           let bodyBytes = 0
           for await (const chunk of req) {
             const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
             bodyBytes += bytes.length
-            if (bodyBytes > DEFAULT_RPC_BODY_LIMIT) throw new Error('RPC request exceeds 80 MiB')
+            if (bodyBytes > rpcBodyLimit) throw new Error(method === 'pluginData' ? '插件数据请求超过 256 MiB 及封装大小限制' : 'RPC request exceeds 80 MiB')
             if (assetGenerationRoute && bodyBytes > (method === 'prepareAssetGeneration' ? 45 * 1024 * 1024 : method === 'setAssetGenPrompt' ? 64 * 1024 : 16384)) throw new Error('素材生成请求过大')
             if (gameplayRoute && bodyBytes > 2 * 1024 * 1024) throw new Error('游戏 API 请求超过 2 MB')
             if (sceneImageRoute && bodyBytes > sceneImageBodyLimit) {
@@ -439,9 +455,8 @@ export function registerTavernHttpRoutes({
             res.end('bad json')
             return
           }
-          const host = req.headers.host
-          const origin = req.headers.origin
-          const trustedOrigin = typeof origin === 'string' && [`http://${host}`, `https://${host}`].includes(origin) ? origin : undefined
+          // In-process server-script calls carry no browser headers either; only HTTP callers act for a page.
+          const trustedOrigin = external ? requestAuthorityOrigin({ host: req.headers.host, origin, fetchSite: req.headers['sec-fetch-site'] }) : undefined
           const result = await dispatch(method, args, {origin:trustedOrigin})
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
           const reply = Object.assign({ ok: true }, result, { runtimeGeneration })
@@ -453,11 +468,20 @@ export function registerTavernHttpRoutes({
             res.end(JSON.stringify({ ok: false, error: redactMvuLoadError(err && err.message || err) }))
             return
           }
+          if (readsStaticAsset) {
+            const msg = str(err && err.message || err)
+            const status = err instanceof StaticAssetError ? err.status : 502
+            res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
+              'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' })
+            res.end(JSON.stringify({ ok: false, error: msg }))
+            return
+          }
           const voiceCode = figureVoiceRoute ? (/^[A-Z_]+$/.test(err?.code || '') ? err.code : 'REQUEST_FAILED') : undefined
           if (voiceCode) ctx.logger?.warn(`[voice-rpc] ${pathname.split('/').at(-1)} ${voiceCode}`)
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ ok: false, error: voiceCode ? '声音暂时不可用' : str(err && err.message || err),
+          res.end(JSON.stringify({ ok: false, error: voiceCode ? '声音暂时不可用' : err?.failure ? bodyGenerationFailure(err).message : str(err && err.message || err),
             errorCode: voiceCode || (typeof err?.code === 'string' ? err.code : undefined),
+            ...(err?.failure ? { failure: bodyGenerationFailure(err) } : {}),
             ...(pathname.split('/').at(-1).startsWith('managedMod') && err?.details ? {errorDetails:err.details} : {}) }))
         }
       }

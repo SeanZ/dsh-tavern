@@ -54,7 +54,8 @@ export function validateAsset(value, path = '$') {
   // a standalone skin entry is only an imported theme — no 启用 / 关闭 state.
   const common = value?.kind === 'skins' ? ['kind', 'id', 'name', 'recall', 'directorNote'] : ['kind', 'id', 'name', 'enabled', 'recall', 'directorNote']
   check(value && [...ASSET_KINDS,'props'].includes(value.kind), path + '.kind')
-  shape(value, [...common, 'remark', ...(value.kind === 'props' ? ['inventoryId'] : []), ...metadata.filter(field=>!value.variants || !ASSET_CONTENT_FIELDS[value.kind].includes(field)), ...(value.variants ? ['variants'] : ASSET_CONTENT_FIELDS[value.kind])], common, path)
+  shape(value, [...common, ...(value.kind === 'skins' ? [] : ['skin']), 'remark', ...(value.kind === 'props' ? ['inventoryId'] : []), ...metadata.filter(field=>!value.variants || !ASSET_CONTENT_FIELDS[value.kind].includes(field)), ...(value.variants ? ['variants'] : ASSET_CONTENT_FIELDS[value.kind])], common, path)
+  if (value.skin !== undefined) validateShortId(value.skin, path + '.skin')
   if (value.inventoryId !== undefined) text(value.inventoryId, path + '.inventoryId', 256)
   validateShortId(value.id, path + '.id'); text(value.name, path + '.name'); if (value.kind !== 'skins') bool(value.enabled, path + '.enabled')
   if (value.remark !== undefined) check(typeof value.remark === 'string', path + '.remark')
@@ -154,9 +155,8 @@ export function validatePackManifest(value, path = '$') {
   const required = ['format', 'schemaVersion', 'id', 'name', 'contentHash', 'assets', 'figures', 'sprites', 'bundles', 'blobs', 'files']
   shape(value, [...required, ...metadata, 'voiceLibrary', 'tagIcons', 'genStyle', 'backgroundStyle', 'stageSkin'], required, path)
   if (value.genStyle !== undefined) oneOf(value.genStyle, PACK_GEN_STYLES, path + '.genStyle')
-  // the stage skin a card bound to this pack first gets when it has no
-  // skin of its own (card-stage-settings.js cardStageSkin / packStageSkin); one of the pack's skins. A skin removed later only
-  // stops it applying.
+  // `stageSkin` is the retired pack default skin: a card's skin is its own value, then the global default, then classic
+  // (card-stage-settings.js cardStageSkin). An older pack keeps it as stored and it is still shape-checked, but nothing reads it.
   if (value.stageSkin !== undefined) validateShortId(value.stageSkin, path + '.stageSkin')
   if (value.voiceLibrary !== undefined) validateVoiceLibrary(value.voiceLibrary, path + '.voiceLibrary')
   oneOf(value.format, ['dsh-asset-pack'], path + '.format'); check([1,2].includes(value.schemaVersion), path + '.schemaVersion', 'Unsupported schemaVersion', 'UNSUPPORTED_SCHEMA_VERSION')
@@ -211,6 +211,7 @@ export function validatePackManifest(value, path = '$') {
     unique(value.tagIcons.map(icon => icon.tag), path + '.tagIcons')
   }
   for (const asset of value.assets) {
+    if (asset.skin !== undefined) check(value.assets.some(row => row.kind === 'skins' && row.id === asset.skin), path + '.assets', 'Missing skin entry: ' + asset.skin, 'MISSING_DEPENDENCY')
     for (const {hash,type} of assetContentMedia(asset)) blobRef(hash,type)
     for (const content of assetContents(asset)) {
       if (['skins','performances','widgets'].includes(asset.kind)) {

@@ -28,13 +28,16 @@ import { sessionEvents } from './session-events.js'
 // Read inputs for the status/body/Helper projection, not director or playback archives.
 // Keep authored Helper plugin data and variables intact; scripts consume those verbatim.
 export const sessionViewMessageFields = Object.freeze([
-  'id', 'role', 'turn', 'greeting', 'name', 'tavernRole', 'tavernHidden',
+  'id', 'messageUid', 'role', 'turn', 'greeting', 'name', 'tavernRole', 'tavernHidden',
   'sourceText', 'projectionText', 'text', 'displayText', 'displayMode', 'projectionVersion', 'projectionWarnings',
   // Sidebar origin uses frame receipts, not the external DOM/console capture.
   'displayRuntime.frames',
   'stagePageVersion', 'swipeId', 'swipes', 'variables', 'tavernPluginData', 'mvu',
-  'native', 'nativeAnchor', 'bodyEdit', 'importSource', 'templateHistoryEdit', 'templateInputSource'
+  'storyResults', 'storyResultId', 'variablesStale', 'incomplete', 'incompleteReason',
+  'source', 'native', 'nativeAnchor', 'placeholder', 'bodyEdit', 'bodyRegenerationProcessed', 'importSource', 'templateHistoryEdit', 'templateInputSource'
 ])
+
+const NO_STAGE = Object.freeze({dialogue: false, stage: false})
 
 /** Own projection caches and field assembly for full, dirty, cached and bounded views. */
 export function createSessionViewProjection({
@@ -43,7 +46,8 @@ export function createSessionViewProjection({
   liveCardUpdate, activityOf, cardUpdateStatus, agentRegistry, str, sessionResources, worldBooks,
   sessionDebugEvidence, cardViewOf, projectLedgerTask, projectCharacterDesignTask, projectPhoneChat,
   readPromptTemplateGlobalVariables, sessionStore, readChatCard, workspaceViewOf, helperHistoryAccess,
-  readLiveCardStage = async () => null, stageReadScope = () => false, readStageChat
+  readLiveCardStage = async () => null, stageReadScope = () => false, readStageChat,
+  readCardStageMode = async () => NO_STAGE
 }) {
   const inputFieldsProjection = createInputFieldsProjection()
   const incrementalReplyView = createIncrementalReplyView({ readChanges })
@@ -90,9 +94,6 @@ export function createSessionViewProjection({
     const activePresetSnapshot = groupOfMode(chat.mode) === 'play' && chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object'
       ? chat.runtimePresetSnapshot
       : null
-    const rollbackEvidence = sessionDebugEvidence(chat.sessionId, true)
-    const rollbackFields = rollbackViewFields(chat, rollbackEvidence, options.inputChanges)
-    const transcriptPlan = await requestPerformance.stage('transcriptRowPlan', async () => transcriptPlanFields(chat, rollbackEvidence, rollbackFields.replacingDshTurns, rollbackFields.keptInputTurns))
     let replyDisplay = { projections: replyProjectionsOf(chat), presentation: null, latestSourceBacked: false }
     let extensionSettings = {}
     let cardExtensions = { regexScripts: [], helperScripts: [] }
@@ -102,15 +103,21 @@ export function createSessionViewProjection({
       replyDisplay = await replyDisplayForChat(chat,card,persistedProjection,cardExtensions)
     }
     const activity = activityOf(chat)
-    const { debugTurns, latestAssistantTurn: latestStoryTurn, latestAssistantMessageId } = latestTurnFields(chat)
-    const forkTurnsByMessageId = forkTurnsForChat(chat, transcriptPlan)
+    const storyTranscriptRead = options.storyTranscript === true
+    const { debugTurns, latestAssistantTurn: latestStoryTurn, latestAssistantMessageId, displayRoundOrder } = latestTurnFields(chat, !storyTranscriptRead)
+    const forkTurnsByMessageId = storyTranscriptRead ? {} : forkTurnsForChat(chat)
     const {inputSources,inputTemplateDisplays}=inputFieldsProjection.project(persistedProjection ? chat : {...chat,_storageRevision:undefined}, options.inputChanges)
     const cardUpdate = ['story', 'script'].includes(chat.mode || 'story') && chat.requestMode !== 'sillytavern'
       ? await cardUpdateStatus(chat, { card, fresh: options.freshSnapshot === true, displayOnly: options.displayOnly === true, busy: activity.busy || ['pending', 'running', 'waiting-runtime'].includes(chat.settleStatus)
-        || agentRegistry.get(chat.sessionId)?.phase?.kind === 'running', settings: runtimeSettings })
+        || (!storyTranscriptRead && agentRegistry.get(chat.sessionId)?.phase?.kind === 'running'), settings: runtimeSettings })
       : { available: false }
-    // Card Stage reads the live card so stage edits show without a card update.
-    const cardStage = ['story', 'script'].includes(chat.mode || 'story') && str(chat.cardPath) !== ''
+    // Dialogue bubbles / stage mode in effect for this card (card-stage-settings.js effectiveCardStage, decided by the host):
+    // the client loads and asks the stage only when one is on, and never recomputes it.
+    const stageMode = ['story', 'script'].includes(chat.mode || 'story') && str(chat.cardPath) !== ''
+      ? await requestPerformance.stage('cardStageMode', () => readCardStageMode(chat.cardPath)) : NO_STAGE
+    // A disabled stage has no stage HTML to project. In particular, do not reread and
+    // parse the whole card merely to discover markup that cannot be displayed.
+    const cardStage = (stageMode.dialogue === true || stageMode.stage === true) && str(chat.cardPath) !== ''
       ? await requestPerformance.stage('cardStage', () => readLiveCardStage(chat.cardPath)) : null
     const helperEnabled = hasTavernScriptRuntime(chat, cardExtensions.helperScripts) || (cardStage !== null && cardStage.html !== '')
     const helperRuntime = helperEnabled
@@ -144,6 +151,12 @@ export function createSessionViewProjection({
     const helperContext = helperEnabled
       ? await requestPerformance.stage('helperMessagesProjection', () => projectTavernHelperContext(chat, { skeletonUntil, indexed:true }))
       : null
+    // Story history has its own read path. It must stay renderable while the native
+    // session is cold and must never fold the native event log just to choose rows.
+    const storyTranscript = options.storyTranscript === true
+    const rollbackEvidence = storyTranscript ? null : sessionDebugEvidence(chat.sessionId, true)
+    const rollbackFields = storyTranscript ? {} : rollbackViewFields(chat, rollbackEvidence, options.inputChanges)
+    const transcriptPlan = storyTranscript ? {} : await requestPerformance.stage('transcriptRowPlan', async () => transcriptPlanFields(chat, rollbackEvidence, rollbackFields.replacingDshTurns, rollbackFields.keptInputTurns))
     return {
       chatId: chat.id,
 
@@ -176,15 +189,27 @@ export function createSessionViewProjection({
       characterDesignTask: projectCharacterDesignTask(chat),
       guides: Array.isArray(chat.guides) ? chat.guides : [],
       debugTurns,
+      // Stable round ids in save-floor order. Clients derive display ordinals and
+      // distances from this list; no saved turn or native mapping is rewritten.
+      displayRoundOrder,
       latestAssistantMessageId,
       forkTurnsByMessageId,
       latestAssistantTurn: latestStoryTurn,
+      // While a body is being replaced, stream text belongs to the story row
+      // named by the save, never to the temporary native turn.
+      streamingMessageUid: chat.regenInProgress === true && typeof chat.regenRecovery?.targetMessageUid === 'string'
+        && chat.regenRecovery.targetMessageUid !== '' ? chat.regenRecovery.targetMessageUid : null,
+      // An unanswered failed tail has no old story row (and therefore no UID).
+      // Its reserved story turn lets the transcript mount a view-only streaming row.
+      streamingStoryTurn: chat.regenInProgress === true && chat.regenRecovery?.unansweredTail === true
+        && Number.isSafeInteger(Number(chat.regenRecovery?.storyTurn)) && Number(chat.regenRecovery.storyTurn) > 0
+        ? Number(chat.regenRecovery.storyTurn) : null,
       inputSources,
       inputTemplateDisplays,
       userInputEdits: userInputEditsOf(chat),
-      editableUserInputTurns: editableUserInputTurnsForChat(chat),
+      editableUserInputTurns: storyTranscriptRead ? [] : editableUserInputTurnsForChat(chat),
       latestCommittedUserTurn: latestCommittedUserTurnForChat(chat),
-      failedUserInputTurns: failedUserInputTurnsForChat(chat),
+      failedUserInputTurns: storyTranscriptRead ? [] : failedUserInputTurnsForChat(chat),
       ...rollbackFields,
       ...transcriptPlan,
       presentation: null,
@@ -192,6 +217,7 @@ export function createSessionViewProjection({
       // tavernStatusView duplicated tavernStatusViews[0] in every read; clients use the list.
       tavernStatusViews: replyDisplay.statusViews || [],
       cardStage,
+      stage: {dialogue: stageMode.dialogue === true, stage: stageMode.stage === true},
       mvuReceipts: mvuReceiptsOf(chat),
       staleVariables: staleVariablesOf(chat),
       // Replies whose text is a 精修 (manual or automatic), by turn, for the small mark under them;
@@ -216,6 +242,9 @@ export function createSessionViewProjection({
       worldBookError: chat.worldBookError || null,
       foregroundError: chat.foregroundError || null,
       lastWorldBookRecall: chat.lastWorldBookRecall || null,
+      // A body replacement under way. The story read carries no row plan, and the page
+      // still has to take the old reply away until the new body lands.
+      regenInProgress: chat.regenInProgress === true,
       activity,
       settleStatus: activity.busy ? 'running' : (activity.phase === 'failed' && activity.role === 'settlement' ? 'error' : 'done'),
       settleError: activity.reason === 'interrupted' ? '后台结算已中断，请重试结算。' : (chat.settleError || null),
@@ -226,8 +255,14 @@ export function createSessionViewProjection({
   }
   // Derived from the newest messages; every projection (full or incremental) recomputes them,
   // so plugin actions never target a turn from an earlier view.
-  function latestTurnFields(chat) {
+  function latestTurnFields(chat, includeNative = true) {
     const messages = Array.isArray(chat.messages) ? chat.messages : []
+    const displayRoundOrder = []
+    for (const message of messages) {
+      if (!message || message.role !== 'assistant') continue
+      const turn = Math.max(0, Number(message.turn) || (message.greeting === true ? 1 : 0))
+      if (turn > 0) displayRoundOrder.push(turn)
+    }
     const debugTurns = []
     for (let index = messages.length - 1; index >= 0 && debugTurns.length < 12; index--) {
       const message = messages[index]
@@ -238,9 +273,9 @@ export function createSessionViewProjection({
       debugTurns.push({ turn, preview: source.slice(0, 90), chars: source.length })
     }
     const latestAssistantTurn = Number(debugTurns[0]?.turn) || 0
-    const liveSession = sessionStore.get(str(chat.sessionId)) || agentRegistry.get(str(chat.sessionId))?.session
-    const latestAssistant = latestAssistantTurn > 0 ? assistantResultForTurn(liveSession, latestAssistantTurn) : null
-    return { debugTurns, latestAssistantTurn, latestAssistantMessageId: str(latestAssistant?.event?.data?.message?.id) }
+    const liveSession = includeNative ? sessionStore.get(str(chat.sessionId)) || agentRegistry.get(str(chat.sessionId))?.session : null
+    const latestAssistant = includeNative && latestAssistantTurn > 0 ? assistantResultForTurn(liveSession, latestAssistantTurn) : null
+    return { debugTurns, latestAssistantTurn, latestAssistantMessageId: str(latestAssistant?.event?.data?.message?.id), displayRoundOrder }
   }
   function replyProjectionsOf(chat) {
     const messages = Array.isArray(chat && chat.messages) ? chat.messages : []
@@ -419,12 +454,12 @@ export function createSessionViewProjection({
         : null
     })
   }
-  async function projectDirtySessionView(chat, previous, dirtyMessageIndices, activity, {layoutChanged,layoutFrom,changedHeaderFields,runtimeInputChanges} = {}) {
-    const card = await readChatCard(chat)
+  async function projectDirtySessionView(chat, previous, dirtyMessageIndices, activity, {baseRevision,layoutChanged,layoutFrom,changedHeaderFields,runtimeInputChanges} = {}) {
     const mode = chat.mode || 'story'
-    const previousMessages = previous.tavernHelper.messages
-    const changes = {baseRevision:previous.tavernHelper.stateRevision,indices:[...dirtyMessageIndices],layoutChanged,changedHeaderFields}
+    const previousMessages = previous.tavernHelper?.messages || []
+    const changes = {baseRevision:baseRevision ?? previous.tavernHelper?.stateRevision,indices:[...dirtyMessageIndices],layoutChanged,changedHeaderFields}
     const next = Object.assign({}, previous, await volatileSessionViewFields(chat, activity, changes), {
+      playerName: str(chat.macroState?.userName).trim() || '你',
       posture: chat.posture || '',
       postureEnabled: chat.backgroundTasks?.posture !== false,
       styleReference: latestStyleReference(chat),
@@ -439,25 +474,29 @@ export function createSessionViewProjection({
     })
     if (mode === 'script') next.scriptProgress = await scriptProgressOf(chat)
     Object.assign(next,inputFieldsProjection.project(chat,{baseRevision:changes.baseRevision,indices:dirtyMessageIndices,changedHeaderFields,runtimeInputChanges}))
-    const helperCore = await requestPerformance.stage('helperMessagesProjection', () => projectTavernHelperContext(chat, {
-      previousMessages, previousContext:previous.tavernHelper, indexed:true, layoutChanged, layoutFrom,
-      dirtyIndices: dirtyMessageIndices
-    }))
-    next.tavernHelper = Object.assign({}, previous.tavernHelper, helperCore, {
-      openingHost: previous.tavernHelper.openingHost,
-      worldbook: previous.tavernHelper.worldbook,
-      globalVariables: previous.tavernHelper.globalVariables,
-      characterVariables: previous.tavernHelper.characterVariables,
-      compatibilityCapabilities: previous.tavernHelper.compatibilityCapabilities,
-      extensionSettings: previous.tavernHelper.extensionSettings,
-      regexScripts: {
-        global: previous.tavernHelper.regexScripts?.global || [],
-        preset: applyRegexOverrides(previous.tavernHelper.regexScripts?.preset || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'),
-        character: applyRegexOverrides(previous.tavernHelper.regexScripts?.character || [], chat.regexOverrides && chat.regexOverrides.card, 'card')
-      }
-    })
-    delete next.tavernHelper.messagesPending
+    if (previous.tavernHelper) {
+      const helperCore = await requestPerformance.stage('helperMessagesProjection', () => projectTavernHelperContext(chat, {
+        previousMessages, previousContext:previous.tavernHelper, indexed:true, layoutChanged, layoutFrom,
+        dirtyIndices: dirtyMessageIndices
+      }))
+      next.tavernHelper = Object.assign({}, previous.tavernHelper, helperCore, {
+        playerName: next.playerName,
+        openingHost: previous.tavernHelper.openingHost,
+        worldbook: previous.tavernHelper.worldbook,
+        globalVariables: previous.tavernHelper.globalVariables,
+        characterVariables: previous.tavernHelper.characterVariables,
+        compatibilityCapabilities: previous.tavernHelper.compatibilityCapabilities,
+        extensionSettings: previous.tavernHelper.extensionSettings,
+        regexScripts: {
+          global: previous.tavernHelper.regexScripts?.global || [],
+          preset: applyRegexOverrides(previous.tavernHelper.regexScripts?.preset || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'),
+          character: applyRegexOverrides(previous.tavernHelper.regexScripts?.character || [], chat.regexOverrides && chat.regexOverrides.card, 'card')
+        }
+      })
+      delete next.tavernHelper.messagesPending
+    } else next.tavernHelper = null
     if (mode === 'story' || mode === 'script') {
+      const card = await readChatCard(chat)
       let cardExtensions = { regexScripts: [], helperScripts: [] }
       try { cardExtensions = await readCardExtensions(chat.cardPath, chat) || cardExtensions } catch (_error) { cardExtensions = { regexScripts: [], helperScripts: [] } }
       const activePresetSnapshot = groupOfMode(chat.mode) === 'play' && chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object'
@@ -476,7 +515,8 @@ export function createSessionViewProjection({
         regexScripts: composeTavernRegexScripts(cardExtensions, presetRegexScripts, chat.regexOverrides && chat.regexOverrides.preset),
         placement: 2, isMarkdown: true, isEdit: false, depth: 0
       }, { charName: chat.cardName, macroState: chat.macroState, regexScripts: cardExtensions.regexScripts }, {shared:true}))
-      const renderChat = {...chat,messages:createScopedMessages(chat.messages.length,[],index=>{const message=chat.messages[index];return message.variables ? message : {...message,variables:helperCore.messages[index]?.swipes_data || []}})}
+      const helperMessages = next.tavernHelper?.messages || []
+      const renderChat = {...chat,messages:createScopedMessages(chat.messages.length,[],index=>{const message=chat.messages[index];return message.variables ? message : {...message,variables:helperMessages[index]?.swipes_data || []}})}
       replyDisplay = await liveCardUpdate.project(renderChat, card, replyDisplay, {charName:chat.cardName,macroState:chat.macroState,regexScripts:cardExtensions.regexScripts})
       replyDisplay.projections = withLegacyPresentationProjection(chat, replyDisplay.projections)
       next.replyProjections = replyDisplay.projections
@@ -507,8 +547,9 @@ export function createSessionViewProjection({
     // The undo point still compares against the window's real revision.
     const chat={...window.chat,_storageRevision:undefined,windowRevision:window.revision}
     const card=await readChatCard(chat)
-    const result=await view(chat,card,false,{openingWindow:true,deferResources:options.deferResources,resourceRevision:window.revision})
+    const result=await view(chat,card,false,{openingWindow:true,storyTranscript:options.storyTranscript===true,deferResources:options.deferResources,resourceRevision:window.revision})
     result.historyWindow={onDemand:true,from:window.from,to:window.to,messageCount:window.messageCount,revision:window.revision}
+    if (window.storyTranscript) result.storyTranscript=window.storyTranscript
     if(result.tavernHelper){
       const helper=result.tavernHelper
       // Transport only loaded rows; the client adapts absolute ids at the
@@ -523,5 +564,6 @@ export function createSessionViewProjection({
 
   return Object.freeze({ view, replyDisplay: replyDisplayForChat, status: chat => sessionStateView.status(chat), stats: () => incrementalReplyView.stats(),
     project: Object.freeze({ full: projectFullSessionView, cached: projectCachedSessionView, dirty: projectDirtySessionView, opening: projectOpeningWindow,
-      invalidate: chatId => incrementalReplyView.invalidate(chatId) }) })
+      invalidate: chatId => incrementalReplyView.invalidate(chatId),
+      story: (window, options = {}) => projectOpeningWindow(window, { ...options, storyTranscript: true }) }) })
 }

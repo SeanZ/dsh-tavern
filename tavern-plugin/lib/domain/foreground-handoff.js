@@ -16,18 +16,35 @@ export function createForegroundHandoff(options = {}) {
     throw new Error('Foreground Handoff 缺少回合、存储或后台任务 adapter')
   }
 
+  const discarded = new Map()
+
   async function finalize(input) {
     return await turns.finalize(input)
   }
 
   async function prepare(input) {
     if (typeof turns.prepare !== 'function') throw new Error('Foreground Handoff 缺少 prepare adapter')
+    // 上一轮异步丢弃会缩短逻辑历史；下一轮须在其完成后再读取准备基线。
+    await discarded.get(input.sessionId)
     // A save being reconciled (#196) finishes that first; both write the story.
     await options.waitReconcile?.(input.sessionId)
     await options.cancelPresentation?.(input.sessionId)
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
     const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
+    // A detached regeneration already owns a frozen request frame. Running the
+    // ordinary next-turn hooks would cancel settlement, sync world state or clean
+    // native tails against the live story before the candidate has been validated.
+    if (chat?.regenInProgress === true) {
+      const marked = await store.chatForSession(input.sessionId)
+      if (marked?.regenRecovery?.candidateFrame?.kind === 'foreground') return await turns.prepare(input)
+    }
+    // MVU's greeting/initvar path runs while floor 0 is still the latest floor.
+    // An immediate first send must wait before templates, context or body.begin
+    // capture an empty baseline and advance beyond that initialization boundary.
+    if (chat?.mvu?.enabled && chat.mvu.owner === 'official' && chat.mvu.openingInitialization?.status === 'pending') {
+      await options.scriptDispatch.waitUntilReady(input.sessionId)
+    }
     // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
     if (chat !== undefined) await options.beforeNextTurn?.(chat)
     // 等待后台任务后再检查，刚完成的重新结算可能已清除变量未重算标记。
@@ -42,10 +59,8 @@ export function createForegroundHandoff(options = {}) {
   }
 
   function later(work, label) {
-    defer(function () {
-      Promise.resolve().then(work).catch(function (error) {
-        logger.error('dsh-tavern: ' + label + '失败', error && error.message || error)
-      })
+    return new Promise(resolve => defer(resolve)).then(work).catch(function (error) {
+      logger.error('dsh-tavern: ' + label + '失败', error && error.message || error)
     })
   }
 
@@ -69,11 +84,15 @@ export function createForegroundHandoff(options = {}) {
       return true
     }
     options.turnDiscarded?.(input.sessionId, input.turn)
-    later(async function () {
+    const previous = discarded.get(input.sessionId)
+    const pending = later(async function () {
+      await previous
       const target = { sessionId: input.sessionId, turn: input.turn }
       await turns.discard(target)
       if (cleanupFailedTurn !== null) await cleanupFailedTurn(target)
     }, '清理未完成前台回合')
+    discarded.set(input.sessionId, pending)
+    void pending.finally(() => { if (discarded.get(input.sessionId) === pending) discarded.delete(input.sessionId) })
     return true
   }
 

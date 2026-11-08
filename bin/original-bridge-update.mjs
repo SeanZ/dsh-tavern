@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto'
 import { copyTreeSync } from './portable-fs.mjs'
 import installationLocation from './installation-location.cjs'
 import { assertDesktopStopped } from './import-user-home.mjs'
-import { acquirePendingLock } from '../tavern-plugin/packages/dsh-profile-bridge/lib/helper.mjs'
+import { acquirePendingLock, installPublishGate, processAlive, readLastResult } from '../tavern-plugin/packages/dsh-tavern/lib/helper.mjs'
+import { launcherBundle, LAUNCHER_BUNDLE } from '../tavern-plugin/packages/dsh-tavern/lib/state.mjs'
 
 const present = file => { try { lstatSync(file); return true } catch (error) { if (error.code === 'ENOENT') return false; throw error } }
 const read = dir => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'))
@@ -33,7 +34,33 @@ function moveWithRetry(from, to, rename) {
     }
   }
 }
-export function beginOriginalBridgeUpdate({ home, sourceRoot, checkStopped = () => assertDesktopStopped([home], { requireGuiClosed: true }), copy = copyTreeSync, rename = renameSync }) {
+function holdProfileSwitches(state, launcherGate, trusted) {
+  const gate = installPublishGate(state)
+  if (launcherGate && same(trusted.map(launcherGate), gate)) {
+    // The launcher keeps this lock until the installer exits, including rollback.
+    // Borrow its fence once it has explicitly allowed publication.
+    const lock = path.dirname(path.dirname(gate))
+    const jobFile = path.join(lock, 'request.json')
+    const workerFile = path.join(lock, 'worker.json')
+    for (const file of [gate, jobFile, workerFile, path.join(state, 'last-result.json')]) {
+      ordinary(path.dirname(file))
+      if (!lstatSync(file).isFile()) throw Error(`NEXT 更新记录不是普通文件：${file}`)
+    }
+    const request = JSON.parse(readFileSync(jobFile, 'utf8'))
+    const worker = JSON.parse(readFileSync(workerFile, 'utf8'))
+    const result = readLastResult(state)
+    if (request.mode !== 'install' || request.host !== 'next' || request.stamp !== result?.stamp
+        || result?.status !== 'pending' || result.mode !== 'install' || !processAlive(worker.pid) || readFileSync(gate, 'utf8') !== 'publish'
+        || present(path.join(state, 'pending'))) throw Error('NEXT 更新尚未获得发布许可，请刷新后重试。')
+    return () => {}
+  }
+  const { lock } = acquirePendingLock(state)
+  // A live PID prevents the switch helper from reclaiming a long-running install.
+  try { writeFileSync(path.join(lock, 'worker.json'), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { flag: 'wx' }) }
+  catch (error) { rmdirSync(lock); throw error }
+  return () => { unlinkSync(path.join(lock, 'worker.json')); rmdirSync(lock) }
+}
+export function beginOriginalBridgeUpdate({ home, sourceRoot, launcherGate, checkStopped = () => assertDesktopStopped([home], { requireGuiClosed: true }), copy = copyTreeSync, rename = renameSync }) {
   // Trust only configured-home ancestors, never a redirect inside managed DSH.
   // Pin filesystem work to that physical identity for the whole transaction.
   const trusted = installationLocation.trustedHome(home)
@@ -48,14 +75,19 @@ export function beginOriginalBridgeUpdate({ home, sourceRoot, checkStopped = () 
     if (previous.schemaVersion !== 1 || !['completed', 'rolled-back'].includes(previous.phase)) throw unsafe(`切换组件更新尚未恢复，请保留备份并检查：${journalFile}`)
   }
   installationLocation.resolveInstallationApp({ dshHome: trusted.logical })
-  if (!present(path.join(state, 'installation.json'))) ordinary(path.join(profiles, 'tavern'))
+  // A completed relocation legitimately links profiles/tavern outside the tree.
+  // An "uninstalled" marker is not a relocation: keep the ordinary-path check so
+  // a leftover link cannot qualify as an already bridged installation.
+  const relocated = (() => {
+    try {
+      const record = JSON.parse(readFileSync(path.join(state, 'installation.json'), 'utf8'))
+      return record?.schemaVersion === 1 && record.phase === 'completed' && record.layout === undefined && Array.isArray(record.entries)
+    } catch { return false }
+  })()
+  if (!relocated) ordinary(path.join(profiles, 'tavern'))
   const managementFile = path.join(state, 'installation-operation.json')
   const previousManagement = present(managementFile) ? readFileSync(managementFile, 'utf8') : null
-  const { lock } = acquirePendingLock(state)
-  // A live PID prevents the switch helper from reclaiming a long-running install.
-  try { writeFileSync(path.join(lock, 'worker.json'), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { flag: 'wx' }) }
-  catch (error) { rmdirSync(lock); throw error }
-  const release = () => { unlinkSync(path.join(lock, 'worker.json')); rmdirSync(lock) }
+  const release = holdProfileSwitches(state, launcherGate, trusted)
   let journal, done = false, managementFenced = false
   const writeManagement = value => {
     const temporary = managementFile + '.' + randomUUID() + '.tmp'
@@ -119,19 +151,37 @@ export function beginOriginalBridgeUpdate({ home, sourceRoot, checkStopped = () 
     } else checkStopped()
     ordinary(original)
     const manifest = read(original)
-    if (!manifest.dsh?.profile?.bundles?.includes('dsh-profile-bridge') || manifest.dsh.profile.bundles.includes('dsh-tavern-plugin') || manifest.name === 'dsh-profile-tavern') throw Error('原版 desktop 配置缺少切换组件，请先恢复备份。')
-    const source = path.join(sourceRoot, 'tavern-plugin/packages/dsh-profile-bridge')
+    const bundle = launcherBundle(manifest, original)
+    if (!bundle || manifest.dsh.profile.bundles.includes('dsh-tavern-plugin') || manifest.name === 'dsh-profile-tavern') throw Error('原版 desktop 配置缺少切换组件，请先恢复备份。')
+    const source = path.join(sourceRoot, 'tavern-plugin/packages/dsh-tavern')
     plainTree(source)
-    if (read(source).name !== 'dsh-profile-bridge') throw Error('切换组件源不完整。')
+    if (read(source).name !== LAUNCHER_BUNDLE) throw Error('切换组件源不完整。')
     const backup = path.join(state, 'bridge-update-' + randomUUID())
     mkdirSync(backup)
     const targets = ['vendor', 'node_modules'].map(name => {
       const parent = path.join(original, name)
       ordinary(parent)
-      return path.join(parent, 'dsh-profile-bridge')
+      return path.join(parent, bundle)
     })
     journal = { schemaVersion: 1, phase: 'preparing', original, backup, actions: [], createdParents: [], previousManagement }; save()
-    for (let i = 0; i < targets.length; i++) copy(source, path.join(backup, 'prepared-' + i))
+    for (let i = 0; i < targets.length; i++) {
+      const prepared = path.join(backup, 'prepared-' + i)
+      copy(source, prepared)
+      // Keep the original manifest and pnpm lockfile valid on older installs.
+      // Refresh their launcher under the name the profile already resolves.
+      if (bundle !== LAUNCHER_BUNDLE) {
+        for (const [file, entry] of [
+          ['package.json', `"name": "${LAUNCHER_BUNDLE}"`],
+          ['cordis.patch.yml', `name: '${LAUNCHER_BUNDLE}'`],
+          ['client.js', `id: '${LAUNCHER_BUNDLE}'`],
+        ]) {
+          const target = path.join(prepared, file)
+          const contents = readFileSync(target, 'utf8')
+          if (!contents.includes(entry)) throw Error(`切换组件源缺少入口：${file}`)
+          writeFileSync(target, contents.replace(entry, entry.replace(LAUNCHER_BUNDLE, bundle)))
+        }
+      }
+    }
     const move = (from, to) => {
       journal.actions.push({ from, to }); save()
       moveWithRetry(from, to, rename)

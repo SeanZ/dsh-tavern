@@ -6,6 +6,7 @@ import test from 'node:test'
 import { createPluginMedia, pluginMediaRange, pluginMediaSession, slicePluginMediaStream, pluginFileMediaType } from '../tavern-plugin/lib/domain/plugin-media.js'
 import { createTavernPluginApi, TAVERN_PLUGIN_API_VERSION } from '../tavern-plugin/lib/plugin-api.js'
 import { createPluginData } from '../tavern-plugin/lib/domain/plugin-data.js'
+import { createSettingsHandlers } from '../tavern-plugin/lib/rpc/settings.js'
 
 function memoryStore() {
   const files = new Map()
@@ -22,6 +23,15 @@ function memoryStore() {
     async writeJson(path, value) { files.set(path, structuredClone(value)) }
   }
 }
+
+test('按局插件存档支持超过 256 KB 的嵌入应用数据，快照和存档导入保留完整内容', async () => {
+  const data = createPluginData({ store: memoryStore() })
+  const value = { slot: 'manual', state: 'x'.repeat(6 * 1024 * 1024) }
+  await data.saveGame({ chatId: 'source', owner: 'app', data: value })
+  assert.deepEqual(await data.readGame({ chatId: 'source', owner: 'app' }), value)
+  await data.importInto({ source: await data.snapshot('source'), targetChatId: 'restored', keyMap: new Map() })
+  assert.deepEqual(await data.readGame({ chatId: 'restored', owner: 'app' }), value)
+})
 
 const image = { attachmentId: 'a1', mediaType: 'image/png', bytes: 10, width: 2, height: 2 }
 
@@ -58,9 +68,11 @@ test('插件媒体：Range 与文件类型', async () => {
 })
 
 async function loadCordis() {
-  if (!process.env.DSH_BOOT_MODULE) return null
-  const require = createRequire(pathToFileURL(process.env.DSH_BOOT_MODULE))
-  return await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href)
+  const require = createRequire(process.env.DSH_BOOT_MODULE ? pathToFileURL(process.env.DSH_BOOT_MODULE) : import.meta.url)
+  let entry
+  try { entry = require.resolve('@deepseek-ai/cordis') }
+  catch (error) { if (process.env.DSH_BOOT_MODULE) throw error; return null }
+  return await import(pathToFileURL(entry).href)
 }
 const cordis = await loadCordis()
 const tick = () => new Promise(resolve => setTimeout(resolve, 20))
@@ -116,8 +128,8 @@ test('provider APIs：capabilities、克隆输入、卡绑定筛选与 Cordis �
     } })
   } })
   await tick()
-  assert.equal(tavern.apiVersion, 6)
-  assert.deepEqual(tavern.capabilities, { mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1 })
+  assert.equal(tavern.apiVersion, 7)
+  assert.deepEqual(tavern.capabilities, { gameMode: 1, hostBehavior: 1, controlInput: 1, mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1, pricingProvider: 1, imageModels: 1, imageLibrary: 1, bodyGeneration: 1 })
   assert.equal(Object.isFrozen(tavern.capabilities), true)
   assert.equal(tavern.mvuProviderRegistered, undefined, 'registration guard is internal, not a plugin service method')
   assert.equal(h.api.mvuProviderRegistered('card-provider'), true)
@@ -566,6 +578,74 @@ test('tavern 服务：worldbookEntries 的条目经校验后交给世界书召�
   assert.deepEqual(await h.api.worldbookPoolEntries({ gameId: 'game-1', turn: 4 }), [])
 })
 
+test('tavern 服务：玩家称呼区分全局默认与本局，实时读取且不依赖轮次结算', { skip: !cordis }, async t => {
+  let defaultName = '默认玩家', playerName = '林岚'
+  const sessions = []
+  const h = await harness(t, {
+    readDefaultPlayerName: async () => defaultName,
+    readPlayerName: async sessionId => { sessions.push(sessionId); return playerName },
+    readLatestSettledTurn: async () => { throw new Error('称呼读取不应依赖正文') },
+  })
+  let tavern
+  await h.root.plugin({ name: 'archive-plugin', inject: ['tavern'], apply(ctx) { tavern = ctx.tavern } })
+  await tick()
+  assert.equal(await tavern.getDefaultPlayerName(), '默认玩家')
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '林岚')
+  defaultName = '新的默认'
+  assert.equal(await tavern.getDefaultPlayerName(), '新的默认')
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '林岚', '改默认称呼不改已有游戏')
+  playerName = ' 本局新称呼 '
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '本局新称呼')
+  assert.deepEqual(sessions, ['game-1', 'game-1', 'game-1'])
+  playerName = undefined
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '你', '旧存档缺称呼时不套用新的全局默认')
+  for (const empty of [undefined, '', '  ']) {
+    defaultName = playerName = empty
+    assert.equal(await tavern.getDefaultPlayerName(), '你')
+    assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '你')
+  }
+  await assert.rejects(tavern.getPlayerName({ gameId: 'missing' }), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+  await assert.rejects(tavern.getPlayerName(), /gameId/)
+})
+
+test('tavern 服务：修改玩家称呼校验输入、隔离默认与本局，拒绝忙碌及越界写入', { skip: !cordis }, async t => {
+  let defaultName = '默认', playerName = '本局', activity = {}
+  const writes = []
+  const h = await harness(t, {
+    readDefaultPlayerName: async () => defaultName,
+    readPlayerName: async () => playerName,
+    writeDefaultPlayerName: async name => { writes.push(['default', name]); return defaultName = name },
+    writePlayerName: async (id, name) => { writes.push([id, name]); return playerName = name },
+    readActivity: async () => activity,
+    cardScope: async () => new Map([['card-plugin', { cards: ['/cards/a.json'] }]]),
+    cardPathOf: async gameId => gameId === 'game-1' ? '/cards/a.json' : '/cards/other.json',
+  })
+  let tavern, cardTavern
+  await h.root.plugin({ name: 'identity-plugin', inject: ['tavern'], apply(ctx) { tavern = ctx.tavern } })
+  await h.root.plugin({ name: 'card-plugin', inject: ['tavern'], apply(ctx) { cardTavern = ctx.tavern } })
+  await tick()
+  assert.equal(await tavern.setDefaultPlayerName({ playerName: ' 新默认 ' }), '新默认')
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '本局')
+  assert.equal(await tavern.setPlayerName({ gameId: 'game-1', playerName: ' 新称呼 ' }), '新称呼')
+  assert.equal(await tavern.getDefaultPlayerName(), '新默认')
+  assert.equal(await tavern.getPlayerName({ gameId: 'game-1' }), '新称呼')
+  assert.equal(await tavern.setDefaultPlayerName({ playerName: '' }), '你')
+  assert.equal(await cardTavern.setPlayerName({ gameId: 'game-1', playerName: '  ' }), '你')
+  const before = writes.length
+  for (const invalid of [undefined, null, 123, {}, '长'.repeat(81)]) {
+    await assert.rejects(tavern.setDefaultPlayerName({ playerName: invalid }), /80/)
+    await assert.rejects(tavern.setPlayerName({ gameId: 'game-1', playerName: invalid }), /80/)
+  }
+  await assert.rejects(tavern.setPlayerName({ gameId: 'missing', playerName: '新名' }), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+  await assert.rejects(cardTavern.setDefaultPlayerName({ playerName: '新名' }), { code: 'TAVERN_PLUGIN_SCOPE' })
+  await assert.rejects(cardTavern.setPlayerName({ gameId: 'other-game', playerName: '新名' }), { code: 'TAVERN_PLUGIN_SCOPE' })
+  for (const busy of [{ generating: true }, { settling: true }]) {
+    activity = busy
+    await assert.rejects(tavern.setPlayerName({ gameId: 'game-1', playerName: '新名' }), { code: 'TAVERN_PLUGIN_BUSY' })
+  }
+  assert.equal(writes.length, before, '拒绝的请求没有写入')
+})
+
 test('tavern 服务：getCard、getHistory 只读；setVariables、editTurn 只改最新一轮的当前版本', { skip: !cordis }, async t => {
   const writes = [], edits = [], ranges = []
   const h = await harness(t, {
@@ -794,6 +874,11 @@ test('人物卡库、改卡、工具可见范围与 Skill：插件不用读写 T
   assert.equal(h.api.toolModesFor('narrative_anchor_read'), null, '没声明的插件工具保持原样')
   assert.throws(() => tavern.toolModes({ name: 'tavern_read_variables', modes: ['card'] }), /插件自己注册/)
   assert.throws(() => tavern.toolModes({ name: 'x_tool', modes: ['story'] }), /play、card/)
+  tavern.toolSkills({ name: 'wrongbook_lookup', skills: ['wrongbook', 'wrongbook'] })
+  assert.deepEqual(h.api.toolSkillsFor('wrongbook_lookup'), ['wrongbook'])
+  assert.equal(h.api.toolSkillsFor('narrative_anchor_read'), null, '没声明的插件工具始终提供')
+  assert.throws(() => tavern.toolSkills({ name: 'tavern_read_variables', skills: ['x'] }), /插件自己注册/)
+  assert.throws(() => tavern.toolSkills({ name: 'x_tool', skills: ['Bad Name'] }), /Skill 名称/)
 
   assert.deepEqual(await tavern.listSkills(), [{ name: 'debug-card', source: 'builtin', description: '内置' }])
   assert.deepEqual(await tavern.saveSkill({ name: 'my-notes', description: '踩坑', body: '先读参考', references: [{ path: 'references/错题.md', content: '…' }] }), { name: 'my-notes', overwritten: false })
@@ -805,6 +890,7 @@ test('人物卡库、改卡、工具可见范围与 Skill：插件不用读写 T
   fiber.dispose()
   await tick()
   assert.equal(h.api.toolModesFor('wrongbook_lookup'), null, '插件卸载后可见范围撤销')
+  assert.equal(h.api.toolSkillsFor('wrongbook_lookup'), null, '插件卸载后解锁 Skill 撤销')
 })
 
 test('人物设计档案：插件读取本局档案，并能按结算同样的规则保存人物', { skip: !cordis }, async t => {
@@ -871,11 +957,12 @@ test('角色素材来源：插件交出的人物经校验后并入本局角色�
   assert.deepEqual(await h.api.castAssetSources({ gameId: 'game-1' }), [])
 })
 
-test('配音渠道：插件注册的渠道带上归属，合成超时或出错记入插件错误；synthesizeSpeech 按本局人物声音合成', { skip: !cordis }, async t => {
+test('配音渠道：插件注册的渠道带上归属并通知语音服务接入，合成超时或出错记入插件错误；synthesizeSpeech 经语音服务合成', { skip: !cordis }, async t => {
   const lines = []
-  const h = await harness(t, { synthesizeSpeech: async (sessionId, line) => { lines.push([sessionId, line]); return line.narration ? { skip: true } : { url: '/api/dsh-tavern/speech-audio?id=x.mp3', mediaType: 'audio/mpeg' } } })
+  let changes = 0
+  const h = await harness(t, { speechProvidersChanged: () => { changes++ }, synthesizeSpeech: async (sessionId, line) => { lines.push([sessionId, line]); return line.narration ? { skip: true, reason: 'narration' } : { url: 'audio:t1', mediaType: 'audio/wav' } } })
   let tavern
-  await h.root.plugin({ name: 'edge-tts', inject: ['tavern'], apply(ctx) {
+  const fiber = await h.root.plugin({ name: 'edge-tts', inject: ['tavern'], apply(ctx) {
     tavern = ctx.tavern
     ctx.tavern.speechProvider({ id: 'edge', label: 'Edge 朗读', voices: ['zh-CN-XiaoxiaoNeural'], synthesize: async ({ text }) => {
       if (text === 'boom') throw new Error('服务挂了')
@@ -886,19 +973,23 @@ test('配音渠道：插件注册的渠道带上归属，合成超时或出错�
   const [entry] = h.api.speechProviders()
   assert.equal(entry.id, 'edge-tts/edge')
   assert.equal(entry.owner, 'edge-tts')
+  assert.equal(changes, 1)
   assert.deepEqual(await entry.synthesize({ text: '你好' }), { data: new Uint8Array([1]), mediaType: 'audio/mpeg' })
   await assert.rejects(entry.synthesize({ text: 'boom' }), /服务挂了/)
   assert.throws(() => tavern.speechProvider({ id: 'edge', label: '重复', synthesize() {} }), /已注册/)
   assert.throws(() => tavern.speechProvider({ id: 'Bad', label: 'x', synthesize() {} }), /name/)
 
-  assert.deepEqual(await tavern.synthesizeSpeech({ gameId: 'game-1', speaker: '林曦', text: '你好', emotion: 'joy' }), { url: '/api/dsh-tavern/speech-audio?id=x.mp3', mediaType: 'audio/mpeg' })
+  assert.deepEqual(await tavern.synthesizeSpeech({ gameId: 'game-1', speaker: '林曦', text: '你好', emotion: 'joy' }), { url: 'audio:t1', mediaType: 'audio/wav' })
   assert.deepEqual(lines[0], ['game-1', { speaker: '林曦', text: '你好', emotion: 'joy', narration: false }])
   assert.equal(await tavern.synthesizeSpeech({ gameId: 'game-1', text: '夜深了。', narration: true }), null)
   await assert.rejects(tavern.synthesizeSpeech({ gameId: 'game-1', text: ' ' }), /text/)
+  await fiber.dispose(); await tick()
+  assert.equal(changes, 2, '卸载插件后语音服务移除它的渠道')
 })
 
-test('生图渠道：插件注册的出图能力带上归属，状态被规整，出错记入插件错误', { skip: !cordis }, async t => {
-  const h = await harness(t)
+test('生图渠道：插件注册的出图能力带上归属，状态被规整，出错记入插件错误；别的插件经 generateImage 借用', { skip: !cordis }, async t => {
+  const asked = []
+  const h = await harness(t, { generateImage: async input => { asked.push(input); return { data: new Uint8Array([2]), mediaType: 'image/png' } } })
   let tavern
   await h.root.plugin({ name: 'painter', inject: ['tavern'], apply(ctx) {
     tavern = ctx.tavern
@@ -917,6 +1008,43 @@ test('生图渠道：插件注册的出图能力带上归属，状态被规整�
   await assert.rejects(entry.generate({ prompt: 'boom' }), error => error.requestMayHaveSucceeded === false)
   assert.throws(() => tavern.imageProvider({ id: 'online', label: '重复', status() {}, generate() {} }), /已注册/)
   assert.throws(() => tavern.imageProvider({ id: 'other', label: 'x', generate() {} }), /status/)
+
+  assert.deepEqual(await tavern.generateImage({ prompt: '猫', width: 64, height: 64 }), { data: new Uint8Array([2]), mediaType: 'image/png' })
+  assert.deepEqual(asked, [{ prompt: '猫', width: 64, height: 64 }])
+})
+
+test('价格提供方：getModelPricing 问插件报价，没有提供方就不可用，卸载即撤销', { skip: !cordis }, async t => {
+  const h = await harness(t)
+  const selections = new Map([['game-1', { provider: 'router', model: 'opus', reasoningEffort: 'low' }]])
+  const settings = createSettingsHandlers({ modelSelection: sessionId => selections.get(sessionId) || null, pluginApi: h.api })
+  assert.equal((await settings.getModelPricing({ sessionId: 'game-1' })).available, false, 'no provider, no figure')
+  const seen = []
+  let tavern
+  const fiber = await h.root.plugin({ name: 'gateway-prices', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    ctx.tavern.pricingProvider({ quote(selection) {
+      seen.push(selection)
+      if (!selection) return { available: false, reason: 'no model' }
+      if (selection.model === 'boom') throw new Error('gateway down')
+      selection.model = 'changed'
+      return { available: true, rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }
+    } })
+  } })
+  await tick()
+  assert.equal(tavern.capabilities.pricingProvider, 1)
+  assert.deepEqual(await settings.getModelPricing({ sessionId: 'game-1' }), { available: true, rates: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } })
+  assert.deepEqual(seen[0], { provider: 'router', model: 'changed', reasoningEffort: 'low' })
+  assert.equal(selections.get('game-1').model, 'opus', 'the provider only changes its own copy')
+  assert.deepEqual(await settings.getModelPricing({ sessionId: 'other' }), { available: false, reason: 'no model' })
+  selections.set('game-1', { provider: 'router', model: 'boom' })
+  await assert.rejects(settings.getModelPricing({ sessionId: 'game-1' }), /gateway down/)
+  assert.deepEqual(h.errors()[0], { plugin: 'gateway-prices', stage: '价格', message: 'gateway down' })
+  assert.throws(() => tavern.pricingProvider({ quote() {} }), /已提供价格/)
+  assert.throws(() => tavern.pricingProvider({}), /quote/)
+  await fiber.dispose()
+  await tick()
+  assert.equal(h.api.pricingProviders().length, 0)
+  assert.equal((await settings.getModelPricing({ sessionId: 'game-1' })).available, false)
 })
 
 test('卡内插件只在所属人物卡的局里出现：回调不触发、调用被拒、人物卡列表只剩本卡、本局插件面板不列出', { skip: !cordis }, async t => {
@@ -992,7 +1120,7 @@ test('版本失效信号：versionSignal 在正文版本被替换或删局时中
     ctx.tavern.onTimelineChanged(change => seen.push(change))
   } })
   await tick()
-  assert.equal(tavern.apiVersion, 6)
+  assert.equal(tavern.apiVersion, 7)
   assert.equal((await tavern.versionSignal({ gameId: 'game-1', turn: 3, textVersion: 'old' })).aborted, true, '不是当前版本时立即中止')
   const signal = await tavern.versionSignal({ gameId: 'game-1', turn: 3, textVersion: 'key-3' })
   h.api.timelineChanged('game-1', { kind: 'edit', turn: 3 })
@@ -1181,7 +1309,7 @@ test('skillSource：插件登记自己的 Skill 目录，卸载时撤销；卡�
   assert.deepEqual(roots, [])
 })
 
-test('插件数据：不跟某一局走，每个插件只读写自己的那一份，256 KB 上限，null 清除', { skip: !cordis }, async t => {
+test('插件数据：不跟某一局走，每个插件只读写自己的那一份，256 MiB 上限，null 清除', { skip: !cordis }, async t => {
   const { mkdtemp, rm } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const path = (await import('node:path')).default
@@ -1198,9 +1326,57 @@ test('插件数据：不跟某一局走，每个插件只读写自己的那一�
   assert.deepEqual(await image.readPluginData(), { endpoint: 'http://127.0.0.1:8188' })
   assert.equal(await other.readPluginData(), null, '各插件互不可见')
   await assert.rejects(image.savePluginData({}), /不能省略/)
-  await assert.rejects(image.savePluginData({ data: 'x'.repeat(300 * 1024) }), /256 KB/)
+  assert.deepEqual(image.getPluginDataLimits(), { maxBytes: 256 * 1024 * 1024 })
+  const large = { presets: '预设'.repeat(100000) }
+  await image.savePluginData({ data: large })
+  assert.deepEqual(await image.readPluginData(), large)
+  await assert.rejects(image.savePluginData({ data: '中'.repeat(Math.ceil(256 * 1024 * 1024 / 3)) }), /256 MiB/)
+  assert.deepEqual(await image.readPluginData(), large, '超限不能破坏旧数据')
   await image.savePluginData({ data: null })
   assert.equal(await image.readPluginData(), null)
+})
+
+test('call context uses shared registries without opting old story plugins into calls', {skip:!cordis}, async t => {
+  const h = await harness(t), seen = []
+  const fiber = await h.root.plugin({name:'call-source', inject:['tavern'], apply(ctx) {
+    ctx.tavern.promptSection({name:'same', text:'story-only'})
+    ctx.tavern.promptSection({name:'same', target:'call', text:context => { seen.push(structuredClone(context)); context.subject.name = 'mutated'; return 'call-only' }})
+    ctx.tavern.turnSection({name:'before', target:'call', position:'before', text:({subject,input}) => subject.name + ':' + input})
+    ctx.tavern.worldbookSource({name:'world', target:'call', entries:({subject}) => [{title:subject.name, content:'private lore'}]})
+    ctx.tavern.promptSection({name:'broken', target:'call', text:() => {throw Error('isolated')}})
+    assert.throws(() => ctx.tavern.promptSection({name:'bad', target:'unknown', text:'x'}), /target/)
+  }})
+  const subject = {id:'actor-42', handle:'lin_yue', name:'林月', ref:{packId:'story-pack',figureId:'figure-7'}}
+  const input = {gameId:'game-1', turn:3, target:'call', subject, input:'你好'}
+  assert.deepEqual((await h.api.promptSections(input)).map(row=>row.text), ['call-only'])
+  assert.deepEqual((await h.api.promptSections({gameId:'game-1',turn:3})).map(row=>row.text), ['story-only'])
+  assert.deepEqual((await h.api.turnContext(input)).map(row=>[row.position,row.text]), [['before','林月:你好'],[undefined,'[林月] private lore']])
+  assert.equal(subject.name, '林月')
+  assert.equal(seen[0].subject.ref.figureId, 'figure-7')
+  assert.deepEqual(await h.api.turnContext({gameId:'game-1',turn:3}), [])
+  await fiber.dispose(); await tick()
+  assert.deepEqual(await h.api.promptSections(input), [])
+  assert.deepEqual(await h.api.turnContext(input), [])
+  // A host-owned section (e.g. a full call history) is not subject to the third-party section cap.
+  const fullHistory = '完整通话'.repeat(3000)
+  h.api.builtinPromptSection({name:'contact-call-history',target:'call',text:fullHistory,unbounded:true})
+  assert.deepEqual((await h.api.promptSections(input)).map(row => row.text), [fullHistory])
+})
+
+test('recognition-only speech providers share registration and unloading but never become TTS choices', {skip:!cordis}, async t => {
+  const h = await harness(t), partials = []
+  const fiber = await h.root.plugin({name:'asr-plugin', inject:['tavern'], apply(ctx) {
+    ctx.tavern.speechProvider({id:'local', label:'本地识别', recognize:async ({onPartial,signal}) => {
+      signal.throwIfAborted(); onPartial({text:'你',language:'zh'}); return {text:'你好',language:'zh'}
+    }})
+  }})
+  assert.deepEqual(h.api.speechProviders(), [])
+  const [provider] = h.api.speechProviders('recognize')
+  assert.equal(provider.id, 'asr-plugin/local')
+  assert.deepEqual(await provider.recognize({signal:new AbortController().signal,onPartial:row=>partials.push(row)}), {text:'你好',language:'zh'})
+  assert.deepEqual(partials, [{text:'你',language:'zh'}])
+  await fiber.dispose(); await tick()
+  assert.deepEqual(h.api.speechProviders('recognize'), [])
 })
 
 test('插件联网声明随卸载释放，不能覆盖原生工具或重复声明', { skip: !cordis }, async t => {
@@ -1479,4 +1655,21 @@ test('managed mods wait for their optional host and rebind after stage restart',
   const second=await install();await tick();assert.equal(active,1);assert.equal(registrations,2)
   await mod.dispose();await tick();assert.equal(active,0)
   await second.dispose()
+})
+
+
+test('正文生成器通过 Cordis 注册、按卡隔离，卸载后停止可用性', { skip: !cordis }, async t => {
+  const h = await harness(t, { cardScope: async () => new Map([['body-plugin', { cards: ['/cards/a.json'] }]]), cardPathOf: async () => '/cards/a.json' })
+  const fiber = await h.root.plugin({ name: 'body-plugin', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.bodyGenerator({ name: 'body', title: '正文', generate: async ({ materials }) => { materials.input.raw = 'changed'; return { text: '完整正文' } } })
+  } })
+  await tick()
+  const list = await h.api.bodyGenerators.list('game-1')
+  assert.deepEqual(list.map(item => item.id), ['body-plugin:body'])
+  const materials = { gameId: 'game-1', input: { raw: '原输入' } }
+  assert.equal((await h.api.bodyGenerators.generate(list[0].id, { materials })).text, '完整正文')
+  assert.equal(materials.input.raw, '原输入')
+  await fiber.dispose(); await tick()
+  assert.deepEqual(await h.api.bodyGenerators.list('game-1'), [])
+  await assert.rejects(h.api.bodyGenerators.generate(list[0].id, { materials }), /不可用/)
 })

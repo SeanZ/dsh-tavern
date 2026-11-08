@@ -200,6 +200,82 @@ test('同一页面重复注入静态缓存脚本时只安装一次，避免两�
   assert.deepEqual(writes, [], '已代理的地址不应再次写回')
 })
 
+test('detached status portraits and inserted subtrees enter the static asset proxy', async t => {
+  const { JSDOM } = await import('jsdom')
+  const script = client.buildTavernFrameDocument({ content: '' }).match(/<script data-dsh-tavern-static-cache>([\s\S]*?)<\/script>/)[1]
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'https://tavern.example/' })
+  t.after(() => dom.window.close())
+  const { window } = dom, { document } = window
+  window.eval(script)
+  const wrapper = document.createElement('section')
+  const portrait = document.createElement('div')
+  const url = 'https://files.catbox.moe/portrait.png'
+  portrait.style.backgroundImage = `url("${url}")`
+  wrapper.append(portrait)
+  const fragment = document.createDocumentFragment()
+  fragment.append(wrapper)
+  document.body.append(fragment)
+  await new Promise(resolve => window.setTimeout(resolve, 0))
+  assert.ok(portrait.style.backgroundImage.includes('/api/dsh-tavern/static-assets?url=' + encodeURIComponent(url)))
+
+  wrapper.insertAdjacentHTML('beforeend', '<div style="background:url(https://img.example/second.png)"></div><img src="https://img.example/card.png"><video src="https://media.example/movie.mp4" poster="https://img.example/poster.png"></video><iframe src="https://page.example/"></iframe>')
+  await new Promise(resolve => window.setTimeout(resolve, 0))
+  assert.match(wrapper.children[1].style.background, /static-assets/)
+  assert.match(wrapper.querySelector('img').src, /static-assets/)
+  const video = wrapper.querySelector('video')
+  assert.match(video.poster, /static-assets/)
+  assert.equal(video.src, 'https://media.example/movie.mp4')
+  assert.equal(wrapper.querySelector('iframe').src, 'https://page.example/')
+
+  portrait.style.backgroundImage = 'url("https://img.example/updated.png")'
+  await new Promise(resolve => window.setTimeout(resolve, 0))
+  assert.ok(portrait.style.backgroundImage.includes(encodeURIComponent('https://img.example/updated.png')))
+})
+
+test('browser loads detached iframe background portraits through the proxy when direct images fail', { skip: !process.env.TAVERN_BROWSER_CHANNEL }, async t => {
+  const { chromium } = await import('playwright')
+  const browser = await chromium.launch({ channel: process.env.TAVERN_BROWSER_CHANNEL, headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage()
+  const script = client.buildTavernFrameDocument({ content: '' }).match(/<script data-dsh-tavern-static-cache>([\s\S]*?)<\/script>/)[1]
+  const proxied = [], errors = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.pathname === '/api/dsh-tavern/static-assets') {
+      proxied.push(url.searchParams.get('url'))
+      return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="100"><rect width="80" height="100" fill="green"/></svg>' })
+    }
+    if (url.href === 'https://tavern.example/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><iframe></iframe>' })
+    return route.abort()
+  })
+  await page.goto('https://tavern.example/')
+  await page.locator('iframe').evaluate((frame, shim) => { frame.srcdoc = '<!doctype html><script>' + shim + '</script><body></body>' }, script)
+  const frame = await page.locator('iframe').elementHandle().then(handle => handle.contentFrame())
+  await frame.waitForFunction(() => typeof window.__dshTavernStaticAssetUrl === 'function')
+  await frame.evaluate(() => {
+    const wrapper = document.createElement('section')
+    for (let i = 0; i < 8; i++) {
+      const portrait = document.createElement('div')
+      portrait.style.cssText = 'width:80px;height:100px;display:inline-block'
+      portrait.style.backgroundImage = `url("https://files.catbox.moe/portrait-${i}.png")`
+      wrapper.append(portrait)
+    }
+    document.body.append(wrapper)
+  })
+  await frame.waitForFunction(() => [...document.querySelectorAll('section > div')].length === 8 && [...document.querySelectorAll('section > div')].every(node => node.style.backgroundImage.includes('/api/dsh-tavern/static-assets?url=')))
+  const sizes = await frame.evaluate(() => Promise.all([...document.querySelectorAll('section > div')].map(async node => {
+    const image = new Image()
+    const url = new URL(getComputedStyle(node).backgroundImage.match(/^url\("(.*)"\)$/)[1])
+    image.src = url.pathname + url.search
+    await image.decode()
+    return [image.naturalWidth, image.naturalHeight]
+  })))
+  assert.deepEqual(sizes, Array.from({ length: 8 }, () => [80, 100]))
+  assert.equal(new Set(proxied).size, 8)
+  assert.deepEqual(errors, [])
+})
+
 test('右侧持久页面记录被捕获的按钮异常和执行日志，但不采集 DOM', () => {
   const html = client.buildTavernFrameDocument({ content: '', token: 'diagnostics', persistent: true, helperContext: { messages: [] }, observeMvuView: false, runtimeReporting: true })
   const script = html.match(/<script data-dsh-tavern-frame>([\s\S]*?)<\/script>/)[1]
@@ -333,6 +409,7 @@ test('standalone /trigger admits a native turn without overwriting the draft or 
   }
   const execute = client.createTavernFrameSlashExecutor(ctx, { setTimeout, clearTimeout })
   const completion = execute('/trigger', 'opening')
+  await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(JSON.parse(JSON.stringify(prompts)), [[[ { type: 'text', text: '继续。' } ], 'queue']])
   summary.running = true
   listeners.forEach(fn => fn())
@@ -738,4 +815,139 @@ test('保留多个正式会话时，parent.Mvu 随当前会话切换而不是最
   host.__dshTavernSelectedSessionId = 'A'; assert.equal(host.Mvu, a.Mvu)
   releaseB(); assert.equal(host.Mvu, a.Mvu)
   releaseA(); assert.equal(host.Mvu, undefined)
+})
+
+test('正式会话支持分步 /send 与 /trigger await=true|false', async () => {
+  const calls = []
+  const ctx = {
+    sessions: { scope: () => ({}), binding: () => ({ session: { prompt: async () => ({ ok: true }) } }) },
+    get: () => ({ input: { for: () => ({ setDraft: text => calls.push(['draft', text]), submit: mode => calls.push(['submit', mode]) }) } })
+  }
+  const execute = client.createTavernFrameSlashExecutor(ctx, { setTimeout, clearTimeout })
+  assert.deepEqual(JSON.parse(JSON.stringify(await execute('/send 租借墨池渊', 'game'))), { drafted: true, deferred: true, pipe: '' })
+  assert.deepEqual(calls, [['draft', '租借墨池渊']])
+  assert.equal((await execute('/trigger await=false', 'game')).submitted, true)
+  assert.deepEqual(calls, [['draft', '租借墨池渊'], ['draft', '租借墨池渊'], ['submit', 'queue']])
+  calls.length = 0
+  assert.equal((await execute('/send 呼叫墨池渊 | /trigger await=true', 'game', { waitForCompletion: false })).submitted, true)
+  assert.deepEqual(calls, [['draft', '呼叫墨池渊'], ['submit', 'queue']])
+})
+
+test('消息 iframe 在 /trigger 前触发 GENERATION_AFTER_COMMANDS 并排空 injectPrompts', async () => {
+  const html = client.buildTavernFrameDocument({ content: '<div>floor</div>', token: 'msg-prompt-token', helperContext: { messages: [] }, turn: 1 })
+  const helperScript = html.match(/<script data-dsh-tavern-helper>([\s\S]*?)<\/script>/)[1]
+  const interactiveScript = html.match(/<script data-dsh-tavern-interactive-helper>([\s\S]*?)<\/script>/)[1]
+  const sent = [], listeners = []
+  const parent = { postMessage(data) { sent.push(JSON.parse(JSON.stringify(data))) } }
+  const scope = { structuredClone, parent, console, addEventListener(name, fn) { if (name === 'message') listeners.push(fn) }, setTimeout, clearTimeout }
+  scope.window = scope
+  vm.createContext(scope)
+  vm.runInContext(helperScript.replace(/var ready=Promise\.all\([\s\S]*?\);/, 'var ready=Promise.resolve(true);'), scope)
+  vm.runInContext(interactiveScript, scope)
+  assert.equal(scope.tavern_events.GENERATION_AFTER_COMMANDS, 'GENERATION_AFTER_COMMANDS')
+  assert.equal(typeof scope.injectPrompts, 'function')
+  assert.equal(typeof scope.TavernHelper.injectPrompts, 'function')
+  assert.equal(typeof scope.TavernHelper.uninjectPrompts, 'function')
+
+  scope.eventOn(scope.tavern_events.GENERATION_AFTER_COMMANDS, () => {
+    scope.injectPrompts([{ id: 'character-locations', position: 'in_chat', depth: 0, role: 'system', content: '当前登场角色：墨池渊' }], { once: true })
+  })
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].type, 'dsh-tavern-frame-before-generate-hook')
+  sent.length = 0
+  const sendPromise = scope.triggerSlash('/send 你好')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].method, 'triggerTavernSlash')
+  for (const fn of listeners) fn({ source: parent, data: { type: 'dsh-tavern-helper-response', token: 'msg-prompt-token', requestId: sent[0].requestId, ok: true, result: { pipe: '', deferred: true } } })
+  await sendPromise
+
+  sent.length = 0
+  let slashDone = false
+  const triggerPromise = scope.triggerSlash('/trigger await=true').then(res => { slashDone = true; return res })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sent.length, 1, '先交由宿主选择最新楼层，不自行注入旧状态')
+  assert.equal(sent[0].method, 'triggerTavernSlash')
+  assert.equal(sent[0].args.beforeGenerateFlushed, undefined)
+  const triggerRequest = sent[0]
+  for (const fn of listeners) fn({ source: parent, data: { type: 'dsh-tavern-frame-before-generate', token: 'msg-prompt-token', requestId: 'host-flush' } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sent[1].method, 'updateTavernHelperPrompts')
+  assert.deepEqual(sent[1].args.operation, {
+    kind: 'inject',
+    once: true,
+    prompts: [{ id: 'character-locations', position: 'in_chat', depth: 0, role: 'system', content: '当前登场角色：墨池渊' }]
+  })
+  assert.equal(sent.some(message => message.type === 'dsh-tavern-frame-before-generate-done'), false)
+  for (const fn of listeners) fn({ source: parent, data: { type: 'dsh-tavern-helper-response', token: 'msg-prompt-token', requestId: sent[1].requestId, ok: true, result: { updated: true } } })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sent.length, 3)
+  assert.equal(sent[2].type, 'dsh-tavern-frame-before-generate-done')
+  assert.equal(sent[2].ok, true)
+  assert.equal(slashDone, false)
+  for (const fn of listeners) fn({ source: parent, data: { type: 'dsh-tavern-helper-response', token: 'msg-prompt-token', requestId: triggerRequest.requestId, ok: true, result: { submitted: true } } })
+  assert.deepEqual(JSON.parse(JSON.stringify(await triggerPromise)), { submitted: true })
+})
+
+test('多楼层会话仅对最新且注册了 GENERATION_AFTER_COMMANDS 的消息帧执行生成前刷新', async () => {
+  const hostListeners = new Set(), receivedByTurn = []
+  const host = {
+    sessionStorage: { getItem() { return null }, setItem() {} },
+    document: null,
+    setTimeout,
+    clearTimeout,
+    addEventListener(name, fn) { if (name === 'message') hostListeners.add(fn) },
+    removeEventListener(name, fn) { if (name === 'message') hostListeners.delete(fn) }
+  }
+  function mountFloor(turn, registerHook) {
+    const lifecycle = client.createTavernMessageFrameLifecycle(
+      { sessionId: 'multi-floor', content: '<div>floor</div>', turn, helperContext: { messages: [] } },
+      { window: host, async rpc() { return {} } }
+    )
+    const doc = lifecycle.snapshot().visibleDocument
+    const source = {
+      postMessage(data) {
+        if (data.type === 'dsh-tavern-frame-before-generate') {
+          receivedByTurn.push(turn)
+          for (const fn of hostListeners) fn({ source, data: { type: 'dsh-tavern-frame-before-generate-done', token: doc.token, requestId: data.requestId, ok: true } })
+        }
+      }
+    }
+    doc.ref({ contentWindow: source })
+    const stop = lifecycle.start(() => {})
+    if (registerHook) {
+      for (const fn of hostListeners) fn({ source, data: { type: 'dsh-tavern-frame-before-generate-hook', token: doc.token, active: true } })
+    }
+    return { token: doc.token, stop }
+  }
+  const floor0 = mountFloor(0, true)
+  const floor2 = mountFloor(2, true)
+  const floor4Unhooked = mountFloor(4, false)
+  try {
+    const ctx = {
+      sessions: { scope: () => ({}), binding: () => ({ session: { prompt: async () => ({ ok: true }) } }) },
+      get: () => ({ input: { for: () => ({ setDraft() {}, submit() {} }) } })
+    }
+    const execute = client.createTavernFrameSlashExecutor(ctx, { setTimeout, clearTimeout })
+    await execute('/trigger await=false', 'multi-floor')
+    assert.deepEqual(receivedByTurn, [2], '外部触发时只刷新注册了钩子的最新楼层，不触发旧楼层且不阻塞未注册钩子的楼层')
+    receivedByTurn.length = 0
+    await execute('/trigger await=false', 'multi-floor', { beforeGenerateFlushedToken: floor2.token })
+    assert.deepEqual(receivedByTurn, [2], 'iframe 声称已刷新不能绕过宿主选择的最新楼层')
+  } finally {
+    floor0.stop()
+    floor2.stop()
+    floor4Unhooked.stop()
+  }
+
+})
+
+test('iframe 默认元素样式放入底层 @layer dsh-tavern-base，避免无层 height:auto 覆盖 Tailwind v4 的 @layer utilities (.h-full)', () => {
+  const doc = client.buildTavernFrameDocument({
+    content: '<div class="relative w-full h-full"><img class="w-full h-full object-cover"></div>',
+    token: 'layer-token',
+    helperContext: { messages: [] }
+  })
+  assert.match(doc, /@layer dsh-tavern-base,theme,base,components,utilities;/)
+  assert.match(doc, /@layer dsh-tavern-base\{[\s\S]*?img,video,svg,canvas\{max-width:100%;height:auto\}[\s\S]*?\}<\/style>/)
 })

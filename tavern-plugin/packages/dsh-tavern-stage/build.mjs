@@ -1,6 +1,7 @@
 import {readFile, realpath, rename, unlink, writeFile} from 'node:fs/promises'
 import {fileURLToPath} from 'node:url'
 import vm from 'node:vm'
+import {stageClientModuleAsScript} from './lib/client-assets.js'
 
 const readSource = async file => (await readFile(file, 'utf8')).replace(/\r\n?/g, '\n')
 
@@ -14,6 +15,7 @@ export async function prepareStageClientBuild() {
     readSource(new URL('./src/client/' + name, import.meta.url))))).join('\n')
   const theme = await readSource(new URL('./src/client/themes.css', import.meta.url))
   const navigation = await readSource(new URL('./src/client/navigation.cjs', import.meta.url))
+  const features = await readSource(new URL('./src/client/features.cjs', import.meta.url))
   const viewScope = await readSource(new URL('./src/client/view-scope.cjs', import.meta.url))
   const views = await readSource(new URL('./src/client/views.cjs', import.meta.url))
   const text = await readSource(new URL('./src/client/text.cjs', import.meta.url))
@@ -53,11 +55,6 @@ export async function prepareStageClientBuild() {
   const skinBacklog = await readSource(new URL('./src/client/skin-backlog.cjs', import.meta.url))
   const skinCursor = await readSource(new URL('./src/client/skin-cursor.cjs', import.meta.url))
   const themes = await readSource(new URL('./src/client/themes.cjs', import.meta.url))
-  const danmakuDisplay = await readSource(new URL('./src/client/danmaku-display.cjs', import.meta.url))
-  const danmakuScheduler = await readSource(new URL('./src/client/danmaku-scheduler.cjs', import.meta.url))
-  const danmakuSession = await readSource(new URL('./src/client/danmaku-session.cjs', import.meta.url))
-  const danmakuAvatar = await readSource(new URL('./src/client/danmaku-avatar.cjs', import.meta.url))
-  const danmakuRenderer = await readSource(new URL('./src/client/danmaku-renderer.cjs', import.meta.url))
   const figureGeometry = await readSource(new URL('./src/client/figure-geometry.cjs', import.meta.url))
   const figureIdle = await readSource(new URL('./src/client/figure-idle.cjs', import.meta.url))
   const figureWarp = await readSource(new URL('./src/client/figure-warp.cjs', import.meta.url))
@@ -71,6 +68,9 @@ export async function prepareStageClientBuild() {
   const lookArt = await readSource(new URL('./src/client/look-art.cjs', import.meta.url))
   const lookUi = await readSource(new URL('./src/client/look-ui.cjs', import.meta.url))
   const spineFigures = await readSource(new URL('./src/client/spine-figures.cjs', import.meta.url))
+  const live2dActs = await readSource(new URL('./src/client/live2d-acts.cjs', import.meta.url))
+  const live2dFigures = await readSource(new URL('./src/client/live2d-figures.cjs', import.meta.url))
+  const live2dLoader = await readSource(new URL('./src/client/live2d-loader.cjs', import.meta.url))
   const backgrounds = await readSource(new URL('./src/client/backgrounds.cjs', import.meta.url))
   const backgroundLayers = await readSource(new URL('./src/client/background-layers.cjs', import.meta.url))
   const resourceRunner = await readSource(new URL('./lib/client/resource-runner.cjs', import.meta.url))
@@ -92,12 +92,16 @@ export async function prepareStageClientBuild() {
   const sessions = await readSource(new URL('./src/client/sessions.cjs', import.meta.url))
   const textIndex = await readSource(new URL('./src/client/text-index.cjs', import.meta.url))
   const clientLifetime = await readSource(new URL('./lib/client/lifetime.cjs', import.meta.url))
+  const clientEntry = await readSource(new URL('./lib/client/entry.cjs', import.meta.url))
+  const resources = await readSource(new URL('./lib/client/resources.cjs', import.meta.url))
   const sessionRuntime = await readSource(new URL('./src/client/session-runtime.cjs', import.meta.url))
   const runtimeKernel = await readSource(new URL('./lib/client/runtime-kernel.cjs', import.meta.url))
   const runtimeStore = await readSource(new URL('./lib/client/runtime-store.cjs', import.meta.url))
   const sessionOwner = await readSource(new URL('./lib/client/session.cjs', import.meta.url))
   const figurePose = await readSource(new URL('./src/client/figure-pose.cjs', import.meta.url))
   const castLayout = await readSource(new URL('./src/client/cast-layout.cjs', import.meta.url))
+  const leaseScene = await readSource(new URL('./src/client/lease-scene.cjs', import.meta.url))
+  const leaseHud = await readSource(new URL('./src/client/lease-hud.cjs', import.meta.url))
   const cast = await readSource(new URL('./src/client/cast.cjs', import.meta.url))
   const figureAppearance = await readSource(new URL('./src/client/figure-appearance.cjs', import.meta.url))
   const figureAssets = await readSource(new URL('./src/client/figure-assets.cjs', import.meta.url))
@@ -111,9 +115,6 @@ export async function prepareStageClientBuild() {
   const sceneGraphics = await readSource(new URL('./src/client/scene-graphics.cjs', import.meta.url))
   const effects = await readSource(new URL('./src/client/effects.cjs', import.meta.url))
   const looks = await readSource(new URL('./src/client/looks.cjs', import.meta.url))
-  const liveroom = await readSource(new URL('./src/client/danmaku-liveroom.cjs', import.meta.url))
-  const danmakuUi = await readSource(new URL('./src/client/danmaku-ui.cjs', import.meta.url))
-  const danmakuSettings = await readSource(new URL('./src/client/danmaku-settings.cjs', import.meta.url))
   const textcardPresets = await readSource(new URL('./src/client/textcard-presets.cjs', import.meta.url))
   const textcardStage = await readSource(new URL('./src/client/textcard-stage.cjs', import.meta.url))
   const textcardFonts = await readSource(new URL('./src/client/textcard-fonts.cjs', import.meta.url))
@@ -138,6 +139,8 @@ export async function prepareStageClientBuild() {
   const phoneLayout = await readSource(new URL('./src/client/phone-layout.cjs', import.meta.url))
   const cg = await readSource(new URL('./src/client/cg.cjs', import.meta.url))
   const gallery = await readSource(new URL('./src/client/gallery.cjs', import.meta.url))
+  const pictures = await readSource(new URL('./src/client/pictures.cjs', import.meta.url))
+  const statusPanel = await readSource(new URL('./src/client/status-panel.cjs', import.meta.url))
   const device = await readSource(new URL('./src/client/device.cjs', import.meta.url))
   const mixer = await readSource(new URL('./src/client/mixer.cjs', import.meta.url))
   const sfx = await readSource(new URL('./src/client/sfx.cjs', import.meta.url))
@@ -145,10 +148,25 @@ export async function prepareStageClientBuild() {
   const bgm = await readSource(new URL('./src/client/bgm.cjs', import.meta.url))
   const template = await readSource(new URL('./src/client/entry.js', import.meta.url))
   const availability = await readSource(new URL('./src/client/availability.cjs', import.meta.url))
-  const entry = '// Generated by dsh-tavern-stage/build; do not edit directly.\n' + template.replace('__STAGE_AVAILABILITY__',()=>availability).replace('__STAGE_CONTROLLER__', () => controller).replace('__STAGE_SOURCE_WIDGETS__', () => sourceWidgets).replace('__STAGE_MOD_SURFACE__', () => modSurface).replace('__STAGE_SCENE__', () => scene).replace('__STAGE_SCENE_MATH__', () => sceneMath).replace('__STAGE_RUNTIME_KERNEL__', () => runtimeKernel).replace('__STAGE_DISPLAY_CONSUMERS__', () => displayConsumers).replace('__STAGE_DISPLAYS__', () => displays).replace('__STAGE_MOD_NOTIFICATIONS__', () => modNotifications).replace('__STAGE_RESOURCE_RUNNER__', () => resourceRunner).replace('__STAGE_DIRECTOR_SOURCE__', () => directorSource).replace('__STAGE_SESSION_OBSERVATION__', () => sessionObservation).replace('__STAGE_INPUT__', () => input).replace('__STAGE_PLAYBACK__', () => playback).replace('__STAGE_RUNTIME_UI__', () => runtimeUi).replace('__STAGE_SPEECH__', () => speech).replace('__STAGE_PERFORMANCE_SURFACE__', () => performanceSurface).replace('__STAGE_SESSIONS__', () => sessions).replace('__STAGE_TEXT_INDEX__', () => textIndex).replace('__STAGE_CLIENT_LIFETIME__', () => clientLifetime).replace('__STAGE_SESSION_RUNTIME__', () => sessionRuntime).replace('__STAGE_RUNTIME_STORE__', () => runtimeStore).replace('__STAGE_SESSION_OWNER__', () => sessionOwner).replace('__STAGE_FIGURE_POSE__', () => figurePose).replace('__STAGE_CAST_LAYOUT__', () => castLayout).replace('__STAGE_CAST__', () => cast).replace('__STAGE_FIGURE_APPEARANCE__', () => figureAppearance).replace('__STAGE_FIGURE_ASSETS__', () => figureAssets).replace('__STAGE_FIGURE_BLINK__', () => figureBlink).replace('__STAGE_FIGURE_BLINK_CLOCK__', () => figureBlinkClock).replace('__STAGE_CALL_VIEWS__', () => callViews).replace('__STAGE_BUST__', () => bust).replace('__STAGE_MONOLOGUE__', () => monologue).replace('__STAGE_BACKGROUNDS__', () => backgrounds).replace('__STAGE_BACKGROUND_LAYERS__', () => backgroundLayers).replace('__STAGE_SCENE_CAMERA__', () => sceneCamera).replace('__STAGE_SCENE_TEXTURES__', () => sceneTextures).replace('__STAGE_SPINE_FIGURES__', () => spineFigures).replace('__STAGE_SCENE_GRAPHICS__', () => sceneGraphics).replace('__STAGE_ENTRANCE_PRESENTATION__', () => entrancePresentation).replace('__STAGE_ENTRANCE_MEDIA__', () => entranceMedia).replace('__STAGE_ENTRANCE_RENDERER__', () => entranceRenderer).replace('__STAGE_ENTRANCE_FRAMES__', () => entranceFrames).replace('__STAGE_ENTRANCE_LOOP__', () => entranceLoop).replace('__STAGE_ENTRANCE_RUNTIME__', () => entranceRuntime).replace('__STAGE_SKIN_PRESENTATION__', () => skinPresentation).replace('__STAGE_SKIN_RESOURCES__', () => skinResources).replace('__STAGE_SKIN_ADAPTER__', () => skinAdapter).replace('__STAGE_SKIN_MOTION__', () => skinMotion).replace('__STAGE_SKIN_BACKLOG__', () => skinBacklog).replace('__STAGE_EFFECTS__', () => effects).replace('__STAGE_LOOK_UI__', () => lookUi).replace('__STAGE_LOOKS__', () => looks).replace('__STAGE_LOOK_ART__', () => lookArt).replace('__STAGE_LOOK_SHADERS__', () => lookShaders).replace('__STAGE_EMOTES__', () => emotes).replace('__STAGE_WEATHER__', () => weather).replace('__STAGE_EFFECT_COLORS__', () => effectColors).replace('__STAGE_FIGURE_MOTION__', () => figureMotion).replace('__STAGE_FIGURE_MOTION_MATH__', () => figureMotionMath).replace('__STAGE_FIGURE_TAP__', () => figureTap).replace('__STAGE_FIGURE_WARP__', () => figureWarp).replace('__STAGE_FIGURE_IDLE__', () => figureIdle).replace('__STAGE_FIGURE_GEOMETRY__', () => figureGeometry).replace('__STAGE_DANMAKU_RENDERER__', () => danmakuRenderer).replace('__STAGE_DANMAKU_AVATAR__', () => danmakuAvatar).replace('__STAGE_DANMAKU_SESSION__', () => danmakuSession).replace('__STAGE_DANMAKU_SCHEDULER__', () => danmakuScheduler).replace('__STAGE_DANMAKU_DISPLAY__', () => danmakuDisplay).replace('__STAGE_LIVEROOM__', () => liveroom).replace('__STAGE_DANMAKU_UI__', () => danmakuUi).replace('__STAGE_DANMAKU_SETTINGS__', () => danmakuSettings).replace('__STAGE_TEXTCARD_PRESETS__', () => textcardPresets).replace('__STAGE_TEXTCARD_STAGE__', () => textcardStage).replace('__STAGE_TEXTCARD_FONTS__', () => textcardFonts).replace('__STAGE_TEXTCARD_PLAYER__', () => textcardPlayer).replace('__STAGE_TEXTCARD_CENTER__', () => textcardCenter).replace('__STAGE_TEXTCARD_METRICS__', () => textcardMetrics).replace('__STAGE_TEXTCARD_LAYOUT__', () => textcardLayout).replace('__STAGE_CHOICES__', () => choices).replace('__STAGE_CHOICE_LAYOUT__', () => choiceLayout).replace('__STAGE_REGENERATE__', () => regenerate).replace('__STAGE_BACKLOG_VIEW__', () => backlogView).replace('__STAGE_BACKLOG_PAGING__', () => backlogPaging).replace('__STAGE_BACKLOG_HISTORY__', () => backlogHistory).replace('__STAGE_BACKLOG_VOICE__', () => backlogVoice).replace('__STAGE_SKIN_SHAPE__', () => skinShape).replace('__STAGE_SKIN_FRAME__', () => skinFrame).replace('__STAGE_SKIN_CURSOR__', () => skinCursor).replace('__STAGE_THEMES__', () => themes).replace('__STAGE_NAVIGATION__', () => navigation).replace('__STAGE_VIEW_SCOPE__', () => viewScope).replace('__STAGE_VIEWS__', () => views).replace('__STAGE_TEXT__', () => text).replace('__STAGE_SPEAKER__', () => speaker).replace('__STAGE_CHAT_ENTRY__', () => chatEntry).replace('__STAGE_MENU__', () => menu).replace('__STAGE_POSITION__', () => position).replace('__STAGE_SUBTITLES__', () => subtitles).replace('__STAGE_TRANSITIONS__', () => transitions).replace('__STAGE_SKIN_BUTTONS__', () => skinButtons).replace('__STAGE_CONTROLS__', () => controls).replace('__STAGE_NOTICES__', () => notices).replace('__STAGE_HINTS__', () => hints).replace('__STAGE_PRESENTATION__', () => presentation).replace('__STAGE_PORTRAITS__', () => portraits).replace('__STAGE_LABELS__', () => labels).replace('__STAGE_LOADER__', () => loader).replace('__STAGE_ADMISSION__', () => admission).replace('__STAGE_PROGRESS__', () => progress).replace('__STAGE_VIDEO__', () => video).replace('__STAGE_TIMER__', () => timer).replace('__TIMER_CLOCK__', () => timerClock).replace('__STAGE_SOUNDSCAPE__', () => soundscape).replace('__STAGE_AMBIENCE__', () => ambience).replace('__STAGE_BACKLOG_ROWS__', () => backlogRows).replace('__STAGE_CONFIG_APPEARANCE__', () => configAppearance).replace('__STAGE_CONFIG_TEXT__', () => configText).replace('__STAGE_CONFIG_SCREEN__', () => configScreen).replace('__STAGE_CONFIG_FIELDS__', () => configFields).replace('__STAGE_WIDGETS__', () => widgets).replace('__STAGE_PHONE_ADJUST__', () => phoneAdjust).replace('__STAGE_PHONE_LAYOUT__', () => phoneLayout).replace('__STAGE_CG__', () => cg).replace('__STAGE_GALLERY__', () => gallery).replace('__STAGE_DEVICE__', () => device).replace('__STAGE_MIXER__', () => mixer).replace('__STAGE_SFX__', () => sfx).replace('__STAGE_MUSIC__', () => music).replace('__STAGE_BGM__', () => bgm).replace('__STAGE_PRESENTATION_CSS__', () => JSON.stringify(css)).replace('__STAGE_THEME_CSS__', () => JSON.stringify(theme))
+  const clipExport = await readSource(new URL('./src/client/clip-export.cjs', import.meta.url))
+  const clipRender = await readSource(new URL('./src/client/clip-render.cjs', import.meta.url))
+  const globalSettings = await readSource(new URL('./src/client/global-settings.js', import.meta.url))
+  // The inert 入场演出 contract (shared protocol): only the stage reads it in the browser, so it ships here, not in the core.
+  const entranceContract = await readSource(new URL('../dsh-presentation-protocol/src/stage-entrance.cjs', import.meta.url))
+  // The asset-pack pages of the core's createAssetPackUI closure: inlined into createStageAssetPackViews, in the order the core
+  // factory included them (gen, card, engine, mod-manager), with the protocol file the card page includes.
+  const cardStageMode = await readSource(new URL('../dsh-presentation-protocol/src/card-stage-mode.cjs', import.meta.url))
+  const assetPackGenUi = await readSource(new URL('./src/client/asset-pack-gen-ui.js', import.meta.url))
+  const assetPackCardUi = await readSource(new URL('./src/client/asset-pack-card-ui.js', import.meta.url))
+  const assetPackEngineUi = await readSource(new URL('./src/client/asset-pack-engine-ui.js', import.meta.url))
+  const modManager = await readSource(new URL('./src/client/mod-manager.js', import.meta.url))
+  const entry = '// Generated by dsh-tavern-stage/build; do not edit directly.\n' + template.replace('__STAGE_AVAILABILITY__',()=>availability).replace('__STAGE_GLOBAL_SETTINGS__', () => globalSettings).replace('__STAGE_ENTRANCE_CONTRACT__', () => entranceContract).replace('__STAGE_CLIP_EXPORT__', () => clipExport).replace('__STAGE_CLIP_RENDER__', () => clipRender)
+    .replace('__STAGE_CARD_STAGE_MODE__', () => cardStageMode).replace('__STAGE_ASSET_PACK_GEN_UI__', () => assetPackGenUi).replace('__STAGE_ASSET_PACK_CARD_UI__', () => assetPackCardUi).replace('__STAGE_ASSET_PACK_ENGINE_UI__', () => assetPackEngineUi).replace('__STAGE_MOD_MANAGER__', () => modManager).replace('__STAGE_CONTROLLER__', () => controller).replace('__STAGE_LEASE_SCENE__', () => leaseScene).replace('__STAGE_LEASE_HUD__', () => leaseHud).replace('__STAGE_SOURCE_WIDGETS__', () => sourceWidgets).replace('__STAGE_MOD_SURFACE__', () => modSurface).replace('__STAGE_SCENE__', () => scene).replace('__STAGE_SCENE_MATH__', () => sceneMath).replace('__STAGE_RUNTIME_KERNEL__', () => runtimeKernel).replace('__STAGE_DISPLAY_CONSUMERS__', () => displayConsumers).replace('__STAGE_DISPLAYS__', () => displays).replace('__STAGE_MOD_NOTIFICATIONS__', () => modNotifications).replace('__STAGE_RESOURCE_RUNNER__', () => resourceRunner).replace('__STAGE_DIRECTOR_SOURCE__', () => directorSource).replace('__STAGE_SESSION_OBSERVATION__', () => sessionObservation).replace('__STAGE_INPUT__', () => input).replace('__STAGE_PLAYBACK__', () => playback).replace('__STAGE_RUNTIME_UI__', () => runtimeUi).replace('__STAGE_SPEECH__', () => speech).replace('__STAGE_PERFORMANCE_SURFACE__', () => performanceSurface).replace('__STAGE_SESSIONS__', () => sessions).replace('__STAGE_TEXT_INDEX__', () => textIndex).replace('__STAGE_CLIENT_LIFETIME__', () => clientLifetime).replace('__STAGE_CLIENT_ENTRY__', () => clientEntry).replace('__STAGE_RESOURCES__', () => resources).replace('__STAGE_SESSION_RUNTIME__', () => sessionRuntime).replace('__STAGE_RUNTIME_STORE__', () => runtimeStore).replace('__STAGE_SESSION_OWNER__', () => sessionOwner).replace('__STAGE_FIGURE_POSE__', () => figurePose).replace('__STAGE_CAST_LAYOUT__', () => castLayout).replace('__STAGE_CAST__', () => cast).replace('__STAGE_FIGURE_APPEARANCE__', () => figureAppearance).replace('__STAGE_FIGURE_ASSETS__', () => figureAssets).replace('__STAGE_FIGURE_BLINK__', () => figureBlink).replace('__STAGE_FIGURE_BLINK_CLOCK__', () => figureBlinkClock).replace('__STAGE_CALL_VIEWS__', () => callViews).replace('__STAGE_BUST__', () => bust).replace('__STAGE_MONOLOGUE__', () => monologue).replace('__STAGE_BACKGROUNDS__', () => backgrounds).replace('__STAGE_BACKGROUND_LAYERS__', () => backgroundLayers).replace('__STAGE_SCENE_CAMERA__', () => sceneCamera).replace('__STAGE_SCENE_TEXTURES__', () => sceneTextures).replace('__STAGE_SPINE_FIGURES__', () => spineFigures).replace('__STAGE_LIVE2D_ACTS__', () => live2dActs).replace('__STAGE_LIVE2D_FIGURES__', () => live2dFigures).replace('__STAGE_LIVE2D_LOADER__', () => live2dLoader).replace('__STAGE_SCENE_GRAPHICS__', () => sceneGraphics).replace('__STAGE_ENTRANCE_PRESENTATION__', () => entrancePresentation).replace('__STAGE_ENTRANCE_MEDIA__', () => entranceMedia).replace('__STAGE_ENTRANCE_RENDERER__', () => entranceRenderer).replace('__STAGE_ENTRANCE_FRAMES__', () => entranceFrames).replace('__STAGE_ENTRANCE_LOOP__', () => entranceLoop).replace('__STAGE_ENTRANCE_RUNTIME__', () => entranceRuntime).replace('__STAGE_SKIN_PRESENTATION__', () => skinPresentation).replace('__STAGE_SKIN_RESOURCES__', () => skinResources).replace('__STAGE_SKIN_ADAPTER__', () => skinAdapter).replace('__STAGE_SKIN_MOTION__', () => skinMotion).replace('__STAGE_SKIN_BACKLOG__', () => skinBacklog).replace('__STAGE_EFFECTS__', () => effects).replace('__STAGE_LOOK_UI__', () => lookUi).replace('__STAGE_LOOKS__', () => looks).replace('__STAGE_LOOK_ART__', () => lookArt).replace('__STAGE_LOOK_SHADERS__', () => lookShaders).replace('__STAGE_EMOTES__', () => emotes).replace('__STAGE_WEATHER__', () => weather).replace('__STAGE_EFFECT_COLORS__', () => effectColors).replace('__STAGE_FIGURE_MOTION__', () => figureMotion).replace('__STAGE_FIGURE_MOTION_MATH__', () => figureMotionMath).replace('__STAGE_FIGURE_TAP__', () => figureTap).replace('__STAGE_FIGURE_WARP__', () => figureWarp).replace('__STAGE_FIGURE_IDLE__', () => figureIdle).replace('__STAGE_FIGURE_GEOMETRY__', () => figureGeometry).replace('__STAGE_TEXTCARD_PRESETS__', () => textcardPresets).replace('__STAGE_TEXTCARD_STAGE__', () => textcardStage).replace('__STAGE_TEXTCARD_FONTS__', () => textcardFonts).replace('__STAGE_TEXTCARD_PLAYER__', () => textcardPlayer).replace('__STAGE_TEXTCARD_CENTER__', () => textcardCenter).replace('__STAGE_TEXTCARD_METRICS__', () => textcardMetrics).replace('__STAGE_TEXTCARD_LAYOUT__', () => textcardLayout).replace('__STAGE_CHOICES__', () => choices).replace('__STAGE_CHOICE_LAYOUT__', () => choiceLayout).replace('__STAGE_REGENERATE__', () => regenerate).replace('__STAGE_BACKLOG_VIEW__', () => backlogView).replace('__STAGE_BACKLOG_PAGING__', () => backlogPaging).replace('__STAGE_BACKLOG_HISTORY__', () => backlogHistory).replace('__STAGE_BACKLOG_VOICE__', () => backlogVoice).replace('__STAGE_SKIN_SHAPE__', () => skinShape).replace('__STAGE_SKIN_FRAME__', () => skinFrame).replace('__STAGE_SKIN_CURSOR__', () => skinCursor).replace('__STAGE_THEMES__', () => themes).replace('__STAGE_NAVIGATION__', () => navigation).replace('__STAGE_FEATURES__', () => features)
+    .replace('__STAGE_VIEW_SCOPE__', () => viewScope).replace('__STAGE_VIEWS__', () => views).replace('__STAGE_TEXT__', () => text).replace('__STAGE_SPEAKER__', () => speaker).replace('__STAGE_CHAT_ENTRY__', () => chatEntry).replace('__STAGE_MENU__', () => menu).replace('__STAGE_POSITION__', () => position).replace('__STAGE_SUBTITLES__', () => subtitles).replace('__STAGE_TRANSITIONS__', () => transitions).replace('__STAGE_SKIN_BUTTONS__', () => skinButtons).replace('__STAGE_CONTROLS__', () => controls).replace('__STAGE_NOTICES__', () => notices).replace('__STAGE_HINTS__', () => hints).replace('__STAGE_PRESENTATION__', () => presentation).replace('__STAGE_PORTRAITS__', () => portraits).replace('__STAGE_LABELS__', () => labels).replace('__STAGE_LOADER__', () => loader).replace('__STAGE_ADMISSION__', () => admission).replace('__STAGE_PROGRESS__', () => progress).replace('__STAGE_VIDEO__', () => video).replace('__STAGE_TIMER__', () => timer).replace('__TIMER_CLOCK__', () => timerClock).replace('__STAGE_SOUNDSCAPE__', () => soundscape).replace('__STAGE_AMBIENCE__', () => ambience).replace('__STAGE_BACKLOG_ROWS__', () => backlogRows).replace('__STAGE_CONFIG_APPEARANCE__', () => configAppearance).replace('__STAGE_CONFIG_TEXT__', () => configText).replace('__STAGE_CONFIG_SCREEN__', () => configScreen).replace('__STAGE_CONFIG_FIELDS__', () => configFields).replace('__STAGE_WIDGETS__', () => widgets).replace('__STAGE_PHONE_ADJUST__', () => phoneAdjust).replace('__STAGE_PHONE_LAYOUT__', () => phoneLayout).replace('__STAGE_CG__', () => cg).replace('__STAGE_GALLERY__', () => gallery).replace('__STAGE_PICTURES__', () => pictures).replace('__STAGE_STATUS_PANEL__', () => statusPanel).replace('__STAGE_DEVICE__', () => device).replace('__STAGE_MIXER__', () => mixer).replace('__STAGE_SFX__', () => sfx).replace('__STAGE_MUSIC__', () => music).replace('__STAGE_BGM__', () => bgm).replace('__STAGE_PRESENTATION_CSS__', () => JSON.stringify(css)).replace('__STAGE_THEME_CSS__', () => JSON.stringify(theme))
   const entryOutput = new URL('./lib/client.js', import.meta.url)
-  new vm.Script(entry, {filename:fileURLToPath(entryOutput)})
-  const artifacts = await Promise.all([[output,next],[entryOutput,entry]].map(async ([file, content]) => {
+  new vm.Script(stageClientModuleAsScript(entry), {filename:fileURLToPath(entryOutput)})
+  const live2d = await prepareLive2dModule()
+  const artifacts = await Promise.all([[output,next],[entryOutput,entry],[live2d.file,live2d.content]].map(async ([file, content]) => {
     const current = await readFile(file, 'utf8').catch(error => {if (error.code === 'ENOENT') return ''; throw error})
     return {file, content, changed:current.replace(/\r\n?/g, '\n') !== content}
   }))
@@ -165,6 +183,19 @@ export async function prepareStageClientBuild() {
   })
 }
 
+// dsh-tavern-live2d (live2d-module.js): the Live2D client module, its own chunk beside the stage's (client-assets.js).
+const LIVE2D_MODULE_EXPORT = 'export {createLive2dModule};'
+async function prepareLive2dModule() {
+  const file = new URL('./lib/client/live2d-client.mjs', import.meta.url)
+  const part = name => readSource(new URL('./src/client/' + name, import.meta.url))
+  const [template, cubismCore, cubismHeap, runtime, preview] = await Promise.all(['live2d-module.js', 'cubism-core.cjs', 'cubism-heap.cjs', 'live2d.cjs', 'live2d-preview.cjs'].map(part))
+  const content = '// Generated by dsh-tavern-stage/build; do not edit directly.\n' + template.replace('__LIVE2D_CUBISM_CORE__', () => cubismCore)
+    .replace('__LIVE2D_CUBISM_HEAP__', () => cubismHeap).replace('__LIVE2D_RUNTIME__', () => runtime).replace('__LIVE2D_PREVIEW__', () => preview)
+  const at = content.lastIndexOf(LIVE2D_MODULE_EXPORT)
+  if (at < 0) throw new Error('Live2D module has no export')
+  new vm.Script('"use strict";\n' + content.slice(0, at) + content.slice(at + LIVE2D_MODULE_EXPORT.length), {filename:fileURLToPath(file)})
+  return {file, content}
+}
 export async function buildStageClient({check = false} = {}) {
   const build = await prepareStageClientBuild()
   if (check && build.changed) throw new Error('Stage client is stale; run dsh-tavern-stage/build')
@@ -172,6 +203,6 @@ export async function buildStageClient({check = false} = {}) {
   return {changed:build.changed}
 }
 
-if (process.argv[1] && await realpath(process.argv[1]).catch(() => '') === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && await realpath(process.argv[1]).catch(() => '') === await realpath(fileURLToPath(import.meta.url))) {
   await buildStageClient({check:process.argv.includes('--check')})
 }

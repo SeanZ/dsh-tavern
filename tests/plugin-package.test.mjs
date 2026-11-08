@@ -24,7 +24,8 @@ test('standard package ships runtime resources without local links, host copies 
   // 沿服务端入口递归验证相对导入，防止二级模块引用被包裁剪遗漏。
   const pending = ['tavern-plugin/lib/index.js',
     'tavern-plugin/packages/dsh-asset-library/lib/index.js',
-    'tavern-plugin/packages/dsh-tavern-stage/lib/index.js']
+    'tavern-plugin/packages/dsh-tavern-stage/lib/index.js',
+    'tavern-plugin/packages/dsh-tavern-tts/lib/index.js']
   const visited = new Set()
   while (pending.length) {
     const entryPath = pending.pop()
@@ -98,7 +99,7 @@ test('standard package ships runtime resources without local links, host copies 
   }
   // 标准插件包的预设行不经宿主锚定、按 profile 目录解析：只能用本包包名的子路径，且目标随包发布。
   const bundlePatch = read('plugin.patch.yml')
-  for (const name of ['dsh-asset-library', 'dsh-tavern-stage']) {
+  for (const name of ['dsh-asset-library', 'dsh-tavern-stage', 'dsh-tavern-tts']) {
     assert.ok(bundlePatch.includes('name: ./tavern-plugin/packages/' + name + '/lib/index.js'))
     const embedded = JSON.parse(read('tavern-plugin/packages/' + name + '/package.json'))
     for (const [dependency, version] of Object.entries(embedded.dependencies || {})) {
@@ -108,7 +109,7 @@ test('standard package ships runtime resources without local links, host copies 
   const presets = bundlePatch.slice(bundlePatch.indexOf('- id: preset-tavern\n'), bundlePatch.indexOf('- id: dsh-tavern-remote\n'))
   assert.deepEqual([...presets.matchAll(/^\s*name: (\.\.?\/\S+)\s*$/gm)].map(match => match[1]), [])
   const ownRows = [...presets.matchAll(new RegExp(`^\\s*name: ${manifest.name}/(\\S+)\\s*$`, 'gm'))].map(match => match[1])
-  assert.deepEqual(ownRows, ['tavern-plugin/lib/user-tools-bridge.js', 'tavern-plugin/lib/agent-compaction.js', 'tavern-plugin/lib/agent-compaction.js'])
+  assert.deepEqual(ownRows, ['tavern-plugin/lib/host/tools.js', 'tavern-plugin/lib/user-tools-bridge.js', 'tavern-plugin/lib/agent-compaction.js', 'tavern-plugin/lib/host/tools.js', 'tavern-plugin/lib/agent-compaction.js'])
   for (const file of ownRows) assert.ok(files.has(file), `预设行指向的文件不在发布包内：${file}`)
   parse(read('tavern-plugin/lib/client.js'), { ecmaVersion: 'latest', sourceType: 'script' })
 })

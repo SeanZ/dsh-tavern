@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -9,9 +9,10 @@ export const IMAGE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91J
 export const imageJson = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
 
 /** Real plugin routes and on-disk state, only the external services are mocked. */
-export async function imagePluginFixture(t, { config = {}, definitions, files = {}, llm, tavern } = {}) {
+export async function imagePluginFixture(t, { config = {}, definitions, files = {}, llm, tavern, tools, credentials, webOrigin = 'http://127.0.0.1:31867' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tavern-image-feature-'))
-  const pluginRoot = join(root, 'plugin')
+  const pluginRoot = join(root, 'data', 'plugins', 'dsh-tavern-image')
+  await mkdir(join(root, 'data', 'plugins'), { recursive: true })
   await cp(IMAGE_PLUGIN_SOURCE, pluginRoot, { recursive: true })
   if (definitions) await writeFile(join(pluginRoot, 'definitions.json'), JSON.stringify(definitions))
   for (const [name, value] of Object.entries(files)) await writeFile(join(pluginRoot, name), JSON.stringify(value))
@@ -33,10 +34,10 @@ export async function imagePluginFixture(t, { config = {}, definitions, files = 
   async function start(overrides = {}) {
     const routes = new Map(), disposers = []
     const ctx = {
-      llm, tavern,
+      llm, tavern, tools, credentials,
       attachments: { saveImage: async () => ({ attachmentId: 'test-attachment' }) },
       logger: Object.fromEntries(['info', 'warn', 'error'].map(key => [key, (...args) => logs.push(args.join(' '))])),
-      webServer: { register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path) } },
+      webServer: { getOrigin: () => typeof webOrigin === 'function' ? webOrigin() : webOrigin, register({ path, handler }) { routes.set(path, handler); return () => routes.delete(path) } },
       inject(names, setup) { if (names.every(name => this[name])) setup(this) },
       effect(setup) { const dispose = setup(); if (typeof dispose === 'function') disposers.push(dispose); return dispose },
       on(event, callback) { if (event === 'dispose') disposers.push(callback) },
@@ -44,10 +45,16 @@ export async function imagePluginFixture(t, { config = {}, definitions, files = 
     const { apply } = await import(pathToFileURL(join(pluginRoot, 'lib/index.js')).href + '?instance=' + runtimes.length)
     apply(ctx, { ...defaults, ...overrides })
     const runtime = {
+      routes,
       close() { for (const dispose of disposers.splice(0).reverse()) dispose() },
       async request(route, body, method = body === undefined ? 'GET' : 'POST', headers = {}) {
-        const url = '/plugins/dsh-tavern-image/' + route
-        const handler = routes.get(url.split('?')[0])
+        if (route === 'definitions' && body?.definitions && !Object.hasOwn(body.definitions, 'revision')) {
+          const state = await this.request('state')
+          body = { ...body, definitions: { ...body.definitions, revision: state.body.definitions.revision } }
+        }
+        const url = route.startsWith('/') ? route : '/plugins/dsh-tavern-image/' + route
+        if (url.startsWith('/dsh-tavern-gen/')) { for (let i = 0; i < 100 && !routes.has('/dsh-tavern-gen/api'); i++) await new Promise(resolve => setTimeout(resolve, 5)) }
+        const handler = routes.get(url.split('?')[0]) || [...routes].find(([path]) => url.startsWith(path + '/'))?.[1]
         if (!handler) throw new Error('unregistered route ' + route)
         return new Promise((done, reject) => {
           const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])

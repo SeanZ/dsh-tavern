@@ -1,5 +1,5 @@
 // Settings owns its initial snapshot; each editor saves only its own resource.
-function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernDefaultModelSetting, TavernModelSlotGroups, TavernConversationWritingSkills, DisplayPreferencesSettings, SystemNavigationSettings, CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, HeaderItemsSettings, TavernUserPluginsSettings, DebugSetting, SpineRuntimeEntry, ForkModManagerEntry, StageGenerationSettings, TavernSettingRow, InlineField, Switch, HelpTip }) {
+function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernDefaultModelSetting, TavernModelSlotGroups, TavernConversationWritingSkills, DisplayPreferencesSettings, SystemNavigationSettings, CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, HeaderItemsSettings, TavernUserPluginsSettings, DebugSetting, SpineRuntimeEntry, ForkModManagerEntry, StageGenerationSettings, TavernSettingRow, InlineField, Switch, HelpTip, VoiceCataloguePicker, voiceKey, voiceFromKey, useReadingBinding }) {
     // explanations live in a 「?」 beside the name (ui-design R3), never as grey lines.
     const help = (label, text) => HelpTip && text ? React.createElement(HelpTip, { label: label + "说明" }, text) : null;
     function GlobalPlayDefaults({ settings }) {
@@ -59,7 +59,7 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
         React.useEffect(function () {
             let active = true;
             rpc("getTavernSettings").then(function (result) {
-                if (active) setState({ loading: false, busy: false, defaultForegroundModel: result.settings?.defaultForegroundModel || null, defaultBackgroundModel: result.settings?.defaultBackgroundModel || null, defaultWorkbenchModel: result.settings?.defaultWorkbenchModel || null, notice: "", settings: result.settings, modModelSlots: result.modModelSlots || [], scoringCatalog: result.scoringCatalog || [], modelCatalog: Array.isArray(result.modelCatalog) ? result.modelCatalog : [], error: "" });
+                if (active) setState({ loading: false, busy: false, defaultForegroundModel: result.settings?.defaultForegroundModel || null, defaultBackgroundModel: result.settings?.defaultBackgroundModel || null, defaultWorkbenchModel: result.settings?.defaultWorkbenchModel || null, notice: "", bodyGenerationProviders: result.bodyGenerationProviders || [], settings: result.settings, modModelSlots: result.modModelSlots || [], scoringCatalog: result.scoringCatalog || [], modelCatalog: Array.isArray(result.modelCatalog) ? result.modelCatalog : [], error: "" });
             }, function (error) {
                 if (active) setState(function (current) { return Object.assign({}, current, { loading: false, busy: false, error: String(error && error.message || error) }); });
             });
@@ -67,7 +67,7 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
         }, []);
         React.useEffect(() => {
             let active=true;
-            const refresh=()=>rpc('getTavernSettings').then(result=>{if(active)setState(current=>({...current,modModelSlots:result.modModelSlots || [],settings:result.settings}));},error=>{if(active)setState(current=>({...current,error:String(error.message || error)}));});
+            const refresh=()=>rpc('getTavernSettings').then(result=>{if(active)setState(current=>({...current,modModelSlots:result.modModelSlots || [],settings:result.settings,bodyGenerationProviders:result.bodyGenerationProviders || []}));},error=>{if(active)setState(current=>({...current,error:String(error.message || error)}));});
             window.addEventListener('dsh-tavern-mods-changed',refresh);
             return ()=>{active=false;window.removeEventListener('dsh-tavern-mods-changed',refresh);};
         },[]);
@@ -77,7 +77,7 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
             try {
                 const result = await rpc("updateTavernSettings", { patch: { [name]: selection } });
                 notifySettingsChanged();
-                setState(current => ({ ...current, [name]: result.settings[name], busy: false, notice: "已保存" }));
+                setState(current => ({ ...current, [name]: result.settings[name], settings: result.settings, busy: false, notice: "已保存" }));
             } catch (err) { setState(current => ({ ...current, busy: false, error: String(err.message || err) })); }
         }
         async function saveSlot(modModelSelection) {
@@ -113,7 +113,19 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                 state.settings ? h(GlobalPlayDefaults, { settings: state.settings }) : null,
                 h(TavernConversationWritingSkills, { globalDefaults: true })),
             group("剧情", "所有游戏都按这些设置，下一轮生效。",
-                card(sw("candidateAutoGenerate", "自动生成候选项", "正文写完后自动生成候选项；关闭后仍可手动生成。只对之后的新回复生效。", false))),
+                card(
+                    h(TavernSettingRow, { title: "正文生成插件", help: "先选择插件，再启用插件生成。插件需已加载并完成自身配置。" },
+                        h(InlineField, { kind: "menu", label: "正文生成插件", hideLabel: true, disabled: state.loading || state.busy,
+                            value: state.settings?.storyGenerationProvider || "", options: [{ value: "", label: "未选择" },
+                                ...(state.settings?.storyGenerationProvider && !(state.bodyGenerationProviders || []).some(item => item.id === state.settings.storyGenerationProvider)
+                                    ? [{ value: state.settings.storyGenerationProvider, label: "已选插件不可用" }] : []),
+                                ...(state.bodyGenerationProviders || []).map(item => ({ value: item.id, label: item.title + "（" + item.owner + "）" }))],
+                            onCommit: value => saveDefault("storyGenerationProvider", value) })),
+                    h(TavernSettingRow, { title: "正文生成方式", help: "直接生成由插件组织上下文并请求正文；检索模式先由前台收集资料。正文完成后一次性显示。本局设置可覆盖此选择。" },
+                        h(InlineField, { kind: "menu", label: "正文生成方式", hideLabel: true, disabled: state.loading || state.busy,
+                            value: state.settings?.storyGenerationMode || "host", options: [{ value: "host", label: "宿主生成" }, { value: "plugin-direct", label: "插件直接生成" }, { value: "plugin-tool-call", label: "前台检索后由插件生成" }],
+                            onCommit: value => saveDefault("storyGenerationMode", value) })),
+                    sw("candidateAutoGenerate", "自动生成候选项", "正文写完后自动生成候选项；关闭后仍可手动生成。只对之后的新回复生效。", false))),
             // one card per group; each entry (incl. the UI plugin's 界面大小 slot) is a row of it.
             group("显示与交互", "",
                 card(sw("autoOpenStatusPanel", "进入游戏时打开酒馆状态", "进入或切换到一局游戏时，右侧面板自动展开并显示本局设置和酒馆状态。关闭后右侧面板保持你上次的样子。", true),
@@ -122,8 +134,10 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                     DebugSetting ? h(DebugSetting) : null,
                     h(CandidatePreferencesSettings), h(HeaderItemsSettings))),
             group("高级", "",
-                card(sw("storyInputToolCall", "输入走工具调用", "把发给模型的历史（此前的玩家消息和正文）以 submit_story 工具参数的形式回放，而不是普通对话文字；可降低续写被拒答。只影响请求，本轮输入、存档和界面保持不变。需要模型支持工具调用。", false),
-                    sw("storyOutputToolCall", "输出走工具调用", "让模型通过 submit_story 提交本轮正文，可缓解 Gemini 等模型在正文中途截断或拒答。需要模型支持工具调用；正文生成完成后一次性显示。", false),
+                card(sw("retryOnFailure", "请求失败自动重试", "模型请求因网络中断、服务端错误或限流失败时，自动再发一次（一轮最多两次请求）。关闭后失败即停在这一步，等你手动重发；DSH 自身的重试也不会介入。下一轮生效。", true),
+                    sw("storyInputToolCall", "输入走工具调用", "把发给模型的历史（此前的玩家消息和正文）以 submit_story 工具参数的形式回放，而不是普通对话文字；可降低续写被拒答。只影响请求，本轮输入、存档和界面保持不变。需要模型支持工具调用。", false),
+                    sw("storyOutputToolCall", "输出走工具调用", "仅用于宿主生成方式。让模型通过 submit_story 提交本轮正文，可缓解 Gemini 等模型在正文中途截断或拒答。需要模型支持工具调用；正文生成完成后一次性显示。", false),
+                    sw("longPressSendRegenerate", "长按 2 秒发送键重新生成", "按住输入框右侧的发送键 2 秒，直接重新生成本轮正文，不打开「重新生成正文」的意见面板；触发前松开或移开即取消。默认关闭。", false),
                     h(PromptTemplateSettingsEntry),
                     h(ContextCompactionSettings)))
         );
@@ -135,13 +149,50 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
             h("header", {className:"dsh-tavern-gs-head"}, h("h2", null, title)),
             h("div", {className:"dsh-tavern-gs-card"}, children));
     }
+    function ReadAloudSettings() {
+        const h = React.createElement, binding = useReadingBinding();
+        const [reading, setReading] = React.useState(null), [notice, setNotice] = React.useState(''), [busy, setBusy] = React.useState(false);
+        React.useEffect(() => {
+            let active = true;
+            const refresh = () => binding.tts.call('reading').then(value => { if (active) setReading(value.readAloud); }, () => { if (active) setNotice('无法读取朗读设置'); });
+            if (!binding.tts?.available()) { setReading(null); return; }
+            void refresh();
+            const off = binding.tts.subscribe(event => { if (event.type === 'readingChanged') void refresh(); });
+            return () => { active = false; off(); };
+        }, [binding]);
+        async function save(patch) {
+            setBusy(true); setNotice('');
+            try { const value = await binding.tts.call('setReading', {readAloud:patch}); setReading(value.readAloud); }
+            catch (_) { setNotice('保存失败，请重试'); }
+            finally { setBusy(false); }
+        }
+        return h(SettingsGroup, {title:'朗读'},
+            !binding.tts?.available() ? h('p', {role:'status'}, '配音服务未启用') : reading ? h(React.Fragment, null,
+                h(TavernSettingRow, {title:'朗读声音'}, h(VoiceCataloguePicker, {binding, value:voiceKey(reading.voice), label:'朗读声音', leading:[{value:'',label:'浏览器 · 系统默认'}], onPick:key => save({voice:voiceFromKey(key)})})),
+                h(TavernSettingRow, {title:'自动朗读',help:'每条新回复用朗读声音读一次；本卡舞台配音开启时让位于角色配音。'}, h(Switch, {label:'自动朗读',checked:reading.auto,disabled:busy,onChange:auto => save({auto})}))) : h('p', {role:'status'}, '正在读取…'),
+            notice ? h('p', {role:'status'}, notice) : null);
+    }
     function TavernPluginsSettingsSection() {
         const h = React.createElement;
         return h("div", {className:"dsh-tavern-settings-section dsh-tavern-global-settings"},
             h(SettingsGroup, {title:"酒馆插件"},
-                h("p", null, "给酒馆加功能：粘贴插件作者的 GitHub 地址即可安装。不支持 SillyTavern 插件。"),
-                h(TavernUserPluginsSettings)));
+                h("p", null, "插件获取：前往 ",
+                    h("a", { href: "https://discord.gg/hYAEjKnpra", target: "_blank", rel: "noopener noreferrer" }, "Discord 交流群"),
+                    "的插件分享，查找社区作者发布的插件及使用说明。"),
+                h("p", null, "给酒馆加功能：粘贴插件作者的 GitHub 地址，或上传 ZIP 安装包。不支持 SillyTavern 插件。"),
+                h(TavernUserPluginsSettings)), h(ReadAloudSettings));
     }
-    const { TavernStageSettingsSection } = createStageSettingsModule({React, rpc, notifySettingsChanged, TavernModelSlotGroups, SettingsGroup, StageGenerationSettings, SpineRuntimeEntry, ForkModManagerEntry});
-    return { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection };
+    // 设置 › 舞台 is the stage package's page (global-settings.js in dsh-tavern-stage, stageViews.GlobalSettings): opening it holds the
+    // stage client (stage-client-loader.cjs hold) so the page loads for any card; the core only draws the wait. The names the
+    // page needs from the core travel as the stage view options (gal-stage.js bindStageViews, globalSettings).
+    const stageGlobalSettingsOptions = {rpc, notifySettingsChanged, TavernModelSlotGroups, SettingsGroup, StageGenerationSettings, SpineRuntimeEntry, ForkModManagerEntry};
+    function TavernStageSettingsSection() {
+        const h = React.createElement;
+        React.useEffect(() => galStageHold(), []);
+        const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
+        const Page = enabled && stageViews ? stageViews.GlobalSettings : null;
+        return Page ? h(Page) : h("div", {className:"dsh-tavern-settings-section dsh-tavern-global-settings"},
+            h(SettingsGroup, {title:"舞台"}, h("p", {className:"dsh-tavern-settings-desc", role:"status"}, "正在加载舞台…")));
+    }
+    return { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, stageGlobalSettingsOptions };
 }

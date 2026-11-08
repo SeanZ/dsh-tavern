@@ -6,7 +6,7 @@ import {createRoot} from 'react-dom/client'
 import {JSDOM} from 'jsdom'
 const require=createRequire(import.meta.url)
 const {createStageSourceWidgets}=require('../tavern-plugin/packages/dsh-tavern-stage/src/client/source-widgets.cjs')
-function fixture(options={}){
+function fixture({prepare,...options}={}){
  const dom=new JSDOM('<!doctype html><main class="fork-gal-stage"></main>',{url:'https://example.test'}),{window}=dom,document=window.document
  const previous={window:globalThis.window,document:globalThis.document,act:globalThis.IS_REACT_ACT_ENVIRONMENT}
  globalThis.window=window;globalThis.document=document;globalThis.IS_REACT_ACT_ENVIRONMENT=true
@@ -16,6 +16,7 @@ function fixture(options={}){
  window.ResizeObserver=class{constructor(){observers++}observe(){}disconnect(){observers--}}
  const foreground={setInterval:fn=>{jobs.set(++serial,fn);return serial},clearInterval:id=>jobs.delete(id)}
  const context={state:null,refs:new Map()}
+ prepare?.(window)
  const plugin=createStageSourceWidgets({React,window,document,storage:window.localStorage,foreground,
   views:{phoneLayout:{prefs,min:()=>50},admission:{shown:{get:()=>true,settled:()=>Promise.resolve()}},scene:{rects:()=>[]}},
   sessions:()=>({owner:{getWidgetContext(){widgetReads++;return context}}}),sandbox:{theme:()=>null,stopSfx(){},scroll(){}},
@@ -78,5 +79,82 @@ test('a late widget avatar lease is released without warming the shared cache af
  act(()=>f.plugin.dispose())
  await act(async()=>{finish({handle:{url:'blob:face'},release:()=>released++});await Promise.resolve()})
  assert.equal(released,1);assert.equal(prepared,0)
+ }finally{f.close()}
+})
+test('a phone contact keeps one face across rounds, outfit changes and moods',async()=>{
+ const phoneProtocol=require('../tavern-plugin/mods/phone/stage-phone.cjs'),drawn=[]
+ // The card face is the contact's only face; the stage portrait follows the current outfit and mood.
+ const characters=[{alias:'alice',name:'Alice',avatarMedia:{default:{identity:'alice-default-calm',revision:1},moods:{happy:{identity:'alice-happy'},sad:{identity:'alice-sad'}}}}]
+ const f=fixture({phoneProtocol,
+  characters:{character:(config,name)=>config.characters.find(row=>row.alias===(name?.alias ?? name))},
+  figureResolution:{resolveFigureName:(rows,id)=>{const row=rows.find(value=>value.actorKey===id);return row ? {status:'resolved',row,actorKey:id} : {status:'unresolved'}}},
+  avatarCache:{subscribe:()=>()=>{},get:face=>'card:'+face.identity,ready:face=>'card:'+face.identity,prepare(){}},
+  sessions:()=>({owner:{getWidgetContext:()=>null}}),
+  // Thumbnails are drawn from the face's image: a canvas here keeps the url it drew.
+  prepare:window=>{
+   window.Image=class{set src(value){this.url=value;this.naturalWidth=this.naturalHeight=64;queueMicrotask(()=>this.onload())}get src(){return this.url}}
+   window.HTMLCanvasElement.prototype.getContext=function(){return {drawImage:image=>{this.drawn=image.src;drawn.push(image.src)}}}
+   window.HTMLCanvasElement.prototype.toDataURL=function(){return 'thumb:'+this.drawn}
+  }})
+ const phone={ref:{modId:'dsh.phone'},modSource:true,sourceOnly:true,state:{},definition:{contentIdentity:'phone',document:{presentation:{open:{width:280,anchor:'corner-right'}}}}}
+ const round=(turn,mood,outfitKey)=>({turn,page:0,pages:[{kind:'line',para:1,alias:'alice',name:'Alice',mood,text:'hi '+turn}],
+  actors:{alice:{outfitKey,figure:{packId:'p',figureId:'f'}}},
+  record:{phase:'done',through:1,token:{bindingKey:'b',sourceKey:'k'+turn,generation:1},entries:[{at:1,ops:[{op:'mod.command',modId:'dsh.phone',commandId:'mark',params:{contact:'alice',side:'in'}}]}]}})
+ let value
+ function View(props){value=f.plugin.useStage({sessionId:'s',rootRef:{current:f.mount},config:{characters},widgets:[phone],enabled:true,mode:'live',
+  readHistory:()=>Promise.resolve(null),phoneThreadsRpc:()=>Promise.resolve(null),
+  avatarOf:()=>({src:'stage:'+props.mood+':'+props.actors.alice.outfitKey}),...props});return null}
+ const faces=()=>{const source=value.items.find(item=>item.ref.modId==='dsh.phone').source
+  const person=source.threads.flatMap(thread=>thread.participants).find(row=>row.id==='alice')
+  return {contact:source.avatars[person.avatar],messages:source.messages.map(row=>row.avatar ?? null)}}
+ try {
+ const seen=[]
+ for (const props of [round(1,'happy','i01'),round(2,'sad','i05'),round(3,'angry','i02')]) {
+  await act(async()=>{f.root.render(React.createElement(View,props));await new Promise(resolve=>setTimeout(resolve,0))})
+  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,0))})
+  seen.push(faces())
+ }
+ // The header, every bubble, the banner and the call read the contact face; no message carries a face of its own.
+ assert.deepEqual(seen,Array(3).fill({contact:'thumb:card:alice-default-calm',messages:[null]}))
+ assert.deepEqual([...new Set(drawn)],['card:alice-default-calm'])
+ }finally{f.close()}
+})
+test('a real phone that covers the stage stops the 100 ms re-measure until it is put away',async()=>{
+ const phoneProtocol=require('../tavern-plugin/mods/phone/stage-phone.cjs')
+ // A real phone: a narrow viewport with a coarse pointer, so the open phone is the device itself.
+ const f=fixture({phoneProtocol,sessions:()=>({owner:{getWidgetContext:()=>null}}),prepare:window=>{
+  window.matchMedia=query=>({matches:query.includes('coarse'),addEventListener(){},removeEventListener(){}})
+  Object.assign(window,{innerWidth:390,innerHeight:844});Object.defineProperty(window.document,'hidden',{value:false})
+  Object.assign(window,{requestAnimationFrame:()=>0,cancelAnimationFrame(){}})
+ }})
+ f.mount.getBoundingClientRect=()=>({left:0,top:0,width:390,height:844})
+ const phone={ref:{modId:'dsh.phone'},modSource:true,sourceOnly:true,state:{},definition:{contentIdentity:'phone',document:{presentation:{open:{width:280,anchor:'corner-right'}}}}}
+ let value
+ function View(){value=f.plugin.useStage({sessionId:'s',rootRef:{current:f.mount},config:{characters:[]},widgets:[phone],turn:1,page:0,
+  pages:[{kind:'line',para:1,name:'Alice',text:'hi'}],enabled:true,mode:'live',readHistory:()=>Promise.resolve(null),phoneThreadsRpc:()=>Promise.resolve(null)});return null}
+ const settle=()=>act(async()=>{await new Promise(resolve=>setTimeout(resolve,0))})
+ try {
+ act(()=>f.root.render(React.createElement(View)));await settle()
+ assert.equal(f.jobs.size,1,'the stage is in view')
+ assert.equal(value.covered,false)
+ const item=()=>value.items.find(row=>row.ref.modId==='dsh.phone')
+ act(()=>value.action(item().key,'open'));act(()=>value.onReady(item().identity,true));await settle()
+ assert.equal(item().presentation.device?.kind,'phone')
+ assert.equal(f.jobs.size,0,'nothing re-measures under the opaque phone')
+ assert.equal(value.covered,true,'the stage reports the cover to other plugins')
+ act(()=>value.action(item().key,'collapse'));await settle()
+ assert.equal(f.jobs.size,1,'putting it away measures again')
+ assert.equal(value.covered,false)
+ }finally{f.close()}
+})
+test('the stage exports its widget placement and the handheld phone decision',()=>{
+ const f=fixture({prepare:window=>{window.matchMedia=query=>({matches:query.includes('coarse'),addEventListener(){},removeEventListener(){}})}})
+ try {
+ assert.equal(f.plugin.phoneHandheld({width:390,height:844}),true,'a narrow touch screen holds the phone as the device')
+ assert.equal(f.plugin.phoneHandheld({width:1280,height:800}),false,'a wide screen shows the phone on the stage')
+ assert.deepEqual(f.plugin.place({width:800,height:600,size:{width:200,height:100},anchor:'top-center'}),{x:300,y:16,width:200,height:100})
+ const clear=f.plugin.place({width:800,height:600,size:{width:200,height:100},blocked:[{x:250,y:0,width:300,height:120}],anchor:'top-center'})
+ assert.ok(clear.y>=132 || clear.x+clear.width<=238 || clear.x>=562,'it keeps clear of a blocked control')
+ assert.equal(f.plugin.place({width:100,height:100,size:{width:200,height:100}}),null,'no safe space places nothing')
  }finally{f.close()}
 })

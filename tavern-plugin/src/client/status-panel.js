@@ -65,10 +65,10 @@ function StatusPanelView(p) {
                 h("span", null, view.settleError || "后台结算失败"),
                 h("button", { type: "button", disabled: p.settlementRetryBusy, onClick: p.retrySettlement }, p.settlementRetryBusy ? "重试中…" : "重试"), debugButton) : null,
             view.worldBookError ? h("div", { className: "fork-status-alert", "data-kind": "error" }, h("span", null, "世界书召回失败：" + view.worldBookError), debugButton) : null,
-            view.foregroundError ? h("div", { className: "fork-status-alert", "data-kind": "error" }, h("span", null, view.foregroundError.message || "正文生成失败，请重新生成本轮。"), debugButton) : null,
+            view.foregroundError ? h("div", { className: "fork-status-alert", "data-kind": "error" }, h("span", null, view.foregroundError.message || "正文生成失败，可撤回这条输入后重发。"), debugButton) : null,
             (view.presentationWarnings || []).map(function (warning, index) { return h("div", { key: "w" + index, className: "fork-status-alert", "data-kind": "warn" }, h("span", null, warning)); }),
 
-            h(TavernCardAppDock, { sessionId: p.props.sessionId }),
+            h(TavernCardAppDock, { key: p.props.sessionId, sessionId: p.props.sessionId, active: p.props.active !== false }),
             h("div", { className: "fork-status-card" },
                 h(TavernPersistentStatusRuntime, { sessionId: p.props.sessionId, view: view, executeSlash: p.props.executeSlash,
                     panels: view.statusBarPlacement === "body" ? "pinned" : "all", section: true })),

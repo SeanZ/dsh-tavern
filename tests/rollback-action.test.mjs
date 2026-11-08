@@ -5,6 +5,8 @@ import vm from './fixtures/client-vm.mjs'
 
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const component = source.slice(source.indexOf('function CandidateAction('), source.indexOf('function CandidateDockActions('))
+const roundOrdinal = source.slice(source.indexOf('function tavernRoundOrdinal('), source.indexOf('function tavernStoryTurnForDshTurn('))
+const withdrawHelper = source.slice(source.indexOf('async function withdrawFailedTavernTurn('), source.indexOf('// Any problem in a game'))
 // The replay submit path sits above CandidateAction; slice it with its only helper.
 
 function harness() {
@@ -38,12 +40,13 @@ function harness() {
     notifyTavernDataChanged: () => calls.push('notify'),
     tavernErrorHub: { report: (name, error) => calls.push(name + ': ' + error.message) },
     submitFailedTurnReplay: async sessionId => { calls.push('replay'); return { view: {} } },
-    TavernCompactionAction: function TavernCompactionAction() {},
-    TavernDebugButton: function TavernDebugButton() {}
+    TavernDebugButton: function TavernDebugButton() {},
+    TavernCompactionAction: function TavernCompactionAction() {}
   }
-  const actions = vm.runInNewContext(component + '; ({ CandidateAction, TavernRollbackAction, TavernUndoRollbackAction, TavernRollbackToAction, TavernMoreActions })', context)
+  const actions = vm.runInNewContext(roundOrdinal + component + '; ({ CandidateAction, TavernRollbackAction, TavernUndoRollbackAction, TavernMoreActions, tavernRoundOrdinal })', context)
   return {
     calls,
+    ordinal: actions.tavernRoundOrdinal,
     view(value) { Object.assign(extraView, value) },
     undoTurn(value) { undoTurn = value },
     rollbackTo() { cursor = 0; return actions.TavernRollbackToAction({ sessionId: 'session', messageId: 'reply' }) },
@@ -76,14 +79,42 @@ function harness() {
   }
 }
 
-test('开场白不显示正文重生成入口，正式玩家轮次完成后只显示一个入口', () => {
+test('旧版视图缺少 canRegenerate 时仍兼容 canRollback 回退判断', () => {
   const h = harness()
   h.running(false); h.playerRound(false)
-  assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项'])
+  assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项', '重新生成正文'])
+  assert.equal(h.buttons()[1].props.disabled, true)
   h.playerRound(true)
   assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项', '重新生成正文'])
+  assert.equal(h.buttons()[1].props.disabled, false)
   h.playerRound(false)
-  assert.deepEqual(h.buttons().map(button => button.children[0]), ['生成候选项'])
+  assert.equal(h.buttons()[1].props.disabled, true)
+})
+
+test('首轮正文删除后，待回复输入提供的 canRegenerate 直接启用按钮', () => {
+  const h = harness()
+  h.running(false); h.playerRound(false)
+  h.view({ canRegenerate: true, failedTailTurn: 2, failedTailPersisted: true })
+  const regenerate = h.buttons()[1]
+  assert.equal(regenerate.children[0], '重新生成正文')
+  assert.equal(regenerate.props.disabled, false)
+})
+
+test('回退标签和轮距按正文楼层顺序计算，稳定 turn 仍用于操作', () => {
+  const h = harness()
+  const displayRoundOrder = [1, 2, 3, 12, 48, 72, 75, 84]
+  h.view({ rollbackTargetTurn: 84, displayRoundOrder })
+  assert.equal(h.button().children[0], '回退第 8 轮')
+  assert.equal(h.ordinal({ displayRoundOrder }, 84) - h.ordinal({ displayRoundOrder }, 75), 1, '倒数第二轮与最后一轮只隔一楼')
+  assert.equal(h.ordinal({ displayRoundOrder: [84, 1, 75] }, 75), 3, '导入的非单调楼层也按实际顺序取序号')
+  h.undoTurn(75)
+  const undo = h.undo()
+  assert.equal(undo.children[0], '撤销回退（恢复第 7 轮）')
+  assert.equal(undo.props.title.includes('恢复第 7 轮正文'), true)
+  h.view({ displayRoundOrder: [1, 2, 3] })
+  h.undoTurn(11)
+  assert.equal(h.undo().children[0], '撤销回退（恢复第 4 轮）', '撤销目标已被删除时按恢复后的楼层位置显示')
+  assert.deepEqual(displayRoundOrder, [1, 2, 3, 12, 48, 72, 75, 84], '显示计算不改回合号')
 })
 
 test('实际回退组件在前台、后台和重生成期间禁用，完成后允许点击', async () => {
@@ -103,38 +134,17 @@ test('实际回退组件在前台、后台和重生成期间禁用，完成后�
   assert.equal(h.button().props.disabled, false)
 })
 
-// 故事视图模式（C4 开关）下，重新生成、失败轮重放与撤回、编辑正文、回退本轮由楼层操作和输入框状态条承担。
-// 上游新增的「交给调试 Agent」是组件元素，按组件名标记；它不与故事视图入口重复，两种模式都保留。
-const labels = buttons => buttons.map(button => typeof button.type === 'function' ? button.type.name : button.children[0])
-function menuItems(more) {
-  const menu = more.children[1]
-  return menu.children.filter(Boolean).map(item => typeof item.type === 'function' ? item.type.name : item.children[0])
-}
-
-test('故事视图模式开启时 dock 只留生成候选项，关闭时照旧显示重新生成与撤回', () => {
-  const h = harness()
-  h.running(false)
-  h.view({ canReplayFailedTurn: false })
-  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成正文'])
-  h.storyView(true)
-  assert.deepEqual(labels(h.buttons()), ['生成候选项'])
-  h.view({ canReplayFailedTurn: true })
-  assert.deepEqual(labels(h.buttons()), ['生成候选项'], '失败轮重放与撤回归输入框状态条，调试入口归更多菜单')
-  h.storyView(false)
-  assert.deepEqual(labels(h.buttons()), ['生成候选项', '重新生成本轮', '撤回这条输入', 'TavernDebugButton'])
-})
-
-test('故事视图模式开启时「更多」不含编辑正文、回退本轮，其余照旧', () => {
-  const h = harness()
-  const all = ['TavernStopBackgroundAction', 'TavernEditBodyAction', 'TavernRollbackAction', 'TavernUndoRollbackAction', 'TavernDebugButton', 'TavernCompactionAction']
-  assert.deepEqual(menuItems(h.more()), all)
-  h.storyView(true)
-  assert.deepEqual(menuItems(h.more()), ['TavernStopBackgroundAction', 'TavernUndoRollbackAction', 'TavernDebugButton', 'TavernCompactionAction'])
-})
-
-test('故事视图模式开启时消息上不显示上游的「回退到这一轮」，关闭时照旧', () => {
-  const h = harness()
-  assert.equal(h.rollbackTo().type, 'tooltip')
-  h.storyView(true)
-  assert.equal(h.rollbackTo(), null)
+test('撤回持久输入后立即刷新故事列表，原输入只回填到输入框', async () => {
+  const calls = []
+  const context = {
+    rpc: async () => ({ view: { clearedInput: '6' } }),
+    historyProjection: { rolledBack: () => calls.push('native-hidden') },
+    window: { dispatchEvent: event => calls.push(['story-refresh', event.detail.sessionId]) },
+    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail } },
+    setCandidatePanel() {}, setRegenPanel() {}, setCandidateGuidePanel() {},
+    askTavernConfirm: async () => true
+  }
+  const withdraw = vm.runInNewContext(withdrawHelper + '; withdrawFailedTavernTurn', context)
+  await withdraw('session', { setDraft: value => calls.push(['draft', value]) }, '')
+  assert.deepEqual(calls, ['native-hidden', ['story-refresh', 'session'], ['draft', '6']])
 })

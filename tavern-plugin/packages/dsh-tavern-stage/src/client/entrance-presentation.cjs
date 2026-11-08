@@ -36,10 +36,13 @@ function useStageEntrance(store, entrance, loadGate) {
     const active = !disposed && !!run && !status.failed && !status.done;
     // Loaded: the gate's reveal has begun; the entrance plays on to its cover.
     const ready = loadGate.visible || loadGate.phase === 'revealing';
-    // Never a permanent black screen: no first frame, no cover after the load, or no end after the cover drops the entrance.
+    // Never a permanent black screen: no first frame, no cover after the load, no end after the cover, or a load still not
+    // ready ENTRANCE_LOAD_WAIT_MS past the entrance's own length drops the entrance; the plain veil then says 「仍在载入…」
+    // with the Esc menu reachable (a load that never settles must not hide behind the entrance's hold).
     useEffect(() => {
         if (!active) return undefined;
-        const left = !status.started ? 3000 + (run.video ? ENTRANCE_VIDEO_WAIT_MS : 0) : ready && !status.covered ? stageEntrance.stageEntranceDuration(run.doc) + 4000 : status.covered ? 8000 : 0;
+        const length = stageEntrance.stageEntranceDuration(run.doc);
+        const left = !status.started ? 3000 + (run.video ? ENTRANCE_VIDEO_WAIT_MS : 0) : status.covered ? 8000 : length + (ready ? 4000 : ENTRANCE_LOAD_WAIT_MS);
         if (!left) return undefined;
         const timer = setTimeout(() => patch(status.covered ? {done: true} : {failed: true}), left);
         return () => clearTimeout(timer);
@@ -54,14 +57,29 @@ function useStageEntrance(store, entrance, loadGate) {
     }, [run]);
     const hidden = active && !status.covered;
     const gate = hidden ? {...loadGate, phase: loadGate.phase === 'pending' ? 'pending' : 'loading', visible: false} : loadGate;
-    return {gate, active, stageAttr: active ? status.covered ? 'covered' : 'playing' : undefined,
-        overlay: active && !status.covered ? {loadPhase: loadGate.phase, bright: !!bright} : null,
+    // The veil keeps its entrance form (only the progress line, hidden once loaded) from the cover on and after the entrance:
+    // turning back into the plain veil would fade its hold colour and 「正在点亮舞台」 out over the cover. Only a stage still
+    // loading ENTRANCE_LOADING_GRACE_MS after an entrance that ended early (failed) gets the plain veil.
+    const loading = !['revealing', 'ready'].includes(loadGate.phase);
+    const [late, setLate] = React.useState(false);
+    React.useEffect(() => {
+        if (!run || active || !loading) return undefined;
+        const timer = setTimeout(() => {if(!disposed)setLate(true);}, ENTRANCE_LOADING_GRACE_MS);
+        return () => clearTimeout(timer);
+    }, [run, active, loading]);
+    const overlay = !run || late && !active ? null : {loadPhase: hidden ? loadGate.phase : 'ended', bright: hidden && !!bright};
+    // end(): the run is over without playing on (a card's showOn page stands in for the entrance on that visit).
+    return {gate, active, end: () => { if (active) patch({done: true}); }, stageAttr: active ? status.covered ? 'covered' : 'playing' : undefined, overlay,
         element: active ? React.createElement(StageEntrance, {key: 'entrance', run, ready, covered: status.covered, started: status.started, onEvent,
             onBright: () => {if(!disposed)setBright(Date.now());}}) : null};
 }
 
 // How long a video layer may preload before the timeline starts without it (it joins when it can play).
 const ENTRANCE_VIDEO_WAIT_MS = 2500;
+// How long past its own length an entrance holds for a load that is not ready (the plain veil's 「仍在载入…」 threshold).
+const ENTRANCE_LOAD_WAIT_MS = 10000;
+// An entrance that ended before the stage was ready leaves the bare stage this long before the plain loading veil shows.
+const ENTRANCE_LOADING_GRACE_MS = 300;
 // The skip (every entrance): black fades in over the frozen entrance, holds until the stage is
 // shown under it, then fades out to the stage. CSS opacity transitions, so the compositor keeps them smooth while the reveal
 // loads the main thread; each step follows the veil's own transition end, never a parallel timer (a loaded page started the
@@ -105,7 +123,9 @@ function StageEntrance({run, ready: loaded, covered, started, onEvent, onBright}
         try {
         if (run.video) {
             // No poster here: an entrance's own drawn layers are what stands in for a video it cannot play.
-            const own = player.current = video.player(videoHost.current, run.video, {audio: run.doc.layers.video.audio === true, poster: false, readyMs: ENTRANCE_VIDEO_WAIT_MS});
+            // An entrance that declares its sound is heard alone: the rest of the stage's sound waits until it ends or is skipped.
+            const audio = run.doc.layers.video.audio === true;
+            const own = player.current = video.player(videoHost.current, run.video, {audio, exclusive: audio, poster: false, readyMs: ENTRANCE_VIDEO_WAIT_MS});
             own.ready.then(begin);
             own.playable.then(() => { if (live && !disposed && player.current === own) { begin(); port.current?.input({video: true}); } });
         } else begin();

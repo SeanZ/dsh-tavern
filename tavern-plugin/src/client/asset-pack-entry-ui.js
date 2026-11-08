@@ -61,12 +61,11 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // 演出风格 is 启用 / 关闭 as well — its pack's lamp decides where it applies.
   // a standalone 舞台皮肤 entry has no 状态 at all — the library only shows which skins
   // are imported (all of them are offered as 默认舞台皮肤) and ⋯ › 删除 removes one. Skins inside a performance are untouched.
-  const LAMPLESS_KINDS=['skins','directions'],STATELESS_KINDS=['skins'];
-  // a 入场演出 plays every time its card's stage opens or never - 蓝灯 / 关闭, no 绿灯; it is never
-  // sent to the director, so it has no 触发词 or 导演说明.
-  const BLUE_ONLY_KINDS=['entrances','videos'],UNDIRECTED_KINDS=['entrances','videos'];
+  const LAMPLESS_KINDS=['skins','directions','entrances'],STATELESS_KINDS=['skins','entrances'];
+  // Entrances are explicit card choices, like skins; neither is selected through lamps.
+  const BLUE_ONLY_KINDS=['videos'],UNDIRECTED_KINDS=['entrances','videos'];
   const lampChoices=kind=>BLUE_ONLY_KINDS.includes(kind)?['constant','off']:undefined;
-  const BLUE_ONLY_HELP={entrances:'蓝灯：绑定这个素材包的卡每次进入舞台都播放；关闭：不播放。',videos:'蓝灯：引用它的入场演出、演出或皮肤可以播放它；关闭：不播放（引用方改用自己的画面）。'};
+  const BLUE_ONLY_HELP={videos:'蓝灯：引用它的入场演出、演出或皮肤可以播放它；关闭：不播放（引用方改用自己的画面）。'};
   const LAMPLESS_HELP={directions:'启用的演出风格每次都发给导演，不用触发词。素材包亮蓝灯（全局）时算玩家的，只亮绿灯（本卡）时算卡片作者的；两者是同类条目，可同时启用叠加，冲突由作者和玩家自行管理。导演指令的开关和每轮上限始终优先。关闭：不再发送。'};
   // the stored `category` reads as 「标签」 — it only filters the library.
   // 标签 holds several tags; each chip is one full path (/ is a level inside it).
@@ -92,6 +91,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     const ranked=bands.flatMap(band=>[...band].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],'zh')).map(([word])=>word));
     return [...new Set(ranked)];
   }
+  // 蓝灯 / 绿灯 need 3–6 words (the pack service's trigger lint); 关闭 may stay empty, so a new entry starts there.
+  const TRIGGER_HELP='名称本身也算触发词。蓝灯、绿灯要 3–6 个正文里会出现的词，每个 2–40 字；关闭时可以留空。';
+  // `fresh`: an entry the player just added (关闭, no words) — the field stands open with the caret in it and a hint after it.
+  const triggerFields=({value,suggest,onCommit,fresh})=>[
+    h(InlineField,{key:'triggers',kind:'chips',label:'触发词',hideEmpty:!fresh,autoEdit:fresh||undefined,help:entryHelp('触发词',TRIGGER_HELP),value,split:splitKeywords,validate:keywordProblem,suggest,onCommit}),
+    fresh&&h('p',{key:'triggers-hint',className:'ap-hint-line ap-trigger-hint',role:'status'},'填 3–6 个正文里会出现的词，再打开蓝灯/绿灯')];
   function keywordProblem(words){
     if(words.length>16)return '触发词最多 16 个';
     const bad=words.find(word=>chars(word)<2||chars(word)>40);
@@ -510,7 +515,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // `card` (the open card's context, or null) only adds the widget ⋯ copy action;
   // per-card widget settings are gone. `onOpenPack(packId, kind, itemId)` opens another pack at an item.
   const entryHelp=(label,text)=>text?h(Help,{text,label:label+' 说明'}):null;
-  function EntryDetail({binding,pack,packs=[],asset,commit,audio,gen,uploadBackground,uploadVariant,card=null,onOpenPack,onCategory,remove,busy,back=null}) {
+  function EntryDetail({binding,pack,packs=[],asset,commit,audio,gen,uploadBackground,uploadVariant,card=null,onOpenPack,onCategory,remove,busy,back=null,fresh=false}) {
     const packId=pack.manifest.id,kind=asset.kind,[error,setError]=React.useState(''),lampless=LAMPLESS_KINDS.includes(kind),stateless=STATELESS_KINDS.includes(kind);
     // ⋯ › 删除 for a standalone 舞台皮肤, after a confirmation (remove(kind, id) is one CAS write).
     const [confirm,setConfirm]=React.useState(null);
@@ -552,9 +557,6 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     // on a phone (ack) the name row carries the sub-page ‹ and leads the page.
     const title=h('div',{className:'ap-detail-title'+(back?' ap-subhead':'')},back&&h(SubpageBack,back),h(CommitInput,{className:'ap-title-input','aria-label':'名称',value:asset.name,validate:v=>!v.trim()?'名称不能为空':chars(v)>256?'名称最多 256 字':'',onCommit:v=>write(c=>({...c,name:v.trim()}))}),
         copyMenu||removeMenu||(!asset.variants&&VARIANT_MEDIA_KINDS.includes(kind)&&uploadVariant&&h(MediaReplaceMenu,{asset,busy,onError:setError,upload:(id,file)=>uploadVariant(kind,asset.id,id,file)}))||null);
-    // a 观众群 预设弹幕 / 接话 section without rules is a 「＋ 名称」 chip until opened.
-    const [rulesOpen,setRulesOpen]=React.useState(()=>new Set());
-    const audienceContent=kind==='audience'?(selected?content:asset.content):null;
     // on every size the name row leads the pane, above the preview / player,
     // and is the only place the name is shown (the player card dropped its own title).
     return h('div',{className:'ap-detail-pane','data-disabled':asset.enabled===false||undefined},title,h(ErrorBox,{error}),hero,
@@ -563,13 +565,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
       // the settings are one column of inline rows — 「label value」, the
       // value read as text and edited in place (InlineField); switches, the slider and the 详情 text sit in the same rows.
       h(InlineGrid,{label:asset.name+' 设置',columns:1,className:'ap-entry-fields'},
-        ...(kind==='audience'?AudienceFields({content:selected?content:asset.content,onCommit:next=>writeContent(c=>selected?next:{...c,content:next}),Help}):[]),
         // enabling is part of 触发策略 — 蓝灯 / 绿灯 / 关闭 (关闭 = enabled: false;
         // the lamp keeps its mode underneath), the separate 启用 switch is gone. Kinds the director never picks by lamp get
         // 启用 / 关闭 and no 触发词 (nothing reads them there).
         !stateless&&h(InlineRow,{label:lampless?'状态':'触发策略',help:entryHelp(lampless?'状态':'触发策略',lampless?LAMPLESS_HELP[kind]:BLUE_ONLY_HELP[kind]||LAMP_HELP+' 关闭：这一条不再用于舞台。')},
           h(LampMenu,{mode:entryLamp(asset,lampless),onOff:lampless,choices:lampChoices(kind),named:true,label:lampless?'状态':'触发策略',onChange:mode=>write(c=>setEntryLamp(c,mode))})),
-        !lampless&&!UNDIRECTED_KINDS.includes(kind)&&h(InlineField,{kind:'chips',label:'触发词',hideEmpty:true,help:entryHelp('触发词','名称本身也算触发词。最多 16 个，每个 2–40 字。'),value:asset.recall.keywords,split:splitKeywords,validate:keywordProblem,suggest:keywordSuggest,
+        !lampless&&!UNDIRECTED_KINDS.includes(kind)&&triggerFields({value:asset.recall.keywords,suggest:keywordSuggest,fresh:fresh&&asset.enabled===false,
           onCommit:keywords=>write(c=>applyEntryFields(c,{recall:{keywords},top:{}}))}),
         // 详情 is an inline multi-line field (no underline, no grip, grows with
         // its text, one paragraph like the stored note); no counter — only the over-limit message.
@@ -594,11 +595,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
         // an 物品's 库存标识 (shared by its variants) links it to the 背包 row with the same id.
         kind==='props'&&h(InlineField,{kind:'text',label:'库存标识',hideEmpty:true,help:entryHelp('库存标识',INVENTORY_ID_HELP),value:asset.inventoryId||'',maxLength:256,
           onCommit:v=>write(c=>{const next={...c},id=v.trim();if(id)next.inventoryId=id;else delete next.inventoryId;return next;})}),
-        ...(kind==='audience'?audienceRuleAdds({content:audienceContent,open:rulesOpen,onOpen:k=>setRulesOpen(s=>new Set(s).add(k))}):[]),
         variantAddChip({asset,selected,onSelect:id=>{audio.stop();setVariant(id);},write,busy})),
-      // an entry with real danmaku shows them read-only above its preset rules.
-      kind==='audience'&&audienceHasCorpus(asset)&&h(AudienceCorpus,{binding,pack,asset}),
-      kind==='audience'&&h(AudienceRuleSections,{content:audienceContent,open:rulesOpen,onClose:k=>setRulesOpen(s=>{const next=new Set(s);next.delete(k);return next;}),onCommit:next=>writeContent(c=>selected?next:{...c,content:next})}),
       kind==='backgrounds'&&h(BackgroundStageTheme,{asset:view,onCommit:writeContent}),
       kind==='widgets'&&h(WidgetSettingsForm,{declaration:document,defaults:content.settingsDefaults,binding,packs:packs.length?packs:[pack],
         onChange:(key,_type,value)=>writeContent(current=>{const settingsDefaults={...current.settingsDefaults};if(_type)settingsDefaults[key]=value;else delete settingsDefaults[key];return {...current,settingsDefaults};}),
@@ -612,12 +609,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     if(asset.variants)return asset.variants;
     const identity=new Set(['kind','id','name','enabled','recall','directorNote','remark','description','category','inventoryId','aliases','author','license','credits','extensions']);
     if(asset.kind==='cg')identity.delete('description');
-    const content=asset.kind==='audience'?asset.content:Object.fromEntries(Object.entries(asset).filter(([key])=>!identity.has(key)));
+    const content=Object.fromEntries(Object.entries(asset).filter(([key])=>!identity.has(key)));
     return {default:'base',entries:[{id:'base',name:'原图',content}]};
   }
   function entryWithVariants(asset,variants) {
     const next={...asset};
-    if(!asset.variants)for(const key of asset.kind==='audience'?['content']:Object.keys(variants.entries[0].content))delete next[key];
+    if(!asset.variants)for(const key of Object.keys(variants.entries[0].content))delete next[key];
     return {...next,variants};
   }
   // 「变体」 is one strip of chips — a small picture (picture kinds) and the

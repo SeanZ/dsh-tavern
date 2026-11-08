@@ -6,7 +6,7 @@
 
 实现边界：服务端 `lib/story/` 复用 Tavern 的存档与历史事务。浏览器端 `src/client/story/service.js` 和 `render.js` 是显式依赖工厂，`bindings.js` 集中接入上游能力。独立 new-ui 只消费 `tavernStory`，不读取存档、不深导入 Tavern 模块，也不复制重生成或分叉状态。调整上游接口时，先更新接线与契约回归；聊天历史读取规则不随界面拆分迁移。
 
-Tavern 3.2 的故事接口仍为 `apiVersion: 1`。共享高亮按文档批量读取后统一更新，静态楼层的样式保留在各自 Shadow DOM 内，页面隐藏或楼层离屏时只积累变更。此策略不改变楼层快照身份、脚本活窗口或历史分页。
+故事接口为 `apiVersion: 2`，须与支持 v2 的独立故事插件配对更新。原生 ChatFlow 带子槽所有权时保留宿主 Chat，不注册无法转交 `renderSlot` 的逻辑故事 flow 包装；此兼容回退不影响独立故事页的 v2 历史与操作。共享高亮按文档批量读取后统一更新，静态楼层的样式保留在各自 Shadow DOM 内，页面隐藏或楼层离屏时只积累变更。此策略不改变楼层快照身份、脚本活窗口或历史分页。
 
 
 本 fork（`trunkbase`）为独立的故事视图插件（`dsh-tavern-new-ui`）提供的契约，上游没有。服务端部分（楼层折叠 `lib/story/story-rounds.js`、中断墓碑、楼层快照 RPC）见 `docs/design/transcript-row-plan.md`、`last-round-replacement.md`、`html-in-dsh-messages.md` 末尾小节。
@@ -23,9 +23,11 @@ Tavern 3.2 的故事接口仍为 `apiVersion: 1`。共享高亮按文档批量�
 
 ### 浏览器服务 `tavernStory`：楼层与楼层操作（C5）
 
-Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`），版本字段 `apiVersion: 1`。楼层操作转调与输入框 dock 相同的请求和流程（`rollbackTurn`、`regenBody`、`replayTurn`、楼层快照 RPC），不另立规则。`sessionId` 即 `gameId`；楼层（floor）是 `subscribeRounds` 给出的对象，`story` 是楼层轮次。
+Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`），版本字段 `apiVersion: 2`。楼层操作转调与输入框 dock 相同的请求和流程（`rollbackStoryFloor`、`regenBody`、楼层快照 RPC），不另立规则。`sessionId` 即 `gameId`；楼层（floor）是 `subscribeRounds` 给出的对象，`story` 是仅供显示的楼号；操作传入 `floor.target`，不能用楼号替代。
 
-故事楼层从原生日志投影，`compact-checkpoint` 摘要只缩短模型上下文，展示时展开其覆盖的有效正文；多次压缩保留原楼层身份与结果选择，普通替换和撤回仍移除对应楼层。分页加载更早事件后重建同一投影。压缩前楼层可分叉，仍须通过存档快照及原生日志前缀一致性校验；源局模型上下文不回填旧正文。分叉状态快照默认保留最近 200 个原生回合的窗口，重生成会推进原生回合号；该窗口不限制正文历史展示，扩大窗口不会恢复已经清理的旧快照。
+故事列表以服务端 `getStoryTranscript` 返回的逻辑消息为准，每个会话独立持有读取窗口。原生事件仅提供运行状态、流式尾部和旧结果兼容读取。压缩前的正文仍可显示；原地撤回不能越过模型摘要边界。分叉沿用上游逻辑消息分叉流程，旧原生快照路径的窗口仍为 200 回合。
+
+每层包含 `messageUid`（服务端消息身份）、`target: { messageUid, messageIndex, revision }`、`story`（显示楼号）、`legacyTurn`（原有剧情轮次）和 `projection`。消费方原样传回 `target`；失效身份明确报错，不按下标或楼号静默回落。`revision` 用于读取一致性，编辑冲突仍由服务端正文令牌判断。`reply.seq` 是 UID 与显示正文版本组合的可重建缓存键，不是原生事件序号。结果历史的 `seq` 是不透明结果 ID，不要求为数字。
 
 | 方法 | 说明 |
 |---|---|
@@ -34,15 +36,16 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 | `readSessionMode(sessionId)` | 按需读取轻量会话目录，返回上述快照的 Promise；不加载首楼、不打开存档、不持有 Session |
 | `subscribeSessionMode(sessionId, listener)` | 立即回调当前快照，随后随明确的会话模式发布与全局开关变化回调，返回注销函数。新建/打开与真实视图发布的模式优先于迟到的列表响应；注销后不再回调。独立 UI 根据主会话的 `isPlay` 注册或注销故事页签，未知时不注册，已知游玩局之间切换保留页签 |
 | `storyViewActive(sessionId)` | 同步读取该会话是否被故事模式接管，等价于 `sessionMode(sessionId).storyViewActive`；全局开关开启且模式属于游玩组时才为真。它与只读取全局开关的 `storyViewMode()` 不同 |
-| `subscribeRounds(sessionId, listener)` | 用本页事件窗口（`ctx.sessions.binding(sessionId).eventSource`）按 `story-rounds.js` 折叠，立即及每次楼层或生成尝试变化时回调 `{ floors, abandoned, open, attempt, interrupted, settling, staleVariables, receipts, settlement, displayRevision, hasMore, from }`，返回取消函数。`receipts` 与 `settlement` 见表后说明，它们变化时也会回调。`settling` 为真表示最新楼层的后台结算（变量、姿态等）仍在等待或运行（Tavern 视图的 `activity`，与插件 `readActivity` 的 `settling` 同一判定），此时重新生成、改写、切换历史结果、编辑正文与创建分支都会被拒（客户端前置报「正在结算，稍候再试」），界面可据此预先禁用；它变化时也会回调。`staleVariables` 为 `{ turn, replySeq }` 或 `null`：官方 MVU 卡的最新楼层切换历史结果后，变量仍对应切换前的正文（存档在该层消息上记 `variablesStale`，Tavern 视图顶层 `staleVariables`），刷新、重开与从该层创建分支后仍在；按此正文重新结算成功（结算中与失败时保留）、重新生成或改写落定、撤回该层后变为 `null`；手动编辑正文不重算变量，已有标记仍保留，变化时回调。界面据它显示「变量未重算」与 `resettle` 入口，不要只依赖 `switchResult` 的返回值。运行中玩家回合的 `open.liveText` 是已到达的助手正文纯文本（宿主临时条目 `assistant/live-chunk` 的 text-delta，按当前尝试拼接，不含思考；未经正则与 HTML 处理），没有时为空串；只有它变化时最多每 100 ms 回调一次，不重新折叠楼层，正文落定后清空并由 `open.reply` / 楼层接替。重新生成尝试轮在正文落定前没有 `open`，不提供预览。加载更早历史后重新折叠。只覆盖已加载的窗口（`hasMore` 为真时用会话的 `loadOlder()` 往前读）。会话须已在本页打开 |
-| `listResults(sessionId, storyTurn)` | 这一层模型每次生成的原文 `{ seq, turn, text, current }`（旧到新；投影、重写正文、编辑不另算；`current` 为当前显示的那次，切换过时按切换目标），没有该层时为 `null` |
-| `switchResult(sessionId, storyTurn, replySeq)` | 只用于最新楼层、前台空闲时：改为显示 `listResults` 里 `seq` 为 `replySeq` 的那次生成（服务端 `switchFloorResult`）。返回 `{ switched, turn, replySeq, mvu, resettle, view }`；`mvu` 为 `'stale'` 时变量仍对应切换前的正文；`resettle` 为真（MVU 卡且变量过期）时可用 `resettle` 按新正文重算变量；同一状态也持久地出现在 `subscribeRounds` 的 `staleVariables` |
-| `forkAt(sessionId, storyTurn)` | 以这一层**当前显示的正文**为起点新开一局（任意已落定楼层，含开场），之后的楼层、输入与变量变化都不带过去；分叉点包含该层已落定的重新生成、结果切换与编辑。走与聊天行分叉按钮相同的流程（侧栏原生分叉、绑定存档、命名「… · 分支」并打开新局），服务端为 `prepareFloorFork` / `forkFloor`。生成中（窗口里有未结束的回合或尝试）或该层不在已加载窗口时不发请求；运行中、重新生成中、后台结算中由服务端拒绝。新局打开后 resolve `{ sessionId, chatId, turn, replySeq }`，失败时 reject 原因。新局带走该层及之前的楼层快照；MVU 变量是该层结束时（之后切换过结果则为切换时）的存档变量 |
-| `rollbackTo(sessionId, storyTurn)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput, input }`；`input` 为被删除的这一层自己的玩家输入 `{ text }`（多条时按行拼接），供界面放回输入框，该层不在本页已加载窗口或没有输入（开场）时为 `null`。dock 的「撤销撤回」只恢复最后一步，跨多层撤回后只能找回最后删掉的那一层 |
-| `regenerate(sessionId, storyTurn)` / `regenerateWithGuidance(sessionId, storyTurn, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
-| `editReply.get(sessionId, storyTurn)` / `editReply.save(sessionId, storyTurn, { token, texts })` | 只用于最新楼层、前台空闲且不在结算时：编辑这一层的正文文字（与 dock「编辑正文」同一流程，服务端 `getBodyEdit` / `saveBodyEdit`）。`get` 返回 `{ token, turn, parts }`，`parts` 为 `{ kind: 'text', text }` 或只标类型的 `{ kind: 'html' \| 'marker' }`；`save` 的 `texts` 按顺序对应每个文本片段（HTML 原样保留，不能新增 HTML），返回 `{ view }`。之后模型看到改后的正文；变量不重新结算。正文或会话在两步之间变化时服务端拒绝（「请重新打开编辑」） |
-| `editInput(sessionId, storyTurn, text)` | 只用于最新楼层（前置校验同 `regenerate`）：把这一层的玩家输入改成 `text`（服务端 `getBodyEdit` / `saveBodyEdit` 的 `role: 'user'`：消息面 replace 原输入、存档文字同步）。回复不变；要按新输入重写回复，随后调用 `regenerate`，它的合成输入取改后的存档文字，旧输入不再进入请求。返回 `{ view }` |
-| `resettle(sessionId, storyTurn, { guidance? }?)` | 只用于最新楼层（前置校验同 `regenerate`）：按这一层当前显示的正文重新做后台结算（服务端 `retrySettlement`，与状态页签「重试后台结算」、聊天行回执「重新结算变量」同一请求）。`guidance` 是只对这次结算生效的指导意见（字符串，≤ 4000 字，可为空串）；省略第三个参数或不带 `guidance` 时服务端沿用上次的指导意见；等待中的结算只能重新投递，带指导意见会被服务端拒绝。MVU 卡从该层结算前的变量快照重算变量；非 MVU 卡只有结算失败时才可重试，否则服务端拒绝并说明原因。结算排队后 resolve `{ view }`，之后 `settling` 为真直到结算完成 |
+| `subscribeRounds(sessionId, listener)` | 读取上游逻辑消息窗口，并订阅本页原生事件以补充运行状态，立即及每次历史或生成尝试变化时回调 `{ floors, abandoned, open, attempt, interrupted, settling, staleVariables, receipts, settlement, displayRevision, hasMore, from }`，返回取消函数。`receipts` 与 `settlement` 见表后说明，它们变化时也会回调。`settling` 为真表示最新楼层的后台结算（变量、姿态等）仍在等待或运行（Tavern 视图的 `activity`，与插件 `readActivity` 的 `settling` 同一判定），此时重新生成、改写、切换历史结果、编辑正文与创建分支都会被拒（客户端前置报「正在结算，稍候再试」），界面可据此预先禁用；它变化时也会回调。`staleVariables` 为 `{ turn, replySeq }` 或 `null`：官方 MVU 卡的最新楼层切换历史结果后，变量仍对应切换前的正文（存档在该层消息上记 `variablesStale`，Tavern 视图顶层 `staleVariables`），刷新、重开与从该层创建分支后仍在；按此正文重新结算成功（结算中与失败时保留）、重新生成或改写落定、撤回该层后变为 `null`；手动编辑正文不重算变量，已有标记仍保留，变化时回调。界面据它显示「变量未重算」与 `resettle` 入口，不要只依赖 `switchResult` 的返回值。运行中玩家回合的 `open.liveText` 是已到达的助手正文纯文本（宿主临时条目 `assistant/live-chunk` 的 text-delta，按当前尝试拼接，不含思考；未经正则与 HTML 处理），没有时为空串；只有它变化时最多每 100 ms 回调一次，不重新折叠楼层，正文落定后清空并由 `open.reply` / 楼层接替。重新生成尝试轮在正文落定前没有 `open`，不提供预览。只覆盖已加载的逻辑窗口；`hasMore` 为真时调用 `loadOlder(sessionId)`，不得用宿主原生事件分页替代。会话须已在本页打开 |
+| `loadOlder(sessionId)` | 将该会话逻辑历史窗口向前扩展最多 120 条消息，保留服务端 UID，返回是否扩展 |
+| `listResults(sessionId, target)` | 这一层模型每次生成的原文 `{ seq, turn, text, current }`（旧到新；投影、重写正文、编辑不另算；`current` 为当前显示的那次，切换过时按切换目标），身份失效时抛错 |
+| `switchResult(sessionId, target, replySeq)` | 只用于最新楼层、前台空闲时：改为显示 `listResults` 里 `seq` 为 `replySeq` 的那次生成（服务端 `switchFloorResult`）。返回 `{ switched, turn, replySeq, mvu, resettle, view }`；`mvu` 为 `'stale'` 时变量仍对应切换前的正文；`resettle` 为真（MVU 卡且变量过期）时可用 `resettle` 按新正文重算变量；同一状态也持久地出现在 `subscribeRounds` 的 `staleVariables` |
+| `forkAt(sessionId, target)` | 以这一层**当前显示的正文**为起点新开一局（任意已落定楼层，含开场），之后的楼层、输入与变量变化都不带过去；分叉点包含该层已落定的重新生成、结果切换与编辑。走与聊天行分叉按钮相同的流程（侧栏原生分叉、绑定存档、命名「… · 分支」并打开新局），服务端为 `getForkPlan` / `forkChat`。生成中（窗口里有未结束的回合或尝试）或该层不在已加载窗口时不发请求；运行中、重新生成中、后台结算中由服务端拒绝。新局打开后 resolve `{ sessionId, chatId, turn, messageUid }`，失败时 reject 原因。静态楼层快照按新身份重新获取或生成；MVU 变量是该层结束时（之后切换过结果则为切换时）的存档变量 |
+| `rollbackTo(sessionId, target)` | 删除这一层及之后各层（从最新一层逐层回退）；尾部有失败回合时先结清它。返回 `{ view, rolledBack, clearedInput, input }`；`input` 为被删除的这一层自己的玩家输入 `{ text }`（多条时按行拼接），供界面放回输入框，该层不在本页已加载窗口或没有输入（开场）时为 `null`。同一操作合并撤销点，dock 的「撤销撤回」可恢复本次连续撤回；重复或非单调旧轮次无法安全映射时拒绝并提示分叉 |
+| `regenerate(sessionId, target)` / `regenerateWithGuidance(sessionId, target, guidance, { restyle?, styleGuidance? })` | 只用于最新楼层：干净重采样 / 按要求改写。与 dock「重新生成正文」同一流程，共用进行中保护和引导记忆；`guidance(sessionId)` 读上次的引导 |
+| `editReply.get(sessionId, target)` / `editReply.save(sessionId, target, { token, texts })` | 只用于最新楼层、前台空闲且不在结算时：编辑这一层的正文文字（与 dock「编辑正文」同一流程，服务端 `getBodyEdit` / `saveBodyEdit`）。`get` 返回 `{ token, turn, parts }`，`parts` 为 `{ kind: 'text', text }` 或只标类型的 `{ kind: 'html' \| 'marker' }`；`save` 的 `texts` 按顺序对应每个文本片段（HTML 原样保留，不能新增 HTML），返回 `{ view }`。之后模型看到改后的正文；变量不重新结算。正文或会话在两步之间变化时服务端拒绝（「请重新打开编辑」） |
+| `editInput(sessionId, target, text)` | 只用于最新楼层（前置校验同 `regenerate`）：把这一层的玩家输入改成 `text`（服务端 `getBodyEdit` / `saveBodyEdit` 的 `role: 'user'`：消息面 replace 原输入、存档文字同步）。回复不变；要按新输入重写回复，随后调用 `regenerate`，它的合成输入取改后的存档文字，旧输入不再进入请求。返回 `{ view }` |
+| `resettle(sessionId, target, { guidance? }?)` | 只用于最新楼层（前置校验同 `regenerate`）：按这一层当前显示的正文重新做后台结算（服务端 `retrySettlement`，与状态页签「重试后台结算」、聊天行回执「重新结算变量」同一请求）。`guidance` 是只对这次结算生效的指导意见（字符串，≤ 4000 字，可为空串）；省略第三个参数或不带 `guidance` 时服务端沿用上次的指导意见；等待中的结算只能重新投递，带指导意见会被服务端拒绝。MVU 卡从该层结算前的变量快照重算变量；非 MVU 卡只有结算失败时才可重试，否则服务端拒绝并说明原因。结算排队后 resolve `{ view }`，之后 `settling` 为真直到结算完成 |
 | `retryFailed(sessionId)` | 用原输入重放失败或被停止的最新回合 |
 | `interruptQueued(sessionId, turn)` | 故事视图模式下，打断指定的**原生回合**并继续已有排队输入。`turn` 是 `open.turn` 的正整数；只有对应回合仍运行且队列非空才执行，返回 `{ interrupted: boolean }`。保留消息 ID、附件和 FIFO 顺序；过期回合、空闲或非故事局返回 `false`。当前宿主 `cancel({ keepInbox: true })` 只暂停队列，不能直接代替此契约 |
 | `readInterruptedInput(sessionId)` | 失败或被打断、玩家尚未继续时，那一轮的原输入 `{ seq, turn, text, reason }`，否则 `null`（同 `subscribeRounds` 的 `interrupted`）。`abandoned` 里 `reason: 'superseded'` 的回合（被打断后下一轮已认领玩家输入，如 `interruptQueued` 的自动打断）不算，下一轮早期失败时由 `attempt` 报告那一条 |
@@ -64,7 +67,7 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 
 `settlement` 是最新楼层后台结算的状态 `{ status, turn, error }`，Tavern 视图未读到时为 `null`。`status` 为 `running`（等待或运行中，与 `settling` 同一判定）、`error`（失败或因重启中断，视图 `settleStatus: 'error'`）或 `idle`；`turn` 为视图 `settlementTurn`（最新正文的故事轮，没有时为 `null`），重试只能针对它；`error` 只在 `error` 时给出（视图 `settleError`，≤ 500 字，缺省「后台结算失败，请重试。」）。`settling` 保留作兼容。
 
-兼容性：`receipts`、`settlement` 与 `resettle` 的第三个参数都是新增，旧调用方式与字段不变，`apiVersion` 仍为 1。
+兼容性：v2 不接受 v1 的数字楼号操作参数。版本不匹配时消费方显示不兼容状态；不并行维护两套历史来源。
 
 稳定性：方法名、参数与返回字段只加不改；不兼容的改动提高 `apiVersion`。
 
@@ -72,9 +75,9 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 
 `tavernStory.render` 按 Tavern 聊天行的方式画一层故事正文，供故事视图插件使用。宿主是 React，这里直接导出 React 组件。
 
-- `projectFloor(sessionId, storyTurn)` → `{ storyTurn, mode, projection, parts, hasScript, helperContext, frameSizing, trustedCardMode, latestTurn, waitingForHistory }`：该层正则/美化后的投影（与聊天行相同的 `replyProjections`）、Helper 上下文与运行策略。`waitingForHistory` 为真时该层在 Tavern 历史窗口外，用 `loadOlderProjections(sessionId)` 往前扩一页。
-- `readInputTemplate(sessionId, inputTurn)` → 玩家输入的显示模板 HTML 或 `null`（`inputTurn` 是输入所在的原生轮次，即楼层 `inputs[].turn`；改过的输入不再用模板）。用 `StaticHtml` 显示。
-- `FloorBody` 组件，props `{ sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?, revision?, containerRef?, fallbackText? }`。`live` 时与聊天行一样用 Tavern 的消息 frame 运行卡片 HTML；否则显示 `snapshotHtml`，没有快照时显示投影文字和去掉脚本的 HTML。没有投影且不在等待历史时，用 `fallbackText`（通常为 `floor.reply.text`）显示配色 Markdown。原文、静态 HTML 和快照中的对白与斜体均使用主题配色，保留卡片显式颜色。静态 HTML 按白名单重建（常见排版、列表、表格、标题、链接、details、style、惰性的 button/input/progress 等元素与 class/style/title/src/href/data-*/aria-* 等属性；src/href 只允许 http(s)、相对路径与 data:image；未知元素只留文字与允许的子节点；svg、math、script、iframe、form 等整段移除；样式里的 @import、expression、behavior、-moz-binding 和脚本或非图片 url 剥掉），放在 shadow root 里，`html`/`body`/`:root` 样式改为作用于楼层。`revision` 建议传 `floor.reply.seq`。
+- `projectFloor(sessionId, floor)` → `{ storyTurn, mode, projection, parts, hasScript, helperContext, frameSizing, trustedCardMode, latestTurn, waitingForHistory }`：该条逻辑消息的显示投影（唯一剧情轮可复用配对的 `replyProjections`）、Helper 上下文与运行策略。v2 的已返回消息自带投影，`waitingForHistory` 为假；更早消息通过 `loadOlder(sessionId)` 读取。
+- 玩家输入的 `inputs[].templateHtml` 来自该条逻辑消息已保存的显示模板；来源文本或 swipe 不匹配时为 `null`，使用原文。通过 `StaticHtml` 净化显示，不用原生轮次查找模板。
+- `FloorBody` 组件，props `{ sessionId, floor, live?, snapshotHtml?, eager?, owner?, revision?, containerRef?, fallbackText? }`。`live` 时与聊天行一样用 Tavern 的消息 frame 运行卡片 HTML；否则显示 `snapshotHtml`，没有快照时显示投影文字和去掉脚本的 HTML。没有投影且不在等待历史时，用 `fallbackText`（通常为 `floor.reply.text`）显示配色 Markdown。原文、静态 HTML 和快照中的对白与斜体均使用主题配色，保留卡片显式颜色。静态 HTML 按白名单重建（常见排版、列表、表格、标题、链接、details、style、惰性的 button/input/progress 等元素与 class/style/title/src/href/data-*/aria-* 等属性；src/href 只允许 http(s)、相对路径与 data:image；未知元素只留文字与允许的子节点；svg、math、script、iframe、form 等整段移除；样式里的 @import、expression、behavior、-moz-binding 和脚本或非图片 url 剥掉），放在 shadow root 里，`html`/`body`/`:root` 样式改为作用于楼层。`revision` 建议传 `floor.reply.seq`。
 - `FloorBody` 复用 Tavern 插件媒体索引、正文锚点与图片操作：未命中锚点的媒体放在文后；快照只保存正文，媒体从当前索引重新渲染，避免重复和旧状态。
 - `IllustrateAction` 组件，props `{ sessionId, storyTurn, disabled?, className? }`。使用当前局获准的上游配图器；未安装、局内禁用或不在游玩模式时不显示。调用方用 `disabled` 接入楼层操作锁，不另写配图请求。
 - **frame 归属**：Tavern 的消息 frame 在 React 卸载后仍会停放保留（同一局离开前不销毁），以免卡片状态丢失。`FloorBody` 在 `live` 变为假或卸载时释放自己 `owner`（默认每个组件实例一个）名下的 frame，活 frame 数因此等于同时 live 的楼层数。要让同一层在重挂载后接回原 frame，可传固定的 `owner` 对象，并在不再需要时卸载或置 `live: false`。frame 按（会话、楼层、片段序号）复用；Tavern 聊天行也画同一层时（未开启故事视图模式）两者会共用同一个 frame，所以只在故事视图模式下使用。

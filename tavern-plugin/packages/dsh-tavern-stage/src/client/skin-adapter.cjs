@@ -25,7 +25,7 @@ const stageSkinSlice = value => stageSkinContract.stageSkinSliceEdges(value);
 // Fonts: the skin's `font` declaration through tavernFonts.resolve (user override first; `lead` = a director-applied
 // performance skin, whose stage fonts beat the override while it is active, performance effects §11.6).
 function stageSkinFont(document, fonts, theme, part, lead = false) {
-    return fonts.resolve('stage',{theme,skin:part === 'title' ? {...document.font,title:document.ui?.titleFont} : document.font || {},part,skinWins:lead || part === 'title'}).family;
+    return fonts.resolve('stage',{theme,skin:part === 'title' ? {...document.font,title:document.ui?.titleFont} : document.font || {},part,skinWins:lead || part === 'title' || part === 'menu'}).family;
 }
 function stageSkinTokens(document, fonts, theme = 'classic', lead = false) {
     const p=document.textbox.paint, shape=document.textbox.shape || {}, n=document.nameplate;
@@ -99,6 +99,8 @@ function stageSkinPanelTokens(document,fonts,theme,builtin=false,lead=false) {
             '--gal-ui-font':stageSkinFont(document,fonts,theme,'ui',lead),
             // A title face is decoration, like the built-ins' CSS title fonts: it keeps winning over the override.
             '--gal-ui-title-font':stageSkinFont(document,fonts,theme,'title'),
+            // font.menu (§18 N33): the drawn Esc menu's glyph tiles (art.menu.glyphTiles), a decoration face too
+            ...(document.font?.menu ? {'--gal-ui-menu-font':stageSkinFont(document,fonts,theme,'menu')} : {}),
             // opaque stage panels (the Esc menu's .fk-surface) paint the skin's own surface,
             // not the theme's stage-panel table, so a light skin never gets a dark menu.
             '--fk-s-stage-panel-bg':raised,'--fk-s-stage-panel-bgSolid':raised,'--fk-s-stage-panel-scrim':raised,'--fk-s-stage-panel-fg':ink,'--fk-s-stage-panel-fgMuted':muted,
@@ -108,7 +110,10 @@ function stageSkinPanelTokens(document,fonts,theme,builtin=false,lead=false) {
         '--gal-ui-hud-plate':surface,'--gal-ui-hud-ink-idle':muted,'--gal-ui-hud-ink-on':ink,'--gal-ui-hud-active':accent,
         '--gal-ui-hud-hover':hover,'--gal-ui-hud-selected':selected,'--gal-ui-hud-line':border,
         // hud.plate (§18 N13): the top bar chips' own opaque ground and ink
-        ...(document.hud?.plate ? {'--fk-hud-plate-bg':document.hud.plate.bg,'--fk-hud-plate-fg':document.hud.plate.fg} : {})};
+        ...(document.hud?.plate ? {'--fk-hud-plate-bg':document.hud.plate.bg,'--fk-hud-plate-fg':document.hud.plate.fg} : {}),
+        // scrollbars: each opted-in surface's thumb, track and width (theme.css «stage scrollbars»)
+        ...Object.fromEntries(Object.entries(document.scrollbars || {}).flatMap(([surface,bar]) => [['--fk-sb-' + surface + '-thumb',bar.thumb],
+            ['--fk-sb-' + surface + '-track',bar.track || 'transparent'],['--fk-sb-' + surface + '-w',(bar.width ?? 6) + 'px']]))};
 }
 // the closed ADV words become root attributes for the stage CSS; a skin that
 // declares none of them gets none (its DOM and tokens are unchanged).
@@ -134,6 +139,8 @@ function stageSkinMarks(document) {
     if (document.textbox.motion) marks['data-fk-skin-box-motion']='';
     if (document.nameplate.motion) marks['data-fk-skin-name-motion']='';
     if (document.hud?.plate) marks['data-fk-skin-hud-plate']='';
+    // scrollbars: the surfaces that show a styled scrollbar; every other one shows none (theme.css «stage scrollbars»).
+    if (document.scrollbars) marks['data-fk-scrollbars']=Object.keys(document.scrollbars).join(' ');
     // textStyle.wrap: phrase = the reading text breaks between phrases (theme.css「stage typewriter」).
     if (document.textStyle?.wrap) marks['data-fk-skin-wrap']=document.textStyle.wrap;
     // transitions (skin-interface.md §9.1): the surfaces with a declared enter / leave (theme.css «stage skin: transitions»).
@@ -364,7 +371,9 @@ function stageSkinArt(document, files, entry = '') {
             if (plate.shadow) {marks['data-fk-skin-art-np-shadow']=''; Object.assign(tokens,{'--art-np-sx':String(plate.shadow[0]),'--art-np-sy':String(plate.shadow[1])});}
             if (plate.spacing != null) tokens['--art-np-spacing']=plate.spacing + 'em';
             // narrow: pill: on phones the name leaves the drawn plate for a pill in the speaker's colour
-            if (plate.narrow) marks['data-fk-skin-art-name-narrow']=plate.narrow;
+            // (under follows the phone face: without art.portrait.phone the name keeps the phone's own plate)
+            const phoneFace=art.portrait?.narrow && art.portrait.phone === true, narrowName=plate.narrow === 'under' && !phoneFace ? null : plate.narrow;
+            if (narrowName) marks['data-fk-skin-art-name-narrow']=narrowName;
             // wide under (§18 N16): on wide stages the plate under the face window on its axis (theme.css «art name wide under»)
             if (plate.wide) marks['data-fk-skin-art-name-wide']=plate.wide;
         if (plate.lead) marks['data-fk-skin-art-name-lead']='';
@@ -498,6 +507,11 @@ function stageSkinArt(document, files, entry = '') {
         if (r.align) tokens['--art-mr-justify']=r.align === 'center' ? 'center' : r.align === 'end' ? 'flex-end' : 'flex-start';
         if (r.ink) tokens['--art-mr-ink']=r.ink;
         if (r.focusInk) tokens['--art-mr-focus-ink']=r.focusInk;
+        // fit (the menu's capacity): past it the bars scroll inside it
+        if (r.fit) {marks['data-fk-skin-art-menu-rows-fit']=''; tokens['--art-mr-fit']=String(r.fit);}
+        // letter / focusScale (§18 N31): the labels as glyph tiles (menu.cjs, art.menu.glyphTiles), the focused one drawn larger
+        if (r.letter) marks['data-fk-skin-art-menu-letter']=r.letter;
+        if (r.focusScale) Object.assign(tokens,{'--art-mr-focus-scale':String(r.focusScale),'--art-mr-origin':({center:'50%',end:'100%'}[r.align] || '0%') + ' 50%'});
         if (r.spacing !== undefined) tokens['--art-mr-spacing']=r.spacing + 'em';
         if (r.cursor) {
             const [cw,ch]=size(r.cursor.image);
@@ -530,6 +544,10 @@ function stageSkinArt(document, files, entry = '') {
         if (t.lift) {marks['data-fk-skin-art-menu-lift']=''; Object.assign(tokens,{[p + '-lift-scale']:String(t.lift.scale ?? 1),[p + '-lift-dy']:String(t.lift.dy || 0)});}
         if (l.stroke) Object.assign(tokens,{[p + '-stroke']:l.stroke.color,[p + '-stroke-w']:String(l.stroke.width)});
         if (t.plain) {const [w,h]=size(t.plain); Object.assign(tokens,{[p + '-plain']:url(t.plain),[p + '-plain-w']:String(w),[p + '-plain-h']:String(h)});}
+        // plainFocus: the plain tile under focus, so a row without its own art (a card page) highlights like the drawn ones
+        if (t.plainFocus) tokens[p + '-plain-focus']=url(t.plainFocus);
+        // minScale: the capacity floor (rows close their gaps, then scale down to it, then the grid scrolls inside fit)
+        if (t.minScale !== undefined) {marks['data-fk-skin-art-menu-scroll']=''; tokens[p + '-min-scale']=String(t.minScale);}
         for (const [id,tile] of Object.entries(t.art)) {
             const [w,h]=size(tile.image), q=p + '-' + id;
             Object.assign(tokens,{[q]:url(tile.image),[q + '-focus']:url(tile.focus || tile.image),[q + '-w']:String(w),[q + '-h']:String(h)});
@@ -547,7 +565,8 @@ function stageSkinArt(document, files, entry = '') {
     }
     if (art.menu) {
         const m=art.menu;
-        if (m.sheet) {marks['data-fk-skin-art-menu-sheet']=''; tokens['--art-menu-sheet']=url(m.sheet);}
+        // sheet: drawn at its own aspect (contained in the game area, the panel ground round it); -w / -h its natural size
+        if (m.sheet) {const [w,h]=size(m.sheet); marks['data-fk-skin-art-menu-sheet']=''; Object.assign(tokens,{'--art-menu-sheet':url(m.sheet),'--art-menu-sheet-w':String(w),'--art-menu-sheet-h':String(h)});}
         // dim / blur / grey: the stage behind the menu darkened, blurred (design px) and greyed
         if (m.dim !== undefined || m.blur || m.grey) {marks['data-fk-skin-art-menu-dim']=''; Object.assign(tokens,{'--art-menu-dim':String(m.dim ?? 0),'--art-menu-blur':String(m.blur || 0),'--art-menu-grey':String(m.grey || 0)});}
         if (m.decor === 'hide') marks['data-fk-skin-art-menu-decor']='hide';
@@ -563,11 +582,18 @@ function stageSkinArt(document, files, entry = '') {
         // motion (§18 E3): the items' staged entrance and exit (theme.css «art menu: motion»; the stage keeps the menu
         // mounted through the exit, GalStage menuLeaving).
         for (const [key,stage] of Object.entries(m.motion || {})) {
+            if (key === 'parts') continue;
             const p='--art-mm-' + key, pose=stage.pose;
             marks['data-fk-skin-art-menu-motion']=[marks['data-fk-skin-art-menu-motion'],key,stage.fade ? key + '-fade' : ''].filter(Boolean).join(' ');
-            Object.assign(tokens,{[p + '-ms']:stage.ms + 'ms',[p + '-stagger']:(stage.stagger || 0) + 'ms',[p + '-ease']:STAGE_SKIN_EASE[stage.ease || 'out'],
+            Object.assign(tokens,{[p + '-ms']:stage.ms + 'ms',[p + '-stagger']:(stage.stagger || 0) + 'ms',[p + '-ease']:STAGE_SKIN_EASE[stage.ease || 'out'],...(stage.delay ? {[p + '-delay']:stage.delay + 'ms'} : {}),
                 [p + '-dx']:String(pose.dx || 0),[p + '-dy']:String(pose.dy || 0),[p + '-rot']:(pose.rot || 0) + 'deg',[p + '-scale']:stageSkinPoseScale(pose),[p + '-f']:`brightness(${pose.bright ?? 1})`});
         }
+        // motion.parts (§18 N21): the sheet, strips and signal each enter on their own beat (@keyframes fork-skin-menu-<part>,
+        // stageSkinMotionKeyframes)
+        const parts=Object.entries(m.motion?.parts || {});
+        if (parts.length) marks['data-fk-skin-art-menu-parts']=parts.map(([part]) => part).join(' ');
+        for (const [part,motion] of parts) Object.assign(tokens,{['--art-mp-' + part + '-ms']:motion.ms + 'ms',['--art-mp-' + part + '-delay']:(motion.delay || 0) + 'ms',
+            ['--art-mp-' + part + '-tf']:motion.steps ? `steps(${motion.steps}, end)` : STAGE_SKIN_EASE[motion.ease || 'out'],['--art-mp-' + part + '-origin']:(motion.origin || [0.5,0.5]).map(v => v * 100 + '%').join(' ')});
         for (const key of strips) {
             const s=m[key], [sw,sh]=s.image ? size(s.image) : [s.text[1],s.text[2] * 2], p='--art-ms-' + key;
             Object.assign(tokens,{[p + '-img']:s.image ? url(s.image) : 'none',[p + '-x']:String(s.x),[p + '-y']:String(s.y),[p + '-w']:String(sw),[p + '-h']:String(sh),
@@ -581,6 +607,7 @@ function stageSkinArt(document, files, entry = '') {
             }
             if (s.ink) tokens[p + '-ink']=s.ink;
         }
+        if (m.title?.letter) marks['data-fk-skin-art-menu-title-letter']=m.title.letter;
     }
     // art.backlog / art.config / art.voice: the stage's own overlays drawn as the original's screens on
     // wide stages (theme.css 「stage skin: art screens」), in design px; a placed image as its top-left and natural size.
@@ -618,6 +645,30 @@ function stageSkinArt(document, files, entry = '') {
             Object.assign(tokens,{[p + '-name-x']:String(b.name.x),[p + '-name-y']:String(b.name.y),[p + '-name-h']:String(b.name.h),[p + '-name-font']:String(b.name.font),[p + '-head']:String(b.name.head)});
             if (b.name.frame) {parts.push('frame'); placed(p + '-frame',b.name.frame);}
             if (b.name.rule) {parts.push('rule'); placed(p + '-rule',b.name.rule);}
+            // name.letter / align (C2): the name as glyph tiles, its right edge on the text column (theme.css 「art backlog glyph tiles」).
+            if (b.name.letter) marks['data-fk-skin-art-backlog-letter']=b.name.letter;
+            if (b.name.align) marks['data-fk-skin-art-backlog-name-align']=b.name.align;
+        }
+        if (b.plates?.divider?.letter) marks['data-fk-skin-art-backlog-divider-letter']=b.plates.divider.letter;
+        // avatar (C3): the face column's box (design px), its window mask, frame, cut-out edge and tone as --art-bl-av-* and
+        // data-fk-skin-art-backlog-avatar (theme.css 「art backlog avatar」).
+        if (b.avatar) {
+            const a=b.avatar;
+            marks['data-fk-skin-art-backlog-avatar']=[a.mask && 'mask',a.frame && 'frame',a.cutout && 'cutout',a.tone].filter(Boolean).join(' ');
+            Object.assign(tokens,{[p + '-av-x']:String(a.at[0]),[p + '-av-y']:String(a.at[1]),[p + '-av-w']:String(a.size[0]),[p + '-av-h']:String(a.size[1])});
+            if (a.mask) tokens[p + '-av-mask']=url(a.mask);
+            if (a.frame) tokens[p + '-av-frame']=url(a.frame);
+            if (a.cutout) Object.assign(tokens,{[p + '-av-cut']:a.cutout.color,[p + '-av-cut-w']:String(a.cutout.width)});
+            if (a.placeholder?.image) tokens[p + '-av-placeholder']=url(a.placeholder.image);
+        }
+        // roll (C4): the check line's mark (design px), the number's ink and scale and the tier tiles as --art-bl-roll-* and
+        // data-fk-skin-art-backlog-roll (its parts: total success fail; theme.css 「art backlog roll」).
+        if (b.roll) {
+            const r=b.roll;
+            marks['data-fk-skin-art-backlog-roll']=['mark',r.total && 'total',r.tier?.success && 'success',r.tier?.fail && 'fail'].filter(Boolean).join(' ');
+            Object.assign(tokens,{[p + '-roll-img']:url(r.image),[p + '-roll-w']:String(r.size[0]),[p + '-roll-h']:String(r.size[1])});
+            if (r.total) Object.assign(tokens,{[p + '-roll-ink']:r.total.ink,[p + '-roll-scale']:String(r.total.scale)});
+            for (const [side,tile] of Object.entries(r.tier || {})) Object.assign(tokens,{[p + '-roll-' + side + '-bg']:tile.ground,[p + '-roll-' + side + '-ink']:tile.ink});
         }
         if (b.scrollbar) {
             const s=b.scrollbar; parts.push('bar');
@@ -626,6 +677,22 @@ function stageSkinArt(document, files, entry = '') {
         // hover: the original's stain behind the entry under the pointer / focus and the current entry (one highlight).
         if (b.hover) {parts.push('hover'); stageSkinHighlightTokens(tokens,p + '-hover',b.hover,url);}
         marks['data-fk-skin-art-backlog-parts']=parts.join(' ');
+        // plates (C1): each role's plate images and inks by index, its slice and overhang edges, poses and slant, as
+        // --art-bl-p-<role>-* (theme.css 「art backlog plates」; the backlog view points each plated row at its own).
+        if (b.plates) {
+            marks['data-fk-skin-art-backlog-plates']=Object.keys(b.plates).join(' ');
+            for (const [role,plate] of Object.entries(b.plates)) {
+                const [sx,sy]=Array.isArray(plate.scale) ? plate.scale : [plate.scale ?? 1,plate.scale ?? 1];
+                const q=p + '-p-' + role, [st,sr,sb,sl]=stageSkinSlice(plate.slice), [ot,or,ob,ol]=plate.out || [0,0,0,0];
+                plate.images.forEach((item,index) => Object.assign(tokens,{[q + '-' + index]:url(item.image),[q + '-' + index + '-ink']:item.ink}));
+                Object.assign(tokens,{[q + '-sx']:String(sx),[q + '-sy']:String(sy),[q + '-st']:String(st),[q + '-sr']:String(sr),[q + '-sb']:String(sb),[q + '-sl']:String(sl),[q + '-ot']:String(ot),[q + '-or']:String(or),[q + '-ob']:String(ob),[q + '-ol']:String(ol)});
+                (plate.poses || []).forEach((pose,index) => Object.assign(tokens,{[q + '-pose-' + index + '-x']:String(pose.x),[q + '-pose-' + index + '-y']:String(pose.y || 0),[q + '-pose-' + index + '-rot']:pose.rot + 'deg'}));
+                if (plate.slant !== undefined) tokens[q + '-slant']=plate.slant + 'deg';
+            }
+        }
+        // narrow: the same drawn sheet, title, close, row head and highlight on phones, one design px = unit CSS px; the
+        // words keep the reading size (theme.css «art backlog: phone»).
+        if (b.narrow) {marks['data-fk-skin-art-backlog-narrow']=''; tokens[p + '-nu']=b.narrow.unit + 'px';}
     }
     if (art.config) {
         const c=art.config, p='--art-cf';
@@ -658,6 +725,8 @@ function stageSkinArt(document, files, entry = '') {
         marks['data-fk-skin-art-voice']='';
         const [vw,vh]=size(art.voice.image,art.voice.scale);
         Object.assign(tokens,{'--art-voice-w':String(vw),'--art-voice-h':String(vh),'--art-voice':url(art.voice.image),'--art-voice-focus':url(art.voice.focus || art.voice.image),'--art-voice-on':url(art.voice.active || art.voice.focus || art.voice.image)});
+        // waves: the backlog speaker's arcs as their own layers over the body (theme.css 「backlog voice waves」).
+        if (art.voice.waves) {marks['data-fk-skin-art-voice-waves']=String(art.voice.waves.length); art.voice.waves.forEach((image,index) => {tokens['--art-voice-wave-' + (index + 1)]=url(image);});}
     }
     // box false: the textbox has no replay control (the original's has none); replay stays on R and in the backlog.
     if (art.voice?.box === false) marks['data-fk-skin-art-voice-box']='none';
@@ -763,6 +832,8 @@ function stageSkinArt(document, files, entry = '') {
         if (box && art.portrait.left >= box.body[0] && art.portrait.left + art.portrait.size <= box.text[0]) {marks['data-fk-skin-art-bare']=''; tokens['--art-text-bare']=String(art.portrait.left);}
         // when off-stage (§2.7): wide stages show a face only for a speaker not drawn on stage (GalStage reads the mark).
         if (art.portrait.when === 'off-stage') marks['data-fk-skin-portrait-when']='off-stage';
+        // behind: the box art draws over the face where they meet (theme.css «art portrait behind»).
+        if (art.portrait.behind) marks['data-fk-skin-portrait-behind']='';
         // placeholder (§18 N16): the stand-in face for a speaker the avatar resolver gives none (GalStage builds it per page):
         // the engine's initial disc, or the skin's own image.
         if (art.portrait.placeholder) {
@@ -831,8 +902,9 @@ function stageSkinArt(document, files, entry = '') {
                     bed:n.bed ? {color:n.bed.color,alpha:n.bed.alpha,width:n.bed.width || n.font} : null,min:n.min || n.font * .25};
             }
         }
-        // narrow (§13): the side on a phone, CSS px from the box's top-left corner; the lines clear it face or not.
-        if (art.portrait.narrow) {
+        // narrow (§13): the side on a phone, CSS px from the box's top-left corner; the lines clear it face or not. A phone
+        // portrait shows no box face by default: only art.portrait.phone true places it.
+        if (art.portrait.narrow && art.portrait.phone === true) {
             const nw=art.portrait.narrow, [sw,sh]=frame ? size(frame.image) : [art.portrait.size,art.portrait.size];
             marks['data-fk-skin-portrait-narrow']=nw.name === 'arc' || !frame?.name ? '' : nw.name || 'below';
             // flow (skin-interface.md §1.5 手机落位): how the lines clear the side - beside (its column), wrap (beside it to its bottom,
@@ -1016,7 +1088,21 @@ function paintStageSkin(root, document, fonts, theme, lead = false, art = null, 
         for (const [name,value] of before) {if (value === null) root.removeAttribute(name); else root.setAttribute(name,value);}
     };
 }
+// The 履历 looks (stageSkinBacklog) with art.backlog.plates' cycles per role (image and pose counts, slanted or not): the
+// backlog view marks each plated row with its place in them (theme.css 「art backlog plates」).
+// C2: the ransom words (name.letter, plates.divider.letter) and the tiles they are cut on - the backlog's own glyphTiles,
+// else the menu's (the validator requires one).
+function stageSkinBacklogLooks(document) {
+    const looks=stageSkinBacklog(document), b=document?.art?.backlog, plates=b?.plates;
+    const letter=b?.name?.letter || plates?.divider?.letter ? {name:b.name?.letter,divider:plates?.divider?.letter,tiles:b.glyphTiles || document.art.menu.glyphTiles} : null;
+    // C3: the face column - whether the player's rows take one and what an unresolved speaker shows (initial / image / none).
+    const avatar=b?.avatar ? {player:b.avatar.player === true,placeholder:b.avatar.placeholder === 'initial' ? 'initial' : b.avatar.placeholder ? 'image' : null} : null;
+    // C4: the check line draws the skin's mark beside the generic die icon (the stylesheet shows one of them).
+    const roll=b?.roll ? true : null;
+    if (!plates && !letter && !avatar && !roll) return looks;
+    return {...looks,...(roll ? {roll} : null),...(plates ? {plates:Object.fromEntries(Object.entries(plates).map(([role,plate]) => [role,{images:plate.images.length,poses:plate.poses?.length || 0,slant:plate.slant !== undefined}]))} : null),...(letter ? {letter} : null),...(avatar ? {avatar} : null)};
+}
 
-return {dispose,STAGE_SKIN_EASE,STAGE_SKIN_TX_EASE,stageSkinTxEase,stageSkinWipeClip,stageSkinTransitionList,STAGE_BACKLOG_DEFAULTS,stageSkinBacklog,stageSkinBacklogPlate,stageSkinBacklogPlateStyle,stageSkinBacklogOutline,stageSkinInset,stageSkinSfx,stageSkinMotionKeyframes,stageSkinGlyphPoses,stageSkinEffects,stageSkinTokens,stageSkinPanelTokens,stageSkinQuickMenu,stageSkinMarks,stageSkinConfigSurface,stageSkinConfigArt,STAGE_CONFIG_DEFAULT_LOOKS,stageSkinControlIcons,stageSkinArt,stageSkinSpinner,stageSkinTint,stageSkinMenuTint,stageSkinFontFaces,applyStageSkin,stageSkinMode,applyStageSkinMode};
+return {dispose,STAGE_SKIN_EASE,STAGE_SKIN_TX_EASE,stageSkinTxEase,stageSkinWipeClip,stageSkinTransitionList,STAGE_BACKLOG_DEFAULTS,stageSkinBacklog:stageSkinBacklogLooks,stageSkinBacklogPlate,stageSkinBacklogPlateStyle,stageSkinBacklogOutline,stageSkinInset,stageSkinSfx,stageSkinMotionKeyframes,stageSkinGlyphPoses,stageSkinEffects,stageSkinTokens,stageSkinPanelTokens,stageSkinQuickMenu,stageSkinMarks,stageSkinConfigSurface,stageSkinConfigArt,STAGE_CONFIG_DEFAULT_LOOKS,stageSkinControlIcons,stageSkinArt,stageSkinSpinner,stageSkinTint,stageSkinMenuTint,stageSkinFontFaces,applyStageSkin,stageSkinMode,applyStageSkinMode};
 }
 if(typeof module!=='undefined'&&typeof window==='undefined')module.exports={createStageSkinAdapter};

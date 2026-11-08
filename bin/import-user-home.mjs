@@ -55,17 +55,49 @@ function merge(from, to) {
   }
   if (!sameContent(from, to)) throw Error(`存在不同内容的同名存档或附件，已停止迁移：${to}`)
 }
-export function assertDesktopStopped(homes, { requireGuiClosed = false } = {}) {
-  let commands
+// guiRoot limits the GUI check to executables inside that install root: other Harness
+// copies (another installation, a stale upgrade stage in the temp directory) cannot write this home.
+export function assertDesktopStopped(homes, { requireGuiClosed = false, guiRoot, preparingForPid, exec = execFileSync, platform = process.platform, pid = process.pid } = {}) {
+  let output
   try {
-    commands = process.platform === 'win32'
-      ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine'], { encoding: 'utf8', windowsHide: true, timeout: 15000 })
-      : execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8', timeout: 15000 })
+    output = platform === 'win32'
+      ? exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }"], { encoding: 'utf8', windowsHide: true, timeout: 15000 })
+      : exec('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 15000 })
   } catch { throw Error('无法确认桌面宿主已退出，尚未迁移数据。请关闭宿主后重试。') }
+  const processes = output.split(/\r?\n/).map(line => line.match(/^\s*(\d+)\s+(\d+)\s?(.*)$/)).filter(Boolean)
+    .map(([, id, parent, command]) => ({ id: Number(id), parent: Number(parent), command }))
+  // The installer itself, and the launchers that started it, may be the desktop
+  // executable in Electron's Node mode. They are not a running GUI.
+  const parents = new Map(processes.map(row => [row.id, row.parent]))
+  const own = new Set()
+  for (let id = pid; id && !own.has(id); id = parents.get(id)) own.add(id)
+  const preparingTree = new Set()
+  if (Number.isInteger(preparingForPid) && preparingForPid > 1) {
+    preparingTree.add(preparingForPid)
+    for (let size = 0; size !== preparingTree.size;) {
+      size = preparingTree.size
+      for (const row of processes) if (preparingTree.has(row.parent)) preparingTree.add(row.id)
+    }
+  }
   const normalize = value => value.replaceAll('\\', '/').toLowerCase()
-  for (const line of commands.split('\n')) {
-    const command = normalize(line)
-    if (requireGuiClosed && /(?:deepseek harness|dsh next|dsh desktop)(?:\.exe)?[\"]?\s*$/.test(command.trim())) throw Error('请完整退出 DeepSeek Harness 后再安装或迁移数据。')
+  const scope = guiRoot && normalize(path.resolve(guiRoot)).replace(/\/*$/, '/')
+  for (const row of processes) {
+    if (own.has(row.id) || preparingTree.has(row.id)) continue
+    const command = normalize(row.command).trim()
+    // Match the executable, including quoted Windows paths and Electron's trailing
+    // arguments. A desktop name occurring only inside another program's args is
+    // not evidence that the GUI is running.
+    const windowsCommand = command.match(/^(?:"([^"]+)"|([a-z]:\/[^"\n]+?\.exe))(?=\s|$)/)
+    const executable = windowsCommand?.[1] || windowsCommand?.[2]
+      || command.match(/^(\/[^"\n]+?\.app\/contents\/macos\/(?:deepseek harness|dsh next|dsh desktop))(?=\s|$)/)?.[1]
+      || command.match(/^((?:deepseek harness|dsh next|dsh desktop)(?:\.exe)?)(?=\s|$)/)?.[1]
+      || command.split(/\s/)[0]
+    if (requireGuiClosed && (!scope || executable.startsWith(scope)) && /(?:^|\/)(?:deepseek harness|dsh next|dsh desktop)(?:\.exe)?$/.test(executable)) {
+      // Electron's crash reporter uses the same .exe and can outlive the GUI.
+      const args = windowsCommand && command.slice(windowsCommand[0].length).trimStart()
+      if (platform === 'win32' && args && /^--type=crashpad-handler(?:\s|$)/.test(args)) continue
+      throw Object.assign(new Error(`请完整退出 DeepSeek Harness 后再安装或迁移数据。仍在运行：${executable.split('/').at(-1)}（PID ${row.id}）。`), { code: 'DSH_DESKTOP_RUNNING' })
+    }
     if (!command.includes('dsh-desktop-host')) continue
     if (homes.some(home => command.includes(normalize(path.join(home, 'profiles'))))) throw Error('请完整退出使用源目录或目标目录的官方桌面，再迁移用户数据。')
   }

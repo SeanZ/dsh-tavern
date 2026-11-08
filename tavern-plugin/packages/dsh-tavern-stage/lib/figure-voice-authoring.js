@@ -11,7 +11,20 @@ const hash = value => createHash('sha256').update(canonical(value)).digest('hex'
 const same = (a, b) => canonical(a) === canonical(b)
 const fail = code => { throw Object.assign(new Error(code), {code}) }
 
-export function createFigureVoiceAuthoring({getLibrary,getTts,getSettings}) {
+// 配音后端 asks before deleting a service how many figures speak with it (Tts.registerUsageSource): every figure of the
+// installed packs whose 配音来源 that service speaks, by the same choice synthesis makes (tts.chooseService).
+export async function countServiceUsers({library, tts, serviceId}) {
+  const services = await tts.listServices()
+  let count = 0
+  for (const pack of await library.listPacks()) for (const figure of Object.values(pack.figures || {})) {
+    const binding = figure.voice, voice = binding && pack.manifest.voiceLibrary?.voices?.[binding.voice]
+    if (!voice || binding.source === null) continue
+    const source = voice.sources[binding.source ?? voice.defaultSource]
+    if (source && tts.chooseService(source, services)?.id === serviceId) count++
+  }
+  return {serviceId, count}
+}
+export function createFigureVoiceAuthoring({getLibrary,getTts}) {
   const previews = new Map(), confirmations = new Map()
   let disposed = false, epoch = 0
   function services() {
@@ -38,9 +51,8 @@ export function createFigureVoiceAuthoring({getLibrary,getTts,getSettings}) {
       const figure = pack?.figures[input.figureId]
       if (!figure) fail('ASSET_UNAVAILABLE')
       const voice = figure.voice && pack.manifest.voiceLibrary?.voices[figure.voice.voice]
-      // Browser speech needs no service: only a voice not picked yet is an issue.
-      const spoken = browserSpeechSource(voice, figure.voice)
-      const status = spoken ? {effective:null,issues:spoken.voiceName === undefined ? [{code:'VOICE_NOT_FOUND'}] : []} : voice && tts ? await tts.resolveVoiceService({voice,binding:figure.voice,defaults:getSettings().voiceServices || {}}) : {effective:null,issues:voice ? [{code:'SERVICE_REQUIRED'}] : []}
+      // Browser speech needs no service and no voice name (none = the system default): it has no issues.
+      const status = browserSpeechSource(voice, figure.voice) ? {effective:null,issues:[]} : voice && tts ? await tts.resolveVoiceService({voice,binding:figure.voice}) : {effective:null,issues:voice ? [{code:'SERVICE_REQUIRED'}] : []}
       return {packRevision:pack.revision,binding:figure.voice || null,voiceLibrary:pack.manifest.voiceLibrary || {version:1,voices:{}},...status,recommended:tts?.listRecommendedFishVoices?.().voices || []}
     },
     async choices() {
@@ -82,7 +94,7 @@ export function createFigureVoiceAuthoring({getLibrary,getTts,getSettings}) {
       const samples = {ja:'\u3053\u3093\u306b\u3061\u306f\u3002\u4eca\u65e5\u3082\u3088\u308d\u3057\u304f\u304a\u9858\u3044\u3057\u307e\u3059\u3002',zh:'\u4f60\u597d\uff0c\u4eca\u5929\u4e5f\u8bf7\u591a\u5173\u7167\u3002',en:'Hello. It is good to see you today.',ko:'\uc548\ub155\ud558\uc138\uc694. \uc624\ub298\ub3c4 \uc798 \ubd80\ud0c1\ud574\uc694.',yue:'\u4f60\u597d\uff0c\u4eca\u65e5\u90fd\u8acb\u591a\u591a\u6307\u6559\u3002'}
       const text = input.text ?? samples[language.toLowerCase().split('-')[0]] ?? samples.en
       if (typeof text !== 'string' || !text.trim() || text.length > 200 || text.includes('\0') || (input.mood !== undefined && (typeof input.mood !== 'string' || input.mood.length > 80 || input.mood.includes('\0')))) fail('INVALID_INPUT')
-      const resolution = await tts.resolveVoiceService({voice:spec,binding:voiceBinding,defaults:getSettings().voiceServices || {}}), binding = resolution.effective
+      const resolution = await tts.resolveVoiceService({voice:spec,binding:voiceBinding}), binding = resolution.effective
       if (!binding) fail(resolution.issues[0]?.code || 'SERVICE_REQUIRED')
       if (disposed || epoch !== started || getLibrary() !== library || getTts() !== tts) fail('PLUGIN_UNAVAILABLE')
       const request = {text,language,...(input.mood === undefined ? {} : {mood:input.mood})}
@@ -111,9 +123,10 @@ export function createFigureVoiceAuthoring({getLibrary,getTts,getSettings}) {
       if (!origin) fail('FORBIDDEN')
       const started = epoch, {library,tts} = services(), pack = await current(library,input,policy?.standalone), figure = pack.figures[input.figureId]
       const voiceBinding = policy?.voiceBinding || figure.voice
-      if (!figure.enabled || !voiceBinding) fail('VOICE_NOT_FOUND')
+      // The figure lamp is the stage's: a figure switched off (or the new-figure page's hidden draft) still auditions.
+      if (!voiceBinding) fail('VOICE_NOT_FOUND')
       const spec = policy?.spec || pack.manifest.voiceLibrary.voices[voiceBinding.voice]
-      const binding = await assetVoiceBinding(tts,getSettings().voiceServices || {},{voice:spec,binding:voiceBinding})
+      const binding = await assetVoiceBinding(tts,{voice:spec,binding:voiceBinding})
       if (policy && !same(binding, policy.binding)) fail('PREVIEW_CONFIRMATION_REQUIRED')
       if (!binding) fail('SERVICE_REQUIRED')
       // Billing is a generic provider capability; Tavern never distinguishes local/cloud backends.

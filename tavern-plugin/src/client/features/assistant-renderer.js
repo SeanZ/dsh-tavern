@@ -1,3 +1,49 @@
+        function tavernStoryInputChanged(hostWindow, sessionId) {
+            if (typeof hostWindow.dispatchEvent === "function" && typeof hostWindow.CustomEvent === "function") {
+                hostWindow.dispatchEvent(new hostWindow.CustomEvent("dsh-tavern-story-mutated", { detail: { sessionId: sessionId } }));
+            }
+        }
+        async function persistTavernPlayerInput(hostWindow, sessionId, text, requestId) {
+            const saved = await rpc("appendPlayerInput", { sessionId: sessionId, requestId: requestId, text: text }, sessionId);
+            if (saved?.saved === true) tavernStoryInputChanged(hostWindow, sessionId);
+            return saved;
+        }
+        // The host's visible composer owns its own submit pipeline. Observe its
+        // existing request id and persist that player row independently of prompt/LLM.
+        function installTavernPlayerInputPersistence(ctx, hostWindow) {
+            hostWindow = hostWindow || window;
+            if (typeof ctx?.sessions?.binding !== "function" || typeof ctx?.sessions?.list?.subscribe !== "function") return function () {};
+            const originals = new Map();
+            function install(sessionId) {
+                const session = ctx.sessions.binding(sessionId)?.session;
+                if (!session || originals.has(session) || typeof session.beginSubmission !== "function") return;
+                const begin = session.beginSubmission;
+                function wrapped(input) {
+                    const handle = begin.call(session, input);
+                    const text = typeof input?.text === "string" ? input.text.trim() : "";
+                    if (handle?.requestId && text) Promise.resolve()
+                        .then(function () { return persistTavernPlayerInput(hostWindow, sessionId, text, handle.requestId); })
+                        .catch(function (error) {
+                            if (typeof tavernErrorHub !== "undefined") tavernErrorHub.report("保存玩家输入", error);
+                            else console.warn("dsh-tavern: 保存玩家输入失败", error);
+                        });
+                    return handle;
+                }
+                originals.set(session, { begin: begin, wrapped: wrapped });
+                session.beginSubmission = wrapped;
+            }
+            function sync() {
+                const snapshot = ctx.sessions.list.getSnapshot();
+                for (const sessionId of Object.keys(snapshot?.byId || {})) install(sessionId);
+            }
+            const stop = ctx.sessions.list.subscribe(sync);
+            sync();
+            return function () {
+                stop();
+                for (const [session, record] of originals) if (session.beginSubmission === record.wrapped) session.beginSubmission = record.begin;
+                originals.clear();
+            };
+        }
 		function createTavernFrameSlashExecutor(ctx, hostWindow) {
 			hostWindow = hostWindow || window;
             // A deliberately bounded, read-only subset of ST slash commands. Parse
@@ -98,15 +144,27 @@
 				} catch (_) {}
 				return "";
 			}
+            function createSubmissionRequestId() {
+                return hostWindow.crypto?.randomUUID?.() || "tavern-input-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+            }
+            function storyChanged(sessionId) { tavernStoryInputChanged(hostWindow, sessionId); }
+            function persistPlayerInput(sessionId, text, requestId) {
+                return persistTavernPlayerInput(hostWindow, sessionId, text, requestId);
+            }
+			const pendingSend = new Map();
+            const submitting = new Set();
 			const execute = function (line, sessionId, options) {
                 if (options && typeof options.inputText === "string") {
                     const text = options.inputText.trim();
                     const binding = ctx.sessions.binding(sessionId);
                     if (!text || !binding) return Promise.reject(new Error("开局消息为空或原对话已关闭"));
-                    return Promise.resolve(binding.session.prompt([{ type:"text", text:text }], "queue")).then(function (result) {
-                        if (!result?.ok) throw new Error(result?.error?.message || "消息发送失败");
-                        return { submitted:true };
-                    });
+                    const requestId = createSubmissionRequestId();
+                    return persistPlayerInput(sessionId, text, requestId)
+                        .then(function () { return binding.session.prompt([{ type:"text", text:text }], "queue", undefined, requestId); })
+                        .then(function (result) {
+                            if (!result?.ok) throw new Error(result?.error?.message || "消息发送失败");
+                            return { submitted:true };
+                        });
                 }
                 if (/^\s*\/(?:pass|return|findentry|findlore|findwi)(?:\s|$)/i.test(String(line))) return executeReadPipeline(String(line), sessionId);
                 if (/^\/ejs(?:-refresh)?(?:\s|$)/.test(String(line))) return rpc("executeFullTemplateCommand", {text:line}, sessionId).then(function(result){return result.pipe;});
@@ -121,9 +179,11 @@
                     error.code = "UNSUPPORTED_SLASH_PIPELINE";
                     return Promise.reject(error);
                 }
-				const match = /^\/send\s+([\s\S]+)\|\s*\/trigger\s*$/.exec(String(line || ""));
-				const triggerOnly = /^\/trigger\s*$/.test(String(line || ""));
-				if (!draftMatch && !triggerOnly && (!match || !match[1].trim())) {
+				const match = /^\/send\s+([\s\S]+?)\s*\|\s*\/trigger(?:\s+await=(true|false))?\s*$/i.exec(String(line || ""));
+				const sendOnly = !pipes.length ? /^\/send\s+([\s\S]+)$/.exec(String(line || "")) : null;
+				const triggerMatch = /^\/trigger(?:\s+await=(true|false))?\s*$/i.exec(String(line || ""));
+				const triggerOnly = Boolean(triggerMatch);
+				if (!draftMatch && !triggerOnly && (!sendOnly || !sendOnly[1].trim()) && (!match || !match[1].trim())) {
                     if (!ctx.remote?.commands?.execute) return Promise.reject(new Error("当前酒馆没有注册这条命令"));
                     return ctx.remote.commands.execute(sessionId, String(line), []).then(function (execution) {
                         if (!execution) throw new Error("当前酒馆没有注册这条命令");
@@ -135,54 +195,115 @@
 				const conversation = ctx.get("conversation");
 				if (!actx || !conversation) return Promise.reject(new Error("当前对话输入框不可用"));
 				const input = conversation.input.for(actx);
-				if (draftMatch) { input.setDraft(draftMatch[1] || ""); return Promise.resolve({ drafted: true }); }
-				const binding = triggerOnly && ctx.sessions.binding(sessionId);
+				if (draftMatch) { pendingSend.delete(sessionId); input.setDraft(draftMatch[1] || ""); return Promise.resolve({ drafted: true }); }
+				if (sendOnly) {
+					pendingSend.set(sessionId, { text: sendOnly[1], at: Date.now() });
+					input.setDraft(sendOnly[1]);
+					return Promise.resolve({ drafted: true, deferred: true, pipe: "" });
+				}
+                if (submitting.has(sessionId)) return Promise.reject(new Error("本局正在提交生成，请等待当前操作完成"));
+                function actualDraft() {
+                    const state = input.state && typeof input.state.getSnapshot === "function" ? input.state.getSnapshot() : null;
+                    return state && typeof state.draft === "string" ? state.draft : undefined;
+                }
+				let pendingEntry = pendingSend.get(sessionId);
+                const draft = actualDraft();
+                if (pendingEntry && (Date.now() - pendingEntry.at > 15000 || (draft !== undefined && draft !== pendingEntry.text))) {
+                    pendingSend.delete(sessionId);
+                    pendingEntry = undefined;
+                }
+				const stagedSend = triggerOnly && pendingEntry ? pendingEntry.text : undefined;
+				const submitDraftText = match ? match[1] : stagedSend;
+				const useNativeTrigger = triggerOnly && submitDraftText === undefined;
+				const binding = ctx.sessions.binding(sessionId);
+                let submissionAccepted = false;
+                if (submitDraftText !== undefined && pendingEntry && !pendingEntry.requestId) pendingEntry.requestId = createSubmissionRequestId();
+                const submissionRequestId = submitDraftText === undefined ? null : pendingEntry ? pendingEntry.requestId : createSubmissionRequestId();
                 // DSH requires nonempty prompt content. Helper messages are already
                 // persisted; admit a continuation without resending them or touching the draft.
                 const triggerContent = [{ type: "text", text: "继续。" }];
-                // Template execution owns the generation queue; waiting here would deadlock it.
-                if (options?.waitForCompletion === false) {
-                    if (triggerOnly) return Promise.resolve(binding.session.prompt(triggerContent, "queue")).then(function(result) {
-                        if (!result?.ok) throw new Error(result?.error?.message || "生成提交失败");
-                        return {submitted:true};
-                    });
-                    input.setDraft(match[1]);
-                    return Promise.resolve(input.submit("queue")).then(function(){return {submitted:true};});
+                const waitForCompletion = options?.waitForCompletion !== false && String((match && match[2]) || (triggerMatch && triggerMatch[1]) || "").toLowerCase() !== "false";
+                function consumePending() {
+                    if (pendingSend.get(sessionId) === pendingEntry) pendingSend.delete(sessionId);
                 }
-				const sessions = ctx.sessions.list;
-				return new Promise(function (resolve, reject) {
-					let observedRun = false;
-					let settled = false;
-					let stop = function () {};
-					let timer = null;
-					function finish(error) {
-						if (settled) return;
-						settled = true;
-						hostWindow.clearTimeout(timer);
-						stop();
-						if (error) reject(error); else resolve({ submitted: true });
-					}
-					function inspect() {
-						const summary = sessions.getSnapshot().byId[sessionId];
-						if (!summary) { finish(new Error("当前对话已关闭")); return; }
-						if (summary.running === true) observedRun = true;
-						else if (observedRun) finish();
-					}
-					stop = sessions.subscribe(inspect);
-					timer = hostWindow.setTimeout(function () { finish(new Error("等待开局生成完成超时")); }, 15 * 60 * 1000);
-					try {
-						if (triggerOnly) {
-							// Helper messages are already persisted and projected into the next request.
-							Promise.resolve(binding.session.prompt(triggerContent, "queue")).then(function (result) {
-								if (!result || !result.ok) finish(new Error(result && result.error && result.error.message || "开局生成提交失败"));
-							}, finish);
-						} else {
-							input.setDraft(match[1]);
-							input.submit("queue");
-						}
-						inspect();
-					} catch (error) { finish(error); }
-				});
+                function submit() {
+                    if (stagedSend !== undefined) {
+                        const currentDraft = actualDraft();
+                        if (pendingSend.get(sessionId) !== pendingEntry || (currentDraft !== undefined && currentDraft !== stagedSend)) {
+                            throw new Error("输入草稿已变化，请重新发送");
+                        }
+                    }
+                    if (!binding?.session) throw new Error("当前对话已关闭");
+                    if (useNativeTrigger) return binding.session.prompt(triggerContent, "queue");
+                    return binding.session.prompt([{ type: "text", text: submitDraftText }], "queue", undefined, submissionRequestId);
+                }
+                function accept(result) {
+                    if (!result?.ok) throw new Error(result?.error?.message || "生成提交失败");
+                    submissionAccepted = true;
+                    if (submitDraftText !== undefined && actualDraft() === submitDraftText) input.setDraft("");
+                    consumePending();
+                    // The player row was saved before generation. Acceptance only adds
+                    // the assistant placeholder to that same story projection.
+                    storyChanged(sessionId);
+                }
+                function submitTurn() {
+                    // Template execution owns the generation queue; waiting here would deadlock it.
+                    if (!waitForCompletion) {
+                        return Promise.resolve().then(submit).then(function(result) { accept(result); return {submitted:true}; });
+                    }
+                    const sessions = ctx.sessions.list;
+                    return new Promise(function (resolve, reject) {
+                        let observedRun = false;
+                        let accepted = false;
+                        let runFinished = false;
+                        let settled = false;
+                        let stop = function () {};
+                        let timer = null;
+                        function finish(error) {
+                            if (settled) return;
+                            settled = true;
+                            hostWindow.clearTimeout(timer);
+                            stop();
+                            if (error) reject(error); else resolve({ submitted: true });
+                        }
+                        function inspect() {
+                            const summary = sessions.getSnapshot().byId[sessionId];
+                            if (!summary) { finish(new Error("当前对话已关闭")); return; }
+                            if (summary.running === true) observedRun = true;
+                            else if (observedRun) { runFinished = true; if (accepted) finish(); }
+                        }
+                        stop = sessions.subscribe(inspect);
+                        timer = hostWindow.setTimeout(function () { finish(new Error("等待开局生成完成超时")); }, 15 * 60 * 1000);
+                        try {
+                            Promise.resolve(submit()).then(function (result) {
+                                accept(result);
+                                accepted = true;
+                                if (runFinished) finish(); else inspect();
+                            }).catch(finish);
+                            inspect();
+                        } catch (error) { finish(error); }
+                    });
+                }
+                // Reserve synchronously so concurrent triggers cannot consume one staged send twice.
+                submitting.add(sessionId);
+                return Promise.resolve().then(function () {
+                    // Saving the player row is independent of Session/LLM acceptance.
+                    if (submitDraftText !== undefined) return persistPlayerInput(sessionId, submitDraftText, submissionRequestId);
+                }).then(function () {
+                    if (typeof flushTavernSessionFramesBeforeGenerate === "function") return flushTavernSessionFramesBeforeGenerate(sessionId);
+                }).then(submitTurn).catch(function (error) {
+                    // Keep the same request id for a retry. appendPlayerInput is
+                    // idempotent, and a saved player row is never abandoned here.
+                    if (!submissionAccepted && submitDraftText !== undefined) {
+                        if (pendingEntry && pendingSend.get(sessionId) === pendingEntry) pendingEntry.at = Date.now();
+                        else if (!pendingEntry) {
+                            pendingEntry = { text: submitDraftText, at: Date.now(), requestId: submissionRequestId };
+                            pendingSend.set(sessionId, pendingEntry);
+                            if (actualDraft() === "") input.setDraft(submitDraftText);
+                        }
+                    }
+                    throw error;
+                }).finally(function () { submitting.delete(sessionId); });
 			};
 			execute.readInput = readInputDraft;
 			return execute;
@@ -248,7 +369,7 @@
 				const location = props.node.location;
 				const turnRef = location && (location.kind === "turn" || location.kind === "step") ? location.turn : null;
 				const turn = turnRef ? Number(turnRef.turn) : 0;
-				const liveState = useScopedLiveTavernView(props.sessionId, String(data.time || ""), [["mode"], ["canEditBody"], ["replayFailedTurn"], ["editableUserInputTurns"], ["failedUserInputTurns"], ["transcriptTurns"], ["transcriptFrom"], ["inputSources", String(turn)], ["inputTemplateDisplays", String(turn)], ["userInputEdits", String(turn)]]);
+				const liveState = useScopedLiveTavernView(props.sessionId, String(data.time || ""), [["mode"], ["canEditBody"], ["failedTailTurn"], ["editableUserInputTurns"], ["failedUserInputTurns"], ["transcriptTurns"], ["transcriptFrom"], ["inputSources", String(turn)], ["inputTemplateDisplays", String(turn)], ["userInputEdits", String(turn)]]);
 				const parts = userContentParts(data.content);
 				// The host keeps rendering the original append node; an edited player
 				// input is carried back by the view instead (see bodyEditor.saveUser).
@@ -324,12 +445,13 @@
 					React.createElement("div", { className: "dsh-tavern-user-actions" }, time ? React.createElement("span", null, time) : null,
 						canEdit ? React.createElement(DshUi.Tooltip, { label: "编辑这条输入", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-edit", "aria-label": "编辑这条输入", disabled: editBusy, onClick: edit }, React.createElement(DshUi.IconEditOutlineRegular, null))) : null,
 						canFork ? React.createElement(DshUi.Tooltip, { label: forking ? "正在分叉…" : "从这一轮分叉", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-fork", "aria-label": "从这一轮分叉", disabled: forking, onClick: fork }, React.createElement(DshUi.IconBranchOutlineRegular, null))) : null,
-						React.createElement(DshUi.Tooltip, { label: copied ? "已复制" : "复制", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-copy", "aria-label": copied ? "已复制" : "复制", onClick: copy }, React.createElement(copied ? DshUi.IconCheckOutlineRegular : DshUi.IconCopyOutlineRegular, null))))
+						React.createElement(DshUi.Tooltip, { label: copied ? "已复制" : "复制", side: "bottom" }, React.createElement("button", { type: "button", className: "dsh-tavern-user-copy", "aria-label": copied ? "已复制" : "复制", onClick: copy }, React.createElement(copied ? DshUi.IconCheckOutlineRegular : DshUi.IconCopyOutlineRegular, null))),
+						React.createElement(messageDeletionFeature.Checkbox, { sessionId: props.sessionId, selector: messageDeletionFeature.userSelector(turn, data) }))
 				);
 			}
 			function tavernAssistantViewPaths(turn, eager = true) {
 				return ["mode", eager ? "tavernHelper" : "$helperAvailable",
-					"cardSave", "tavernRuntimePolicy", "tavernMvuRuntime", "statusBarPlacement", "regenInProgress", "replacingDshTurns", "suppressedDshTurns"].map(field => [field]).concat([["$projectionTurn", String(turn)], ["$projectionLatestTurn", String(turn)]]);
+					"cardSave", "tavernRuntimePolicy", "tavernMvuRuntime", "statusBarPlacement", "regenInProgress", "replacingDshTurns", "suppressedDshTurns", "displayRoundOrder"].map(field => [field]).concat([["$projectionTurn", String(turn)], ["$projectionLatestTurn", String(turn)]]);
 			}
 			function tavernReceiptViewPaths(turn, receipt, latest) {
 				const paths = [["$mvuReceiptTurn", String(turn)], ["$settlementOwner", String(turn)], ["polishedTurns"], ["autoPolishedTurns"]];
@@ -418,6 +540,9 @@
 			// an IntersectionObserver is the backstop (resize, leaving the stage). Floors only go from placeholder to
 			// mounted. The stage text index, 履历, jumps and voice read the session, not this DOM.
 			const TAVERN_EAGER_FLOORS = 1;
+			// Floors this many turns back (and the newest) stay out of content-visibility. 4 is an assumption:
+			// it covers the floor a send leaves on screen plus the few the reader scrolls back through.
+			const TAVERN_RECENT_FLOORS = 4;
 			const TAVERN_DEFERRED_FLOOR_VIEWPORTS = 1.5;
 			const tavernDeferredFloors = (function () {
 				const pending = new Map(), observers = new WeakMap();
@@ -598,6 +723,8 @@
 				const ownsTurn = !tail || !tail.closing || !data.finalNode || tail.closing.finalNode.seq === data.finalNode.seq;
 					const projection = settled && ownsTurn ? tavernProjectionForTurn(liveState.view, storyTurn) : null;
 					const latestProjectionTurn = tavernLatestProjectionTurn(liveState.view);
+				const roundDistance = storyTurn > 0 && latestProjectionTurn > 0
+					? tavernRoundOrdinal(liveState.view, latestProjectionTurn) - tavernRoundOrdinal(liveState.view, storyTurn) : 0;
 				const [renderRound, setRenderRound] = React.useState(false);
 				const outsideHtmlWindow = useTavernHtmlDeferred(props.sessionId, storyTurn);
 				const deferHtml = !renderRound && outsideHtmlWindow ? function () { setRenderRound(true); } : null;
@@ -623,7 +750,11 @@
 					if (!turnRef || turnRef.status !== "closed" || !data.finalNode || !tail || !tail.closing || tail.closing.finalNode.seq !== data.finalNode.seq) return undefined;
 					return { turn: turnRef, seq: data.finalNode.seq, openFile: props.openFile };
 				}, [turnRef, data.finalNode, tail, props.openFile]);
-				const mentions = React.useMemo(function () { return owner === undefined ? undefined : typeof props.fileMentions === "function" ? props.fileMentions(owner) : props.hostFileMentions(owner, props.sessionId); }, [owner, props.fileMentions, props.hostFileMentions, props.sessionId]);
+				// DSH 0.2.1 routed fileMentions to every chat node; 0.2.2 only injects it into its own
+				// assistant renderer, so ours supplies tavernFileMentions. A throw here would make the
+				// slot abdicate to the native renderer and show the card's raw tags.
+				const fileMentions = typeof props.fileMentions === "function" ? props.fileMentions : props.tavernFileMentions;
+				const mentions = React.useMemo(function () { return owner === undefined || typeof fileMentions !== "function" ? undefined : fileMentions(owner); }, [owner, fileMentions]);
 				const copyLabel = props.t ? props.t("copy") : "复制", copiedLabel = props.t ? props.t("copied") : "已复制";
 				const codeLabels = React.useMemo(() => ({ copyLabel, copiedLabel }), [copyLabel, copiedLabel]);
 				const superseded = galIsSuperseded(liveState.view, turn, storyTurn);
@@ -651,21 +782,32 @@
                     tavernReplyRunWatch.mark(props.sessionId, replyMessageId);
                     if (historyNode.current) tavernReplyReveal(historyNode.current, { host: window });
                 }, [props.sessionId, replyMessageId, replyText, playView, settled]);
+                // 正文一旦画在屏幕上就记下来：之后计划重算想把这行收掉时，除非同一段正文已经
+                // 在别的行上画着（那才叫"搬走"），这一行必须留着（turn-history.js tavernShownBodies）。
+                React.useLayoutEffect(function () {
+                    if (!ownsTurn || replyText.trim() === "") return;
+                    tavernShownBodies.remember(props.sessionId, turn, storyTurn);
+                }, [props.sessionId, turn, storyTurn, replyText, ownsTurn]);
+                const rowPlan = tavernPlanOf(liveState.view);
                 // The host chat store knows the latest turn before the Tavern view has loaded (a reload, a cold chat).
                 const latestDshTurn = useTavernLatestDshTurn(props.useChat);
-                const eagerFloor = latestDshTurn !== null && turn > 0 && turn === latestDshTurn || storyTurn > 0 && latestProjectionTurn > 0 && latestProjectionTurn - storyTurn < TAVERN_EAGER_FLOORS;
+                const eagerFloor = latestDshTurn !== null && turn > 0 && turn === latestDshTurn || storyTurn > 0 && latestProjectionTurn > 0 && roundDistance < TAVERN_EAGER_FLOORS;
                 const deferredFloor = useTavernDeferredFloor(historyNode, settled && !eagerFloor && (data.blocks || []).length > 0, !sessionTransitioning && !waitingForHistory);
                 const deferredFloorText = React.useMemo(function () { return tavernFloorMeasureText(data.blocks); }, [data.blocks]);
                 const deferredFloorReserve = useTavernDeferredFloorReserve(historyNode, deferredFloor, settled, deferredFloorText, props.sessionId, storyTurn || turn);
                 // the newest floor is on screen when the chat opens; tavern.css keeps it out of
                 // content-visibility, so the deferred floors measure it at its real height, not the 800 px estimate.
                 const floorShown = data.status === "running" || data.status === "interrupted" || (data.blocks || []).length > 0;
+                // A floor that just stopped being the newest is still on screen after a send (the host scrolls to the
+                // bottom); tavern.css keeps it, and its paragraphs, out of content-visibility (data-fork-recent-floor).
+                const recentFloor = eagerFloor || turn > 0 && latestDshTurn !== null && turn <= latestDshTurn && latestDshTurn - turn <= TAVERN_RECENT_FLOORS;
                 React.useLayoutEffect(function () {
-                    const item = eagerFloor && historyNode.current ? historyNode.current.closest('[class*="_flowItem"]') : null;
+                    const attribute = eagerFloor ? "data-fork-latest-floor" : "data-fork-recent-floor";
+                    const item = recentFloor && historyNode.current ? historyNode.current.closest('[class*="_flowItem"]') : null;
                     if (!item) return;
-                    item.setAttribute("data-fork-latest-floor", "");
-                    return function () { item.removeAttribute("data-fork-latest-floor"); };
-                }, [eagerFloor, floorShown]);
+                    item.setAttribute(attribute, "");
+                    return function () { item.removeAttribute(attribute); };
+                }, [recentFloor, eagerFloor, floorShown]);
                 const rendered = sessionTransitioning ? [React.createElement("div", { key: "switching", className: "dsh-tavern-session-switching", role: "status" }, "正在完成游戏初始化…")] : waitingForHistory ? [React.createElement("div", {key:"history",role:"status"}, "正在读取历史内容…")] : deferredFloor ? [] : renderTavernAssistantBlocks({
 					// Publish native identity and this node's regeneration decision, not the whole view.
 					forkStageSource,
@@ -698,10 +840,13 @@
 					mentions: mentions,
 					t: props.t
 				});
-				const distantHeight = useTavernDistantFloor(historyNode, !deferredFloor && settled && !sessionTransitioning && storyTurn > 0 && latestProjectionTurn - storyTurn >= TAVERN_LIVE_FLOORS);
+				const distantHeight = useTavernDistantFloor(historyNode, !deferredFloor && settled && !sessionTransitioning && storyTurn > 0 && roundDistance >= TAVERN_LIVE_FLOORS);
 				// A reply the row plan does not draw (an old body being regenerated, a repair
 				// copy): its row is hidden; render nothing into it either. After all hooks.
-				if (!tavernPlanShowsRow(tavernPlanOf(liveState.view), String(turn), "assistant-step")) return null;
+				// 例外：这一行已经显示过正文，而计划这次并没有在别的行上画同一段正文——那不是
+				// 搬家而是抹掉，留着这行（turn-history.js tavernShownBodies）。
+				if (!tavernPlanShowsRow(rowPlan, String(turn), "assistant-step")
+					&& !tavernPlanErasesRowForRender(props.sessionId, rowPlan, turn, liveState.view?.regenInProgress === true)) return null;
 				if (deferredFloor) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-deferred-floor": true, "data-deferred-reserve": deferredFloorReserve > 0 ? "measured" : "fallback", style: { minHeight: (deferredFloorReserve || tavernTextMeasureFallback()) + "px" } });
 				if (!(data.status === "running" || data.status === "interrupted" || rendered.length > 0)) return null;
 				if (distantHeight > 0) return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-distant-floor": true, style: { height: distantHeight + "px" } });
@@ -715,14 +860,16 @@
 					: null;
 				const foldKey = props.sessionId + ":" + turn;
 				const foldOpen = fold !== null && tavernReplyFoldOpen.has(foldKey);
+				const deletionNode = data.finalNode ? React.createElement(messageDeletionFeature.Checkbox, { sessionId: props.sessionId,
+					selector: messageDeletionFeature.assistantSelector(turn, storyTurn, data) }) : null;
 				if (fold !== null && !foldOpen) {
-					return React.createElement("button", {
+					return React.createElement("div", { ref: historyNode, className: "dsh-tavern-assistant" }, deletionNode, React.createElement("button", {
 						type: "button", className: "dsh-tavern-assistant-fold", "aria-expanded": false, title: "展开这一轮的原文",
 						onClick: function () { tavernReplyFoldOpen.add(foldKey); setFoldRevision(function (value) { return value + 1; }); }
 					},
 						React.createElement("span", { className: "dsh-tavern-assistant-fold-paw", "aria-hidden": true }, "🐾"),
 						React.createElement("b", null, fold.summary),
-						React.createElement("span", { className: "dsh-tavern-assistant-fold-hint" }, "· 展开"));
+						React.createElement("span", { className: "dsh-tavern-assistant-fold-hint" }, "· 展开")));
 				}
 				const foldBack = foldOpen ? React.createElement("button", {
 					type: "button", className: "dsh-tavern-assistant-fold-back", "aria-expanded": true, title: "收起到一行",
@@ -758,7 +905,8 @@
 				// the round's tavern_roll results lead its story text (dice-roll.js).
 				const diceNode = typeof props.useChat === "function" ? tavernStageBoundary("骰子", React.createElement(DiceRolls, { useChat: props.useChat, nativeTurn: turn, nodeKey: props.node.key })) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
-				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, foldBack, diceNode, body, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
+				const gameSurface = playView && settled && storyTurn === latestProjectionTurn ? React.createElement(tavernReplyObserverFeature.GameModeSurface, { key: props.sessionId, sessionId: props.sessionId }) : null;
+				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, deletionNode, foldBack, diceNode, body, gameSurface, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}
 			function TavernForkAssistantAction(props) {
 				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["forkTurnsByMessageId", String(props.messageId || "")]]);
@@ -804,25 +952,19 @@
 				const [manualBusy, setManualBusy] = React.useState(false);
 				const buttonRef = React.useRef(null);
 				const instructionRef = React.useRef(null);
-				const pressRef = React.useRef(null), suppressClickRef = React.useRef(false), submitLockRef = React.useRef(false), manualOpenRef = React.useRef(false);
+				const submitLockRef = React.useRef(false), manualOpenRef = React.useRef(false);
 				const instructionTitleId = React.useId();
-				function clearPress() {
-					if (pressRef.current) clearTimeout(pressRef.current.timer);
-					pressRef.current = null;
-				}
 				function openManual() {
-					if (busy || props.disabled) return;
-					suppressClickRef.current = true;
-					if (manualOpenRef.current) return;
+					if (manualOpenRef.current || props.disabled) return;
 					manualOpenRef.current = true;
-					clearPress();
 					setManualError("");
 					setInstruction("");
 					setManualOpen(true);
 				}
+				const press = useTavernIllustratePress(busy || props.disabled, draw, openManual);
 				function closeManual() {
 					manualOpenRef.current = false;
-					suppressClickRef.current = false;
+					press.release();
 					setManualOpen(false);
 					setInstruction("");
 					setManualError("");
@@ -842,15 +984,20 @@
 					submitLockRef.current = true;
 					setManualBusy(true);
 					setManualError("");
-					try {
-						await runTavernIllustrator(props.illustrator, props.sessionId, props.turn, instruction);
-						closeManual();
-						setInstruction("");
-					} catch (error) {
-						setManualError(String(error && error.message || error));
-					} finally {
+					// Closes once the illustrator has taken the request; the pictures' progress shows in the turn's text.
+					let accepted = false;
+					function accept() {
+						accepted = true;
 						submitLockRef.current = false;
 						setManualBusy(false);
+						closeManual();
+					}
+					try {
+						await runTavernIllustrator(props.illustrator, props.sessionId, props.turn, instruction, accept);
+					} catch (error) {
+						if (!accepted) setManualError(String(error && error.message || error));
+					} finally {
+						if (!accepted) { submitLockRef.current = false; setManualBusy(false); }
 					}
 				}
 				React.useEffect(function () {
@@ -869,38 +1016,11 @@
 					});
 					return function () { cancelAnimationFrame(frame); };
 				}, [manualOpen]);
-				React.useEffect(function () { if (props.disabled) clearPress(); }, [props.disabled]);
-				React.useEffect(function () { return function () { clearPress(); }; }, []);
 				const label = busy ? "正在整理画面…" : "为这一轮配图";
 				return React.createElement(React.Fragment, null,
 					React.createElement(DshUi.Tooltip, { label: label, side: "bottom" },
-						React.createElement("button", { ref: buttonRef, type: "button", className: "dsh-tavern-message-fork dsh-tavern-message-illustrate" + (props.className ? " " + props.className : ""), "aria-label": label, title: "点击直接配图；长按或右键填写本次画面要求", disabled: busy || props.disabled, onClick: function (event) {
-							if (suppressClickRef.current) { suppressClickRef.current = false; event.preventDefault(); return; }
-							return draw();
-						},
-						onPointerDown: function (event) {
-							if (busy || props.disabled || event.button !== 0 || event.isPrimary === false) return;
-							suppressClickRef.current = false;
-							clearPress();
-						const press = { id: event.pointerId, x: event.clientX, y: event.clientY, timer: null };
-						press.timer = setTimeout(function () {
-							if (pressRef.current !== press) return;
-							pressRef.current = null;
-							suppressClickRef.current = true;
-							openManual();
-						}, 550);
-						pressRef.current = press;
-						},
-						onPointerMove: function (event) {
-							const press = pressRef.current;
-							if (press && press.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 10) { clearPress(); suppressClickRef.current = true; }
-						},
-						onPointerUp: function (event) { if (pressRef.current && pressRef.current.id === event.pointerId) clearPress(); },
-						onPointerCancel: function () { if (pressRef.current) suppressClickRef.current = true; clearPress(); },
-						onPointerLeave: function () { if (pressRef.current) { clearPress(); suppressClickRef.current = true; } },
-						onContextMenu: function (event) { event.preventDefault(); openManual(); },
-						onKeyDown: function (event) { if (event.shiftKey && event.key === "F10") { event.preventDefault(); openManual(); } }
-						}, React.createElement(TavernIllustrateIcon, null))),
+						React.createElement("button", Object.assign({ ref: buttonRef, type: "button", className: props.className || "dsh-tavern-message-fork dsh-tavern-message-illustrate", "aria-label": label, title: TAVERN_ILLUSTRATE_TITLE, disabled: busy || props.disabled }, press.handlers),
+							React.createElement(TavernIllustrateIcon, null))),
 					manualOpen ? React.createElement("section", { className: "dsh-tavern-illustration-instructions", "aria-labelledby": instructionTitleId },
 						React.createElement("form", { onSubmit: submitManual, onKeyDown: function (event) { if (event.key === "Escape" && !manualBusy) { event.preventDefault(); closeManual(); } } },
 							React.createElement("h2", { id: instructionTitleId, style: { margin: "0 0 6px", fontSize: "16px" } }, "本次配图要求"),
@@ -924,10 +1044,8 @@
 				function resolveUiWorkspace() {
 					try { return input.ctx.get("uiWorkspace") || null; } catch (_) { return null; }
 				}
-				const scriptOwner = createTavernScriptSessionOwner({ sessions: createSessionCompat(input.ctx.sessions, resolveUiWorkspace()), executeSlash: createTavernFrameSlashExecutor(input.ctx) });
 				const executeSlash = createTavernFrameSlashExecutor(input.ctx);
-				// alpha.3 将文件引用移到公开服务；旧宿主仍优先使用行参数。
-				const hostFileMentions = (owner, sessionId, getFileTriggerProps) => input.ctx.get("chatFileMentions")?.forClosing(owner, sessionId, getFileTriggerProps);
+				const scriptOwner = createTavernScriptSessionOwner({ sessions: createSessionCompat(input.ctx.sessions, resolveUiWorkspace()), executeSlash: executeSlash });
 				input.ctx.effect(function () {
 					scriptOwner.start();
 					return function () { scriptOwner.dispose(); };
@@ -941,18 +1059,24 @@
 					return input.slots.inject("conversation.chat.node", function () { return input.slots.register({
 						name: "conversation.chat.node",
 						key: "assistant-step",
-						priority: -1
+						priority: -1,
+						inject: function (sessionId) { return { tavernFileMentions: function (owner) {
+							let service = null;
+							try { service = input.ctx.get("chatFileMentions") || null; } catch (_) { service = null; }
+							return service && typeof service.forClosing === "function" ? service.forClosing(owner, sessionId) : undefined;
+						} }; }
 					}, function (props) {
 						// Hide only our model-facing seed; keep it in Session history and requests.
 						if (props.node.data.finalNode && /^tavern-seed-trajectory:v1:.+:2$/.test(String(props.node.data.finalNode.messageId || ""))) return null;
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
 						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
-						// A reply the row plan does not draw (an old body being regenerated, a repair copy).
-						const data = props.node.data;
-						return React.createElement(TavernPlannedRow, { sessionId: props.sessionId, turn: nodeTurn(props.node), kind: "assistant-step",
-							revision: String(data.status || "") + ":" + String(data.finalNode && data.finalNode.seq || "") },
-							React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash, hostFileMentions: hostFileMentions })));
+						if (String(props.node.data.finalNode?.messageId || '').startsWith('tavern-game-mode:')) {
+							return React.createElement('section', { className: 'dsh-tavern-game-foreground', 'aria-label': 'DM 前台记录' },
+								React.createElement('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8 } }, (props.node.data.blocks || []).filter(block => block.kind === 'text').map(block => block.text).join('\n')),
+								React.createElement(tavernReplyObserverFeature.GameModeSurface, { sessionId: props.sessionId, foreground: true, messageId: props.node.data.finalNode.messageId }));
+						}
+						return React.createElement(TavernAssistantNodeView, Object.assign({}, props, { executeSlash: executeSlash }));
 					}); });
 				}, "dsh-tavern: inline assistant renderer");
 				chatEffect(function () {

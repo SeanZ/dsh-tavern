@@ -10,21 +10,27 @@ export pnpm_config_registry="$npm_config_registry"
 export pnpm_config_update_notifier=false
 
 INSTALL_HOST=${DSH_TAVERN_HOST:-desktop}
+LAUNCHER_ONLY=0
+if [ "${1:-}" = "--launcher-only" ]; then
+  LAUNCHER_ONLY=1
+  [ "$INSTALL_HOST" != cli ] || { echo '安装失败：--launcher-only 需要桌面宿主。' >&2; exit 1; }
+fi
 case ${INSTALL_HOST} in
-  desktop|cli) ;;
-  *) echo "安装失败：只支持官方桌面和独立命令行，不支持宿主 ${INSTALL_HOST}" >&2; exit 1 ;;
+  desktop|next|cli) ;;
+  *) echo "安装失败：不支持宿主 ${INSTALL_HOST}" >&2; exit 1 ;;
 esac
 
 REPOSITORY=${DSH_TAVERN_REPOSITORY:-flizzywine/dsh-tavern}
 REPOSITORY_URL=${DSH_TAVERN_GIT_URL:-https://github.com/${REPOSITORY}.git}
 ARCHIVE_URL=${DSH_TAVERN_ARCHIVE_URL:-https://codeload.github.com/${REPOSITORY}/tar.gz/refs/heads/main}
 COMMIT_URL=${DSH_TAVERN_COMMIT_URL:-https://api.github.com/repos/${REPOSITORY}/commits/main}
-CDN_METADATA_URL=${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/${REPOSITORY}@main/dsh-tavern-runtime.json}
+CDN_METADATA_URL=${DSH_TAVERN_CDN_METADATA_URL:-https://cdn.jsdelivr.net/gh/${REPOSITORY}@runtime-archive-main/dsh-tavern-runtime.json}
 CDN_ROOT_URL=${DSH_TAVERN_CDN_ROOT_URL:-https://cdn.jsdelivr.net/gh/${REPOSITORY}}
 # This installer's release (package.json, written by bin/build-installer-scripts.mjs): never install older code.
 INSTALLER_VERSION='3.2.0'
 LEGACY_DSH_ROOT=${DSH_TAVERN_LEGACY_DSH_HOME:-${DSH_HOME:-${HOME}/.dsh}}
 DSH_ROOT=${DSH_HOME:-${HOME}/.dsh}
+if [ "${INSTALL_HOST}" = "next" ]; then DSH_ROOT=${DSH_HOME:-${DSH_DESKTOP_NEXT_HOME:-${HOME}/.dsh}}; fi
 if [ "${INSTALL_HOST}" = "cli" ]; then
   # CLI directory selection: explicit paths and existing installations never prompt.
   DSH_ROOT=${DSH_TAVERN_CLI_HOME:-}
@@ -128,17 +134,22 @@ fail() {
   exit 1
 }
 
-if [ "${INSTALL_HOST}" = "desktop" ]; then
+if [ "${INSTALL_HOST}" != "cli" ]; then
   desktop_executable=${DSH_DESKTOP_APP_EXECUTABLE:-}
+  desktop_name='DeepSeek Harness'
+  desktop_host_arg=
+  if [ "${INSTALL_HOST}" = "next" ]; then
+    desktop_executable=${DSH_TAVERN_NEXT_EXECUTABLE:-}
+    desktop_name='DSH NEXT'
+    desktop_host_arg=--next
+  fi
   if [ -z "$desktop_executable" ] && [ "$(uname -s)" = "Darwin" ]; then
-    # Only official DeepSeek Harness is supported.
-    for desktop_name in "DeepSeek Harness"; do
-      for desktop_app in "/Applications/${desktop_name}.app" "$HOME/Applications/${desktop_name}.app"; do
-        if [ -x "$desktop_app/Contents/MacOS/${desktop_name}" ]; then desktop_executable="$desktop_app/Contents/MacOS/${desktop_name}"; break 2; fi
-      done
+    for desktop_app in "/Applications/${desktop_name}.app" "$HOME/Applications/${desktop_name}.app"; do
+      if [ -x "$desktop_app/Contents/MacOS/${desktop_name}" ]; then desktop_executable="$desktop_app/Contents/MacOS/${desktop_name}"; break; fi
     done
   fi
   if ! { [ -n "$desktop_executable" ] && [ -x "$desktop_executable" ]; }; then
+    [ "${INSTALL_HOST}" != "next" ] || fail '请用 DSH_TAVERN_NEXT_EXECUTABLE 指定 DSH NEXT 的程序路径。'
     # A community app installed instead of the official one gets told where its installer is.
     for community_name in "DSH NEXT" "DSH Desktop"; do
       for community_app in "/Applications/${community_name}.app" "$HOME/Applications/${community_name}.app"; do
@@ -147,14 +158,24 @@ if [ "${INSTALL_HOST}" = "desktop" ]; then
     done
     fail "请先安装官方 DeepSeek Harness（https://deepseek.com/harness/）"
   fi
+  if [ "$LAUNCHER_ONLY" -eq 1 ]; then
+    if pgrep -x 'DeepSeek Harness|DSH NEXT' >/dev/null 2>&1; then
+      fail '请先完全退出 DeepSeek Harness（⌘Q）以及正在运行的其他 DSH 桌面应用，再安装酒馆启动器。'
+    fi
+    desktop_profile=${DSH_ROOT}/profiles/desktop
+    [ ! -L "$desktop_profile" ] || fail '请在「设置 → 酒馆启动器」切回原版 DSH，完全退出后再运行本命令。'
+    [ -d "$desktop_profile" ] || fail '找不到原版 desktop 配置。请打开官方 DeepSeek Harness 完成初始设置，再完全退出。'
+  fi
   cat >"${TEMP_DIR}/official-desktop-runtime.cjs" <<'DSH_OFFICIAL_DESKTOP_MODULE'
 // Bootstrap for official DeepSeek Harness only. Electron reads packaged app.asar files.
 const fs = require('node:fs');
 const path = require('node:path');
 const OFFICIAL = '@deepseek-ai/dsh-desktop';
+const NEXT = 'dsh-desktop-next';
 const APP_NAMES = ['DeepSeek Harness'];
 // Read archive metadata under plain Node as well, so unsupported hosts fail before mutation.
-function asarRead(archive, relative, contents) {
+function withoutAsar(fn) { const prev = process.noAsar; process.noAsar = true; try { return fn(); } finally { process.noAsar = prev; } }
+function asarRead(archive, relative, contents) { return withoutAsar(() => {
   const fd = fs.openSync(archive, 'r');
   try {
     const sizes = Buffer.alloc(16);
@@ -170,7 +191,7 @@ function asarRead(archive, relative, contents) {
     const data = Buffer.alloc(entry.size);
     fs.readSync(fd, data, 0, entry.size, 8 + headerSize + Number(entry.offset));
     return data.toString('utf8');
-  } catch { return null; } finally { fs.closeSync(fd); }
+  } catch { return null; } finally { fs.closeSync(fd); } });
 }
 // Split a path at the archive that contains it; null when it is not inside one. A directory named
 // *.asar is not told apart here: exists() finds its files directly, and asarRead fails on it.
@@ -181,26 +202,35 @@ function inAsar(file) {
 }
 // A file the runner can load: on disk, or inside app.asar (readable under Electron only).
 function exists(file) {
-  if (fs.existsSync(file)) return true;
+
   const packed = inAsar(file);
-  return packed !== null && fs.existsSync(packed.archive) && asarRead(packed.archive, packed.relative, false) !== null;
+  if (packed !== null) return withoutAsar(() => fs.existsSync(packed.archive)) && asarRead(packed.archive, packed.relative, false) !== null;
+  return withoutAsar(() => fs.existsSync(file));
+
+
 }
 function packageName(app) {
-  try { return JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).name || ''; } catch {}
-  try { return app.endsWith('.asar') ? String(JSON.parse(asarRead(app, 'package.json', true) || '{}').name || '') : ''; } catch { return ''; }
+  try { if (app.endsWith('.asar')) return String(JSON.parse(asarRead(app, 'package.json', true) || '{}').name || ''); } catch { return ''; }
+  try { return withoutAsar(() => JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8')).name || ''); } catch { return ''; }
+
 }
 function layout(executable, platform = process.platform) {
   const resources = platform === 'darwin' ? path.resolve(path.dirname(executable), '../Resources') : path.join(path.dirname(executable), 'resources');
   const unpacked = path.join(resources, 'app'), packed = path.join(resources, 'app.asar');
   const app = fs.existsSync(path.join(unpacked, 'package.json')) ? unpacked : packed;
   const name = packageName(app);
+  if (name === NEXT) {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const runtime = path.join(resources, 'runtime', arch, 'primary-runtime');
+    return { resources, app, name, host: app, bootstrap: path.join(app, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), pnpm: path.join(runtime, 'dependencies', 'pnpm', 'bin', 'pnpm.mjs') };
+  }
   const host = path.join(app, 'dsh');
   return { resources, app, name, host, bootstrap: path.join(host, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js'), pnpm: path.join(resources, 'runtime', 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs') };
 }
-function prepare({ executable, home, env = process.env, platform = process.platform }) {
+function prepare({ executable, home, env = process.env, platform = process.platform, host = 'desktop' }) {
   if (!executable || !home) throw Error('请先安装官方 DeepSeek Harness，并指定安装目录');
   const paths = layout(executable, platform);
-  if (paths.name !== OFFICIAL) throw Error('桌面版仅支持官方 DeepSeek Harness：' + executable
+  if (paths.name !== (host === 'next' ? NEXT : OFFICIAL)) throw Error((host === 'next' ? 'Next 安装需要 DSH NEXT：' : '桌面版仅支持官方 DeepSeek Harness：') + executable
     + '（读到的应用包名：' + (paths.name || '无法读取') + '，应用目录：' + paths.app + '）');
   const bootstrap = paths.bootstrap;
   for (const file of [bootstrap, paths.pnpm]) if (!exists(file)) throw Error('桌面运行时不完整：' + file);
@@ -208,7 +238,7 @@ function prepare({ executable, home, env = process.env, platform = process.platf
   const dshRunner = runner, pnpmRunner = runner;
   const runnerOf = name => name === 'dsh' ? dshRunner : name === 'pnpm' ? pnpmRunner : runner;
   const variableOf = name => name === 'dsh' ? 'DSH_DESKTOP_DSH_RUNNER' : name === 'pnpm' ? 'DSH_DESKTOP_PNPM_RUNNER' : 'DSH_DESKTOP_NODE_EXECUTABLE';
-  const bin = path.join(home, 'tools', 'official-desktop', 'bin');
+  const bin = path.join(home, 'tools', host === 'next' ? 'desktop-next' : 'official-desktop', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const [name, entry] of [['node', null], ['pnpm', paths.pnpm], ['dsh', bootstrap]]) {
@@ -225,10 +255,17 @@ function prepare({ executable, home, env = process.env, platform = process.platf
     DSH_TAVERN_HOST_DEPENDENCY_ANCHOR: path.join(paths.host, 'package.json'),
     [key]: bin + (platform === 'win32' ? ';' : ':') + (env[key] || '') };
 }
+function discoverNext(env = process.env) {
+  const executable = env.DSH_TAVERN_NEXT_EXECUTABLE || (process.versions.electron ? process.execPath : undefined);
+  if (!executable || !path.isAbsolute(executable) || !fs.existsSync(executable) || layout(executable).name !== NEXT) {
+    throw Error('请用 DSH_TAVERN_NEXT_EXECUTABLE 指定已安装的 DSH NEXT 程序绝对路径');
+  }
+  return executable;
+}
 function discover(env = process.env, platform = process.platform) {
   // A standalone node executable is not a desktop host.
   const node = env.DSH_DESKTOP_NODE_EXECUTABLE && !/^node(\.exe)?$/i.test(path.basename(env.DSH_DESKTOP_NODE_EXECUTABLE)) ? env.DSH_DESKTOP_NODE_EXECUTABLE : undefined;
-  const candidates = [env.DSH_DESKTOP_APP_EXECUTABLE, node, process.versions.electron ? process.execPath : undefined];
+  const candidates = [env.DSH_DESKTOP_APP_EXECUTABLE, node, env === process.env && process.versions.electron ? process.execPath : undefined];
   for (const app of APP_NAMES) {
     if (platform === 'darwin') candidates.push(`/Applications/${app}.app/Contents/MacOS/${app}`, path.join(require('node:os').homedir(), `Applications/${app}.app/Contents/MacOS/${app}`));
     if (platform === 'win32') for (const root of [env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs'), env.ProgramFiles]) if (root) candidates.push(path.join(root, app, app + '.exe'));
@@ -239,10 +276,11 @@ function discover(env = process.env, platform = process.platform) {
 }
 // Installer code always runs under the official app's Electron.
 function runner(executable) { return executable; }
-module.exports = { layout, prepare, discover, runner, APP_NAMES };
+module.exports = { layout, prepare, discover, discoverNext, runner, APP_NAMES };
 if (require.main === module) {
   try {
-    const result = prepare({ executable: process.versions.electron ? process.execPath : discover(), home: process.argv[2] });
+    const host = process.argv.includes('--next') ? 'next' : 'desktop';
+    const result = prepare({ executable: process.versions.electron ? process.execPath : host === 'next' ? discoverNext() : discover(), home: process.argv[2], host });
     if (process.argv.includes('--shell')) for (const [key, value] of Object.entries(result)) console.log('export ' + key + "='" + value.replaceAll("'", "'\\''") + "'");
     else console.log(JSON.stringify(result));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
@@ -250,18 +288,56 @@ if (require.main === module) {
 DSH_OFFICIAL_DESKTOP_MODULE
   # Use the official desktop Electron runtime.
   desktop_runner=$desktop_executable
-  DSH_DESKTOP_APP_EXECUTABLE="$desktop_executable" ELECTRON_RUN_AS_NODE=1 "$desktop_runner" --expose-internals "${TEMP_DIR}/official-desktop-runtime.cjs" "$DSH_ROOT" --shell >"${TEMP_DIR}/desktop-env.sh" || fail "桌面运行环境校验失败"
+  DSH_DESKTOP_APP_EXECUTABLE="$desktop_executable" ELECTRON_RUN_AS_NODE=1 "$desktop_runner" --expose-internals "${TEMP_DIR}/official-desktop-runtime.cjs" "$DSH_ROOT" --shell ${desktop_host_arg:+"$desktop_host_arg"} >"${TEMP_DIR}/desktop-env.sh" || fail "桌面运行环境校验失败"
   . "${TEMP_DIR}/desktop-env.sh"
+  if [ "$LAUNCHER_ONLY" -eq 1 ]; then
+    node - "$desktop_profile" <<'DSH_CHECK_LAUNCHER' || fail '请检查原版 desktop 配置。'
+const { readFileSync } = require('node:fs')
+const { join } = require('node:path')
+const directory = process.argv[2]
+const profile = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+const hasBundle = name => Object.hasOwn(profile.dependencies ?? {}, name) || profile.dsh?.profile?.bundles?.includes(name)
+for (const name of profile.dsh?.profile?.bundles ?? []) {
+  if (name === 'dsh-tavern' || name === '.' || name === '..' || !/^(?:@[\w.-]+\/)?[\w.-]+$/.test(name)) continue
+  let installed
+  try { installed = JSON.parse(readFileSync(join(directory, 'node_modules', name, 'package.json'), 'utf8')) } catch { continue }
+  const repo = installed.repository?.url
+  const ownNext = repo === 'git+https://github.com/flizzywine/dsh-tavern.git' && installed.dshTavern?.profileHandoff === true
+  let patch = ''
+  if (installed.dsh?.bundle?.patch === './cordis.patch.yml') {
+    try { patch = readFileSync(join(directory, 'node_modules', name, 'cordis.patch.yml'), 'utf8') } catch {}
+  }
+  if (ownNext || /^\s*-\s+id:\s+profile-bridge\s*$/m.test(patch)) {
+    console.error('请从插件页移除旧启动器 ' + name + '，再安装 dsh-tavern。')
+    process.exit(1)
+  }
+}
+if (hasBundle('dsh-tavern')) {
+  let installed
+  try { installed = JSON.parse(readFileSync(join(directory, 'node_modules/dsh-tavern/package.json'), 'utf8')) } catch {}
+  const repository = installed?.repository
+  if (repository?.url !== 'git+https://github.com/flizzywine/dsh-tavern.git' || (repository.directory !== 'tavern-plugin/packages/dsh-tavern' && installed.dshTavern?.profileHandoff !== true)) {
+    console.error('当前 Profile 已有同名的 dsh-tavern 插件，请检查其来源后再安装酒馆。')
+    process.exit(1)
+  }
+}
+DSH_CHECK_LAUNCHER
+    launcher_url='https://github.com/flizzywine/dsh-tavern/releases/download/launcher-current/dsh-tavern.tgz'
+    dsh plugin --profile desktop add "$launcher_url" || fail '安装酒馆启动器失败。'
+    printf '%s\n' '酒馆启动器已安装。打开桌面，进入「设置 → 酒馆启动器 → 安装酒馆」。'
+    INSTALL_COMPLETED=1
+    exit 0
+  fi
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "需要先安装 Node.js 22.19 或更高版本：https://nodejs.org/" >&2
+  echo "需要先安装 Node.js 22.19 或更高版本（DSH 0.2.2 起需要 24.9 或更高版本）：https://nodejs.org/" >&2
   if command -v open >/dev/null 2>&1; then open https://nodejs.org/ >/dev/null 2>&1 || true; fi
   fail "未找到 Node.js。安装后重新运行本命令。"
 fi
 
 if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' >/dev/null 2>&1; then
-  fail "Node.js 版本过低，需要 22.19 或更高版本（当前：$(node --version)）。"
+  fail "Node.js 版本过低，安装入口至少需要 22.19（DSH 0.2.2 起需要 24.9 或更高版本）（当前：$(node --version)）。"
 fi
 
 # Claim the installation before creating markers, logs, source cache or profiles.
@@ -696,6 +772,27 @@ function absolute(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value) || /[\0\r\n]/u.test(value) || !same(path.resolve(value), value)) fail('路径不是规范的绝对路径')
   return value
 }
+// Reinstalling code does not move data that was retained on another disk.
+// Only an exact, registered data alias may cross the managed-home boundary.
+function resolveInstallationData({ dshHome, dataDir } = {}) {
+  const trusted = trustedHome(dshHome), home = trusted.physical
+  const from = path.join(home, 'profile-data', 'tavern')
+  ordinaryAncestors(path.dirname(from))
+  const to = dataDir === undefined ? from : trusted.map(absolute(dataDir))
+  let stat
+  try { stat = fs.lstatSync(from) } catch (error) { if (error.code !== 'ENOENT') throw error }
+  if (!stat?.isSymbolicLink()) {
+    if (!same(from, to)) fail('保留的数据入口已改变')
+    ordinaryAncestors(from)
+    return null
+  }
+  if (same(from, to) || overlaps(to, home)) fail('外部数据位置未登记或与 DSH 目录重叠')
+  ordinaryAncestors(to)
+  if (!fs.lstatSync(to).isDirectory() || !same(fs.realpathSync(to), to)
+    || !same(trusted.map(path.resolve(path.dirname(from), fs.readlinkSync(from))), to)
+    || !same(fs.realpathSync(from), to)) fail('保留的数据链接已改变')
+  return { kind: 'data', from, to }
+}
 function resolveInstallationApp({ dshHome, appDir } = {}) {
   const trusted = trustedHome(dshHome), home = trusted.physical
   ordinaryAncestors(path.join(home, 'profile-bridge'))
@@ -721,7 +818,21 @@ function resolveInstallationApp({ dshHome, appDir } = {}) {
     if (error.code === 'INSTALLATION_LOCATION_UNSAFE') throw error
     fail(`无法读取 ${filename} (${error.code || error.name})`)
   }
+  if (record?.schemaVersion === 1 && record.phase === 'uninstalled') {
+    const data = resolveInstallationData({ dshHome, dataDir: record.dataDir })
+    if (data && overlaps(data.to, trusted.map(requested))) fail('程序目录不能与保留的数据重叠')
+    return requested
+  }
   if (record?.schemaVersion !== 1 || record.phase !== 'completed' || !Array.isArray(record.entries)) fail('迁移尚未完成或记录格式不受支持')
+  if (record.layout === 'retained-data') {
+    const entry = record.entries[0]
+    if (record.entries.length !== 1 || entry?.kind !== 'data') fail('保留的数据登记不完整')
+    const data = resolveInstallationData({ dshHome, dataDir: absolute(entry.to) })
+    if (!data || !same(trusted.map(absolute(entry.from)), data.from)) fail('保留的数据入口不匹配')
+    if (overlaps(data.to, trusted.map(requested))) fail('程序目录不能与保留的数据重叠')
+    return requested
+  }
+  if (record.layout !== undefined) fail('不支持的安装位置布局')
   const destination = trusted.map(absolute(record.destination))
   const logicalApp = trusted.map(absolute(record.appDir))
   if (overlaps(destination, home) || overlaps(destination, logicalApp)) fail('迁移目标不能与共享 DSH 或原安装目录重叠')
@@ -749,7 +860,7 @@ function resolveInstallationApp({ dshHome, appDir } = {}) {
   if (appDir && !same(trusted.map(requested), logicalApp) && !same(trusted.map(requested), physicalApp)) fail('指定目录与已迁移的酒馆冲突')
   return physicalApp
 }
-module.exports = { resolveInstallationApp, trustedHome }
+module.exports = { resolveInstallationApp, resolveInstallationData, trustedHome }
 if (require.main === module) {
   try { console.log(resolveInstallationApp({ dshHome: process.argv[2], appDir: process.argv[3] || undefined })) }
   catch (error) { console.error(error.message); process.exitCode = 1 }
@@ -1350,6 +1461,18 @@ else
 fi
 [ -n "${SOURCE_DIR}" ] || fail "下载内容不完整。"
 [ -f "${SOURCE_DIR}/package.json" ] || fail "下载内容不完整。"
+if [ "${INSTALL_HOST}" = "next" ]; then
+  grep -Fq DSH_TAVERN_UNIFIED_DESKTOP "${SOURCE_DIR}/bin/profile-installation.mjs" || fail "下载源尚未同步统一桌面安装支持，请稍后重试。"
+fi
+if [ "${DSH_TAVERN_INSTALL_INACTIVE:-0}" = "1" ]; then
+  grep -Fq DSH_TAVERN_INSTALL_INACTIVE "${SOURCE_DIR}/bin/profile-installation.mjs" || fail "下载源尚未同步独立安装支持，请稍后重试。"
+fi
+if [ "${DSH_TAVERN_LATE_PUBLISH:-0}" = "1" ]; then
+  grep -Fq DSH_TAVERN_LATE_PUBLISH "${SOURCE_DIR}/bin/profile-installation.mjs" || fail "下载源尚未同步重启前安装支持，请稍后重试。"
+fi
+if [ "${DSH_TAVERN_REQUIRE_NEXT_MIGRATION:-0}" = "1" ]; then
+  grep -Fq hasNextTavern "${SOURCE_DIR}/bin/desktop-profile-installation.mjs" || fail "下载源尚未同步 NEXT 迁移支持，请稍后重试。"
+fi
 
 # The downloaded release supplies process-tree supervision. Older release
 # archives remain usable; current releases bound every mutating package stage.
@@ -1394,19 +1517,32 @@ if [ "${INSTALL_HOST}" != "cli" ]; then
 fi
 
 STAGER=${SOURCE_DIR}/bin/staged-app-install.mjs
-if [ "${INSTALL_HOST}" = "cli" ] && [ -f "${STAGER}" ]; then
+if [ -n "${DSH_TAVERN_PUBLISH_GATE:-}" ] || { [ "${INSTALL_HOST}" != "desktop" ] && [ -f "${STAGER}" ]; }; then
   # Prepare beside the running app; only the final switch stops the service, and a
   # failure after it restores the previous directory (see bin/staged-app-install.mjs).
   echo "正在准备新版本（当前版本继续运行）……"
+  if [ -n "${DSH_TAVERN_PUBLISH_GATE:-}" ]; then printf '%s' '正在准备程序与安装依赖…' >"${DSH_TAVERN_PUBLISH_GATE}.progress"; fi
   STAGED_INSTALL=1
   node "${STAGER}" prepare --app "${APP_DIR}" --source "${SOURCE_DIR}" --commit "${TARGET_COMMIT}" >/dev/null
 
   echo "正在安装程序依赖……"
   run_install dependencies.install 600000 pnpm --dir "${APP_DIR}.staging" install --frozen-lockfile --config.minimum-release-age=0
 
-  if [ -f "${APP_DIR}/bin/dsh-tavern.mjs" ]; then
+  if [ "${DSH_TAVERN_LATE_PUBLISH:-0}" = "1" ]; then
+    if [ -f "${APP_DIR}/bin/dsh-tavern.mjs" ]; then PREVIOUS_APP=1; fi
+  elif [ -n "${DSH_TAVERN_PUBLISH_GATE:-}" ]; then
+    printf '%s' '准备完成，等待确认重启…' >"${DSH_TAVERN_PUBLISH_GATE}.progress"
+    : >"${DSH_TAVERN_PUBLISH_GATE}.ready"
+    deadline=$(( $(date +%s) + 900 ))
+    while [ ! -f "${DSH_TAVERN_PUBLISH_GATE}" ]; do
+      [ "$(date +%s)" -lt "$deadline" ] || fail "等待重启确认或桌面退出超时，尚未切换 Profile。"
+      sleep 1
+    done
+    [ "$(cat "${DSH_TAVERN_PUBLISH_GATE}")" = publish ] || fail "桌面未能退出，尚未切换 Profile。"
+    if [ -f "${APP_DIR}/bin/dsh-tavern.mjs" ]; then PREVIOUS_APP=1; fi
+  elif [ -f "${APP_DIR}/bin/dsh-tavern.mjs" ]; then
     PREVIOUS_APP=1
-    DSH_HOME=${DSH_ROOT} node "${APP_DIR}/bin/dsh-tavern.mjs" stop >/dev/null 2>&1 || true
+    if [ "${INSTALL_HOST}" = "cli" ]; then DSH_HOME=${DSH_ROOT} node "${APP_DIR}/bin/dsh-tavern.mjs" stop >/dev/null 2>&1 || true; fi
   fi
   APP_SWAPPED=1
   node "${STAGER}" swap --app "${APP_DIR}"
@@ -1446,7 +1582,9 @@ fi
 
 if [ "${INSTALL_HOST}" = "desktop" ]; then
   echo "DSH Tavern Desktop 版安装完成。"
-  echo "请重启官方 DeepSeek Harness，酒馆已安装到独立 tavern 配置；原版 desktop 已备份，可在设置 → Profile 切换中切换。"
+  echo "酒馆已安装到独立 tavern 配置；首次安装保留原版默认入口，更新保留已有选择。需要默认打开酒馆时，请在设置 → 酒馆启动器中主动选择。"
+elif [ "${INSTALL_HOST}" = "next" ]; then
+  echo 'DSH Tavern 安装完成。请打开 DSH NEXT，进入「设置 → 酒馆启动器」切换到酒馆。'
 else
   if [ "${DSH_TAVERN_DEFER_SERVICE_START:-0}" != "1" ]; then
     DSH_HOME=${DSH_ROOT} node "${APP_DIR}/bin/dsh-tavern.mjs" start

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-import { installToolPresentationPolicy } from '../tavern-plugin/lib/domain/tool-presentation-policy.js'
+import { createHostToolPolicy } from '../tavern-plugin/lib/host/tools.js'
 
 const require = createRequire(process.env.DSH_BOOT_MODULE || new URL('../package.json', import.meta.url))
 const load = name => import(pathToFileURL(require.resolve(name)))
@@ -25,12 +25,12 @@ test('真实 alpha.2 装配分离工具声明，执行管线仍拒绝会话关�
     output: { schema: { type: 'string' }, render: (_, value) => [{ type: 'text', text: value }] },
     async execute() { calls++; return 'ok' }
   }))
-  ctx.on('system-prompt/assemble', async (presentation, _context, next) => {
+  const policy = createHostToolPolicy(ctx, { denial: () => closed ? '该工具在当前任务中已关闭' : undefined })
+  ctx.on('system-prompt/assemble', async (presentation, context, next) => {
     assert.equal(Object.hasOwn(presentation, 'tools'), false)
     sawPresentation = true
-    return next()
+    return policy.assemble(await next(), context, async (assembly, tools) => ({ ...assembly, tools: closed ? [] : tools }))
   })
-  installToolPresentationPolicy(ctx, { sessionFor: () => agent.session, filter: async tools => closed ? [] : tools })
   const signal = new AbortController().signal
   const toolSet = await ctx.tools.resolve({ agent, signal, modelSelection: { provider: 'synthetic', model: 'fixed' } })
   t.after(() => toolSet.dispose())
@@ -42,6 +42,6 @@ test('真实 alpha.2 装配分离工具声明，执行管线仍拒绝会话关�
   closed = true
   const denied = (await execute()).results[0].result
   assert.equal(denied.isError, true)
-  assert.match(JSON.stringify(denied), /当前 Tavern 会话或任务中已关闭/)
+  assert.match(JSON.stringify(denied), /当前任务中已关闭/)
   assert.equal(calls, 1)
 })

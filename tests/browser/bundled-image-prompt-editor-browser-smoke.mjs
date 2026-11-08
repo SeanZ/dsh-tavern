@@ -44,7 +44,9 @@ try {
   ].join('\n')
   const componentScript = [
     'const React=modules.react; const useEffect=React.useEffect, useState=React.useState;',
-    'const BASE="http://localhost/plugins/dsh-tavern-image"; let openPromptEditor=null; const IMAGE_REFERENCE_PROTOCOLS=new Set(["openai","gemini","gemini-chat","atlascloud","seedream","grok","qwen","sdwebui"]); function uiSupportsImageReferences(channel,state){ if(!channel)return state?.referenceSupported===true; if(channel.provider==="comfyui")return state?.referenceSupported===true&&state?.config?.imageBackend==="comfyui"; return IMAGE_REFERENCE_PROTOCOLS.has(channel.provider==="custom"?String(channel.options?.apiProtocol||"openai"):channel.provider); }',
+    'const BASE="http://localhost/plugins/dsh-tavern-image"; let openPromptEditor=null;',
+    (await readFile(new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/lib/image-provider-capabilities.js', import.meta.url), 'utf8')).replace(/^export /gm, ''),
+    declaration('uiSupportsImageReferences'),
     'const mediaPostLocks=new Set(), mediaUncertainActions=new Set(), requests=[]; window.__jobOverrides={}; window.__redrawAttempts=[]; window.__newJobs=0;',
     'const validMediaContext=context=>Boolean(context&&context.gameId&&context.mediaId&&context.jobId&&context.textVersion&&Number.isFinite(Number(context.turn)));',
     `window.fetch=async (url,options={}) => {
@@ -56,13 +58,14 @@ try {
       }
       throw new Error('unexpected browser fetch: '+url);
     };`,
-    declaration('jsonFetchOnce'),
+    declaration('createJsonTransport'),
+    'const redrawTransport=createJsonTransport();',
     `async function jsonFetch(url,options={}) {
       if(url.includes('/job-detail?')) return {ok:true,job:{rawPrompt:'two people in a garden',tag:'two people in a garden',prompt:'expanded',promptText:${JSON.stringify(promptText)},negative:'base uc'}};
       if(url.includes('/jobs?')) return {ok:true,job:{generationMode:'text',backend:'atlascloud',channelId:'atlas',references:[],positive:'expanded',negative:'base uc',submittedPrompt:'expanded',...(window.__jobOverrides[new URL(url).searchParams.get('id')]||{})}};
       if(url.endsWith('/state')) return {config:{imageChannels:[{id:'atlas',name:'atlas cloud',provider:'atlascloud'},{id:'other',name:'other provider',provider:'novelai'}]}};
       if(url.endsWith('/media-action')) { requests.push(JSON.parse(options.body)); return {ok:true,jobId:'replacement'}; }
-      if(url.endsWith('/redraw')) return jsonFetchOnce(url,options);
+      if(url.endsWith('/redraw')) return redrawTransport(url,options);
       if(url.endsWith('/improve-prompt')) return {ok:true,prompt:'后台改写后的提示词'};
       throw new Error('unexpected request');
     }`,
@@ -90,7 +93,7 @@ try {
   assert.equal(request.refreshReferences, false)
   await page.evaluate(() => {
     window.__jobOverrides['job-reference'] = {
-      generationMode: 'reference', submittedPrompt: '人物：林月，参照图片1\n环境：窗边', error: 'fixture platform warning',
+      generationMode: 'reference', requestedGenerationMode: 'auto', generationModeReason: 'references', submittedPrompt: '人物：林月，参照图片1\n环境：窗边', error: 'fixture platform warning',
       references: [{ image: { id: 'a'.repeat(64), name: 'face.png' }, kind: 'character', characterId: 'person-a', index: 1, label: '林月', consistencyText: '保持脸型' }],
     }
     window.__openEditor('job-reference', { gameId: 'game', turn: 3, textVersion: 'v3', mediaId: 'media-reference', jobId: 'job-reference' })
@@ -100,6 +103,7 @@ try {
   const editableBeforeInspection = await prompt.inputValue()
   await page.getByRole('button', { name: /看展开结果/ }).click()
   assert.equal(await page.getByLabel('实际提交提示词', { exact: true }).textContent(), '人物：林月，参照图片1\n环境：窗边')
+  assert.match(await page.getByLabel('原任务生图模式').textContent(), /参考图生图（自动：本张有参考图）/)
   assert.equal(await prompt.inputValue(), editableBeforeInspection, 'inspecting actual inputs must not replace editable raw prompt')
   assert.ok((await page.getByRole('img', { name: '参考图 1 林月' }).getAttribute('src')).endsWith('/reference-image?id=' + 'a'.repeat(64)))
   assert.match(await page.getByLabel('原任务参考图').textContent(), /保持脸型/)
@@ -120,6 +124,18 @@ try {
   assert.equal(await page.evaluate(() => window.__requests[2].channelId), 'other')
   assert.equal(await page.evaluate(() => window.__requests[2].generationMode), 'text')
   assert.equal(await page.evaluate(() => window.__requests[2].refreshReferences), false)
+
+  for (const [reason, note] of [['no-references', '本张没有可用参考图'], ['unsupported-input', '当前渠道或工作流不支持参考图']]) {
+    await page.evaluate(reason => {
+      window.__jobOverrides['job-auto-text'] = { generationMode: 'text', requestedGenerationMode: 'auto', generationModeReason: reason }
+      window.__openEditor('job-auto-text', null)
+    }, reason)
+    await page.waitForFunction(reason => document.querySelector('[aria-label="本次生图模式"]')?.value === 'text' && document.querySelector('[aria-label="本次生图模式"]')?.disabled === false, reason)
+    await page.getByRole('button', { name: /看展开结果/ }).click()
+    assert.equal(await page.getByLabel('原任务生图模式').textContent(), '实际生图模式：文生图（自动：' + note + '）')
+    await page.getByLabel('本次生图模式').selectOption('reference')
+    assert.equal(await page.getByLabel('原任务生图模式').textContent(), '实际生图模式：文生图（自动：' + note + '）', 'editing the next job does not rewrite original inputs')
+  }
 
   await page.evaluate(() => window.__openEditor('job-legacy', null))
   await page.waitForFunction(() => document.querySelector('[aria-label="本次生图模式"]') && !document.querySelector('[aria-label="本次生图模式"]').disabled)

@@ -58,7 +58,6 @@ const ICON_PATHS = {
     phone: "M8.5 2.5h7A1.5 1.5 0 0 1 17 4v16a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20V4a1.5 1.5 0 0 1 1.5-1.5zM10.5 18.5h3",
     message: "M3 4h18v13H9l-6 4V4z",
     widget: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
-    danmaku: "M5.5 4.5h13A2.5 2.5 0 0 1 21 7v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16V7a2.5 2.5 0 0 1 2.5-2.5zM6.8 8.6h5.4M14.6 8.6h2.8M9.2 11.8h8M6.8 15h4.2",
     "die-covered": "M6 3.5h12A2.5 2.5 0 0 1 20.5 6v12a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5zM9.8 9.6a2.3 2.3 0 1 1 3.4 2c-.8.5-1.2 1-1.2 1.9M12 16.4h.01"
 };
 function Icon(props) {
@@ -148,36 +147,45 @@ function FloatingPanel(props) {
 
 // "?" badge whose help text shows on hover / keyboard focus / tap, instead of inline paragraphs. The
 // visible text floats (FloatingPanel); a hidden copy stays in place for aria-describedby.
+// A click (or tap) pins it open past the pointer leaving; a click while pinned, Esc or a click outside closes it.
 // `interactive` lets the text hold links (a licence page) — the body takes the
 // pointer and stays while the pointer crosses to it, Tab from「?」enters it and leaves it again, Esc closes it first.
 function HelpTip(props) {
     const h = React.createElement;
     const id = React.useId();
     const [open, setOpen] = React.useState(false);
+    const [pinned, setPinned] = React.useState(false);
     const button = React.useRef(null), pop = React.useRef(null), wrap = React.useRef(null), timer = React.useRef(0), quiet = React.useRef(false);
     const interactive = !!props.interactive;
     React.useEffect(() => () => clearTimeout(timer.current), []);
     const show = () => { clearTimeout(timer.current); setOpen(true); };
-    const hide = () => { clearTimeout(timer.current); if (interactive) timer.current = setTimeout(() => setOpen(false), 200); else setOpen(false); };
+    const close = () => { clearTimeout(timer.current); setPinned(false); setOpen(false); };
+    const hide = () => { if (pinned) return; clearTimeout(timer.current); if (interactive) timer.current = setTimeout(() => setOpen(false), 200); else setOpen(false); };
     const inside = node => !!node && !!(wrap.current?.contains(node) || pop.current?.contains(node));
+    React.useEffect(() => {
+        if (!pinned) return undefined;
+        const away = event => { if (!inside(event.target)) close(); };
+        document.addEventListener("pointerdown", away, true);
+        return () => document.removeEventListener("pointerdown", away, true);
+    }, [pinned]);
     const links = () => pop.current ? [...pop.current.querySelectorAll("a[href],button")] : [];
     const keyboard = target => { try { return target.matches(":focus-visible"); } catch (_) { return false; } };
     // Focus handed back to 「?」 (Esc, Tab past the last link) does not reopen it.
     const back = () => { quiet.current = true; button.current?.focus(); quiet.current = false; };
     const keys = event => {
-        if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); if (event.target !== button.current) back(); return; }
+        if (event.key === "Escape" && open) { event.stopPropagation(); close(); if (event.target !== button.current) back(); return; }
         if (!interactive || !open || event.key !== "Tab") return;
         const list = links();
         if (event.target === button.current && !event.shiftKey && list.length) { event.preventDefault(); list[0].focus(); }
         else if (event.target === list[0] && event.shiftKey) { event.preventDefault(); button.current?.focus(); }
-        else if (event.target === list[list.length - 1] && !event.shiftKey) { setOpen(false); back(); }
+        else if (event.target === list[list.length - 1] && !event.shiftKey) { close(); back(); }
     };
     return h("span", { ref: wrap, className: "fork-help-tip" + (open ? " is-open" : ""), onMouseEnter: show, onMouseLeave: hide, onKeyDown: keys,
-            onBlur: interactive ? event => { if (!inside(event.relatedTarget)) setOpen(false); } : undefined },
+            onBlur: interactive ? event => { if (!inside(event.relatedTarget)) close(); } : undefined },
         h("button", { ref: button, type: "button", className: "fork-help-tip-button", "aria-label": props.label || "说明", "aria-describedby": id, "aria-expanded": open,
-            onClick: event => { event.preventDefault(); event.stopPropagation(); setOpen(!open); },
+            onClick: event => { event.preventDefault(); event.stopPropagation(); if (pinned) close(); else { clearTimeout(timer.current); setPinned(true); setOpen(true); } },
             onFocus: event => { if (!quiet.current && keyboard(event.target)) setOpen(true); },
-            onBlur: interactive ? undefined : () => setOpen(false) }, "?"),
+            onBlur: interactive ? undefined : close }, "?"),
         h("span", { id: id, className: "fork-help-tip-text", inert: interactive || undefined }, props.children),
         open ? h(FloatingPanel, { anchor: button, popRef: pop, className: "fork-help-tip-body" + (interactive ? " is-interactive" : ""), gap: 6,
             ...(interactive ? { role: "group", "aria-label": props.label || "说明" } : { role: "tooltip", "aria-hidden": true }) }, props.children) : null);

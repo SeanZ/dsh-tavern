@@ -1,9 +1,15 @@
-import { createHash } from 'node:crypto'
+import { createHostBehaviorPolicies } from './domain/plugin-host-behavior.js'
+import { MAX_PLUGIN_DATA } from './domain/plugin-data-store.js'
 import { isMvuUpdateEntry } from './domain/worldbook-recall.js'
+import { createHash } from 'node:crypto'
+import { createPluginGameModes } from './domain/plugin-game-mode.js'
+import { createGameModeAgents } from './domain/game-mode-agents.js'
 import { createPluginTaskExecution } from './domain/plugin-task-execution.js'
+import { createBodyGenerationProviders } from './domain/body-generation-providers.js'
 import { pluginMember, pluginMemberId, registerPluginMember } from './domain/background-members.js'
 import { CUSTOM_EVENT, STORY_EVENTS } from './domain/story-events.js'
 import { bounded, untilAborted } from './domain/plugin-callback.js'
+import { createPluginImageCatalog } from './domain/plugin-image-catalog.js'
 import path from 'node:path'
 import { publicPluginMedia, pluginMediaSession } from './domain/plugin-media.js'
 import { normalizeGameSettings, coerceSetting, settingValues } from './domain/plugin-game-settings.js'
@@ -11,7 +17,7 @@ import { normalizeGameSettings, coerceSetting, settingValues } from './domain/pl
 // The public `tavern` service for third-party DSH plugins (docs/plugin-api.md).
 // Only additive changes are allowed here: published plugins depend on every
 // name and field. Internals are reached through `deps`, never exposed.
-export const TAVERN_PLUGIN_API_VERSION = 6
+export const TAVERN_PLUGIN_API_VERSION = 7
 const TRACKER = Symbol.for('cordis.tracker')
 const SECTION_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const MAX_SECTION_TEXT = 8000
@@ -88,12 +94,22 @@ function positiveTurn(value) {
   return turn
 }
 
+function playerNameOf(value) {
+  if (typeof value !== 'string' || value.length > 80) throw new TypeError('playerName 必须是不超过 80 字的字符串')
+  return value.trim() || '你'
+}
+
 function textOrFunction(text) {
   if (typeof text !== 'string' && typeof text !== 'function') throw new TypeError('text 必须是字符串或函数')
 }
 
 function sectionName(name) {
   if (typeof name !== 'string' || !SECTION_NAME.test(name)) throw new Error('name 只能用小写字母、数字、点、下划线和连字符')
+}
+
+function contextTarget(target) {
+  if (!['story', 'call'].includes(target)) throw new TypeError("target must be 'story' or 'call'")
+  return target
 }
 
 function taskKey(owner, name) { return owner + ':' + name }
@@ -151,6 +167,8 @@ export function createTavernPluginApi(deps) {
   const settledHandlers = new Set()
   const removedHandlers = new Set()
   const mediaRemovedHandlers = new Set()
+  // Host-only: Tavern's own readers of a finished plugin picture (the stage's CG sync); plugins never see this.
+  const pictureObservers = new Set()
   const timelineHandlers = new Set()
   const castHandlers = new Set()
   const cardHandlers = new Set()
@@ -160,9 +178,10 @@ export function createTavernPluginApi(deps) {
   const settingHandlers = new Set()
   const speechProviders = new Map()
   const imageProviders = new Map()
+  const pricingProviders = new Map()
   const galleryProviders = new Map()
   const mvuSettlementProviders = new Map()
-  const capabilities = Object.freeze({ mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1 })
+  const capabilities = Object.freeze({ gameMode: 1, hostBehavior: 1, controlInput: 1, mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1, pricingProvider: 1, imageModels: 1, imageLibrary: 1, bodyGeneration: 1 })
   const sections = new Map()
   const turnSections = new Map()
   const settlementSections = new Map()
@@ -181,12 +200,29 @@ export function createTavernPluginApi(deps) {
   // Task-table jobs plugins declared (tavern.job), by workflow id.
   const jobs = new Map()
   const toolScopes = new Map()
+  const toolSkillGates = new Map()
   const toolNetworks = new Map()
   const reservedToolNames = new Set(deps.reservedToolNames || [])
   const notified = new Set()
   // The latest state each plugin published for its page side, per game and name (memory only).
   const publishedStates = new Map()
   const log = deps.logger || console
+  const gameModes = createPluginGameModes({
+    read: async gameId => {
+      if (typeof gameId !== 'string' || !gameId) return null
+      const game = await deps.resolveGame(gameId)
+      return game ? deps.data.readMode(game.chatId) : null
+    },
+    write: async (gameId, revision, doc) => deps.data.writeMode((await requireGame(gameId)).chatId, revision, doc),
+    allowed: async (owner, gameId) => {
+      await requireGame(gameId)
+      await guardScope(owner, { gameId })
+      if ((await choicesFor(gameId)).disabled.has(owner)) throw new Error('本局已停用玩法插件')
+    },
+    runAgent: createGameModeAgents({ data: deps.data, resolveGame: requireGame, runTask: input => deps.runTask(input) }),
+    foreground: deps.projectGameForeground,
+    changed: gameId => deps.publishState?.(gameId, '@tavern', 'game-mode'),
+  })
 
   const taskExecution = createPluginTaskExecution({
     runTask: deps.runTask, currentKey: deps.currentKey,
@@ -194,11 +230,42 @@ export function createTavernPluginApi(deps) {
     requireGame, choicesFor, snapshotOf, recordError, reservedToolNames, settlementTasks, manualTasks,
   })
   const { runSettlementTasks, manualTaskFor, runManualTask, stopTasks, runningTask, checkVersions } = taskExecution
+  const bodyGenerators = createBodyGenerationProviders({ allowed: async (owner, gameId) => {
+    await guardScope(owner, { gameId })
+    return !(await choicesFor(gameId)).disabled.has(owner)
+  } })
 
   /** Log a plugin failure; Tavern carries on with its own behaviour. */
   function recordError(_gameId, owner, stage, error) {
     const message = String(error?.message || error).slice(0, 500)
     log.warn?.('dsh-tavern: 插件 ' + owner + ' 在「' + stage + '」出错: ' + message)
+  }
+
+  const imageCatalog = createPluginImageCatalog({ imageProviders, reportError: recordError,
+    available: async (owner, context) => {
+      const scopes = deps.cardScope ? await deps.cardScope() : null
+      const scope = scopes?.get(owner)
+      return !scope || Boolean(context.card && scope.cards.includes(context.card))
+    }
+  })
+
+  async function imageContext(caller, input) {
+    const context = {}
+    if (input.gameId !== undefined) {
+      const gameId = gameIdOf(input.gameId)
+      const game = deps.resolveGalleryContext ? await deps.resolveGalleryContext(gameId) : await requireGame(gameId)
+      if (!game || game.sessionId !== gameId) throw Object.assign(new Error('会话不存在'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      context.gameId = gameId
+      context.card = game.cardPath || await deps.cardPathOf?.(gameId) || ''
+    }
+    if (input.card !== undefined) {
+      const card = cardIdOf(input.card)
+      if (context.gameId && context.card !== card) throw new Error('card 与 gameId 不匹配')
+      context.card = card
+    }
+    // A card plugin must select its own card even for a global catalog query.
+    await guardScope(ownerOf(caller), { ...context, card: context.card || '' })
+    return context
   }
 
   /**
@@ -305,28 +372,40 @@ export function createTavernPluginApi(deps) {
   }
 
   /** One registry entry per (plugin, name), removed when the plugin unloads. */
-  function register(registry, key, entry, label, duplicate) {
+  function register(registry, key, entry, label, duplicate, changed = () => {}) {
     return owned(this, () => {
       if (registry.has(key)) throw new Error(duplicate)
-      registry.set(key, entry)
-      return () => { if (registry.get(key) === entry) registry.delete(key) }
+      registry.set(key, entry); changed()
+      return () => { if (registry.get(key) === entry) { registry.delete(key); changed() } }
     }, label)
   }
 
   async function collectSections(registry, context, label, disabled) {
     const result = []
-    const entries = Array.from(registry.values()).filter(entry => !disabled?.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
+    const entries = Array.from(registry.values()).filter(entry => !disabled?.has(entry.owner) && (entry.target || 'story') === (context.target || 'story')).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))
     for (const entry of entries) {
       let text
       try { text = typeof entry.text === 'function' ? await bounded(entry.text(structuredClone(context)), label) : entry.text }
       catch (error) { recordError(context.gameId, entry.owner, label, error); continue }
       if (typeof text !== 'string' || !text.trim()) continue
-      result.push({ name: 'tavern-plugin:' + entry.owner + ':' + entry.name, owner: entry.owner, ...(entry.position === 'before' ? { position: 'before' } : {}), text: text.trim().slice(0, MAX_SECTION_TEXT) })
+      result.push({ name: 'tavern-plugin:' + entry.owner + ':' + entry.name, owner: entry.owner, ...(entry.position === 'before' ? { position: 'before' } : {}), text: entry.unbounded ? text.trim() : text.trim().slice(0, MAX_SECTION_TEXT) })
     }
     return result
   }
 
+  const hostBehavior = createHostBehaviorPolicies({ allowed: async (owner, gameId) => {
+    await guardScope(owner, { gameId })
+    return !(await choicesFor(gameId)).disabled.has(owner)
+  } })
   const service = {
+    hostBehavior(input) {
+      const owner = ownerOf(this)
+      return owned(this, () => hostBehavior.register(owner, input), 'tavern.hostBehavior()')
+    },
+    gameMode(input) {
+      const owner = ownerOf(this)
+      return owned(this, () => gameModes.register(owner, input), 'tavern.gameMode()')
+    },
     ctx: deps.ctx,
     apiVersion: TAVERN_PLUGIN_API_VERSION,
     // Managed modules opt in; ordinary plugins keep their existing API and card scope.
@@ -518,34 +597,38 @@ export function createTavernPluginApi(deps) {
       return await deps.readCardPackFile(game.sessionId, pack, path)
     },
 
-    // A speech channel of the plugin's own; players pick it in Tavern's voicing settings.
-    speechProvider({ id, label, description = '', voices = [], defaultVoice = '', version = '', synthesize } = {}) {
+    // A speech channel of the plugin's own: it joins the voice service as provider 'tavern-plugin:<owner>:<id>'
+    // (its voices are the catalogue, version its revision). recognize alone offers speech recognition only.
+    speechProvider({ id, label, description = '', voices = [], defaultVoice = '', version = '', synthesize, recognize } = {}) {
       const owner = ownerOf(this)
       sectionName(id)
       if (typeof label !== 'string' || !label.trim() || label.trim().length > 30) throw new Error('label 必须是 1–30 字')
-      if (typeof synthesize !== 'function') throw new TypeError('speechProvider 需要 synthesize 函数')
+      if (typeof synthesize !== 'function' && typeof recognize !== 'function') throw new TypeError('speechProvider requires synthesize or recognize')
+      if (synthesize !== undefined && typeof synthesize !== 'function' || recognize !== undefined && typeof recognize !== 'function') throw new TypeError('speechProvider capabilities must be functions')
       if (!Array.isArray(voices) || voices.some(voice => typeof voice !== 'string')) throw new TypeError('voices 必须是文本数组')
       if (typeof version !== 'string' || version.length > 40) throw new TypeError('version 必须是不超过 40 字的字符串')
       const key = owner + '/' + id
       const entry = { id: key, owner, label: label.trim(), description: String(description).slice(0, 300), voices: voices.slice(0, 200), defaultVoice: String(defaultVoice || ''), version,
-        synthesize: input => bounded(synthesize(input), '配音渠道 ' + key, REPLACEMENT_TIMEOUT_MS).catch(error => { recordError(null, owner, '配音', error); throw error }) }
-      return register.call(this, speechProviders, key, entry, 'tavern.speechProvider()', '配音渠道 ' + id + ' 已注册')
+        ...(synthesize ? {synthesize: input => bounded(synthesize(input), '配音渠道 ' + key, REPLACEMENT_TIMEOUT_MS).catch(error => { recordError(null, owner, '配音', error); throw error })} : {}),
+        ...(recognize ? {recognize: input => bounded(recognize(input), 'Recognition ' + key, REPLACEMENT_TIMEOUT_MS)} : {}) }
+      return register.call(this, speechProviders, key, entry, 'tavern.speechProvider()', '配音渠道 ' + id + ' 已注册', () => deps.speechProvidersChanged?.())
     },
 
     // Picture generation Tavern itself asks for (stage asset packs). Tavern keeps no image channels:
     // status() → { ready, reason?, model?, maxReferences } describes the plugin's current channel;
     // generate({ prompt, references: [{ data, mediaType }], width, height, background, quality, signal })
     // → { data, mediaType }. A thrown error with requestMayHaveSucceeded === false says nothing was billed.
-    imageProvider({ id, label, status, generate } = {}) {
+    imageProvider({ id, label, status, generate, models } = {}) {
       const owner = ownerOf(this)
       sectionName(id)
       if (typeof label !== 'string' || !label.trim() || label.trim().length > 30) throw new Error('label 必须是 1–30 字')
       if (typeof status !== 'function') throw new TypeError('imageProvider 需要 status 函数')
       if (typeof generate !== 'function') throw new TypeError('imageProvider 需要 generate 函数')
+      if (models !== undefined && typeof models !== 'function') throw new TypeError('models 必须是函数')
       const key = owner + '/' + id
-      const entry = { id: key, owner, label: label.trim(),
-        status: async () => {
-          const value = await bounded(status(), '生图渠道 ' + key, POOL_TIMEOUT_MS)
+      const entry = { id: key, owner, label: label.trim(), models,
+        status: async (input = {}) => {
+          const value = await bounded(Promise.resolve().then(() => status({ ...input })), '生图渠道 ' + key, POOL_TIMEOUT_MS)
           const maxReferences = Number.isSafeInteger(value?.maxReferences) && value.maxReferences > 0 ? value.maxReferences : 0
           return { ready: value?.ready === true, reason: String(value?.reason || '').slice(0, 200), model: String(value?.model || '').slice(0, 100), maxReferences }
         },
@@ -553,8 +636,46 @@ export function createTavernPluginApi(deps) {
       return register.call(this, imageProviders, key, entry, 'tavern.imageProvider()', '生图渠道 ' + id + ' 已注册')
     },
 
-    // Say a line in a character's voice on the channel the player chose: { url, mediaType }, or
-    // null when voicing is off, the channel is the browser's own, or narration is set silent.
+    // Draw one picture on the channel the image plugin offers (tavern.imageProvider), the one Tavern's asset pictures use:
+    // { prompt, width, height, background?, quality?, references?: [{ data, mediaType }] (PNG/JPEG/WebP, ≤ 8 MiB each),
+    // signal? } → { data, mediaType }. Shares their limit of four in flight. Errors carry code NOT_CONFIGURED /
+    // UNSUPPORTED_CHANNEL / INVALID_ARGUMENT / BUSY / GENERATION_FAILED; mayHaveCharged === true when a request went out.
+    async generateImage(input = {}) {
+      if (!deps.generateImage) throw Object.assign(new Error('当前版本不支持生图'), { code: 'TAVERN_PLUGIN_NOT_FOUND' })
+      const context = await imageContext(this, input)
+      const source = await imageCatalog.select(context, input)
+      return await deps.generateImage(input, source)
+    },
+
+    async listImageModels(input = {}) {
+      return imageCatalog.listModels(await imageContext(this, input))
+    },
+
+    registerImageLibrary(input = {}) {
+      const owner = ownerOf(this)
+      return owned(this, () => imageCatalog.registerLibrary(owner, input), 'tavern.registerImageLibrary()')
+    },
+
+    async listImageCharacters(input = {}) {
+      return imageCatalog.list('characters', await imageContext(this, input), input)
+    },
+
+    async listImageOutfits(input = {}) {
+      return imageCatalog.list('outfits', await imageContext(this, input), input)
+    },
+
+    // What the session's model costs, for the presentation's getModelPricing (one per plugin; the first registered answers):
+    // quote({ provider, model, reasoningEffort? }) → { available: true, rates: { input, output, cacheRead, cacheWrite } }
+    // in USD per million tokens, or { available: false, reason }.
+    pricingProvider({ quote } = {}) {
+      const owner = ownerOf(this)
+      if (typeof quote !== 'function') throw new TypeError('pricingProvider 需要 quote 函数')
+      const entry = { owner, quote: selection => bounded(Promise.resolve().then(() => quote(structuredClone(selection))), '价格提供方 ' + owner).catch(error => { recordError(null, owner, '价格', error); throw error }) }
+      return register.call(this, pricingProviders, owner, entry, 'tavern.pricingProvider()', '插件 ' + owner + ' 已提供价格')
+    },
+
+    // Say a line in its voice through the voice service: { url, mediaType }, or null when there is no voice service,
+    // the voice is the browser's own, or narration is off.
     async synthesizeSpeech({ gameId, speaker, text, emotion, narration } = {}) {
       const game = await requireGame(gameId)
       if (typeof text !== 'string' || !text.trim()) throw new TypeError('text 必须是非空字符串')
@@ -636,6 +757,7 @@ export function createTavernPluginApi(deps) {
       await deps.pluginData.save(owner, data)
     },
 
+    getPluginDataLimits() { return { maxBytes: MAX_PLUGIN_DATA } },
     async readPluginData() {
       const owner = ownerOf(this)
       return deps.pluginData ? deps.pluginData.read(owner) : null
@@ -673,6 +795,32 @@ export function createTavernPluginApi(deps) {
 
     async getTurnState({ gameId } = {}) {
       return await turnState(gameId)
+    },
+
+    // New-game default and the current game's {{user}} identity are separate values.
+    async getDefaultPlayerName() {
+      return String(await deps.readDefaultPlayerName() || '').trim() || '你'
+    },
+
+    async getPlayerName({ gameId } = {}) {
+      const game = await requireGame(gameId)
+      return String(await deps.readPlayerName(game.sessionId) || '').trim() || '你'
+    },
+
+    async setDefaultPlayerName({ playerName } = {}) {
+      const owner = ownerOf(this)
+      const name = playerNameOf(playerName)
+      const scopes = deps.cardScope ? await deps.cardScope() : null
+      if (scopes?.has(owner)) throw Object.assign(new Error('卡内插件不能修改全局默认玩家称呼'), { code: 'TAVERN_PLUGIN_SCOPE' })
+      return await deps.writeDefaultPlayerName(name)
+    },
+
+    async setPlayerName({ gameId, playerName } = {}) {
+      const game = await requireGame(gameId)
+      const name = playerNameOf(playerName)
+      const activity = await deps.readActivity?.(game.sessionId)
+      if (activity?.generating || activity?.settling) throw Object.assign(new Error('请等待正文生成和后台结算完成后再修改玩家称呼'), { code: 'TAVERN_PLUGIN_BUSY' })
+      return await deps.writePlayerName(game.sessionId, name)
     },
 
     // The plugin's latest state for its own page side (tavernUi.watchState): kept in memory, replaced on each call.
@@ -870,6 +1018,14 @@ export function createTavernPluginApi(deps) {
       return register.call(this, toolScopes, name, { owner: ownerOf(this), modes: [...new Set(modes)] }, 'tavern.toolModes()', '工具 ' + name + ' 的可见范围已被设置')
     },
 
+    // A task-only tool stays out of the request until one of these Skills is loaded in the
+    // session, like Tavern's own skill-gated tools. Independent of toolModes.
+    toolSkills({ name, skills } = {}) {
+      if (typeof name !== 'string' || !name || (deps.isControlledTool && deps.isControlledTool(name))) throw new TypeError('toolSkills 只能设置插件自己注册的工具')
+      if (!Array.isArray(skills) || !skills.length || skills.some(skill => typeof skill !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill) || skill.length > 64)) throw new TypeError('skills 需要至少一个 Skill 名称（小写字母、数字和连字符）')
+      return register.call(this, toolSkillGates, name, { owner: ownerOf(this), skills: [...new Set(skills)] }, 'tavern.toolSkills()', '工具 ' + name + ' 的解锁 Skill 已被设置')
+    },
+
     // A directory of the plugin's own skills (<dir>/<name>/SKILL.md), read-only, after Tavern's built-in ones.
     skillSource({ dir, role = 'card' } = {}) {
       const owner = ownerOf(this)
@@ -950,6 +1106,15 @@ export function createTavernPluginApi(deps) {
       return await taskExecution.runAgent(ownerOf(this), input)
     },
 
+    // Host-invoked current-turn generation; plugins return processed prose, never write the save.
+    bodyGenerator({ name, title, prepare, generate, controlInput = false } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      if (typeof generate !== 'function') throw new TypeError('generate 需要一个函数')
+      if (prepare !== undefined && typeof prepare !== 'function') throw new TypeError('prepare 需要一个函数')
+      return owned(this, () => bodyGenerators.register(owner, { name, title: taskTitle(title, name), prepare, generate, controlInput: controlInput === true }), 'tavern.bodyGenerator()')
+    },
+
     // A resident background Agent of this plugin: one per game, its own Session and prompt cache.
     // Tasks given `member: name` run in it one at a time, beside Tavern's own members.
     // A resident member of this plugin: one Session per game. With `system` it has a prefix of
@@ -1013,6 +1178,7 @@ export function createTavernPluginApi(deps) {
       if (typeof textVersion !== 'string' || textVersion === '') throw new Error('textVersion 必须是 onTurnSettled 或 getTurn 给出的值')
       const record = await deps.media.attach({ chatId: material.chatId, sessionId: material.sessionId, owner, turn: material.turn, key: textVersion, currentKey: material.key, item })
       await changed(material.sessionId)
+      pictureReady(material.sessionId, record)
       return { id: record.id }
     },
 
@@ -1021,6 +1187,7 @@ export function createTavernPluginApi(deps) {
       const { chatId, sessionId } = await locateItem(itemId)
       const record = await deps.media.patch({ chatId, owner, itemId, changes })
       await changed(sessionId)
+      pictureReady(sessionId, record)
       return publicPluginMedia(record)
     },
 
@@ -1052,17 +1219,17 @@ export function createTavernPluginApi(deps) {
       return items.map(item => publicPluginMedia(item, currentKeys.get(item.turn) === item.key))
     },
 
-    promptSection({ name, text } = {}) {
+    promptSection({ name, text, target = 'story' } = {}) {
       const owner = ownerOf(this)
-      sectionName(name); textOrFunction(text)
-      return register.call(this, sections, owner + '\u0000' + name, { owner, name, text }, 'tavern.promptSection()', '提示词段落 ' + name + ' 已注册')
+      sectionName(name); textOrFunction(text); contextTarget(target)
+      return register.call(this, sections, owner + '\u0000' + target + '\u0000' + name, { owner, name, text, target }, 'tavern.promptSection()', '提示词段落 ' + name + ' 已注册')
     },
 
-    turnSection({ name, text, position = 'after' } = {}) {
+    turnSection({ name, text, position = 'after', target = 'story' } = {}) {
       const owner = ownerOf(this)
-      sectionName(name); textOrFunction(text)
+      sectionName(name); textOrFunction(text); contextTarget(target)
       if (!['before', 'after'].includes(position)) throw new Error("position 只能是 'before' 或 'after'")
-      return register.call(this, turnSections, owner + '\u0000' + name, { owner, name, text, position }, 'tavern.turnSection()', '本轮上下文段落 ' + name + ' 已注册')
+      return register.call(this, turnSections, owner + '\u0000' + target + '\u0000' + name, { owner, name, text, position, target }, 'tavern.turnSection()', '本轮上下文段落 ' + name + ' 已注册')
     },
 
     settlementSection({ name, text } = {}) {
@@ -1154,11 +1321,11 @@ export function createTavernPluginApi(deps) {
       }, 'tavern.worldbookStrategy()')
     },
 
-    worldbookSource({ name, entries } = {}) {
+    worldbookSource({ name, entries, target = 'story' } = {}) {
       const owner = ownerOf(this)
-      sectionName(name)
+      sectionName(name); contextTarget(target)
       if (typeof entries !== 'function') throw new TypeError('entries 必须是函数')
-      return register.call(this, worldbookSources, owner + '\u0000' + name, { owner, name, entries }, 'tavern.worldbookSource()', '世界书来源 ' + name + ' 已注册')
+      return register.call(this, worldbookSources, owner + '\u0000' + target + '\u0000' + name, { owner, name, entries, target }, 'tavern.worldbookSource()', '世界书来源 ' + name + ' 已注册')
     },
 
     // Entries joining this game's world book pool: Tavern's own recall decides what reaches a request.
@@ -1269,6 +1436,19 @@ export function createTavernPluginApi(deps) {
     catch (error) { recordError(null, converted.owner, '导入人物卡收尾', error) }
   }
 
+  /** A plugin item now shows a finished picture: Tavern's observers hear it (once per picture is theirs to decide). */
+  function pictureReady(gameId, record) {
+    if (record.status !== 'ready' || !String(record.attachment?.mediaType || '').startsWith('image/')) return
+    const item = publicPluginMedia(record)
+    for (const observer of Array.from(pictureObservers)) {
+      Promise.resolve().then(() => observer({ gameId, item })).catch(error => recordError(gameId, record.owner, '同步插图', error))
+    }
+  }
+  function onPictureReady(observer) {
+    pictureObservers.add(observer)
+    return () => pictureObservers.delete(observer)
+  }
+
   /** Called by Tavern after the player removed pictures of a plugin's media item; only its owner hears. */
   function mediaRemoved(gameId, item, pictures, itemRemoved) {
     if (!gameId || !item?.owner || !pictures?.length) return
@@ -1278,6 +1458,7 @@ export function createTavernPluginApi(deps) {
 
   function gameRemoved(gameId) {
     if (!gameId) return
+    gameModes.stop(gameId)
     for (const key of Array.from(publishedStates.keys())) if (key.startsWith(gameId + '\u0000')) publishedStates.delete(key)
     void checkVersions(gameId, { all: true })
     dispatch(removedHandlers, { gameId }, 'onGameRemoved')
@@ -1396,7 +1577,8 @@ export function createTavernPluginApi(deps) {
   function stopAllTasks(gameId) {
     const ledger = ledgerRuns.get(gameId)
     ledger?.abort(new Error('玩家停止了台账整理'))
-    return stopTasks(gameId) || Boolean(ledger)
+    const body = bodyGenerators.stop(gameId)
+    return stopTasks(gameId) || Boolean(ledger) || body
   }
 
   /** A game's manual plugin tasks and the options plugins add to its settings. */
@@ -1447,17 +1629,18 @@ export function createTavernPluginApi(deps) {
   }
 
   /** Plugin sections for the foreground story prompt, in a stable order. */
-  async function promptSections({ gameId, turn }) {
+  async function promptSections({ gameId, turn, target = 'story', subject }) {
     const { disabled } = await choicesFor(gameId)
-    return (await collectSections(sections, { gameId, turn }, '提示词段落', disabled)).map(({ name, text }) => ({ name, text }))
+    const context = { gameId, turn, ...(target === 'story' ? {} : {target, subject}) }
+    return (await collectSections(sections, context, '提示词段落', disabled)).map(({ name, text }) => ({ name, text }))
   }
 
   /** Seam: per-turn context for the story request, computed once while the turn is prepared. */
-  async function turnContext({ gameId, turn, input }) {
-    const context = { gameId, turn, input: String(input || '') }
+  async function turnContext({ gameId, turn, input, target = 'story', subject }) {
+    const context = { gameId, turn, input: String(input || ''), ...(target === 'story' ? {} : {target, subject}) }
     const { disabled } = await choicesFor(gameId)
     const result = await collectSections(turnSections, context, '本轮上下文段落', disabled)
-    for (const source of Array.from(worldbookSources.values()).filter(entry => !disabled.has(entry.owner)).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))) {
+    for (const source of Array.from(worldbookSources.values()).filter(entry => !disabled.has(entry.owner) && entry.target === target).sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name))) {
       let entries
       try { entries = await bounded(source.entries(structuredClone(context)), '世界书来源') }
       catch (error) { recordError(gameId, source.owner, '世界书来源', error); continue }
@@ -1591,6 +1774,12 @@ export function createTavernPluginApi(deps) {
   function toolModesFor(name) {
     const entry = toolScopes.get(name)
     return entry ? entry.modes.slice() : null
+  }
+
+  /** Seam: the Skills that unlock a plugin-registered DSH tool; null when it is always offered. */
+  function toolSkillsFor(name) {
+    const entry = toolSkillGates.get(name)
+    return entry ? entry.skills.slice() : null
   }
 
   async function mvuProvider(input = {}) {
@@ -1748,8 +1937,16 @@ export function createTavernPluginApi(deps) {
     return results.sort((a, b) => (order.get(a.versionId) ?? 0) - (order.get(b.versionId) ?? 0))
   }
 
-  return Object.freeze({ taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved,
+  return Object.freeze({ hostBehavior, gameModes, bodyGenerators, taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolSkillsFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved, onPictureReady,
     listGalleryProviderItems, readGalleryProviderImage, removeGalleryProviderItems,
-    speechProviders: () => Array.from(speechProviders.values()), imageProviders: () => Array.from(imageProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,
+    // The asset library's access to the 配图 人物库 records (registerImageLibrary schema 4); outside any card.
+    imageCharacters: (op, input) => imageCatalog.record(op, {}, input),
+    imageCharacterLibraries: () => imageCatalog.recordLibraries({}),
+    listImageLibrary: (kind, input) => imageCatalog.list(kind, {}, input),
+    builtinPromptSection({name,target,text,unbounded = false}) {
+      return register.call({ctx:deps.ctx},sections,'dsh-tavern\u0000'+target+'\u0000'+name,
+        {owner:'dsh-tavern',name,target,text,unbounded},'tavern builtin prompt section','Duplicate built-in prompt section')
+    },
+    speechProviders: (capability = 'synthesize') => Array.from(speechProviders.values()).filter(entry => typeof entry[capability] === 'function'), imageProviders: () => Array.from(imageProviders.values()), pricingProviders: () => Array.from(pricingProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,
     runSettlementTasks, manualTaskFor, runManualTask, stopTasks: stopAllTasks, runningTask, gamePlugins, setGamePlugin, pluginGameSettings })
 }

@@ -233,7 +233,8 @@ function PackImage({identity,src,crop,avatar,originalSrc,cropOverflow=false,...p
             setSize({url,width:image.naturalWidth,height:image.naturalHeight});
     }, [url,cached]);
     if (cached) return h('img',{...props,ref:node,src:cached});
-    if (typeof getStageAvatarCrop === 'function') crop = getStageAvatarCrop(url,crop);
+    // The stage client's resource owners record pack avatar crops (dsh-tavern-stage resources.cjs).
+    if (typeof stageViews !== 'undefined' && stageViews?.resources) crop = stageViews.resources.getStageAvatarCrop(url,crop);
     if (!crop) return h('img',{...props,...(avatar ? {ref:node} : {}),src:url});
     // face orientation belongs to the crop wrapper, not its offset source pixels.
     const {className,style,'data-enter':enter,'data-out':out,'data-face-actor':faceActor,...imageProps} = props;
@@ -348,6 +349,14 @@ function createPackVoicePlayer({ getClient, createAudio = url => new Audio(url),
                 if (!createSpeech) throw new Error('voice-unavailable');
                 const audio = createSpeech({...descriptor.browser, text:input.text, language:descriptor.language});
                 prepareAudio(audio, null, {});
+                const clip = {url:'', audio, size:0, key:null};
+                remember(key, clip);
+                return clip;
+            }
+            // A line the host already synthesized (台词朗读 speechForLine) arrives as its audio URL.
+            if (descriptor.url) {
+                const audio = createAudio(descriptor.url);
+                audio.preload = 'auto'; prepareAudio(audio, null, {loudness:descriptor.loudness}); audio.load?.();
                 const clip = {url:'', audio, size:0, key:null};
                 remember(key, clip);
                 return clip;

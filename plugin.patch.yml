@@ -81,6 +81,7 @@
         - agentPresets
         - settings
         - tokenMeter
+        - connection
 
 # 0.2.0-rc.2 适配：preset 容器模型从「扫描 presets/ 目录」改为「@deepseek-ai/dsh-agent-preset
 # 声明行」。0.2.0 的 agent-preset-registry 既不扫目录也不接受 preset 路径，定义就是普通插件行；
@@ -100,6 +101,8 @@
         description: 基于 DSH 极简会话的人物卡文字游戏，复用原生输入、模型、重试、历史与上下文管理。
         order: 10
         plugins:
+          - id: tavern-native-tools
+            name: dsh-profile-tavern/tavern-plugin/lib/host/tools.js
           # Tavern preset：最终系统提示词由插件按游玩／卡片会话装配。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -172,6 +175,8 @@
         id: tavern-background
         order: 11
         plugins:
+          - id: tavern-native-tools
+            name: dsh-profile-tavern/tavern-plugin/lib/host/tools.js
           # Tavern 后台 Agent 的最小 DSH 预设。
           # 提供压缩与 Tavern Skill 按需加载，不继承前台正文提示词、其他工具或正则。
           - id: tool-skill
@@ -232,6 +237,13 @@
       name: ./tavern-plugin/packages/dsh-asset-library/lib/index.js
       config:
         assetRoot: !!js dshHomePath('profile-data', 'tavern', 'asset-packs')
+
+- insert:
+    - id: dsh-tavern-tts
+      name: ./tavern-plugin/packages/dsh-tavern-tts/lib/index.js
+      config:
+        profileId: tavern
+        dataDir: !!js dshHomePath('profile-data', 'tavern', 'tts')
 
 - insert:
     - id: dsh-tavern-stage

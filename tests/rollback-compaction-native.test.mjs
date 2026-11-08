@@ -20,7 +20,7 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   h.open()
   const agent = h.target.agent, session = agent.session
   const play = async turn => {
-    agent.followup({ id: 'round-' + turn, role: 'user', content: [{ type: 'text', text: '行动' + turn + '旧事。'.repeat(200) }], source: { kind: 'human' } })
+    agent.followup({ id: 'round-' + turn, role: 'user', content: [{ type: 'text', text: '行动' + turn + '旧事。'.repeat(200) }], source: { kind: 'user' } })
     await agent.whenIdle()
   }
   for (let turn = 1; turn <= 5; turn++) await play(turn)
@@ -55,10 +55,15 @@ test('真实压缩、存档与回退RPC：跨摘要拒绝无写入，未压缩�
   const folded = createStoryRoundsFold(); folded.addEvents(sessionEvents(session))
   const compactedThrough = folded.compactedStories().at(-1)
   const removed = await rpc.rollbackToTurn({ sessionId: session.id, chatId: before.id, turn: compactedThrough })
-  assert.equal(removed.view.rolledBackTo.latest, compactedThrough)
+  // 最早保留的正文仍在消息面，但其玩家输入可能已进入摘要；不能越过这个半轮边界。
+  const boundaryFloor = floors.find(floor => nodes.includes(floor.reply.seq))
+  const boundaryInput = events.findLast(event => event.type === 'user/message' && event.seq < boundaryFloor.reply.seq)
+  assert.ok(boundaryInput && !nodes.includes(boundaryInput.seq), '边界输入已被真实摘要取代')
+  assert.equal(removed.view.rolledBackTo.latest, boundaryFloor.story)
+  assert.match(removed.view.rollbackWarning, /已回退.*不能原地回退/)
   assert.ok(removed.view.rolledBackTo.removed >= 2, '真实压缩后撤回多层并验证合并撤销点')
   const after = await read(), afterEvents = structuredClone(sessionEvents(session))
-  await assert.rejects(rpc.rollbackTurn({ sessionId: session.id, chatId: before.id, expectedTurn: compactedThrough }), /压缩摘要/)
+  await assert.rejects(rpc.rollbackTurn({ sessionId: session.id, chatId: before.id, expectedTurn: boundaryFloor.story }), /压缩摘要|不在可回退/)
   assert.deepEqual(await read(), after)
   assert.deepEqual(sessionEvents(session), afterEvents)
   await rounds.undoRollback(session.id, before.id)
@@ -82,7 +87,7 @@ for (const kind of ['error', 'regeneration']) test('真实压缩纳入未结算�
   const { BasicCompactionEngine } = await import(new URL('../../dsh-compaction-basic/lib/index.js', pathToFileURL(process.env.DSH_BOOT_MODULE)))
   const agent = h.target.agent, session = agent.session
   for (let turn = 1; turn <= 3; turn++) {
-    agent.followup({ id: 'normal-' + turn, role: 'user', source: { kind: 'human' }, content: [{ type: 'text', text: '旧剧情'.repeat(200) }] })
+    agent.followup({ id: 'normal-' + turn, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '旧剧情'.repeat(200) }] })
     await agent.whenIdle()
   }
   // 构造真实 Session 的多步尝试终态，再交由真实压缩引擎生成检查点。

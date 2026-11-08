@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { maximumBackgroundTokens, traceError } from './background-agent-task.js'
 import { createBackgroundRunLedger } from './background-run-ledger.js'
 import { memberOf, pluginMember } from './domain/background-members.js'
+import { applyAgentModelSelection } from './domain/session-model-selection.js'
 
 const LEGACY_BACKGROUND_PROVIDER = 'dsh-tavern-background'
 const BACKGROUND_PROVIDER = 'dsh-tavern-background-tools-v4'
@@ -83,6 +84,9 @@ export function createBackgroundAgentSessions(options, task) {
     }
   }
   const residentSessionByParent = new Map()
+  // One-shot tasks that continue one conversation over several runs (the streaming director's
+  // windows of one round). The caller closes it; nothing is resumed after a restart.
+  const conversations = new Map()
   const runs = createBackgroundRunLedger({ now: options.now })
   const queues = new Map()
 
@@ -168,7 +172,7 @@ export function createBackgroundAgentSessions(options, task) {
 
   function descriptorFor(input, persistent) {
     const member = persistent ? pluginMember(input.member) : null
-    if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: LEGACY_BACKGROUND_PROVIDER, label: '插件成员：' + member.name })
+    if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-plugin-member-v1', label: '插件成员：' + member.name })
     if (input.task === 'polish') return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-polish', label: '正文精修', agentProvider: input.selection.provider, agentModel: input.selection.model, persona: '只审读正文，通过精修工具逐处提交修改。' })
     if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
@@ -227,8 +231,11 @@ export function createBackgroundAgentSessions(options, task) {
       ...(maxTokens === undefined ? {} : { maxTokens }),
       ...(input.selection.reasoningEffort === undefined ? {} : { reasoningEffort: input.selection.reasoningEffort })
     }
-    let resident = persistent ? residentHandles.get(traceSessionId) : undefined
-    if (resident !== undefined && resident.key !== key) {
+    const conversation = !persistent ? conversations.get(input.conversation) : undefined
+    if (input.conversation !== undefined && !persistent && conversation === undefined) throw new Error('后台对话已结束')
+    if (conversation?.handle) traceSessionId = conversation.traceSessionId
+    let resident = persistent ? residentHandles.get(traceSessionId) : conversation?.handle ? conversation : undefined
+    if (resident !== undefined && persistent && resident.key !== key) {
       throw new Error('同一个常驻后台 Agent 不能绑定到不同前台会话或任务类型')
     }
     let handle = resident && resident.handle
@@ -295,6 +302,7 @@ export function createBackgroundAgentSessions(options, task) {
         throw wrapped
       }
       catalogChild(parent, handle.agent.session, descriptor)
+      if (conversation) Object.assign(conversation, { handle, state, traceSessionId })
       if (persistent) {
         resident = { handle, state, parentSessionId: str(input.sessionId), key, queueKey: queueKey(input), lastUsedAt: now() }
         residentHandles.set(traceSessionId, resident)
@@ -303,6 +311,10 @@ export function createBackgroundAgentSessions(options, task) {
     }
     state.input = runtimeInput
     if (state.modelSelection) state.modelSelection.current = { ...input.selection }
+    // 0.2.2 installModelSelection no longer reads the caller's mutable selection:
+    // it only adds the switch notice. A reused resident Agent keeps its old
+    // model/selection event otherwise, so record the new one before its next step.
+    applyAgentModelSelection(handle?.agent, input.selection)
     state.refreshConfiguredTools?.()
     activeSessions.add(traceSessionId)
     requestSessions.set(traceSessionId, handle.agent.session)
@@ -338,6 +350,7 @@ export function createBackgroundAgentSessions(options, task) {
         residentHandles.delete(traceSessionId)
         if (residentSessionByParent.get(key)===traceSessionId) residentSessionByParent.delete(key)
         requestContexts.delete(traceSessionId); requestSessions.delete(traceSessionId)
+        if (conversation?.handle === handle) Object.assign(conversation, { handle: undefined, state: undefined })
         const release = Promise.resolve().then(async () => {
           try { await options.flushSession?.(handle.agent.session) }
           finally { await handle.dispose() }
@@ -348,6 +361,8 @@ export function createBackgroundAgentSessions(options, task) {
         void release.catch(error => console.warn('dsh-tavern: 退休后台会话释放失败', traceSessionId, error)).finally(() => {
           if (releasing.get(traceSessionId) === release) releasing.delete(traceSessionId)
         })
+      } else if (conversation && !conversation.closed) {
+        // 同一 conversation 保留原生会话供下一次请求。
       } else if (!persistent) {
         requestContexts.delete(traceSessionId)
         requestSessions.delete(traceSessionId)
@@ -420,6 +435,24 @@ export function createBackgroundAgentSessions(options, task) {
     return Promise.race([edited, waited])
   }
 
+  // An opaque token for run({conversation}); close() releases the native session once idle.
+  function conversation() {
+    const token = Object.freeze({ close: () => closeConversation(token) })
+    conversations.set(token, { closed: false })
+    return token
+  }
+
+  async function closeConversation(token) {
+    const entry = conversations.get(token)
+    if (!entry) return
+    conversations.delete(token)
+    entry.closed = true
+    if (!entry.handle || activeSessions.has(entry.traceSessionId)) return
+    requestContexts.delete(entry.traceSessionId)
+    requestSessions.delete(entry.traceSessionId)
+    await entry.handle.dispose()
+  }
+
   function owns(sessionId) {
     const id = str(sessionId)
     return activeSessions.has(id) || residentHandles.has(id)
@@ -473,7 +506,8 @@ export function createBackgroundAgentSessions(options, task) {
     clearTimeout(reapTimer)
     if (reaping) await reaping
     await Promise.allSettled([...releasing.values()])
-    const residents = Array.from(residentHandles.values())
+    const residents = Array.from(residentHandles.values()).concat([...conversations.values()].filter(entry => entry.handle))
+    conversations.clear()
     residentHandles.clear()
     residentSessionByParent.clear()
     activeSessions.clear()
@@ -515,5 +549,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, conversation, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

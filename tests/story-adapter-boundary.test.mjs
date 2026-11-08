@@ -35,7 +35,7 @@ function freeNames(source) {
   visit(parse(source,{ecmaVersion:'latest',sourceType:'module'}))
   return [...references].filter(name => !names.has(name) && !builtins.has(name)).sort()
 }
-for (const name of ['service','render']) test('故事 ' + name + ' 适配器没有隐式上游全局依赖', async () => {
+for (const name of ['service','render','transcript']) test('故事 ' + name + ' 适配器没有隐式上游全局依赖', async () => {
   const source = await readFile(new URL('../tavern-plugin/src/client/story/' + name + '.js',import.meta.url),'utf8')
   assert.deepEqual(freeNames(source), [])
 })
@@ -43,7 +43,7 @@ for (const name of ['service','render']) test('故事 ' + name + ' 适配器没�
 test('脱离 Tavern 大包运行故事服务：事件折叠与快照 RPC 使用各自注入的实例', async () => {
   const seen = []
   function create(id) {
-    const deps = { window: { setTimeout, clearTimeout }, createStoryRoundsFold, foldStoryRounds, filterStoryRounds,
+    const deps = { storyTranscript: { older: async () => false, floors: () => ({ floors: [] }) }, window: { setTimeout, clearTimeout }, createStoryRoundsFold, foldStoryRounds, filterStoryRounds,
       rpc: async (method,args,sessionId) => { seen.push({id,method,args,sessionId}); return {interrupted:true} },
       liveTavernView: {getSnapshot:()=>({view:null})} }
     const {createTavernStoryService} = createStoryServiceAdapter(deps)
@@ -60,8 +60,9 @@ test('脱离 Tavern 大包运行故事渲染投影，复用注入的投影语义
   const projection = {parts:[{kind:'markdown',text:'保留的正文'}]}
   const {createTavernStoryRender} = createStoryRenderAdapter({...validation,
     liveTavernView:{getSnapshot:()=>({view:{mode:'story'}})},
+    storyTranscript: { older: async () => false, resolve: (_sid, target) => { assert.equal(target.messageUid, 'm2'); return { legacyTurn: 2, projection } } },
     tavernProjectionForTurn:()=>projection, projectionPartsOf:p=>p.parts,tavernLatestProjectionTurn:()=>2})
-  const floor = await createTavernStoryRender({}).projectFloor('s',2)
+  const floor = await createTavernStoryRender({}).projectFloor('s',{messageUid:'m2'})
   assert.equal(floor.projection,projection)
   assert.equal(floor.parts,projection.parts)
   assert.equal(floor.waitingForHistory,false)

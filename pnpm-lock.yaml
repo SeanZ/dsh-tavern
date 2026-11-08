@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  dsh-better-sidebar@0.28.0: 4f54fe004a0c388c920fb4827618d7795673580b54a583675b959a2b3fa7fac6
+  dsh-better-sidebar@0.28.0: 850e16168b85d56a330c133fe8f26468d70046002ca6b3e7f06a1b6cfb75450e
   dsh-pocket@2.12.0: 1b0fac9bc15853908a97cd3cd9cea13aa17484e649ce423b5f9bcbecd61ef42e
   dsh-web-mobile@3.1.0: f4e306c03ef6fb2ffca172bcac2f1f72debff28a56bdc2b966a304ccd7fb5fa5
 
@@ -136,7 +136,7 @@ importers:
         version: link:tavern-plugin/packages/dsh-asset-library
       dsh-better-sidebar:
         specifier: 0.28.0
-        version: 0.28.0(patch_hash=4f54fe004a0c388c920fb4827618d7795673580b54a583675b959a2b3fa7fac6)(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-agent@0.2.2-alpha.3(c03ef7d0da67c40af6ab86a8471e8716))(@deepseek-ai/dsh-client-locale@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-conversation@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-settings@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-llm@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-session@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-scope@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)))(@deepseek-ai/dsh-settings@0.2.2-alpha.3(39311d6648176e0b15d1d23214ce8ac8))(@deepseek-ai/dsh-subagent@0.2.2-alpha.3(0f02dd0e2631d78971db5f4a64825a3c))(@deepseek-ai/dsh-tools@0.2.2-alpha.3(db698fec014e3667df9194d0bfe272ee))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+        version: 0.28.0(patch_hash=850e16168b85d56a330c133fe8f26468d70046002ca6b3e7f06a1b6cfb75450e)(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-agent@0.2.2-alpha.3(c03ef7d0da67c40af6ab86a8471e8716))(@deepseek-ai/dsh-client-locale@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-conversation@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-settings@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-llm@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-session@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-scope@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)))(@deepseek-ai/dsh-settings@0.2.2-alpha.3(39311d6648176e0b15d1d23214ce8ac8))(@deepseek-ai/dsh-subagent@0.2.2-alpha.3(0f02dd0e2631d78971db5f4a64825a3c))(@deepseek-ai/dsh-tools@0.2.2-alpha.3(db698fec014e3667df9194d0bfe272ee))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       dsh-dream-skin:
         specifier: link:./tavern-plugin/packages/dsh-dream-skin
         version: link:tavern-plugin/packages/dsh-dream-skin
@@ -152,6 +152,9 @@ importers:
       dsh-tavern-stage:
         specifier: link:./tavern-plugin/packages/dsh-tavern-stage
         version: link:tavern-plugin/packages/dsh-tavern-stage
+      dsh-tavern-tts:
+        specifier: link:./tavern-plugin/packages/dsh-tavern-tts
+        version: link:tavern-plugin/packages/dsh-tavern-tts
       dsh-web-mobile:
         specifier: 3.1.0
         version: 3.1.0(patch_hash=f4e306c03ef6fb2ffca172bcac2f1f72debff28a56bdc2b966a304ccd7fb5fa5)(bf2fe1eec8bf6c55992baea59a1cb679)
@@ -10936,7 +10939,7 @@ snapshots:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
-  dsh-better-sidebar@0.28.0(patch_hash=4f54fe004a0c388c920fb4827618d7795673580b54a583675b959a2b3fa7fac6)(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-agent@0.2.2-alpha.3(c03ef7d0da67c40af6ab86a8471e8716))(@deepseek-ai/dsh-client-locale@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-conversation@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-settings@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-llm@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-session@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-scope@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)))(@deepseek-ai/dsh-settings@0.2.2-alpha.3(39311d6648176e0b15d1d23214ce8ac8))(@deepseek-ai/dsh-subagent@0.2.2-alpha.3(0f02dd0e2631d78971db5f4a64825a3c))(@deepseek-ai/dsh-tools@0.2.2-alpha.3(db698fec014e3667df9194d0bfe272ee))(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
+  dsh-better-sidebar@0.28.0(patch_hash=850e16168b85d56a330c133fe8f26468d70046002ca6b3e7f06a1b6cfb75450e)(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-agent@0.2.2-alpha.3(c03ef7d0da67c40af6ab86a8471e8716))(@deepseek-ai/dsh-client-locale@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-conversation@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-client-ui-settings@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-llm@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2))(@deepseek-ai/dsh-session@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)(@deepseek-ai/dsh-scope@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)))(@deepseek-ai/dsh-settings@0.2.2-alpha.3(39311d6648176e0b15d1d23214ce8ac8))(@deepseek-ai/dsh-subagent@0.2.2-alpha.3(0f02dd0e2631d78971db5f4a64825a3c))(@deepseek-ai/dsh-tools@0.2.2-alpha.3(db698fec014e3667df9194d0bfe272ee))(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
     dependencies:
       '@codemirror/commands': 6.11.0
       '@codemirror/lang-cpp': 6.0.3

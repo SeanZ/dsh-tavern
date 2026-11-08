@@ -33,7 +33,10 @@ function declaration(source, name) {
 
 const action = declaration(hostSource, 'TavernPluginIllustrateAction')
 const icon = declaration(hostSource, 'TavernIllustrateIcon')
-const run = declaration(extensionsSource, 'runTavernIllustrator')
+const run = declaration(extensionsSource, 'watchTavernIllustrationStart') + '\n' + declaration(extensionsSource, 'runTavernIllustrator')
+// the gestures and tooltip the chat button shares with the stage's 场景生图 entry
+const press = declaration(extensionsSource, 'useTavernIllustratePress')
+const title = extensionsSource.match(/const TAVERN_ILLUSTRATE_TITLE = [^\n]*/)[0]
 const drawRunner = declaration(imageClientSource, 'createMessageDrawRunner')
 const scroller = declaration(revealSource, 'tavernReplyRevealScroller')
 const chromeCandidates = [process.env.CHROME_PATH]
@@ -70,12 +73,14 @@ try {
     'const DshUi={Tooltip:({children})=>children};',
     'const drafts=new Map(); const tavernIllustrationDrafts={set:(g,t,v)=>{const k=g+":"+t;if(v)drafts.set(k,v);else drafts.delete(k);},get:(g,t)=>drafts.get(g+":"+t)||null};',
     'const TAVERN_ILLUSTRATION_NOTICE_MS=8000;',
+    // the turn never gains a picture here, so a request form closes only when draw settles
+    'const rpc=async()=>({items:[]}); const tavernPluginMediaIndex={subscribe:()=>()=>{},has:()=>false};',
     drawRunner,
     'const calls=[]; let failNext=false, delayNext=false, finishDelayed=null;',
     'const illustrator={draw:async context=>{calls.push({...context});if(failNext){failNext=false;throw new Error("network unavailable")}if(delayNext){delayNext=false;return new Promise(resolve=>{finishDelayed=()=>resolve({})})}return {};}};',
     'window.__calls=calls;window.__fail=()=>{failNext=true};window.__delay=()=>{delayNext=true};window.__finish=()=>finishDelayed?.();',
     'window.__run=(...args)=>runTavernIllustrator(illustrator,...args);',
-    run, icon, action, scroller,
+    run, title, press, icon, action, scroller,
     'const root=modules["react-dom/client"].createRoot(document.querySelector("#app"));',
     'window.__render=(gameId="game-A",turn=7,status="settled")=>{document.querySelector("[data-turn-tail=\\\"7\\\"]").dataset.streaming=String(status==="streaming");root.render(h(TavernPluginIllustrateAction,{key:gameId+":"+turn,sessionId:gameId,turn,illustrator,status}));};',
     'window.__unmount=()=>root.unmount();',

@@ -25,7 +25,7 @@ test('插件面板：注册为当前游戏的侧栏页，卸载时移除；没�
   const dispose = plugin.registerPanel({ id: 'state', title: '记忆', render: ({ gameId }) => { seen.push(gameId); return 'panel:' + gameId } })
   const tab = tabs.get('tavern-plugin:memory-plugin:state')
   assert.equal(tab.title, '记忆')
-  assert.equal(ui.service.apiVersion, 7)
+  assert.equal(ui.service.apiVersion, 8)
   const rendered = tab.component({ scope: { sessionId: 'game-1' } })
   assert.equal(rendered.type, 'Boundary')
   assert.equal(seen.length, 0, '渲染回调由边界内的子组件执行')
@@ -220,12 +220,13 @@ test('人物卡封面加载失败时保持宫格尺寸并显示名字首字，�
 
  test('回合订阅忽略迟到的旧响应，卸载后不再通知', async () => {
   const requests = [], seen = []
-  let signal
+  let signal, subscriptionOptions
   const ui = loadWith({
     rpc: () => new Promise(resolve => requests.push(resolve)),
-    liveTavernView: { subscribe(_id, listener) { signal = listener; listener(); return () => {} } }
+    liveTavernView: { subscribe(_id, listener, _paths, options) { subscriptionOptions = options; signal = listener; listener(); return () => {} } }
   })
   const stop = ui.service.watchTurnState('g', state => seen.push(state))
+  assert.equal(subscriptionOptions.deferLoad, true)
   const flush = () => new Promise(resolve => setImmediate(resolve))
   await flush()
   signal()
@@ -247,18 +248,22 @@ test('舞台插件保留公开投影；舞台视图接口已停用，退休的�
   const code = await readFile(new URL('../tavern-plugin/src/client/features/cast-stage.js', import.meta.url), 'utf8')
   const project = vm.runInNewContext(code + '; tavernStagePublicData')
   const data = { enabled: true, player: '你', card: { name: 'A' }, cast: [{ name: '林曦' }], turns: [{ turn: 2, text: 't', lines: [] }], musicOwned: true, music: 'old.mp3' }
-  const reported = []
-  const ui = loadWith({ rpc: async () => data, tavernStagePublicData: project, tavernErrorHub: { report: (_label, error) => reported.push(error.message) } })
+  const reported = [], warned = []
+  const ui = loadWith({ rpc: async () => data, tavernStagePublicData: project, tavernErrorHub: { report: (_label, error) => reported.push(error.message) }, console: { warn: message => warned.push(message) } })
   const plugin = { ctx: { fiber: { name: 'dsh-tavern-galgame' } } }
   Object.setPrototypeOf(plugin, ui.service)
   const projected = JSON.parse(JSON.stringify(await plugin.getStage('game-1')))
   assert.deepEqual(projected, { enabled: true, player: '你', card: { name: 'A' }, background: '', characters: [{ name: '林曦' }], turns: [{ turn: 2, text: 't', lines: [] }] })
   assert.equal(Object.hasOwn(projected, 'music'), false)
-  // The old stage's plugin views are retired: registering one is reported, never thrown (a throw while
-  // a plugin applies fails the whole page's boot), and nothing is registered.
+  // The old stage's plugin views are retired: registering one is warned to the developer console once per
+  // plugin, never thrown (a throw while a plugin applies fails the whole page's boot), raises no player
+  // error, and nothing is registered.
   const dispose = plugin.registerStageView({ id: 'vn', label: '视觉小说', render: value => value })
+  plugin.registerStageView({ id: 'vn2', label: '视觉小说', render: value => value })
   assert.equal(typeof dispose, 'function')
-  assert.match(reported.join('\n'), /已停用的 registerStageView/)
+  assert.equal(warned.length, 1)
+  assert.match(warned[0], /已停用的 registerStageView/)
+  assert.deepEqual(reported, [])
   assert.equal(Object.hasOwn(ui, 'stageViews'), false)
 })
 test('背景音乐：同一首接着放、换曲淡入；玩家的开关记在浏览器里，关掉时不出声；插件经 playMusic 交给 Tavern', async () => {

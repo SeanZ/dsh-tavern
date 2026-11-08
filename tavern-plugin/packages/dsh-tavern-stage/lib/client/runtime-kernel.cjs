@@ -3,7 +3,7 @@
 // All collaborators are explicit: this kernel can run outside the application closure.
 function createStageRuntimeKernel({performanceStateKernel, modProjectionKernel, phoneBeatKernel, performanceKindsKernel}) {
 // a page turn under this long after the previous one is continuous paging;
-// history then waits this long on a page before it plays (recorded danmaku, a settled history page's performances).
+// history then waits this long on a page before it plays (a settled history page's performances).
 const STAGE_HISTORY_SETTLE_MS = 1000;
 const performancePhaseLedgerKey = token => JSON.stringify(['performance-phase',token.instanceKey,token.phaseKey]);
 const samePerformanceToken = (a,b) => !!a && !!b && sameSource(a.source,b.source) &&
@@ -383,11 +383,13 @@ function reduceStageRuntime(previous, event) {
         // A replay shows its round's starting state (the predecessor's end) before its first page.
         if (state.replay?.phase === 'baseline') return;
         cancelProjection();
-        if (!state.cursor.anchor) return;
+        // A carry is the predecessor's sealed end, not a page of this turn: a turn with no page to anchor (a gameMode
+        // step, a text-less opening) still shows it, else the entry never has a backdrop to accept and keeps its veil.
         if (!directed()) {
             if (state.carry?.envelope) projectCarry(state.carry, state.cursor.mode === 'history' || state.cursor.skipping ? 'snap' : 'normal');
             return;
         }
+        if (!state.cursor.anchor) return;
         const token = {id: nextId(), source: state.source, direction: directionToken(state), visitId: state.cursor.visitId, anchor: state.cursor.anchor};
         patch({projection: {token, outstanding: Object.keys(GROUPS).filter(key => key !== 'visual')}});
         pending({projection: true});
@@ -459,7 +461,8 @@ function reduceStageRuntime(previous, event) {
     // screen is this turn's starting point. Navigation (history jump, resume, a SEND that pulls a
     // historical cursor forward) still shows the departure position until this visit stages a page.
     // eligible: the landing page plays its one-shots (live arrival).
-    function selectSource(source, mode, text, anchor, generating, follow = false, eligible = mode === 'live') {
+    // still: a restored reading position (a lifecycle reload of the round on screen) shows its page as it stands and plays nothing.
+    function selectSource(source, mode, text, anchor, generating, follow = false, eligible = mode === 'live', still = false) {
         const old = state.source;
         // Leaving the working live round for an earlier one keeps that round's phase (indicator v2); any other move drops it.
         const leaving = mode === 'history' && !state.round && state.cursor.mode === 'live' ? stageRoundPhase(state) : null;
@@ -478,7 +481,7 @@ function reduceStageRuntime(previous, event) {
         const ledger = Object.fromEntries(Object.entries(state.ledger).filter(([,entry]) => entry.descriptor.kind === 'mod-performance' && !entry.dwell && !(replay && sameSource(entry.token.source, source))));
         patch({source, text: nextText, director: emptyDirector(), carry: null, carryRequest: null, ledger, liveStreamSeen: mode === 'live' && (!!generating || nextText.streaming),
             visitStaged: mode === 'live' && follow, replay: replay ? {phase: 'baseline', request: null} : null,
-            cursor: {mode, anchor: anchor || nextText.pages[0]?.anchor || null, visitId: state.cursor.visitId + 1, readThrough: 0, skipping: state.cursor.skipping, firstPageEligible: eligible, afterEligible: eligible, still: false, dwell: null},
+            cursor: {mode, anchor: anchor || nextText.pages[0]?.anchor || null, visitId: state.cursor.visitId + 1, readThrough: still ? anchor?.offset || 0 : 0, skipping: state.cursor.skipping, firstPageEligible: eligible && !still, afterEligible: eligible && !still, still, dwell: null},
             interrupted: false, retryable: false, empty: false,
             pending: {text: !!generating || nextText.streaming, director: false, projection: false, resources: false, error: null}});
         if (mode === 'live') patch({latestSource: source});
@@ -638,7 +641,7 @@ function reduceStageRuntime(previous, event) {
             patch({latestSource: event.source});
             if (state.cursor.mode === 'history') followRound(event.source, event.text);
         } else if (!sameSource(state.source, event.source)) {
-            selectSource(event.source, 'live', event.text, null, event.type !== 'TURN_CHANGED' || event.generating, state.cursor.mode === 'live' && !!state.source);
+            selectSource(event.source, 'live', event.text, event.anchor || null, event.type !== 'TURN_CHANGED' || event.generating, state.cursor.mode === 'live' && !!state.source, true, event.still === true);
         } else if (event.type !== 'TURN_CHANGED' && state.cursor.mode !== 'live') {
             // SEND can precede the new native node. Leave history/replay now, or its later
             // TURN_CHANGED would keep following the old turn forever.

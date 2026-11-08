@@ -1,4 +1,5 @@
 import { applyPendingOpeningCommand, parseOpeningCommand, parsePendingOpeningCommand } from './opening-command.js'
+import { parseOpeningScriptStart } from './opening-setup.js'
 import { projectFullPromptTemplateState, applyFullPromptTemplateState } from './full-prompt-template-state.js'
 import { projectTavernHelperScripts } from './tavern-helper-scripts.js'
 import { mutateScriptPrompts } from './tavern-script-prompts.js'
@@ -8,6 +9,7 @@ import { OFFICIAL_MVU_VERSION } from './official-mvu-assets.js'
 import { randomUUID } from 'node:crypto'
 import { cardOpeningChoices } from './card-openings.js'
 import { inspectWorldBookDocument, updateWorldBookDocument, exportSillyTavernWorldBook } from './worldbook-resource.js'
+import { hasInitialVariablesEntry } from './worldbook-entry-classification.js'
 import { patchTavernHelperWorldbookEntries, projectTavernHelperWorldbook, replaceTavernHelperWorldbookOperations, tavernHelperWorldbookChanges, tavernHelperWorldbookVersion } from './tavern-helper-worldbook.js'
 import { createHelperGenerationTasks } from './helper-generation-tasks.js'
 import { helperGenerationHistory } from './helper-generation-prompts.js'
@@ -132,6 +134,14 @@ export function createOpeningPreparation({ readCard, worldBooks, generate, gener
       return present(draft)
     },
     get(id) { return present(requireDraft(id)) },
+    // The template worker seeds initial values from world-book entries carrying the
+    // [InitialVariables] marker; without one the fork cannot produce a variable and only
+    // pays a process start (jsdom plus the template engine) before being killed again.
+    needsTemplateInitial(id) {
+      const draft = requireDraft(id)
+      const entries = draft.document ? inspectWorldBookDocument(draft.document).entries : []
+      return entries.some(entry => hasInitialVariablesEntry(entry))
+    },
     retain(id) { requireDraft(id); return { retained: true } },
     release(id) { generations.stopAll('opening:' + id); return { released: drafts.delete(id) } },
     dispose() { generations.dispose(); drafts.clear() },
@@ -176,8 +186,14 @@ export function createOpeningPreparation({ readCard, worldBooks, generate, gener
         }
         const command = applyPendingOpeningCommand(parseOpeningCommand(args.line), draft.pendingOpening, args.line)
         draft.pendingOpening = undefined
-        draft.startCommand = { ...command, openingId }
+        const scriptStart = parseOpeningScriptStart(args.scriptStart)
+        draft.startCommand = { ...command, openingId, ...(typeof args.userName === 'string' ? { userName: args.userName } : {}), ...(scriptStart ? { scriptStart } : {}) }
         return { deferred: false, input: command.input }
+      }
+      if (method === 'updateTavernHelperPrompts') {
+        mutateScriptPrompts(draft.chat, args.operation)
+        bumpRevision(draft)
+        return { updated: true, context: runtimeContext(draft) }
       }
       if (!draft.runtimeEnabled) throw new Error('准备页脚本运行时未初始化')
       if (method === 'loadTavernWorldInfo') return { worldInfo: exportSillyTavernWorldBook(draft.document) }
@@ -281,6 +297,7 @@ export function createOpeningPreparation({ readCard, worldBooks, generate, gener
         // Chat data the wizard saved before the first turn travels with the game.
         openingPluginData: greeting && greeting.tavernPluginData ? copy(greeting.tavernPluginData) : undefined,
         chatPluginMetadata: draft.chat.tavernPluginMetadata ? copy(draft.chat.tavernPluginMetadata) : undefined,
+        tavernScriptPrompts: Array.isArray(draft.chat.tavernScriptPrompts) && draft.chat.tavernScriptPrompts.length ? copy(draft.chat.tavernScriptPrompts) : undefined,
         preparedMessages: created.map(message => copy(message)),
         openingMessages: Object.fromEntries(draft.openings.map((opening,index)=>[opening.id,draft.chat.messages[0]?.swipes?.[index] ?? opening.text])), openingVariables: Object.fromEntries(draft.openings.map((opening, index) => [opening.id, draft.chat.messages[0]?.variables?.[index] || {}])), variables: draft.chat.variables || {}, messageVariables: draft.chat.messages[0]?.variables?.[selectedIndex] || {}, openingId: selected, sourceSessionId: draft.sourceSessionId, sourceLifecycleRevision: draft.sourceLifecycleRevision,
         // A wizard's record for the floor it sent belongs to the new game's opening

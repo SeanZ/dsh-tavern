@@ -21,7 +21,8 @@ function visit(dir, relative = '') {
 }
 // The lightweight validator owns source kinds; publish the same enum in the schema. Read it from this package's vendored
 // copy (refreshed first; the protocol's src is private to it).
-const vendorProtocol = (source, target) => emit(join(root, 'src', target), (source.endsWith('.json') ? '' : '// Generated from dsh-presentation-protocol by build.mjs; do not edit.\n') + readFileSync(join(root, '../dsh-presentation-protocol/src', source), 'utf8').replaceAll("from './asset-packs.js'", "from './asset-pack-refs.js'"))
+// voice-schema.js is copied byte-identically (its own header names the canonical source).
+const vendorProtocol = (source, target) => emit(join(root, 'src', target), (source.endsWith('.json') || source === 'voice-schema.js' ? '' : '// Generated from dsh-presentation-protocol by build.mjs; do not edit.\n') + readFileSync(join(root, '../dsh-presentation-protocol/src', source), 'utf8').replaceAll("from './asset-packs.js'", "from './asset-pack-refs.js'"))
 vendorProtocol('stage-skin.cjs', 'shared/stage-skin.cjs')
 const { STAGE_SKIN_SOURCE_KINDS } = (await import('./src/shared/stage-skin.cjs')).default
 const skinSchemaPath = join(root, '../dsh-presentation-protocol/schema/skin.schema.json')
@@ -35,6 +36,7 @@ for (const [source, target] of [
   ['figure-resolution.cjs', 'shared/figure-resolution.cjs'],
   ['media-resolution.cjs', 'shared/media-resolution.cjs'],
   ['voice-schema.js', 'shared/voice-schema.js'],
+  ['cast-voice.js', 'shared/cast-voice.js'],
   ['asset-pack-json.js', 'shared/asset-pack-json.js'],
   ['asset-variant-table.cjs', 'shared/asset-variant-table.cjs'],
   ['asset-tags.cjs', 'shared/asset-tags.cjs'],
@@ -58,6 +60,9 @@ for (const name of ['native-settings.js', 'settings-migration.js']) {
   emit(join(root, 'src/shared', name), '// Generated from Tavern host settings by build.mjs; do not edit.\n' +
     readFileSync(join(root, '../../lib', name), 'utf8'))
 }
+// The control and lease routes share the host's one request-origin rule.
+emit(join(root, 'src/shared/request-origin.js'), '// Generated from Tavern host HTTP routes by build.mjs; do not edit.\n' +
+  readFileSync(join(root, '../../lib/http/request-origin.js'), 'utf8'))
 // Reuse the production matcher at figure-name ingress without a second matching policy.
 emit(join(root, 'src/shared/asset-pack-lexical.js'), '// Generated from domain/asset-pack-lexical.js by build.mjs; do not edit.\n' +
   readFileSync(join(root, '../../lib/domain/asset-pack-lexical.js'), 'utf8')

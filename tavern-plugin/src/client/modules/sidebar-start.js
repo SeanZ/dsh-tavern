@@ -17,7 +17,8 @@ const TAVERN_START_ICON_PATHS = Object.freeze({
 	'background-tasks': 'M3 6h12M3 11h7M3 16h7M12 16a5 5 0 1 0 10 0a5 5 0 1 0-10 0M17 13.5V16l1.5 1.5',
 	'conversation-settings': 'M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1zM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
 	cards: 'M8 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0M4 21a8 8 0 0 1 16 0',
-	worldbooks: 'M3 5c0-4 18-4 18 0s-18 4-18 0v14c0 4 18 4 18 0V5M3 12c0 4 18 4 18 0',
+	// 打开的书（两页外扩 + 中缝书脊），比数据库圆柱更像「世界书」；tab-icons.js 的签条图标用同一条 path。
+	worldbooks: 'M12 6.3C9.6 4.2 6 3.9 3.5 4.6v13c2.5-.7 6.1-.4 8.5 1.7 2.4-2.1 6-2.4 8.5-1.7v-13c-2.5-.7-6.1-.4-8.5 1.7zM12 6.3v13',
 	presets: 'M10 4a2 2 0 1 0 4 0a2 2 0 1 0-4 0M3 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M17 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M8 6l-3 8M16 6l3 8M9 19h6',
 	resources: 'M3 8V5h7l3 3h8v12H3zM3 11h18',
 	skills: 'M13 21H5V3h14v9M8 7h8M8 11h5M18 14l1.5 3.5L23 19l-3.5 1.5L18 24l-1.5-3.5L13 19l3.5-1.5z',
@@ -43,6 +44,7 @@ function tavernStartIcon(id, option, size) {
 
 // Group the flat catalog the same way the start page does: Tavern's own groups
 // first, then groups plugins registered, then plugin tabs, then the rest.
+// Plugins that name the same group share one section, in sidebar order.
 function tavernStartGroups(options, pluginGroups) {
 	const list = Array.isArray(options) ? options.filter(Boolean) : [];
 	const claimed = new Set();
@@ -52,10 +54,15 @@ function tavernStartGroups(options, pluginGroups) {
 		const found = ids.map(id => list.find(option => option.id === id)).filter(Boolean);
 		if (found.length) groups.push([title, found]);
 	}
+	const shared = new Map();
 	for (const group of pluginGroups || []) {
 		const tabs = (group && group.tabs || []).filter(id => !claimed.has(id) && (claimed.add(id), true));
 		const found = tabs.map(id => list.find(option => option.id === id)).filter(Boolean);
-		if (found.length) groups.push([group.title, found]);
+		if (!found.length) continue;
+		const section = shared.get(group.title);
+		if (!section) { shared.set(group.title, found); groups.push([group.title, found]); continue; }
+		section.push(...found);
+		section.sort((a, b) => list.indexOf(a) - list.indexOf(b));
 	}
 	const plugins = list.filter(option => String(option.id).startsWith("tavern-plugin:") && !claimed.has(option.id));
 	if (plugins.length) groups.push(["插件", plugins]);

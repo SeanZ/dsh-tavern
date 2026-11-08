@@ -101,7 +101,7 @@ test(
       )
       assert.deepEqual(
         own.map((row) => `${row.presetId}/${row.id}`),
-        ['tavern/user-tools', 'tavern/tavern-compaction', 'tavern-background/tavern-compaction'],
+        ['tavern/tavern-native-tools', 'tavern/user-tools', 'tavern/tavern-compaction', 'tavern-background/tavern-native-tools', 'tavern-background/tavern-compaction'],
       )
       for (const row of own) {
         const resolved = boot.resolvePluginResource(row.name, baseUrl)

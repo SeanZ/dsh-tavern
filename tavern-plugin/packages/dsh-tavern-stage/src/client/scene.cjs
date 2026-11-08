@@ -59,6 +59,17 @@ const {paint:stagePaintEmpty,palette:stageEmptyPalette}=services.canvas || {};
 const {Image,MessageChannel,MutationObserver,ResizeObserver,performance}=window;
 const getComputedStyle=(...args)=>window.getComputedStyle(...args),setTimeout=(...args)=>window.setTimeout(...args);
 const galFigureSources=new WeakMap(),instances=new Set();let disposed=false;
+// Register before creating scenes. A scene snapshots factories and owns their instances.
+// factory(scene) returns load, tick, head, hit, react, release, set, reload and dispose.
+// Model renderers own placement; sprite renderers return spriteBased:true for shared placement.
+const figureRenderers=new Map();
+function registerFigureRenderer(kind,factory){
+    if(disposed)throw new Error('Stage scene disposed');
+    if(figureRenderers.has(kind))throw new Error('Figure renderer already registered: '+kind);
+    figureRenderers.set(kind,factory);
+    return ()=>{if(figureRenderers.get(kind)===factory)figureRenderers.delete(kind);};
+}
+registerFigureRenderer('spine',scene=>scene.spine());
 function create(host,options){
     if(disposed)throw new Error('Stage scene disposed');
     const rollback=[];
@@ -77,7 +88,7 @@ function galSyncFaceOrientation(root, figures) {
     if (!root) return;
     const scales = new Map();
     figures.forEach(entry => {
-        const image = entry.sprite;
+        const image = entry.sprite || entry.model;
         if (image) scales.set(entry.figure.alias, image.scale.x < 0 ? "-1" : "1");
     });
     root.querySelectorAll("[data-face-actor]").forEach(node => {
@@ -97,16 +108,25 @@ function galCreateScene(host, options, own) {
     const onDebug = options.onDebug || function () {};
     let quality = options.quality === "low" ? "low" : "high";
     const refreshRate = options.refreshRate || window.screen && window.screen.refreshRate;
+    // A handheld phone (options.handheld, device.cjs galDeviceHandheld) draws lighter: 30 fps unless the reader chose a cap, DPR 2 at most.
+    const isHandheld = options.handheld || (() => false);
+    let handheld = isHandheld();
     const app = new PIXI.Application({ resizeTo: host, backgroundColor: 0x0b0812, backgroundAlpha: 1, antialias: true, autoDensity: true,
-        resolution: galResolution(quality), powerPreference: "high-performance" });
+        resolution: galResolution(quality, undefined, handheld), powerPreference: "high-performance" });
     own(app,value=>value.destroy(true,{children:true}));
     host.appendChild(app.view);
+    // Pixi's InteractionManager re-tests a resting pointer against the whole scene on the shared system ticker every frame
+    // (hover). Nothing in the scene is Pixi-interactive (taps are DOM handlers on the stage), so that second 60 Hz loop only
+    // cost power; pointer events still reach the manager.
+    app.renderer.plugins.interaction.useSystemTicker = false;
     const gl = app.renderer.gl;
 
     // resizeTo resizes - and so clears - the canvas in its own animation frame; the paced
     // ticker may skip that vsync, which then shows an empty scene for a frame (leaving full screen flashed). Redraw now.
     app.renderer.on("resize", () => { if (!state.destroyed && state.desc) app.render(); });
-    app.ticker.maxFPS = galFrameRate(quality, true, refreshRate, stageReading.get().frameCap);
+    // A rotated phone can change profile (desktop <-> handheld at the breakpoints): retune at once.
+    app.renderer.on("resize", () => { if (!state.destroyed && isHandheld() !== handheld) applyQuality(quality); });
+    app.ticker.maxFPS = galFrameRate(quality, true, refreshRate, stageReading.get().frameCap, handheld);
     const tickerUpdate = app.ticker.update;
     const pace = { last: 0, next: 0, fps: 0, vsync: 0 };
     const generated = stageViews.sceneGraphics.textures(PIXI, host);
@@ -147,7 +167,7 @@ function galCreateScene(host, options, own) {
     app.stage.addChild(world, bust.sprite, overlay, call.container);
     // Filter attachment points (render order within each chain).
     const filters = {
-        world: stageViews.sceneGraphics.filters(world, app.screen, ["timeGrade", "grade", "soften", "bloom", "screen", "film", "beatBlur", "glitch", "shock"]), backdrop: stageViews.sceneGraphics.filters(backdrop, app.screen, ["blur"]),
+        world: stageViews.sceneGraphics.filters(world, app.screen, ["timeGrade", "grade", "soften", "screen", "film", "beatBlur", "glitch", "shock"]), backdrop: stageViews.sceneGraphics.filters(backdrop, app.screen, ["blur", "bloom"]),
         backFx: stageViews.sceneGraphics.filters(backFx), figures: stageViews.sceneGraphics.filters(figuresBox), frontFx: stageViews.sceneGraphics.filters(frontFx), overlay: stageViews.sceneGraphics.filters(overlay, app.screen)
     };
     function tune(filter) {
@@ -163,7 +183,7 @@ function galCreateScene(host, options, own) {
 
     const cameraMotion=stageViews.sceneCamera.create();
     let closeHead=null;
-    const sceneLayout=stageViews.castLayout.create();
+    const sceneLayout=stageViews.castLayout.create({drawn:kind=>renderers.has(kind)});
     own(sceneLayout,value=>value.dispose());
     const cast=stageViews.cast.create({build:(figure,pending)=>addFigure(figure,!pending),release:destroyFigure});
     own(cast,value=>value.dispose());
@@ -208,8 +228,10 @@ function galCreateScene(host, options, own) {
 
     const textures=stageViews.sceneTextures.create({PIXI,upload:texture=>app.renderer.plugins.prepare?.upload(texture)});
     own(textures,value=>value.dispose());
-    const figureAssets=stageViews.figureAssets.create({PIXI,renderer:app.renderer,screen:app.screen,textures});
+    const figureAssets=stageViews.figureAssets.create({PIXI,renderer:app.renderer,screen:app.screen,textures,document,centred:math.galCentredAnatomy});
     own(figureAssets,value=>value.dispose());
+    const renderers=new Map();
+    for(const [kind,factory] of figureRenderers)renderers.set(kind,own(factory({PIXI,app,state,emotes:emotesBox,figures:figuresBox,onError,commit:commitFigureReplacement,lifeOn:figureLifeOn,tune,spine:createSpineRenderer}),value=>value.dispose()));
     const loadTexture=textures.load;
     function pruneTextures() {
         const keep = new Set(describe().preload || []);
@@ -283,6 +305,7 @@ function galCreateScene(host, options, own) {
         const release=action=>{try{action();}catch(error){errors.push(error);}};
         if(entry.replacement){const replacement=entry.replacement;entry.replacement=null;release(()=>destroyFigure(replacement));}
         release(()=>releaseTapStills(entry));
+        if(renderers.has(entry.kind))release(()=>renderers.get(entry.kind).release(entry));
         if(entry.warp){const warp=entry.warp;entry.warp=null;release(()=>warp.destroy());}
         release(()=>entry.blink.dispose());
         release(()=>layeredSpriteClearScene(entry));
@@ -299,6 +322,12 @@ function galCreateScene(host, options, own) {
     }
     // the runtime loads with the first Spine figure; the figure then becomes a
     // sprite-like body (entry.sprite) placed and sized by the static path, from its rest-pose frame and pack anatomy.
+    function createSpineRenderer(){
+        return {spriteBased:true,load:loadSpine,tick:tickSpine,
+            hit: (entry,point)=>stageViews.figureTap.galTapHitSpine(entry.sprite,entry.spineFigure?.spine,point,app.renderer,PIXI),
+            react(entry,reaction){if(reaction.animation)entry.tapAnimation={animation:reaction.animation,base:entry.figure.animation,until:performance.now()+stageViews.figureIdle.FIGURE_LIFE.animationMs};},
+            release(){},set(){},reload(){},dispose(){}};
+    }
     function loadSpine(entry) {
         if (entry.loading || entry.sprite || entry.failed || !entry.url) return;
         entry.loading = true;
@@ -367,10 +396,11 @@ function galCreateScene(host, options, own) {
     // the viewport layout of the directed cast (galFigureLayout), recomputed only
     // when the stage size, text box, ruler, cast or priority change. The fit eases like the face rest (700 ms).
     function figureLayout(desc,W,H,now) {
+        // Missing lower-body artwork contributes to the shared viewport fit.
         const crops={};
         for(const figure of desc.figures||[]){
             const entry=figure&&state.figures.get(figure.key);
-            const anatomy=(entry?.model?entry.figureSizing:entry?.sprite?.figureInput)?.anatomy||figure?.figureSizing?.anatomy;
+            const input=(entry?.model?entry.figureSizing:entry?.sprite?.figureInput)||figure?.figureSizing,anatomy=input?.anatomy||figure?.figureSizing?.anatomy;
             if(anatomy&&anatomy.feet>anatomy.visibleBottom)crops[figure.alias]=(anatomy.feet-anatomy.visibleBottom)/(anatomy.feet-(anatomy.headTop??anatomy.figureTop));
         }
         const result=sceneLayout.update({plan:desc.figureLayout,figures:desc.figures,W,H,now,
@@ -425,7 +455,7 @@ function galCreateScene(host, options, own) {
         cast.update(figures,now).forEach(function({entry,replacement}) {
             const figure=entry.figure;
             if(replacement){
-                if(figure.kind==='spine')loadSpine(entry);else showStatic(entry,figure.src);
+                if(renderers.has(figure.kind))renderers.get(figure.kind).load(entry);else showStatic(entry,figure.src);
                 return;
             }
             if (figure.kind === "static") {
@@ -454,7 +484,7 @@ function galCreateScene(host, options, own) {
         const entry = typeof alias === "object" ? alias : entryOf(alias);
         if (!entry) return null;
         if (rest && entry.restHead) return entry.restHead;
-        ;
+        if(entry.model && renderers.has(entry.kind))return renderers.get(entry.kind).head(entry,exact);
         if (entry.sprite) {
             const sprite = entry.sprite, height = sprite.texture.height, width = sprite.texture.width;
             const metrics = sprite.figureInput?.metrics, m = { ...metrics?.auto, ...metrics?.override };
@@ -561,8 +591,8 @@ function galCreateScene(host, options, own) {
         // Never fight lip sync or the line's own expression while the figure is speaking.
         if (figure.speaking) return;
         const reaction = figure.reactions && figure.reactions[stageViews.figureTap.GAL_TAP_EMOTION[plan.kind]] || {};
-        if (entry.kind === "spine" && reaction.animation) {
-            entry.tapAnimation = { animation: reaction.animation, base: figure.animation, until: now + stageViews.figureIdle.FIGURE_LIFE.animationMs };
+        if (renderers.has(entry.kind)) {
+            if(entry.model || entry.sprite)renderers.get(entry.kind).react(entry,reaction,hit,plan);
         } else if (entry.kind === "static" && reaction.still && typeof desc.tapMedia === "function") {
             const src = entry.src;
             entry.tapStillError = null;
@@ -581,7 +611,7 @@ function galCreateScene(host, options, own) {
         for (const entry of entries) {
             let hit = null;
             try {
-                hit = entry.kind === "spine" ? stageViews.figureTap.galTapHitSpine(entry.sprite, entry.spineFigure && entry.spineFigure.spine, point, app.renderer, PIXI)
+                hit = renderers.has(entry.kind) ? renderers.get(entry.kind).hit(entry,point)
                     : entry.kind === "static" ? stageViews.figureTap.galTapHitStatic(entry.sprite, point) : null;
             } catch (error) { console.warn("[fork-gal-scene] tap hit test failed", error); }
             if (hit) return { entry, hit };
@@ -627,8 +657,9 @@ function galCreateScene(host, options, own) {
         // figures loaded off stage for the call view live the same life (load, blink, mouth, mood, place).
         const tickEntry = function (entry) {
             const figure = entry.figure;
-            if (entry.kind === "spine") loadSpine(entry);
-            ;
+            const renderer=renderers.get(entry.kind);
+            if(renderer)renderer.load(entry);
+            if(!(entry.model || entry.sprite)){if(entry.leaving)destroyFigure(entry);return;}
             // Figures arrive with the first picture (and its grade), never over an empty, ungraded stage.
             if (!entry.started && !backgrounds.layers.length) return;
             // a figure still loading when the entry revealed fades in where it stands, even on a
@@ -637,6 +668,12 @@ function galCreateScene(host, options, own) {
             const closeOn = state.camera.closeOn;
             entry.cropped = Boolean(closeOn && figure.alias !== closeOn && !entry.leaving && galCropHidden(entry.restBody, state.camera.goal, W, H));
             galFigureStep(entry, figure, now, dt);
+            // 舞台借用 focus (cast-layout.cjs lights it): the focus actor's step forward eases in and back out like the figure's
+            // other springs; skip, snap and reduced motion take it at once.
+            const stepTo = figure.focus && !entry.leaving ? 1 : 0;
+            entry.step ||= galSpringValue(stepTo);
+            if (desc.snap || desc.skipping || desc.reducedMotion) { entry.step.v = stepTo; entry.step.d = 0; }
+            else galSpring(entry.step, stepTo, 9, dt);
             // A performance shot cuts to its subject: no fade in (tickShot hides everyone else).
             if (desc.shot && figure.alias === desc.shot.alias && figure.visible !== false && !entry.leaving) entry.alpha.v = 1;
             if (entry.leaving && (galFigureGone(entry) || now - entry.leavingSince > 2500)) { destroyFigure(entry); return; }
@@ -644,16 +681,17 @@ function galCreateScene(host, options, own) {
             entry.container.scale.set(1);
             const alpha = entry.alpha.v, shade = entry.shade.v;
             entry.container.visible = alpha > 0.003;
-            entry.container.zIndex = entry.leaving ? 0 : figure.close ? 3 : figure.speaking ? 2 : 1;
+            entry.container.zIndex = entry.leaving ? 0 : figure.close ? 3 : figure.focus || figure.speaking && !figure.dim ? 2 : 1;
             const look = tickFigureLook(entry, desc, now, dt, dofTarget);
             const key = shade.toFixed(3) + ":" + alpha.toFixed(3) + ":" + look.glow.toFixed(3) + ":" + look.shadow.toFixed(3) + ":" + backgrounds.grade.version;
             if (entry.shadeKey !== key) {
                 entry.shadeKey = key;
                 entry.appearance.setShade(galFigureMatrix(shade, alpha, look.glow, look.shadow, backgrounds.grade.current));
             }
-            ;
-            if (entry.kind === "spine") tickSpine(entry, figure, desc);
-            else {
+            if(renderer){
+                renderer.tick(entry,figure,desc,{now,dt,W,H,framing,reducedHop});
+                if(!renderer.spriteBased)return;
+            }else {
                 if (!layeredSpriteTickScene(entry, textures, PIXI, !desc.skipping && figure.speaking)) entry.sprite.texture = entry.baseTexture;
                 tickBlink(entry);
                 tapTextureStatic(entry, now);
@@ -704,12 +742,14 @@ function galCreateScene(host, options, own) {
     function tickFaceRest(desc, now, W, H) {
         const env = faceEnvironment(desc, W, H);
         const closeShot = desc.camera?.shot === "close";
-        const fitTo = sceneLayout.target;
-        const layoutKey = [state.figureScale?.scene, state.figureScale?.rescales, env.key, closeShot, fitTo.fit, fitTo.drop, fitTo.top, fitTo.ruler, fitTo.spread].join(":");
-        const ruled = fitTo.ruler != null;
+        const castFit = sceneLayout.target;
+        const layoutKey = [state.figureScale?.scene, state.figureScale?.rescales, env.key, closeShot, castFit.fit, castFit.drop, castFit.top, castFit.ruler, castFit.spread].join(":");
+        const ruled = castFit.ruler != null;
         state.figures.forEach(entry => {
             if (!entry.restHead) return;
             const input = entry.figureSizing || entry.sprite?.figureInput;
+            // REST and animated figures use the same cast framing.
+            const fitTo = castFit;
             const key = [layoutKey, input?.source || entry.figure.url || entry.figure.modelId, entry.figure.close || false].join(":");
             const supportY = entry.figureResolved?.support?.y ?? H * (1 - (entry.figure.ground || 0));
             const old = entry.faceRest;
@@ -730,12 +770,15 @@ function galCreateScene(host, options, own) {
             entry.faceRest.scene = state.figureScale?.scene;
             if (old !== entry.faceRest && entry.faceRest.to.warning) console.warn("[fork-gal-scene] face-visibility-shrink", entry.figure.alias, entry.faceRest.to);
             const rest = galFaceRestFrame(entry.faceRest, now), x = W * entry.cx.v;
-            entry.container.scale.set(rest.scale);
-            entry.container.position.set(x * (1 - rest.scale), supportY * (1 - rest.scale) - rest.lift);
-            const pointX = v => x + (v - x) * rest.scale, pointY = v => supportY + (v - supportY) * rest.scale - rest.lift;
+            // the focus actor's step forward about its support point, over the face rest (the face clamp then sees it).
+            const step = stageFocusStep(entry.step?.v || 0, galBodyActAt), scale = rest.scale * step.zoom;
+            const drop = entry.restBody ? step.dy * entry.restBody.height : 0;
+            entry.container.scale.set(scale);
+            entry.container.position.set(x * (1 - scale), supportY * (1 - scale) - rest.lift + drop);
+            const pointX = v => x + (v - x) * scale, pointY = v => supportY + (v - supportY) * scale - rest.lift + drop;
             const head = entry.restHead, body = entry.restBody;
-            entry.restHead = { ...head, x: pointX(head.x), top: pointY(head.top), chin: pointY(head.chin), width: head.width * rest.scale };
-            if (body) entry.restBody = { x: pointX(body.x), y: pointY(body.y), width: body.width * rest.scale, height: body.height * rest.scale };
+            entry.restHead = { ...head, x: pointX(head.x), top: pointY(head.top), chin: pointY(head.chin), width: head.width * scale };
+            if (body) entry.restBody = { x: pointX(body.x), y: pointY(body.y), width: body.width * scale, height: body.height * scale };
             entry.faceRestCurrent = rest;
         });
     }
@@ -802,8 +845,7 @@ function galCreateScene(host, options, own) {
             destroyFigure(entry); state.offstage.delete(key);
         });
         const load = entry => {
-            ;
-            if (entry.kind === "spine") { entry.url = entry.figure.url || ""; loadSpine(entry); return; }
+            if(renderers.has(entry.kind)){entry.url=entry.figure.url || "";renderers.get(entry.kind).load(entry);return;}
             showStatic(entry, entry.figure.src);
             const key = (entry.figure.spriteBundle?.revision || "") + "|" + (entry.figure.blinkBundle?.key || "");
             if (entry.preloadCall === key) return;
@@ -887,8 +929,9 @@ function galCreateScene(host, options, own) {
 
     function applyQuality(next) {
         quality = next === "low" ? "low" : "high";
-        const resolution = galResolution(quality);
-        app.ticker.maxFPS = galFrameRate(quality, true, refreshRate, stageReading.get().frameCap);
+        handheld = isHandheld();
+        const resolution = galResolution(quality, undefined, handheld);
+        app.ticker.maxFPS = galFrameRate(quality, true, refreshRate, stageReading.get().frameCap, handheld);
         if (app.renderer.resolution !== resolution) { app.renderer.resolution = resolution; app.resize(); }
         const all = [].concat(...Object.values(filters).map(chain => chain.all()));
         state.figures.forEach(entry => all.push(...entry.filters.all()));
@@ -909,7 +952,7 @@ function galCreateScene(host, options, own) {
         if (newVisit) { state.visit = desc.visit; state.camera = cameraMotion.reset(); }
         const W = app.screen.width, H = app.screen.height;
         if ((desc.quality === "low" ? "low" : "high") !== quality) applyQuality(desc.quality);
-        ;
+        for(const renderer of renderers.values())renderer.set(desc);
         // CG gates the whole figure layer, including pending Live2D arrivals and exit fades.
         // Keep directed state/resources current so clearing CG reveals the latest outfit and cast.
         // an open phone no longer takes the
@@ -990,7 +1033,7 @@ function galCreateScene(host, options, own) {
         const desc = describe(), plan = effects.looks.plan();
         const neutral = plan && !plan.grade && !plan.soften && !plan.frame && !plan.bloom && !plan.screen && !plan.film && !plan.backBlur && !plan.motes.length && !plan.vignette && !plan.haze && !plan.leaks.length && !plan.flare;
         const idle = !state.figures.size && !(desc.figures || []).length && !desc.animatedUi && !desc.thinking && !(thinking.alpha > 0) && !desc.weather && !(desc.effects || []).length && !state.debugEffects.length && !state.override && !state.preview && neutral && backgrounds.layers.length <= 1 && !backgrounds.pending && performance.now() - state.changedAt > 4000 && state.clock >= state.camera.start + state.camera.ms;
-        return galFrameRate(quality, !idle, refreshRate, stageReading.get().frameCap);
+        return galFrameRate(quality, !idle, refreshRate, stageReading.get().frameCap, handheld);
     }
     // The wrapper restores the requested cap after Pixi dispatches its listeners.
     app.ticker.update = function (now) {
@@ -1149,7 +1192,7 @@ function galCreateScene(host, options, own) {
         // the next frame; figures already on stage and the backdrop stay as they are.
         reload() {
             state.figures.forEach(entry => { if (entry.failed && !entry.loading) entry.failed = false; });
-            ;
+            for(const renderer of renderers.values())renderer.reload();
             state.changedAt = performance.now();
         },
         destroy() {
@@ -1169,7 +1212,7 @@ function galCreateScene(host, options, own) {
             clean(()=>app.ticker.remove(frame));
             for(const dispose of [()=>effects.destroy(),()=>cast.dispose(),()=>sceneLayout.dispose()])clean(dispose);
             for(const entry of state.offstage.values()){if(entry.next)clean(()=>destroyFigure(entry.next));clean(()=>destroyFigure(entry));}
-            for(const dispose of [()=>call.dispose(),()=>offstageBox.destroy(),()=>backgrounds.dispose(),()=>figureAssets.dispose(),()=>layered.dispose(),()=>textures.dispose(),()=>bust.dispose(),()=>thinking.dispose(),()=>app.destroy(true,{children:true})])clean(dispose);
+            for(const dispose of [()=>call.dispose(),()=>offstageBox.destroy(),()=>backgrounds.dispose(),()=>figureAssets.dispose(),()=>layered.dispose(),()=>textures.dispose(),()=>bust.dispose(),()=>thinking.dispose(),...[...renderers.values()].map(renderer=>()=>renderer.dispose()),()=>app.destroy(true,{children:true})])clean(dispose);
             for(const texture of Object.values(generated))clean(()=>texture.destroy(true));
             if(errors.length)throw new AggregateError(errors,'Stage scene cleanup failed');
         }
@@ -1224,7 +1267,7 @@ function GalScene(props) {
         if ((props.reload || 0) === reloads.current) return;
         reloads.current = props.reload || 0;
         setError('');
-        if (scene.current && !error) scene.current.reload(); else setAttempt(n => n + 1);
+        if (scene.current) scene.current.reload(); else setAttempt(n => n + 1);
     }, [props.reload]);
     React.useEffect(function () {
         if (!startRenderer) return;
@@ -1232,7 +1275,7 @@ function GalScene(props) {
         loadPixiRuntime().then(function () {
             if (disposed || !live || !host.current) return;
             try {
-                scene.current = create(host.current, { quality: latest.current && latest.current.quality, onError: message => { if (live) setError(message); },
+                scene.current = create(host.current, { quality: latest.current && latest.current.quality, handheld: stageViews.device.handheld, onError: message => { if (live) setError(message); },
                     onDebug: effect => { if (live && debugHandler.current) debugHandler.current(effect); },
                     onUi: frame => { if (live && uiHandler.current) uiHandler.current(frame); },
                     onPresented: revision => { if (live) presentedHandler.current?.(revision); },
@@ -1265,10 +1308,17 @@ function GalScene(props) {
         error && !errorHandler ? h("p", { className: "fork-live2d-error", role: "alert" }, error) : null);
 }
 
-return {Scene:GalScene,create,rects:root=>galFigureSources.get(root)?.() || [],dispose(){
-    if(disposed)return;disposed=true;const errors=[];
+return {Scene:GalScene,create,figureRenderers:{register:registerFigureRenderer},rects:root=>galFigureSources.get(root)?.() || [],dispose(){
+    if(disposed)return;disposed=true;figureRenderers.clear();const errors=[];
     for(const instance of [...instances])try{instance.destroy();}catch(error){errors.push(error);}
     if(errors.length)throw new AggregateError(errors,'Stage scene scope cleanup failed');
 }};
 }
-if(typeof module!=='undefined'&&typeof window==='undefined')module.exports={createStageScene,createStageLayeredFigures};
+// 舞台借用 focus: the focus actor steps forward and holds there - the existing 'lean' body act (galBodyActAt) at its peak,
+// eased by k (0 none .. 1 full). zoom about the support point; dy in body heights (down: nearer the viewer).
+function stageFocusStep(k, bodyActAt) {
+    if (!k) return { zoom: 1, dy: 0 };
+    const peak = bodyActAt("lean", 0.5);
+    return { zoom: 1 + (peak.zoom - 1) * k, dy: peak.dy * k };
+}
+if(typeof module!=='undefined'&&typeof window==='undefined')module.exports={createStageScene,createStageLayeredFigures,stageFocusStep};

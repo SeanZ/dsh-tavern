@@ -110,3 +110,36 @@ test('游玩工作过程默认隐藏、独立保存且配置类型受校验', ()
   }
   for (const showPlayProcess of [null, 'true', 1]) assert.throws(() => applyTavernSettingsPatch({}, { showPlayProcess }), /游玩过程/)
 })
+
+
+test('请求失败自动重试默认开启，关闭后往返保存且类型受校验', () => {
+  assert.equal(presentTavernSettings({}, {}).retryOnFailure, true)
+  assert.equal(presentTavernSettings({ retryOnFailure: 'off' }, {}).retryOnFailure, true)
+  const saved = applyTavernSettingsPatch({}, { retryOnFailure: false })
+  assert.equal(saved.retryOnFailure, false)
+  assert.equal(presentTavernSettings(JSON.parse(JSON.stringify(saved)), {}).retryOnFailure, false)
+  assert.equal(applyTavernSettingsPatch(saved, { retryOnFailure: true }).retryOnFailure, true)
+  for (const retryOnFailure of [null, 'false', 0]) assert.throws(() => applyTavernSettingsPatch({}, { retryOnFailure }), /自动重试/)
+})
+
+
+test('正文生成方式默认原生，插件模式必须指定生成器且完整往返保存', () => {
+  assert.equal(presentTavernSettings({}, {}).storyGenerationMode, 'host')
+  assert.throws(() => applyTavernSettingsPatch({}, { storyGenerationMode: 'plugin-tool-call' }), /先选择/)
+  assert.throws(() => applyTavernSettingsPatch({}, { storyGenerationMode: 'invalid' }), /无效/)
+  let value = applyTavernSettingsPatch({}, { storyGenerationProvider: 'p:body', storyGenerationMode: 'plugin-tool-call' })
+  value = presentTavernSettings(value, {})
+  assert.equal(value.storyGenerationProvider, 'p:body')
+  assert.equal(value.storyGenerationMode, 'plugin-tool-call')
+  assert.equal(applyTavernSettingsPatch(value, { storyGenerationMode: 'host' }).storyGenerationProvider, 'p:body')
+})
+
+test('长按发送键重新生成默认关闭，开关往返保存且类型受校验', () => {
+  assert.equal(presentTavernSettings({}, {}).longPressSendRegenerate, false)
+  assert.equal(presentTavernSettings({ longPressSendRegenerate: 'yes' }, {}).longPressSendRegenerate, false)
+  const saved = applyTavernSettingsPatch({}, { longPressSendRegenerate: true })
+  assert.equal(saved.longPressSendRegenerate, true)
+  assert.equal(presentTavernSettings(JSON.parse(JSON.stringify(saved)), {}).longPressSendRegenerate, true)
+  assert.equal(applyTavernSettingsPatch(saved, { longPressSendRegenerate: false }).longPressSendRegenerate, false)
+  for (const longPressSendRegenerate of [null, 'true', 1]) assert.throws(() => applyTavernSettingsPatch({}, { longPressSendRegenerate }), /长按发送键/)
+})

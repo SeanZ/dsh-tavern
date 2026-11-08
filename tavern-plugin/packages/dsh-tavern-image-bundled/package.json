@@ -1,6 +1,6 @@
 {
   "name": "dsh-tavern-image",
-  "version": "3.4.2",
+  "version": "3.12.4",
   "description": "DSH Tavern 剧情配图插件，支持 ComfyUI 工作流、NovelAI、OpenAI Images、Gemini、atlas cloud、自定义 API 等渠道。",
   "type": "module",
   "scripts": {
@@ -10,7 +10,22 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./channels": "./lib/api/channels.js",
+    "./generation": {
+      "types": "./lib/api/generation.d.ts",
+      "default": "./lib/model-provider.js"
+    },
+    "./library": {
+      "types": "./lib/api/library.d.ts",
+      "default": "./lib/library-provider.js"
+    },
+    "./prompts": "./lib/prompt-presets.js",
+    "./providers": "./lib/image-providers.js",
+    "./client/transport": {
+      "types": "./lib/api/transport.d.ts",
+      "default": "./lib/client/transport.js"
+    }
   },
   "files": [
     "lib",
@@ -20,6 +35,10 @@
     "design-rules.md",
     "世界书-通用生图规则.json",
     "世界书-角色与服装库.json",
+    "skills/image-prompt/SKILL.md",
+    "skills/character-authoring/SKILL.md",
+    "skills/character-authoring/references/design-rules.md",
+    "card-worldbook.default.json",
     "workflows/.gitkeep",
     "scripts/Package-DshTavernImage.ps1",
     "scripts/install-plugin.ps1",

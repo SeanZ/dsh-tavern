@@ -61,7 +61,7 @@ ctx.tavern.cardImporter({
 })
 ```
 
-- `extensions` 1–10 个，写成 `.xxx`，大小写不敏感。`.png`、`.json`、`.charx`、`.dshcard` 始终由 Tavern 自己导入，插件不能接管（`.png` 包括封面后接 DSH 人物卡或 CHARX 的 `.dshcard.png`、`.charx.png`）；同一扩展名只能有一个插件。
+- `extensions` 1–10 个，写成 `.xxx`，大小写不敏感。`.png`、`.json`、`.charx`、`.dshcard` 始终由 Tavern 自己导入，插件不能接管；同一扩展名只能有一个插件。
 - `card` 里 CCv3 的 `data.assets`（封面、表情、背景）按 `files` 里的文件导入，和 CHARX 一样进角色素材；`packs` 存成素材包挂到这张卡上。
 - 同一个文件再次导入时直接打开已导入的卡，不再调用 `convert`。
 - `convert` 抛错、120 秒没返回或交回的东西不合格时，这次导入失败并把原因告诉玩家。`imported` 出错只记进 Tavern 日志，不影响已经导入的卡。
@@ -88,6 +88,17 @@ ctx.tavern.toolModes({ name: 'wrongbook_lookup', modes: ['card'] })  // 只给�
 ```
 
 只能设置插件自己注册的工具；Tavern 自己的工具由 Tavern 决定。插件卸载时自动撤销。
+
+### `toolSkills({ name, skills })`
+
+只在某些任务里用到的工具，可以等对应 Skill 加载后再出现，平时不占每一步请求的工具清单。`skills` 列出能解锁它的 Skill 名称（加载其中任一个即可，内置 Skill 与插件自己的 Skill 都行）；没声明的插件工具始终提供。
+
+```js
+ctx.tavern.toolModes({ name: 'wrongbook_edit', modes: ['card'] })
+ctx.tavern.toolSkills({ name: 'wrongbook_edit', skills: ['wrongbook'] })  // 加载 wrongbook Skill 后才出现
+```
+
+与 Tavern 自己按 Skill 解锁的工具走同一套判断：Skill 一经加载，本会话内保持解锁；工具清单变化只多一次缓存未命中。只能设置插件自己注册的工具，与 `toolModes` 独立，插件卸载时自动撤销。
 
 ### `listSkills()`、`readSkill({ name })`、`saveSkill({ name, description, body, references?, overwrite? })`、`removeSkill({ name })`
 
@@ -176,7 +187,7 @@ const { id, contentHash } = await ctx.tavern.saveCardPack({ card, id: 'stage-bg'
 - `format` 说明由谁解读包的内容，Tavern 不解读。图片、音视频、字体、JSON、文本按原类型提供，其他类型只能下载、不会在页面里运行。
 - `removeCardPack` 只是把包从卡上取下，返回是否取下了。卡内插件只能写自己的卡。
 
-### `speechProvider({ id, label, description?, voices?, defaultVoice?, version?, synthesize })`
+### `speechProvider({ id, label, description?, voices?, defaultVoice?, version?, synthesize?, recognize? })`
 
 添加一个配音渠道，例如 Edge TTS、火山、自己部署的语音服务。玩家在「设置 → DSH Tavern → 显示与交互 → 配音」的渠道列表里选中它后，台词朗读、舞台朗读和其他插件的 `synthesizeSpeech` 都走这个渠道。
 
@@ -197,8 +208,27 @@ ctx.tavern.speechProvider({
 - `synthesize` 还收到（第 3 版）：`gameId`（为某一局合成时）、`speaker`（正文里的人名，设置页试听时为空字符串）、`narration`（是不是旁白）。渠道可以据此自己决定怎么读，例如按人物挑参考音频。
 - `version`（第 3 版，最多 40 字）：渠道的合成方式变了（换了模型、参数）时改它，旧缓存就不再使用。
 - 渠道自己的地址、Key 等设置由插件自己保存（DSH 的设置区或凭据服务），Tavern 只保存每个人物用哪个声音。
+- 渠道也可以只提供语音识别：给 `recognize({ audio, sampleRate, language, signal, onPartial })`（`audio` 为 16 kHz 单声道 PCM，`onPartial({ text, language })` 报中间结果），返回 `{ text, language }`。`synthesize` 与 `recognize` 至少给一个；只有 `recognize` 的渠道不出现在配音渠道列表里，只供宿主的语音识别（如电话通话）选用，同样 120 秒超时、随插件卸载消失。
 - 同一渠道、同一声音、同一情绪的同一句话只合成一次，之后读缓存；插件渠道的缓存还按 `speaker`、`narration` 和 `version` 区分。120 秒没返回或出错时这句不播，错误记进 Tavern 日志。插件卸载后渠道消失，选着它的玩家听不到配音，直到选别的渠道或插件重新加载。
 
 ### `synthesizeSpeech({ gameId, speaker, text, emotion?, narration? })`
 
 用玩家选的渠道和这个人物的声音合成一句，返回 `{ url, mediaType }`，`url` 可以直接交给 `<audio>`。配音关闭、渠道是浏览器朗读（声音在浏览器里合成，宿主侧拿不到音频）、或旁白没有设声音时返回 `null`。`narration: true` 表示旁白，用旁白声音。适合做自己的播放界面、把语音挂进媒体项；只想在浏览器里播放时用 `tavernUi.speak` 更省事。
+
+### `generateImage({ prompt, width, height, background?, quality?, references?, signal?, providerId?, modelId?, gameId?, card? })`
+
+用配图插件给 Tavern 的生图渠道（`imageProvider`，和素材库生图是同一个）画一张图，返回 `{ data, mediaType }`（`data` 是 Uint8Array）。
+
+`imageModels: 1` 可先查询模型列表，再通过 `providerId`、`modelId` 选定渠道；不传时沿用当前渠道。人物卡范围与模型删除后的行为见[生图接口](plugin-api-data.md)。
+
+```js
+const { data, mediaType } = await ctx.tavern.generateImage({
+  prompt: '傍晃的教室，窗外有樱花', width: 1536, height: 1024,
+  background: 'opaque', quality: 'medium',                 // 可省略，默认 auto
+  references: [{ data: pngBytes, mediaType: 'image/png' }] // 可省略；PNG/JPEG/WebP，每张至多 8 MiB
+})
+```
+
+- 参考图至多 4 张，且不超过渠道自己的上限；`background` 为 `auto`/`transparent`/`opaque`，`quality` 为 `auto`/`low`/`medium`/`high`。
+- 与素材库生图共用「同时至多四张」的限制；不重试、不缓存，一次调用就是一次请求。
+- 出错时错误带 `code`：`NOT_CONFIGURED`（没有配图插件或渠道没配好）、`UNSUPPORTED_CHANNEL`（参考图超出渠道上限）、`INVALID_ARGUMENT`、`BUSY`、`GENERATION_FAILED`。`mayHaveCharged === true` 表示请求已发出、可能已经计费，是否重试由你决定。

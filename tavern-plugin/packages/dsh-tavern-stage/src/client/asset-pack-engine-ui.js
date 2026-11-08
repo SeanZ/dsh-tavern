@@ -1,4 +1,4 @@
-// global stage command groups, limits, judge credentials and voice services.
+// global stage command groups, limits and judge credentials.
 const ENGINE_DIMENSION_GROUPS=[...directorCommands.dimensionGroups.slice(0,4),['CG',[['cg','CG']]]];
 const ENGINE_CAPS=[['beat','画面效果','次'],['act','人物动作','次 / 人']];
 // The engine page's folds sit in the stage panel's fold store under their own keys (kept from the old page name, so
@@ -23,10 +23,24 @@ function EngineCommandGroup({group,items,isOn,disabled,onToggle}) {
           checked&&h(Glyph,{name:'check'}),h('span',null,label));})));
 }
 
+// ---------- 皮肤: 「默认皮肤」 is the global default (engine dialogueTheme) for every card without its own 「使用皮肤」
+// (stage.defaultSkin: imported with the card or chosen in stage CONFIG › 画面 本卡皮肤); 经典 when unusable. It offers the
+// built-in skins, the globally enabled packs' skins and the engine's custom dialogue themes, and saves at once.
+const STAGE_SKIN_HELP='没有指定皮肤的卡都用这套；皮肤不可用时用「经典」。';
+function EngineSkinSection({binding,value,themes,disabled,onChange}) {
+  const packs=useLoad(binding,async()=>{const global=binding.globalEnabledPackIds||[];
+    return stageReadDetails(binding,(await loadPackRows(binding)).filter(row=>!row.error&&row.manifest&&global.includes(row.manifest.id)));},[]);
+  const choices=[...stageSkinChoices(packs.value||[]),...(themes||[]).map(theme=>({value:theme.id,label:theme.name}))];
+  return h(StageSection,{foldKey:engineFold('皮肤'),title:'皮肤',className:'ap-engine-skin',help:STAGE_SKIN_HELP},
+    h(InlineRow,{label:'默认皮肤',className:'ap-stage-skin-row'},
+      h(StageSkinPicker,{label:'默认皮肤',choices,value,onChange:next=>{if(!disabled)onChange(next);}}),
+      packs.value&&!choices.some(choice=>stageSkinKey(choice.value)===stageSkinKey(value))&&h(HintLine,{compact:true,text:'所选皮肤不可用，正在用「经典」'})),
+    h(ErrorBox,{error:packs.error,reload:packs.reload}));
+}
+
 // `focus:'judge'` (提示词 › 智能判断 ✎) opens the page at 智能判断, unfolded, with the focus on its heading; `focus:'commands'`
 // (提示词 › 导演指令 / 演出指引 ✎) at 可用演出 the same way.
 function EnginePage({binding,onBack,focus}) {
-  const services=useLoad(binding,async()=>(await binding.rpc('getAssetVoiceServices')).services,[]);
   const state=useLoad(binding,()=>binding.rpc('getAssetEngineSettings'),[]),[draft,setDraft]=React.useState(null);
   const preserved=React.useRef(null),title=React.useRef(null),page=React.useRef(null),focused=React.useRef(false);
   React.useEffect(()=>{if(state.value){setDraft(preserved.current || clone(state.value.values));preserved.current=null;}},[state.value]);
@@ -57,18 +71,14 @@ function EnginePage({binding,onBack,focus}) {
     return result.status;
   }
 
+  async function saveSkin(value){const result=await state.task(()=>binding.rpc('saveAssetEngineSettings',{expectedRevision:state.value.revision,patch:{dialogueTheme:value}}));if(result)keep(result,'dialogueTheme');}
   async function toggleDimension(key,value){const result=await state.task(()=>binding.rpc('saveAssetEngineSettings',{expectedRevision:state.value.revision,patch:{dimensions:{[key]:value}}}));if(result)keep(result,'dimensions');}
   // Every command shows (a missing key reads as on, like the backend default).
   const dims=draft.dimensions||{},groups=ENGINE_DIMENSION_GROUPS;
   const shown=groups.flatMap(([,items])=>items.map(([key])=>key)),onCount=shown.filter(key=>dims[key]!==false).length;
-  // 配音服务选择 only lists a method that really has a choice. The stored choice is
-  // read by dsh-tts chooseService: a chosen service is used (only it); 「自动」 uses the one compatible service when there is exactly
-  // one, otherwise none. So with one service 自动 already uses it and the row changes nothing — it shows for ≥ 2 services, or
-  // when the stored choice names a service that is not installed (that kind stays silent until it is set back to 自动).
-  const installed=services.value||null,ofKind=kind=>(installed||[]).filter(s=>s.kind===kind);
-  const voiceKinds=installed?[...new Set([...installed.map(s=>s.kind),...Object.keys(draft.voiceServices).filter(k=>k!=='reference'&&k!=='gpt-sovits')])]
-    .filter(kind=>{const chosen=draft.voiceServices[kind];return ofKind(kind).length>=2||!!chosen&&!installed.some(s=>s.id===chosen);}):[];
   return h('div',{className:'ap-engine',ref:page,onKeyDown:keys},head,
+    // 皮肤 first (moved here from 基础设置: a skin is a stage concept); it saves at once like 可用演出's chips.
+    state.value.writable!==false&&h(EngineSkinSection,{binding,value:draft.dialogueTheme,themes:draft.dialogueThemes,disabled:state.busy,onChange:saveSkin}),
     // 「判断模型」 (was 智能判断; the fold key keeps the old name), no provider badge.
     draft.judge&&h(StageSection,{foldKey:engineFold('智能判断'),title:'判断模型',className:'ap-engine-judge',reveal:focus==='judge',
         help:'可选：配置后可减轻导演负担、更精准地挑选素材；未设置时蓝灯与触发词照常生效，可用模组直接交给导演。'},
@@ -79,12 +89,6 @@ function EnginePage({binding,onBack,focus}) {
     // one column, the same label column as every other field here.
     h(StageSection,{foldKey:engineFold('每轮上限'),title:'每轮上限',help:'每轮回复里最多用几次，免得画面一直闪、人物一直动。'},
       h(InlineGrid,{label:'每轮上限',columns:1},ENGINE_CAPS.map(([key,label,unit])=>h(InlineField,{key,kind:'number',label,controlLabel:label+' 每轮上限',unit,integer:true,min:1,max:256,value:draft.actionCaps[key],onCommit:v=>patch({actionCaps:{...draft.actionCaps,[key]:v}})})))),
-    (voiceKinds.length>0||services.error)&&h(StageSection,{foldKey:engineFold('配音服务选择'),title:'配音服务',help:'同一种配音装了几个服务时，用哪一个。'},
-      h(InlineGrid,{label:'配音服务',columns:1},voiceKinds.map(kind=>{const current=draft.voiceServices[kind]||'',mine=ofKind(kind),name=VOICE_PROVIDERS[kind]||kind;
-        return h(InlineField,{key:kind,kind:'menu',label:name,controlLabel:name+' 默认服务',value:current,
-          options:[{value:'',label:'自动'},...(current&&!(services.value||[]).some(s=>s.id===current)?[{value:current,label:current+'（不可用）'}]:[]),...mine.map(s=>({value:s.id,label:s.label||s.name||s.id}))],
-          onCommit:v=>{const next={...draft.voiceServices};if(v)next[kind]=v;else delete next[kind];patch({voiceServices:next});}});})),
-      h(ErrorBox,{error:services.error,reload:services.reload})),
     h(ErrorBox,{error:state.error,reload:state.reload}),
     // Sticky while there is something to save, so 「保存」 is reachable from any section.
     h('div',{className:'ap-engine-foot','data-dirty':dirty||undefined},

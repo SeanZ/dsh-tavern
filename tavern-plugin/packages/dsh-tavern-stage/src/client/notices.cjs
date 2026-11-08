@@ -1,5 +1,5 @@
 'use strict';
-function createStageNotices({React, document, foreground, displayPreferences, getSelection, StageWaitStop, Spinner, Icon, providerRefusal:tavernProviderRefusalNotice, errorText:stageRuntimeErrorText, diagnosticText:stageDiagnosticText, shortcuts:galShortcuts}) {
+function createStageNotices({React, document, foreground, displayPreferences, getSelection, StageWaitStop, Spinner, Icon, providerRefusal:tavernProviderRefusalNotice, errorText:stageRuntimeErrorText, diagnosticText:stageDiagnosticText, shortcuts:galShortcuts, live2d:live2dRuntime = null}) {
 let disposed = false;
 const notifiedSessions = new Set(), pendingNotices = new Set();
 function useCapabilityNotice(sessionId, live, rows) {
@@ -24,6 +24,30 @@ function useCapabilityNotice(sessionId, live, rows) {
     }, [sessionId, notice]);
     return live && notice?.sessionId === sessionId ? notice.message : null;
 }
+// The voice line of the stack: source = {key, state:'loading'|'error'|'text', failed} from the
+// line on screen (its voice player state) or her reply on a phone call (phone-call.js state.voice); null: nothing to say.
+// A voice that keeps up shows nothing: synthesizing becomes a quiet line only after VOICE_QUIET_MS and 「配音较慢…」
+// after VOICE_SLOW_MS; a failure or a reply gone to text shows for VOICE_RESULT_MS. Local timers only, no voice polling.
+const VOICE_QUIET_MS = 300, VOICE_SLOW_MS = 1500, VOICE_RESULT_MS = 4000;
+function useVoiceStatus(source) {
+    const state = source?.state || '', key = state ? JSON.stringify([source.key, state, source.failed === true]) : '';
+    const since = React.useRef({key:'', at:0});
+    if (since.current.key !== key) since.current = {key, at:Date.now()};
+    const [, redraw] = React.useReducer(n => n + 1, 0);
+    React.useEffect(() => {
+        if (disposed || !key) return;
+        const marks = (state === 'loading' ? [VOICE_QUIET_MS, VOICE_SLOW_MS] : [VOICE_RESULT_MS]).map(ms => since.current.at + ms - Date.now()).filter(ms => ms > 0);
+        const timers = marks.map(ms => foreground.setTimeout(() => { if (!disposed) redraw(); }, ms + 16));
+        const stop = () => { timers.forEach(timer => foreground.clearTimeout(timer)); pendingNotices.delete(stop); };
+        pendingNotices.add(stop);
+        return stop;
+    }, [key]);
+    if (!key) return null;
+    const elapsed = Date.now() - since.current.at;
+    if (state === 'loading') return elapsed < VOICE_QUIET_MS ? null : elapsed < VOICE_SLOW_MS ? 'working' : 'slow';
+    return elapsed >= VOICE_RESULT_MS ? null : state === 'text' ? source.failed ? 'text-failed' : 'text-slow' : 'failed';
+}
+const GAL_VOICE_TEXT = { working: '配音中…', slow: '配音较慢…', failed: '配音失败，已跳过', 'text-slow': '配音太慢，已转文字', 'text-failed': '配音失败，已转文字' };
 function useAlive() {
     const ref = React.useRef(null);
     React.useEffect(() => { const token = {}; ref.current = token; return () => { if (ref.current === token) ref.current = null; }; }, []);
@@ -144,7 +168,31 @@ function GalSceneReload({ onReload }) {
 // round = the round's phase, 'body' | 'staging' | null (「正在生成正文…」 / 「正在生成后续演出…」, the round's 停止 when onStop is given).
 // The stop's label is the phrase without the ellipsis, like the text box's 「正在生成选项」.
 const GAL_ROUND_TEXT = { body: '正在生成正文', staging: '正在生成后续演出' };
-function GalRuntimeStatus({ interopNotice, page = false, round = null, onStop, stopping, hints, danmaku, error, bodyFailure = false, onRetry = null, diagnostics, sceneError, onReloadScene = null, cgNotice, spriteFallbacks = [], nameOf, scope }) {
+// an on-stage Live2D figure is showing its static sprite (or nothing) because this machine has no Live2D runtime.
+// One ⚠ notice 「Live2D 未安装 · 安装」; 安装 unfolds the shared licence + install entry (the Live2D module's CubismCoreEntry via
+// live2d-loader.cjs, as in 设置 › 舞台 › 运行库) in place. Installing re-reads the stage (session-observation.cjs), so the figures
+// switch to Live2D without a reload; the notice goes as soon as the runtime is in.
+function GalCubismNotice({ icon, request }) {
+    const h = React.createElement, store = live2dRuntime.runtime;
+    React.useSyncExternalStore(store.subscribe, store.snapshot);
+    const [open, setOpen] = React.useState(false), panel = React.useId(), toggle = React.useRef(null);
+    if (store.core) return null;
+    // The stage reads Enter/Space/Esc on window; keys on the notice's own controls stay here, Esc folds the entry first.
+    const keys = event => {
+        if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); toggle.current?.focus(); }
+        else if ([' ', 'Enter'].includes(event.key) && event.target.closest?.('button,a')) event.stopPropagation();
+    };
+    return h('div', { className: 'fork-gal-runtime-status', 'data-tone': 'error', role: 'status', onKeyDown: keys }, icon,
+        h('div', { className: 'fork-gal-runtime-text' },
+            h('div', { className: 'fork-gal-runtime-head' }, h('strong', null, 'Live2D 未安装'), ' · ',
+                h('button', { type: 'button', ref: toggle, className: 'fork-gal-runtime-action', 'aria-expanded': open, 'aria-controls': panel, onClick: () => setOpen(!open) }, '安装')),
+            open ? h('div', { id: panel, className: 'fork-gal-cubism-install' }, h(live2dRuntime.Entry, { request, head: false })) : null));
+}
+// picture: a 场景生图 picture of this round is being drawn ({progress}: the plugin's 0..1 once it reports one, else null);
+// pictureReady: one finished after its page was read ({onView} opens its insert page where the reader is).
+// voice: useVoiceStatus's phase (GAL_VOICE_TEXT): synthesizing is a quiet line, slow a busy one, a reply gone to text a hint,
+// a failure the ⚠ line. overSheet: the stack stands over a reading sheet (the handheld phone call) rather than under the top bar.
+function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = null, overSheet = false, onStop, stopping, hints, pages = [], error, bodyFailure = false, onRetry = null, diagnostics, sceneError, onReloadScene = null, cgNotice, spriteFallbacks = [], live2dRequest = null, nameOf, scope, picture = null, pictureReady = null }) {
     const h = React.createElement;
     const notes = diagnostics || [], cancelled = error === 'cancelled';
     const icon = h('svg', { className: 'fork-gal-runtime-icon', width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
@@ -188,13 +236,20 @@ function GalRuntimeStatus({ interopNotice, page = false, round = null, onStop, s
         : roundLine ? notice('direction', 'round', h(Spinner, { className: 'fork-gal-runtime-spinner' }), null, null, null, roundLine) : null;
     // first-run hints ride the same stack (no modal): 「点任意处开启声音」 while the
     // browser holds the BGM back, and the stage's real shortcuts once (useGalFirstRunHints).
-    return h('div', { className: 'fork-gal-notices', onWheel: event => event.stopPropagation(), onClick: event => event.stopPropagation() },
+    return h('div', { className: 'fork-gal-notices' + (overSheet ? ' is-over-sheet' : ''), onWheel: event => event.stopPropagation(), onClick: event => event.stopPropagation() },
         hints?.sound ? notice('sound', 'hint', h('span', { className: 'fork-gal-runtime-icon', 'aria-hidden': true }, h(Icon, { name: 'speaker', size: 15 })), '点任意处开启声音') : null,
         hints?.keys ? h('div', { key: 'keys', className: 'fork-gal-runtime-status fork-gal-runtime-keys', 'data-tone': 'hint', role: 'note', 'aria-label': '快捷键' },
-            h('dl', null, galShortcuts(danmaku).map(([label, key]) => h(React.Fragment, { key: label }, h('dt', null, h('kbd', null, key)), h('dd', null, label))))) : null,
+            h('dl', null, galShortcuts({ pages }).map(([label, key]) => h(React.Fragment, { key: label }, h('dt', null, h('kbd', null, key)), h('dd', null, label))))) : null,
         direction,
+        voice ? notice('voice', voice === 'working' ? 'quiet' : voice === 'slow' ? 'busy' : voice === 'text-slow' ? 'hint' : 'error',
+            voice === 'working' || voice === 'slow' ? h(Spinner, { className: 'fork-gal-runtime-spinner' })
+                : voice === 'text-slow' ? h('span', { className: 'fork-gal-runtime-icon', 'aria-hidden': true }, h(Icon, { name: 'speaker', size: 15 })) : icon,
+            GAL_VOICE_TEXT[voice]) : null,
+        picture ? notice('picture', 'busy', h(Spinner, { className: 'fork-gal-runtime-spinner' }), '正在生成 CG…' + (typeof picture.progress === 'number' ? ' ' + Math.round(picture.progress * 100) + '%' : '')) : null,
+        pictureReady ? notice('picture-ready', 'hint', null, 'CG 已生成', null,
+            h('button', { type: 'button', className: 'fork-gal-runtime-action', 'data-action': 'view-picture', onClick: event => { event.preventDefault(); event.stopPropagation(); pictureReady.onView(); } }, '查看')) : null,
         interopNotice ? notice('interop', 'hint', null, interopNotice) : null,
-        null,
+        live2dRequest && live2dRuntime ? h(GalCubismNotice, { key: 'live2d-core', icon, request: live2dRequest }) : null,
         notes.length ? notice('diagnostics', 'debug', icon, '场景诊断', notes.map(note => ({
             text: GAL_DIAGNOSTIC_TEXT[typeof note === 'string' ? note.split(':')[0] : note?.code] || stageDiagnosticText(note), raw: stageDiagnosticText(note, true), always: true }))) : null,
         spriteFallbacks.length ? notice('sprite-fallback', 'error', icon, galSpriteFallbackTitle(spriteFallbacks),
@@ -204,7 +259,7 @@ function GalRuntimeStatus({ interopNotice, page = false, round = null, onStop, s
             onReloadScene ? h(GalSceneReload, { onReload: onReloadScene }) : null) : null);
 }
 
-return {useCapabilityNotice, Status:GalRuntimeStatus, Retry:GalRetryBody, useSpriteFallbacks:useGalSpriteFallbacks, dispose() {
+return {useCapabilityNotice, useVoiceStatus, Status:GalRuntimeStatus, Retry:GalRetryBody, useSpriteFallbacks:useGalSpriteFallbacks, dispose() {
     if (disposed) return;
     disposed = true; galNoticeFolds.open.clear(); notifiedSessions.clear();
     const errors = [];

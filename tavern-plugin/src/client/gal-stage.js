@@ -14,7 +14,6 @@
 // @include textcard-stage.js
 // @include gal-entry.js
 // @include stage-video.js
-// @include stage-entrance.js
 // @include timer-stage.js
 
 // @include gal-stage-helpers.cjs
@@ -71,7 +70,7 @@ function useStageFilm() { return React.useSyncExternalStore(stageFilm.subscribe,
 // The auto waits and a silent page's reading time (galAutoHold) are stage-auto-timing.cjs, shared with clip exports.
 // @include stage-auto-timing.cjs
 // @include stage-performance-kinds.cjs
-const STAGE_READING_DEFAULTS = { textSpeed: 28, autoWait: STAGE_AUTO.wait, autoSpeed: STAGE_AUTO.speed, voiceRate: 1, frameCap: 60, reducedMotion:false, photosensitive:true, textScale:{}, hudReveal:null };
+const STAGE_READING_DEFAULTS = { textSpeed: 28, autoWait: STAGE_AUTO.wait, autoSpeed: STAGE_AUTO.speed, voiceRate: 1, frameCap: null, reducedMotion:false, photosensitive:true, skipTitlePage:false, textScale:{}, hudReveal:null };
 const STAGE_READING_LIMITS = { textSpeed: [0, 80, 2], autoWait: [0, 3000, 100], autoSpeed: [0.5, 3, 0.1], voiceRate: [0.8, 2, 0.1] }; // [min, max, step]
 const STAGE_TEXT_SCALE = [70, 130, 5]; // [min, max, step] percent of the skin's own size
 function stageTextScaleMap(map) {
@@ -87,8 +86,10 @@ function stageTextScaleOf(reading, skin) { return reading.textScale[skin] || 100
 function stageReadingPrefs(saved) {
     const out = { ...STAGE_READING_DEFAULTS };
     if (!saved || typeof saved !== "object") return out;
-    if ([0, 30, 60, 120].includes(saved.frameCap)) out.frameCap = saved.frameCap;
-    for (const key of ['reducedMotion','photosensitive']) if (typeof saved[key] === 'boolean') out[key]=saved[key];
+    // frameCap null = not chosen: the device's own cap (galFrameRate: 30 on a handheld phone, else 60). Records before v 2
+    // stored the old default 60 whether chosen or not, so that 60 is read as not chosen (once; the next write is v 2).
+    if ([0, 30, 60, 120].includes(saved.frameCap) && (saved.v === 2 || saved.frameCap !== 60)) out.frameCap = saved.frameCap;
+    for (const key of ['reducedMotion','photosensitive','skipTitlePage']) if (typeof saved[key] === 'boolean') out[key]=saved[key];
     if (saved.hudReveal === 'auto' || saved.hudReveal === 'always') out.hudReveal = saved.hudReveal;
     if (saved.textScale && typeof saved.textScale === 'object') out.textScale = stageTextScaleMap(saved.textScale);
     for (const key of Object.keys(STAGE_READING_LIMITS)) {
@@ -119,8 +120,8 @@ const stageReading = (function () {
     return {
         get,
         set(patch) {
-            cached = stageReadingPrefs({ ...get(), ...patch });
-            try { localStorage.setItem(KEY, JSON.stringify(cached)); } catch (_) {}
+            cached = stageReadingPrefs({ ...get(), ...patch, v: 2 });
+            try { localStorage.setItem(KEY, JSON.stringify({ ...cached, v: 2 })); } catch (_) {}
             listeners.forEach(fn => fn());
         },
         subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -135,10 +136,6 @@ function galFaceClearMs(...args) { return stageViews.faceClearMs(...args); }
 function galHandoffAutoDelay(...args) { return stageViews.handoffAutoDelay(...args); }
 function useGalSpriteFallbacks(...args) { return stageViews.notices.useSpriteFallbacks(...args); }
 function GalStandIns(props) { return stageViews ? React.createElement(stageViews.StandIns, props) : null; }
-// an on-stage Live2D figure is showing its static sprite (or nothing) because
-// this machine has no Cubism Core (the user imports it: official page, then the file). One ⚠ notice 「Live2D 未安装 · 安装」; 安装 unfolds the shared licence + install entry
-// (CubismCoreEntry, as in 设置 › 舞台 › 运行库) in place. Installing re-reads the stage (stage-session-binding.js),
-// so the figures switch to Live2D without a reload; the notice goes as soon as the Core is in.
 
 // first-run hints, shown in the stage's notice stack (not a modal) once the entry
 // is revealed. keys: the stage's real shortcuts (GAL_SHORTCUTS), once per profile — 「已看过」 is kept in the persisted
@@ -182,6 +179,11 @@ function galNameParts(...args) { return stageViews.nameParts(...args); }
 
 // Stable slots render only the optional plugin's current view implementation.
 let stageViews = null;
+// The session slash executor for card page frames (the one message frames use), made once the app context exists.
+let stageCardPageSlashExecutor = null;
+function stageCardPageSlash() {
+    return stageCardPageSlashExecutor || (stageCardPageSlashExecutor = createTavernFrameSlashExecutor(tavernUiExtensions.service.ctx));
+}
 function GalStageHost(props) {
     const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
     return enabled && stageViews ? React.createElement(stageViews.Host, props) : null;
@@ -202,20 +204,27 @@ function bindStageViews(createViews) {
         playbackTiming:{delay:stageAutoDelay,remaining:stageAutoRemaining},
         performances:{read:id=>rpc('getStagePerformanceKinds',{},id),registry:createStagePerformanceRegistry,core:STAGE_PERFORMANCE_CORE},
         directorCommands,
-        resourceDependencies:{stageResourceMatches,createPerformanceTimeline,performanceSustained},
+        resourceDependencies:{createPerformanceTimeline,performanceSustained},
         runtimeProtocol:{performanceStateKernel:{performanceSustained,reducePerformanceEvent},modProjectionKernel:{modPerformanceLedgerKey},phoneBeatKernel:{phoneModAutoVoiceAllowed},
             performanceKindsKernel:{stagePerformanceKindOf,stagePerformanceBlocks,stagePerformancePhaseBlocks,STAGE_PERFORMANCE_CORE}},
-        entranceContract:stageEntranceContract,
         entrance:{reading:stageReading,safety:stageSafety,flashGate:stageFlashGate},
         entranceMedia:{getService:()=>packTransport.service,fetch,AbortController},
-        skinPresentation:{fonts:tavernFonts,files:getStageBundleFiles,appearance:stageSkinAppearance},
-        skinResources:{setTimeout,clearTimeout},
+        skinPresentation:{fonts:tavernFonts,appearance:stageSkinAppearance},
+        skinResources:{setTimeout,clearTimeout,classic:BUILTIN_STAGE_SKINS.classic},
         skinContract:{stageSkinImageOf,stageSkinSliceEdges,stageSkinScreenFiles,skinContrast},
         useBubbles, Icon,
         controller:{useLiveView:useLiveTavernView,storyTurn:tavernStoryTurnForDshTurn,useCoordination:useTavernCoordination,rpc,phoneCall:()=>typeof phoneModCall==='object'?phoneModCall:null,
             dialogue:{color:bubbleColor,displayName:bubbleDisplayName,moodBadge:bubbleMoodBadge,moods:bubbleMoodList,actor:stageActorCharacter},figures:{layers:createPackSceneLayers,performance:packPerformanceScene,render:packFigureRenderInputs,reactions:packFigureReactions},
-            DiceRolls,DiceThrow,narration:stageNarrationPresentation,offstage:stageOffstage,skinFigures:stageSkinFigures,phoneBeat:phoneModBeat},
+            DiceRolls,DiceThrow,narration:stageNarrationPresentation,offstage:stageOffstage,skinFigures:stageSkinFigures,phoneBeat:phoneModBeat,playEvents:tavernPlayEvents,
+            // 场景生图 pictures of the round on screen (stage-scene-images.js): the CG insert pages and the 「正在生成 CG…」 notice.
+            pictures:{use:useStagePictures}},
+        // Clip export (clip-export.cjs) lives in the stage package; these are the core names it uses.
+        clipExport:{rpc,Icon,Spinner,EmptyState,overlayEscape,useOverlay,InlineField},
         controllerLegacy:{film:stageFilm,background:useBgManualScene,widgetTheme:useWidgetTheme,entryContext:stageEntryContextType,entryStore:createStageEntryStore},
+        // 设置 › 舞台 (stage global-settings.js): the page's core rows and controls (modules/global-settings.js).
+        globalSettings:stageGlobalSettingsOptions,
+        // 素材库 / 舞台 tab pages (stage asset-pack-{gen,card,engine}-ui.js, mod-manager.js): the core asset-pack closure's names in, its stage names bound back (asset-pack-ui.js stageScope).
+        assetPack:packUi.stageScope,
         admission:{performance, setTimeout, clearTimeout, Spinner},
         widgets:{sandbox:WidgetSandbox, sounds:forkUiSfx, report:useStageEntryState, entries:stageEntries, setTimeout, clearTimeout, requestAnimationFrame, cancelAnimationFrame},
         phoneAdjust:{navigator, pad:8, setTimeout, clearTimeout, requestAnimationFrame, cancelAnimationFrame},
@@ -224,6 +233,10 @@ function bindStageViews(createViews) {
         effects:{policy:{STAGE_EFFECT_BEATS, STAGE_EFFECT_LOOKS, STAGE_EFFECTS, stageEffectResolve, stageSafety, stageEffectRed, stageEffectLuma, stageFlashDark, stageFlashSafe, stageFlashGate, stageFlashAt, stageShakeAt, stagePulseAt, stageGlitchAt},loadScript:forkLoadScript,filtersUrl:PIXI_VENDOR+"pixi-filters.js",thunder:(...args)=>stageSfx.thunder(...args)},
         looks:{math:stageLookMath,fade:stageLookFadeMs,Image},
         spineFigures:{rig:spineRig,bottomFade:packSpineBottomFade},
+        // Live2D is the stage's on-demand module (dsh-tavern-live2d, stage live2d-loader.cjs); the core holds no Live2D code.
+        // `host`: the core names the module uses (the shared runtime entry, the pixi loader); `measure`: the core's figure measurement.
+        live2d:{host:{rpc,Spinner,RUNTIMES,RuntimeEntry,vendorRuntimeStore,forkLoadScript,loadPixiRuntime,forkLipSync,galResolution,galFollowResolution,resolveFigureSizing},
+            measure:{figureMeasureLive2d,figureMeasurePackLive2d,figureMeasureLive2dHead,figureMeasureLive2dCentre,figureKnowsBody,packFigureAnatomy,packFigureRecord}},
         sceneServices:{foreground:forkForeground,lipSync:forkLipSync,loadPixi:loadPixiRuntime,resolution:galResolution,subscribeResolution:galResolutionSubscribe,
             layered:{urls:layeredSpriteUrls,paint:layeredSpritePaint,voice:layeredSpriteVoice},canvas:{paint:stagePaintEmpty,palette:stageEmptyPalette}},
         sceneFigureProtocol:{FIGURE_DISPLAY,figureSceneFrame,figureSceneUpdate,figureMixedWarning,resolveFigureSizing},
@@ -235,16 +248,14 @@ function bindStageViews(createViews) {
         callViews:{subscribeFrames:callback=>typeof phoneModCall==='object' && phoneModCall?.frames ? phoneModCall.frames(callback) : null},
         backgrounds:{correction:galLayerCorrection,timeGrade:galTimeGrade},
         sceneGraphics:{paintEmpty:stagePaintEmpty,emptyPalette:stageEmptyPalette},
-        danmaku:{Image,getComputedStyle,requestAnimationFrame,cancelAnimationFrame,setTimeout,clearTimeout,performance},
-        danmakuUi:{sections:STAGE_CONFIG_SECTIONS,entries:stageEntries,report:useStageEntryState,confirm:useTavernConfirm,sounds:forkUiSfx,setTimeout,clearTimeout},
         textcard:{clock:forkForeground},
         textcardFonts:{FontFace:globalThis.FontFace,fonts:tavernFonts},
         textcardPlayer:{performance,requestAnimationFrame,cancelAnimationFrame,setInterval,clearInterval,setTimeout,clearTimeout},
         textcardLayout:{getComputedStyle,figureTextColor,figurePlateColor},
-        choices:{ReactDOM,sounds:forkUiSfx,useSounds:useForkUiSfxControls,episode:stageWaitLinesEpisode,waitLines:STAGE_WAIT_LINES,TextArea,Icon,StageWaitStop,StageWaitLines,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
+        choices:{ReactDOM,playEvents:tavernPlayEvents,sounds:forkUiSfx,useSounds:useForkUiSfxControls,episode:stageWaitLinesEpisode,waitLines:STAGE_WAIT_LINES,TextArea,Icon,StageWaitStop,StageWaitLines,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
         choiceLayout:{getComputedStyle},
         regenerate:{report:(...args)=>tavernErrorHub.report(...args),sounds:forkUiSfx,useSounds:useForkUiSfxControls,episode:stageWaitLinesEpisode,waitLines:STAGE_WAIT_LINES,HelpTip,Segmented,TextArea,StageWaitStop,StageWaitLines},
-        backlogView:{voicePlayer,useDiceBacklog,diceBacklogEntries,diceLine,useClipBacklog:typeof useClipBacklog==='function'?useClipBacklog:undefined,useJumpLatest,JumpLatest,useFigureTextContrast,bubbleCharacter,galQuoted,VoiceButton,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
+        backlogView:{voicePlayer,useDiceBacklog,diceBacklogEntries,diceLine,useJumpLatest,JumpLatest,useFigureTextContrast,bubbleCharacter,galQuoted,VoiceButton,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
         backlogHistory:{read:sessionId=>rpc('getStageModHistory',{},sessionId), subscribe:(sessionId,refresh)=>tavernSessionSignals.subscribe(sessionId,'stage-direction',refresh,refresh,refresh)},
         backlogVoice:{player:voicePlayer, wake:()=>forkLipSync?.wake?.()},
         backlogRows:{registry:createStagePerformanceRegistry, core:STAGE_PERFORMANCE_CORE, pointer:stagePerformancePointer},
@@ -254,10 +265,20 @@ function bindStageViews(createViews) {
         configFields:{HelpTip, Segmented, Slider, ResetButton, FontPicker, InlineField, sounds:forkUiSfx, classify:type=>type===GalConfigSwitch?"toggle":null},
         phoneLayout:{storage:(() => {try {return localStorage;} catch (_) {return null;}})(), width:()=>innerWidth, ResetButton, sections:STAGE_CONFIG_SECTIONS},
         cg:{ResizeObserver, clock:forkForeground, consumer:createCgConsumer, paint:cgPaintFrame, policy:cgMotionPolicy, rpc},
-        gallery:{ResizeObserver, IntersectionObserver, AbortController, clock:forkForeground, consumer:createCgConsumer, paint:cgPaintFrame, revision:usePackRevision, rpc, Spinner},
+        gallery:{ResizeObserver, IntersectionObserver, AbortController, clock:forkForeground, consumer:createCgConsumer, paint:cgPaintFrame, revision:usePackRevision, rpc, Spinner, EmptyState,
+            // 回想 › 在素材库中编辑: the 素材库 tab opened at that CG entry (asset-launcher.js stageNav).
+            openLibrary:(sessionId,target)=>stageNav(sessionId).openLibrary(target)},
+        // 卡片页面 (stage status-panel.cjs): each page frame is the core message-frame lifecycle (the text-mode card HTML
+        // document, Helper and trust model) with the session slash executor message frames use; the page's data is re-read
+        // after each session state signal while open; asset() reads the card's bound packs through the pack service.
+        // newGame() asks with the core confirm, and the sidebar opens the session card's 游戏准备 (dsh-tavern-new-game).
+        statusPanel:{rpc, signals:{subscribe:(id,refresh)=>tavernSessionSignals.subscribe(id,'tavern-state',refresh,()=>{},refresh)}, themeTokens:stageWidgetThemeTokens, sounds:forkUiSfx,
+            confirm:askTavernConfirm, newGame:sessionId=>window.dispatchEvent(new CustomEvent('dsh-tavern-new-game',{detail:{sessionId}})),
+            useLiveView:useLiveTavernView, packService:()=>packTransport?.service,
+            createCardFrame:props=>createTavernMessageFrameLifecycle(props,{executeSlash:stageCardPageSlash()})},
         device:{matchMedia},
         mixer:{reading:stageReading, voiceRateLimits:STAGE_READING_LIMITS.voiceRate, Icon, Slider, audio:forkStageAudio, sounds:forkUiSfx, entries:stageEntries, report:useStageEntryState, icons:ICON_PATHS},
-        sfx:{Audio, audio:forkStageAudio, foreground:forkForeground, matches:stageResourceMatches},
+        sfx:{Audio, audio:forkStageAudio, foreground:forkForeground},
         music:{audio:forkStageAudio,foreground:forkForeground,fetch,AbortController},
         bgm:{
             read:id => rpc("getStageMusicTracks",{},id), storage:(() => {try {return localStorage;} catch (_) {return null;}})(), authority:source => stageResourceAuthority(source)},
@@ -266,7 +287,7 @@ function bindStageViews(createViews) {
         timer:{rpc, crypto, performance, setInterval, clearInterval, Icon, foreground:forkForeground, ResizeObserver, MutationObserver,
             resourceAuthority:stageResourceAuthority, useModOptions},
         video:{getService:() => packTransport.service, fetch, URL, stageVideo, audio:forkStageAudio, foreground:forkForeground, setTimeout, clearTimeout},
-        loader:{getService:() => packTransport.service, fetch, URL, AbortController, decodeImage:stageDecodeImage},
+        loader:{getService:() => packTransport.service, fetch, URL, AbortController},
         transitions:{getComputedStyle, DOMMatrixReadOnly, setTimeout, clearTimeout},
         speaker:{character:bubbleCharacter,resolve:(...args) => figureResolution.resolveFigureName(...args),render:packFigureRenderInputs},
         chatEntry:{MutationObserver,markdown:TavernColoredMarkdown,enter:galEnter,plain:galPlain,blocks:galBlocks,paragraphs:galParagraphs,parse:parseBubbles,schedule:setTimeout,cancel:clearTimeout},

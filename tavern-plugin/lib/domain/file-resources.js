@@ -375,11 +375,20 @@ export function createFileResourceStore(options = {}) {
   }
 
   let copyTail = Promise.resolve()
-  function copyCard(sourcePath, name) {
+  // options.keepName keeps the character's own name (the library's 「另存副本」); only the
+  // file name differs. The agent tool keeps renaming the character to the copy's name.
+  function copyCard(sourcePath, name, options = {}) {
+    const keepName = options && options.keepName === true
     const operation = copyTail.then(async () => {
       await ensure()
       const source = normalizeResourcePath(sourcePath, 'card')
-      const stem = safeResourceName(name).replace(/\.json$/i, '')
+      let stem = safeResourceName(name).replace(/\.json$/i, '')
+      if (options.numbered) {
+        const base = source.split('/').pop().replace(/\.json$/i, '')
+        let n = 1
+        while (await exists(absolute('cards/' + base + ' (' + n + ').json')) || await originalCardName('cards/' + base + ' (' + n + ').json') !== null) n++
+        stem = base + ' (' + n + ')'
+      }
       const target = normalizeResourcePath('cards/' + stem + '.json', 'card')
       if (source === target || await exists(absolute(target)) || await originalCardName(target) !== null) throw new Error('副本名称已存在，请使用新名称: ' + stem)
       const card = await readCard(source)
@@ -390,11 +399,11 @@ export function createFileResourceStore(options = {}) {
       delete saved.path
       if (saved.raw && saved.meta) {
         saved.meta.id = randomUUID()
-        if (saved.raw.data && typeof saved.raw.data === 'object') saved.raw.data.name = stem
-        if (Object.hasOwn(saved.raw, 'name') || !saved.raw.data) saved.raw.name = stem
+        if (!keepName && saved.raw.data && typeof saved.raw.data === 'object') saved.raw.data.name = stem
+        if (!keepName && (Object.hasOwn(saved.raw, 'name') || !saved.raw.data)) saved.raw.name = stem
       } else {
-        if (saved.data && typeof saved.data === 'object') saved.data.name = stem
-        if (Object.hasOwn(saved, 'name') || !saved.data) saved.name = stem
+        if (!keepName && saved.data && typeof saved.data === 'object') saved.data.name = stem
+        if (!keepName && (Object.hasOwn(saved, 'name') || !saved.data)) saved.name = stem
         if (saved.meta && typeof saved.meta === 'object') saved.meta.id = randomUUID()
       }
       const text = JSON.stringify(saved, null, 2)
@@ -417,6 +426,24 @@ export function createFileResourceStore(options = {}) {
 
   async function writeImportedCard(payload, card, options) {
     await ensure()
+    if (options.replacePath) {
+      const relative = normalizeResourcePath(options.replacePath, 'card')
+      const previous = await readCard(relative)
+      if (!previous) throw new Error('要更新的人物卡不存在: ' + relative)
+      const saved = clone(card)
+      if (saved.meta && previous.meta) saved.meta.id = previous.meta.id
+      const oldName = await originalCardName(relative)
+      const originalDir = path.dirname(absolute(relative, true))
+      const stem = path.basename(relative, '.json')
+      const original = path.join(originalDir, stem + (payload.kind === 'png' ? '.png' : '.json'))
+      const bytes = payload.kind === 'png' ? Buffer.from(payload.fileB64, 'base64') : payload.text || JSON.stringify(card)
+      await mutations.run('replace-card:' + relative, async plan => {
+        if (oldName && path.join(originalDir, oldName) !== original) await plan.remove(path.join(originalDir, oldName))
+        await plan.write(original, bytes)
+        await plan.write(absolute(relative), JSON.stringify(saved, null, 2))
+      })
+      return relative
+    }
     let rawName = safeResourceName(payload && payload.name || '未命名人物卡.json')
     if (options.unique) {
       const parsed = path.parse(rawName)

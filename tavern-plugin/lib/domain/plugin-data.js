@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto'
 // not follow the story. One file per game; each plugin sees only its own part.
 const hash = value => createHash('sha256').update(String(value)).digest('hex')
 const MAX_RECORD_BYTES = 64 * 1024
-const MAX_GAME_BYTES = 256 * 1024
 const MAX_RECORDS = 2000
 const MAX_OWNER_BYTES = 8 * 1024 * 1024
 
@@ -64,13 +63,38 @@ export function createPluginData({ store, now = Date.now }) {
   }
 
   async function saveGame({ chatId, owner, data }) {
-    const record = data === null ? null : encoded(data, MAX_GAME_BYTES, 'data')
+    // Per-game data also carries embedded apps' saves. Transport limits belong to the caller;
+    // disk-backed snapshots must not inherit the small turn-record quota.
+    const record = data === null ? null : encoded(data, Infinity, 'data')
     await update(chatId, value => { ownerOf(value, owner).game = record ? record.value : null })
   }
 
   async function readGame({ chatId, owner }) {
     const own = (await read(chatId)).owners[owner]
     return own && own.game !== undefined ? structuredClone(own.game) : null
+  }
+
+  // Host-owned game-mode journal travels with the existing save/fork package.
+  const modeOwner = '@tavern/game-mode'
+  const readMode = chatId => readGame({ chatId, owner: modeOwner })
+  const actorOwner = '@tavern/game-agents'
+  async function readModeAgent(chatId, parentId, member) {
+    const record = await readGame({ chatId, owner: actorOwner })
+    return record?.parentId === parentId ? record.agents?.[member] || '' : ''
+  }
+  async function writeModeAgent(chatId, parentId, member, sessionId) {
+    return update(chatId, value => {
+      const own = ownerOf(value, actorOwner)
+      if (own.game?.parentId !== parentId) own.game = { parentId, agents: {} }
+      own.game.agents[member] = sessionId
+    })
+  }
+  async function writeMode(chatId, expectedRevision, document) {
+    return update(chatId, value => {
+      const own = ownerOf(value, modeOwner)
+      if ((own.game?.revision ?? null) !== expectedRevision) throw new Error('玩法状态已变化，请刷新后重试')
+      own.game = structuredClone(document)
+    })
   }
 
   /** Carry a fork's visible history: records whose version maps into the new game. */
@@ -118,5 +142,5 @@ export function createPluginData({ store, now = Date.now }) {
 
   async function removeChat(chatId) { await store.remove(pathFor(chatId)) }
 
-  return Object.freeze({ saveTurn, turnsUpTo, saveGame, readGame, copyForFork, snapshot, importInto, turns, readSettings, updateSettings, removeChat, pathFor })
+  return Object.freeze({ readMode, writeMode, readModeAgent, writeModeAgent, saveTurn, turnsUpTo, saveGame, readGame, copyForFork, snapshot, importInto, turns, readSettings, updateSettings, removeChat, pathFor })
 }

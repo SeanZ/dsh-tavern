@@ -1,10 +1,10 @@
 import {STAGE_TIMER_FIELD} from './mods/timer/stage-service.js'
-import {readAudienceCorpus} from '../../../lib/danmaku-corpus.js'
 import {describeOpeningScenes} from './domain/stage-opening-scene.js'
 import {readStageProjection} from './domain/stage-projection.js'
 import {readWidgetWindowProjection} from './domain/widget-window-projection.js'
 import {STAGE_PLAYBACK_FIELD, saveStagePlayback, patchStagePlayback, addStageMeasurement} from './domain/stage-playback.js'
-import {spineRuntimeAvailable, spineRuntimeStatus, importSpineRuntime} from '../../../lib/domain/tavern-runtime-assets.js'
+import {createLive2dFiles, live2dFigureRuntime} from './live2d/live2d-files.js'
+import {isAbsolute, join} from 'node:path'
 import {stageModHistoryTurns} from './domain/stage-items.js'
 import {registerStageClientAssets} from './client-assets.js'
 import {createForegroundCapabilities} from '../../../lib/domain/foreground-capabilities.js'
@@ -60,7 +60,13 @@ export function createStageRuntime(core, factories = {assets:createStageAssets, 
     },
     requests(bindings, registry) {
       assert('ready')
-      const owned = Object.fromEntries(Object.entries({STAGE_TIMER_FIELD,readAudienceCorpus,describeOpeningScenes,readStageProjection,readWidgetWindowProjection,STAGE_PLAYBACK_FIELD,saveStagePlayback,patchStagePlayback,addStageMeasurement,spineRuntimeAvailable,spineRuntimeStatus,importSpineRuntime,stageModHistoryTurns,...assets,...cardAssets,...module,...services}).map(([key,value]) => [key,{value,enumerable:true}]))
+      // The user-installed Live2D runtime (Cubism Core + display library) under the data directory, a figure runtime like Spine;
+      // clip export reads it too (deps.live2dFiles: the clip's stage draws the same Live2D figures).
+      const live2dFiles = isAbsolute(String(bindings.dataRoot || '')) ? createLive2dFiles(join(bindings.dataRoot, 'live2d')) : null
+      if (live2dFiles) assets.figureRuntimes.register('live2d', live2dFigureRuntime(live2dFiles))
+      assets.figureRuntimes.bind(registry)
+      assets.stageExtensions.bind(registry)
+      const owned = Object.fromEntries(Object.entries({STAGE_TIMER_FIELD,live2dFiles,describeOpeningScenes,readStageProjection,readWidgetWindowProjection,STAGE_PLAYBACK_FIELD,saveStagePlayback,patchStagePlayback,addStageMeasurement,stageModHistoryTurns,...assets,...cardAssets,...module,...services}).map(([key,value]) => [key,{value,enumerable:true}]))
       return module.requests(Object.create(bindings,owned),registry)
     },
     async dispose() {phase = 'disposed';await scope.dispose()},

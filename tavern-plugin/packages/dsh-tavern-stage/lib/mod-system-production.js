@@ -9,6 +9,7 @@ import {freezeForegroundModPrompts} from '../../../lib/domain/mod-system-prompts
 import {createManagedConfigAssetValidator,createManagedConfigAssetReader} from '../../../lib/domain/mod-system-config-assets.js'
 import {createManagedModHost} from '../../../lib/domain/mod-system-host.js'
 import {validateSkinModOptions} from '../../../lib/domain/mod-system-options.js'
+import {modVersionMatches} from '../../../lib/domain/mod-system-semver.js'
 
 export {MANAGED_MOD_METHODS}
 
@@ -19,7 +20,9 @@ export function createManagedModProduction({ctx,cardPlugins,cardPreparation,list
   const localDistributions=()=>bundles ||= distributions()
   const settings=createManagedModSettingsOwner(ctx)
   const cards=createManagedModCardOwner({cardPreparation,listPaths,readWorkspace,writeWorkspace,withCardLock})
-  const installations=cardPlugins.managed({retiredIds:['dsh.performance'],distributions:localDistributions,cardRoots:async()=>(await cards.list()).map(row=>({cardId:row.cardId,revision:row.revision,mods:[...new Set([...Object.keys(row.value.mods),...Object.keys(row.value.config)])].sort()}))})
+  // Retired: performance moved into core; danmaku was removed (#456). Their installed releases leave the catalogue and
+  // the native loader at the next installBuiltins.
+  const installations=cardPlugins.managed({retiredIds:['dsh.performance','dsh.danmaku'],distributions:localDistributions,cardRoots:async()=>(await cards.list()).map(row=>({cardId:row.cardId,revision:row.revision,mods:[...new Set([...Object.keys(row.value.mods),...Object.keys(row.value.config)])].sort()}))})
   const modHost=createManagedModHost()
   async function authorize() {const current=await installations.read();modHost.authorize(current.value.releases.filter(row=>row.active && row.installed && row.authorized).map(row=>row.manifest.id))}
   const ready=authorize()
@@ -108,6 +111,8 @@ export function createManagedModProduction({ctx,cardPlugins,cardPreparation,list
           row.active=row.digest===bundle.sha256
           if(row.active)Object.assign(row,{installed:true,authorized:true,globalRoot:true})
         }
+        // A built-in release is the current code, not a choice: cards follow it within their range.
+        for(const lock of value.locks.filter(lock=>lock.modId===bundle.manifest.id && modVersionMatches(bundle.manifest.version,lock.range)))lock.digest=bundle.sha256
       }
       await installations.compareAndSwap({expectedRevision:current.revision,expectedValue:current.value,value})
       await authorize()

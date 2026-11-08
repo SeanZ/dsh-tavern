@@ -212,6 +212,13 @@ function bubbleMediaDescriptor(character, mood, moods) {
     const group = bubbleMood(mood, moods);
     return character?.avatarMedia?.moods?.[group?.id] || character?.avatarMedia?.default || null;
 }
+// Transcript avatars are body text and work with the stage off: without the stage client's resource owner a row holds
+// the pack media lease itself until the avatar cache has its bitmap.
+const bubbleLeaseOwner = {async acquire(descriptor) {
+    const service = packTransport.service;
+    const lease = await service.leaseMedia({packId:descriptor.ref.packId, hash:descriptor.hash});
+    return {handle:{identity:descriptor.identity, url:lease.url}, release() { void service.releaseLease(lease.ticket); }};
+}};
 // Transcript and stage pin the same session/authority-owned bytes and Blob URL.
 const bubbleMediaPool = (() => {
     let users = 0, generation = 0, warming = 0;
@@ -237,7 +244,7 @@ const bubbleMediaPool = (() => {
         },
         retain() {
             if (!users++) packListeners.add(changed);
-            return {owner:stageSessions.resourceOwner, release() { if (!--users) packListeners.delete(changed); }};
+            return {owner:stageSessions.resourceOwner || bubbleLeaseOwner, release() { if (!--users) packListeners.delete(changed); }};
         }
     };
 })();
@@ -294,7 +301,7 @@ function useBubbleMedia(sessionId, character, mood, moods, wanted = true) {
     const cached = React.useSyncExternalStore(cache?.subscribe || (() => () => {}), () => avatar && cache?.ready(avatar) || null);
     React.useEffect(() => {
         if (activeStage === sessionId || cached || (!enabled && !cache)) { setLoaded(null); return; }
-        if (!descriptor || !authority || !stageSessions.resourceOwner) return;
+        if (!descriptor || stageSessions.resourceOwner && !authority) return;
         const pool = bubbleMediaPool.retain();
         let active = true, pin = null;
         // loaded transcript rows (including the viewport margin) warm
@@ -409,7 +416,10 @@ function BubbleContent(props) {
     const segments = React.useMemo(() => parseBubbles(text, props.streaming), [text, props.streaming]);
     useThoughtFace(segments.some(segment => segment.thought));
     const select = React.useMemo(() => bubbleMessageSelector(segments), [segments]);
-    const data = useBubbles(props.sessionId, has || Boolean(props.voiceScope), select);
+    // A session whose card has dialogue bubbles off (view.stage.dialogue, host-decided) asks for bubble settings only
+    // when its text has @bubble lines: those rows still need their speakers' names and avatars. Settings pages pass their own wanted flag.
+    const dialogue = useStageDialogue(props.sessionId);
+    const data = useBubbles(props.sessionId, has || dialogue && Boolean(props.voiceScope), select);
     const match = /^(\d+):(\d+)(?::plugin:\d+)?$/.exec(String(props.voiceScope || ""));
     const source = props.stageSource;
     const stageSuperseded = Boolean(props.stageSuperseded || source && (source.superseded || galIsSuperseded(source.view, source.nativeTurn, match && Number(match[1]))));
@@ -430,13 +440,14 @@ function BubbleContent(props) {
     const config = data && data.config || null;
     const voice = useVoiceBubbles(props, segments, data && data.cardPath, config);
 
-    const enter = match && config && config.enabled && !props.voicePreview && !stageSuperseded;
+    const enter = props.staged && match && config && config.enabled && !props.voicePreview && !stageSuperseded;
     // a chunk changes the session map, not every historical paragraph's offset.
     // Subscribe to the scalar offset so hidden chat messages do not all re-render while streaming.
     const fragmentOffset = Number(props.stageParaOffset) || 0;
     const localBase = (Number(props.stageParaBase) || 0) + fragmentOffset;
     const sourceRef = React.useRef({match,source,enter,localBase,fragmentOffset}); sourceRef.current = {match,source,enter,localBase,fragmentOffset};
-    const base = useStageSelector(props.sessionId, state => {
+    // `staged` is fixed for this mount (BubbleSafePublication keys on it), so the hook order is stable.
+    const base = !props.staged ? localBase : useStageSelector(props.sessionId, state => {
         const {match,source,enter,localBase,fragmentOffset} = sourceRef.current;
         if (!enter) return localBase;
         let count = 0;
@@ -489,8 +500,10 @@ function BubbleSafePublication(props) {
     const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
     const plain = Object.assign({}, props);
     for (const key of ["sessionId", "voiceScope", "stageParaBase", "stageParaOffset", "stageSource", "stageOrder", "stageSuperseded", "interrupted"]) delete plain[key];
-    if (!enabled || !stageViews) return React.createElement(TavernColoredMarkdown, plain);
-    return tavernStageBoundary("对白气泡", React.createElement(BubblePublication, props), React.createElement(TavernColoredMarkdown, plain));
+    const staged = Boolean(enabled && stageViews);
+    // @bubble lines are body text: with the stage off they still render as bubble rows (name, avatar), never raw.
+    if (!staged && String(props.text || "").indexOf("@bubble") < 0) return React.createElement(TavernColoredMarkdown, plain);
+    return tavernStageBoundary("对白气泡", React.createElement(BubblePublication, Object.assign({}, props, { staged, key: staged ? "stage" : "body" })), React.createElement(TavernColoredMarkdown, plain));
 }
 let bubblePublicationMemo;
 function bubblePublicationType() {

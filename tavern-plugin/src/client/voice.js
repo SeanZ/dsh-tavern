@@ -6,7 +6,7 @@ let forkTtsScope;
 const browserSpeechService = (function () {
     let current = null;
     return Object.freeze({
-        available: () => Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance),
+        available: browserSpeechSupported,
         voices: () => browserSpeechVoiceList(window.speechSynthesis),
         speak(line) {
             current?.pause();
@@ -23,10 +23,12 @@ const voicePlayer = createPackVoicePlayer({now: forkForeground.now, schedule: fo
     prepareAudio:(audio,blob,result) => {if(audio.browserSpeech){audio.playbackRate=stageReading.get().voiceRate;return;}forkForeground.media(audio);forkStageAudio.prepareVoice(audio,blob,result.loudness);audio.preservesPitch=true;audio.playbackRate=stageReading.get().voiceRate;},
     disposeAudio:audio => { if (!audio.browserSpeech) forkStageAudio.release(audio); },
     onAudio:audio => forkStageAudio.voice(Boolean(audio))});
+// Whether the voice service is on for this page (ttsClient): the stage voices and a reply's 🔊 show only then.
+const ttsClientAvailable = () => Boolean(forkTtsScope?.get('ttsClient')?.available());
 function voiceObservedTurn(_session,_turn,running) { return running; }
 // @include voice-speech.cjs
 function useVoiceBubbles(props,segments,_cardPath,config) {
-    usePackRevision(() => Boolean(forkTtsScope?.get('ttsClient')?.available()));
+    usePackRevision(ttsClientAvailable);
     const client=forkTtsScope?.get('ttsClient');
     const owner=String(props.sessionId)+':'+String(props.voiceScope);
     const active = React.useSyncExternalStore(galActive.subscribe,galActive.get);
@@ -41,11 +43,12 @@ function useVoiceBubbles(props,segments,_cardPath,config) {
         const input = segmentSpeechInput(segment,config);
         if (!input) return [];
         const {text,mood} = input;
-        const id=JSON.stringify([index,text,mood,bubbleCharacter(config,segment)?.voiceKey]);
-        const character = bubbleCharacter(config,segment);
-        const cacheKey = JSON.stringify([props.sessionId,character.alias,character.voiceKey,characterVoiceLanguage(character),text,mood]);
+        const character = input.general ? null : bubbleCharacter(config,segment);
+        const id=JSON.stringify([index,text,mood,input.general ? 'general' : character.voiceKey]);
+        const speaker = input.general ? ['general',config.voice.general,segment.name] : [character.alias,character.voiceKey,characterVoiceLanguage(character)];
+        const cacheKey = JSON.stringify([props.sessionId,...speaker,text,mood]);
         const selectionKey=props.stageSource ? JSON.stringify([props.sessionId,props.stageSource.nativeTurn,(props.stageParaBase||0)+(props.stageParaOffset||0)+(voiceOrdinals.get(index)||0)]) : undefined;
-        const request={text,mood,owner,id,selectionKey,cacheKey:JSON.stringify([cacheKey,selectionKey])}, descriptor=()=>rpc('openAssetPackVoice',{alias:character.alias},props.sessionId);
+        const request={text,mood,owner,id,selectionKey,cacheKey:JSON.stringify([cacheKey,selectionKey])}, descriptor=()=>rpc('openAssetPackVoice',input.general ? {general:true} : {alias:character.alias},props.sessionId);
         return [[index,{...request,sessionId:props.sessionId,player:voicePlayer.get(),get error(){return voicePlayer.getError(request);},prefetch:()=>voicePlayer.prefetch(descriptor,request),
             click:options=>voicePlayer.play(descriptor,{...request,handoff:options?.handoff===true})}]];
     }) : []);
@@ -55,13 +58,28 @@ function useVoiceBubbles(props,segments,_cardPath,config) {
         return JSON.stringify([available && player?.owner === owner ? [player.id,player.loading,player.error,Boolean(player.audio),player.audio?.paused] : null,
             Object.values(handles).map(handle => voicePlayer.getError(handle))]);
     });
+    // A reply streaming with voice plays its lines as they arrive, with no tap: the mixer stays awake meanwhile (stage-audio.js keepAwake).
+    const streamingVoice=Boolean(available && props.streaming && props.voiceAuto);
+    React.useEffect(()=>{ forkStageAudio.keepAwake(owner,streamingVoice); return()=>forkStageAudio.keepAwake(owner,false); },[owner,streamingVoice]);
     React.useEffect(()=>{
         if (active===props.sessionId || !props.voiceAuto || !available) return;
         for (const handle of Object.values(handles)) void handle.prefetch();
     },[active,props.sessionId,props.voiceAuto,available,JSON.stringify(Object.values(handles).map(handle=>handle.id))]);
     return handles;
 }
-function VoiceButton({voice}) {
+// glyph speaker (the stage backlog's rows): a speaker whose body stays still while its sound-wave arcs light in sequence as the
+// line plays (theme.css 「backlog voice waves」); a skin's art.voice.waves draws the arcs from its own images (the i layers).
+// Both are decorative layers (data-fk-layer): only they fade, never the button or its label.
+const VOICE_SPEAKER_BODY = 'M2 9h3.5L10 5v14l-4.5-4H2z';
+const VOICE_SPEAKER_WAVES = ['M12.5 9.5a3.5 3.5 0 0 1 0 5', 'M14.9 7a7 7 0 0 1 0 10', 'M17.4 4.6a10.5 10.5 0 0 1 0 14.8'];
+function VoiceSpeaker() {
+    const h = React.createElement;
+    return [h('svg',{key:'glyph',className:'fork-voice-speaker','data-fk-layer':'',width:12,height:12,viewBox:'0 0 24 24','aria-hidden':true},
+        h('path',{d:VOICE_SPEAKER_BODY,fill:'currentColor'}),
+        VOICE_SPEAKER_WAVES.map((d,index)=>h('path',{key:index,className:'fork-voice-wave','data-wave':index+1,d,fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round'}))),
+        h('span',{key:'art',className:'fork-voice-art-waves','data-fk-layer':'','aria-hidden':true},[1,2,3].map(wave=>h('i',{key:wave,className:'fork-voice-wave','data-wave':wave})))];
+}
+function VoiceButton({voice, glyph}) {
     const current=voice.player?.owner===voice.owner&&voice.player?.id===voice.id?voice.player:null;
     const failure = current?.error || voice.error;
     const error = {QWEN_INVALID_TEXT:'这句没有可朗读内容或被 Qwen 拒绝，请修改台词后重播',VOICE_NOT_FOUND:'声音绑定未解析，请重新选择该人物的声音','voice-unbound':'声音绑定未解析，请重新选择该人物的声音',QWEN_MODEL_NOT_FOUND:'Qwen 当前服务无法访问此配音模型（404），请在百炼控制台检查模型开通状态与区域',QWEN_RESOURCE_NOT_FOUND:'Qwen 语音服务资源不存在（404），请检查区域、模型与音色',QWEN_AUDIO_NOT_FOUND:'Qwen 合成音频下载失败（404），请重试',QWEN_REQUEST_FAILED:'Qwen 语音服务请求失败'}[failure] || failure;
@@ -76,8 +94,8 @@ function VoiceButton({voice}) {
         else current.audio.pause();
     } : voice.click;
     return h('button',{type:'button',className:'fork-voice-button','data-voice-state':state,'aria-label':label,'aria-busy':state==='loading',disabled:state==='loading',title:error||label,onClick:event=>{
-        if (state === 'idle' || state === 'error') playTelemetry.record('voice_replay', voice.sessionId);
+        if (state === 'idle' || state === 'error') tavernPlayEvents.emit('voice_replay', voice.sessionId);
         click(event);
     }},
-        state==='error'?h('span',{'aria-hidden':true},'⚠'):state==='loading'?h(Spinner,{className:'fork-voice-spinner'}):h('svg',{width:12,height:12,viewBox:'0 0 24 24','aria-hidden':true},h('path',{d:path,fill:'currentColor'})));
+        state==='error'?h('span',{'aria-hidden':true},'⚠'):state==='loading'?h(Spinner,{className:'fork-voice-spinner'}):glyph==='speaker'?h(VoiceSpeaker):h('svg',{width:12,height:12,viewBox:'0 0 24 24','aria-hidden':true},h('path',{d:path,fill:'currentColor'})));
 }

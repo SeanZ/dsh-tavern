@@ -55,6 +55,7 @@ function harness() {
   const sessions = { get: () => agent, flush: async () => {} }
   const editor = createBodyEditor({ chats, sessions, timeline, activity: () => ({ busy: false }), project: async () => ({}), present: async value => value })
   const history = createRoundHistory({ chats, sessions, timeline, scripts: { read: async () => ({ chunks: [] }), continuity: { transition: () => ({ state: { cursor: 0 } }) }, dispatchEvent: async () => {} },
+    prepareRegenerationFrame: async input => ({ userText: input.userText, frame: { kind: 'foreground', contributions: [], userInput: { sourceText: input.userText, projectedText: input.userText }, source: {} } }),
     queueSettlement: async () => {}, present: async value => structuredClone(value) })
   return { session, editor, history, requests, get chat() { return chat }, mark() { chat.messages.at(-1).variablesStale = { replySeq: 3 } } }
 }

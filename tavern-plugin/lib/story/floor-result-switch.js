@@ -1,3 +1,6 @@
+import { resolveStoryMessage } from './message-target.js'
+import { storyResultHistory } from './result-history.js'
+import { legacyMessageUid } from '../domain/message-uid.js'
 import { randomUUID } from 'node:crypto'
 import { foldStoryRounds } from './story-rounds.js'
 import { sessionEvents } from '../domain/session-events.js'
@@ -32,13 +35,13 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
     return message
   }
 
-  /** @returns {Promise<{ switched: boolean, turn: number, replySeq: number, mvu: 'stale' | 'unchanged', view: object }>} */
+  /** @returns {Promise<{ switched: boolean, turn: number, replySeq: number|string, mvu: 'stale' | 'unchanged', view: object }>} */
   async function switchResult(input = {}) {
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
     const sessionId = String(input.sessionId ?? '')
     const turn = Number(input.turn)
-    const replySeq = Number(input.replySeq)
-    if (!Number.isSafeInteger(turn) || turn < 1 || !Number.isSafeInteger(replySeq) || replySeq < 0) throw new Error('切换参数无效')
+    const replySeq = input.replySeq
+    if (!Number.isSafeInteger(turn) || turn < 1 || (!(typeof replySeq === 'string' && replySeq.length > 0 && replySeq.length <= 128) && (!Number.isSafeInteger(replySeq) || replySeq < 0))) throw new Error('切换参数无效')
     if (pending.has(sessionId)) throw new Error('正在切换历史结果，请稍候')
     pending.add(sessionId)
     try {
@@ -49,16 +52,18 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
       const session = agent?.session
       if (!session) throw new Error('无法访问原生会话')
       idle(chat, agent)
-      const message = latestFloor(chat, turn)
+      const message = input.messageUid ? resolveStoryMessage(chat, input, { latest: true }).message : latestFloor(chat, turn)
       const floor = foldStoryRounds(sessionEvents(session)).floors.at(-1)
       if (!floor || floor.story !== turn || !session.surface?.nodes.includes(floor.reply.seq)) throw new Error('这一层已不在当前上下文中，无法切换')
-      const entry = floor.history.find(item => item.seq === replySeq)
+      const results = storyResultHistory(message, floor.history)
+      const entry = results.history.find(item => String(item.id) === String(replySeq))
       if (!entry) throw new Error('这一层没有这个历史结果')
-      if (entry.current) return { switched: false, turn, replySeq, mvu: 'unchanged', view: await present(chat) }
+      if (entry.id === results.current) return { switched: false, turn, replySeq, mvu: 'unchanged', view: await present(chat) }
       // Prose only, like an edit: macros are not replayed, the regex projections are.
       const reply = await project(entry.text, chat)
       const patch = { ...replyProse(entry.text, { ...reply, projectionText: entry.text }),
-        incomplete: entry.incomplete === true, incompleteReason: entry.incompleteReason || '' }
+        incomplete: entry.incomplete === true, incompleteReason: entry.incompleteReason || '',
+        messageUid: legacyMessageUid(message, chat.messages.length - 1), storyResults: results.history, storyResultId: entry.id }
       if (Array.isArray(message.swipes)) {
         patch.swipes = structuredClone(message.swipes)
         const swipe = Number(message.swipeId) || 0
@@ -66,10 +71,10 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
       }
       const saved = await chats.update(chat.id, current => {
         idle(current, agent)
-        if (latestFloor(current, turn).text !== message.text) throw new Error('正文已变化，请刷新后再切换')
+        if ((input.messageUid ? resolveStoryMessage(current, input, { latest: true }).message : latestFloor(current, turn)).text !== message.text) throw new Error('正文已变化，请刷新后再切换')
         if (!session.surface?.nodes.includes(floor.reply.seq)) throw new Error('模型上下文已变化，请刷新后再切换')
         const edited = timeline.apply({ chat: current, intent: { kind: 'body.edit', turn, patch } }).chat
-        if (edited.mvu?.enabled === true && edited.mvu.owner === 'official') edited.messages.at(-1).variablesStale = { replySeq: entry.seq }
+        if (edited.mvu?.enabled === true && edited.mvu.owner === 'official') edited.messages.at(-1).variablesStale = { replySeq: entry.seq ?? entry.id }
         return edited
       }, { source: 'foreground.result-switch' })
       // The save holds the switch first; a crash before this write leaves a save the
@@ -77,7 +82,7 @@ export function createFloorResultSwitch({ chats, sessions, timeline, activity, p
       replaceSessionSurface(session, 'assistant/message', {
         turn: Number(floor.reply.turn) || turn, step: 1,
         message: { id: 'tavern-result-switch:' + id(), role: 'assistant', content: [{ type: 'text', text: patch.text }],
-          source: { kind: 'model', provider: 'dsh-tavern', model: 'result-switch', tavernStoryTurn: turn, tavernResultSeq: entry.seq, tavernIncomplete: entry.incomplete === true, tavernIncompleteReason: entry.incompleteReason || '' } }
+          source: { kind: 'model', provider: 'dsh-tavern', model: 'result-switch', tavernStoryTurn: turn, tavernResultSeq: Number.isSafeInteger(entry.seq) ? entry.seq : floor.reply.seq, tavernIncomplete: entry.incomplete === true, tavernIncompleteReason: entry.incompleteReason || '' } }
       }, { start: floor.reply.seq, end: floor.reply.seq, sourceEventSeqs: [floor.reply.seq] })
       await sessions.flush(session)
       return { switched: true, turn, replySeq, mvu: 'stale', view: await present(saved) }

@@ -1,10 +1,14 @@
 # Tavern 插件接口总览
 
-接口版本：**4**（宿主侧；浏览器侧 `tavernUi.apiVersion` 仍为 **5**）
+接口版本：**7**（宿主侧；浏览器侧 `tavernUi.apiVersion` 为 **8**）
 
 DSH Tavern 把扩展功能交给第三方 **DSH 插件**：文生图、文生视频、配音，以及记忆、叙事锚点这类需要参与提示词和后台结算的功能。Tavern 提供一层稳定的接口：让插件知道「这一轮写完了、写了什么」，把图片或别的内容「挂回这一轮」，并往正文请求和后台结算里**添加**内容。v4 另提供仅对当前人物卡卡内插件开放的官方 MVU 变量结算 provider。多数是添加类接口，插件出错只会丢掉它自己那一份，游戏照常进行；少数替换类接口（如 `replaceSettlement`）让插件接管某个流程，插件失败时自动退回 Tavern 自己的做法。
 
-宿主通过 `ctx.tavern.capabilities` 公布可选能力。插件按能力名和版本探测；新增能力不要求旧插件升级接口版本。当前 `galleryProvider: 1` 可把插件自己保存的图片列入 Tavern 对话画廊，适合没有正文轮次的卡片工作台图库，见[媒体与数据](plugin-api-data.md)。
+宿主通过 `ctx.tavern.capabilities` 公布可选能力。插件按能力名和版本探测；新增能力不要求旧插件升级接口版本。当前 `galleryProvider: 1` 可把插件自己保存的图片列入 Tavern 对话画廊，适合没有正文轮次的卡片工作台图库；`pricingProvider: 1` 让插件给界面报会话模型的价格。两者都见[媒体与数据](plugin-api-data.md)。
+
+生图扩展另提供 `imageModels: 1`（查询已配置模型、指定来源和模型生成）、`imageLibrary: 1`（提供与查询人物、服装库），用法与数据契约见[生图模型与人物、服装库](plugin-api-data.md)。
+
+独立桌游或多角色玩法使用 `capabilities.gameMode === 1`：通过 `gameMode` 管理状态、行动和玩家投影，通过 `registerGameModeView` 提供大厅与整页界面，并可复用已注册成员的持久子代理。详见[玩法 API](plugin-api-game.md)和[浏览器 API](plugin-api-ui.md)。
 
 ## 三条承诺
 
@@ -16,7 +20,9 @@ DSH Tavern 把扩展功能交给第三方 **DSH 插件**：文生图、文生视
 
 ## 快速开始
 
-一个插件就是一个文件夹。把它放进 Tavern 数据目录的 `plugins/` 下就会加载，不需要改 Tavern 的任何文件，也不需要打包：
+用户安装插件时，使用 **设置 → DSH Tavern → 插件**：粘贴 GitHub 仓库地址安装，或点「上传 ZIP」。作者分发时提供可直接安装的仓库或 ZIP，并附上这条安装路径；包结构和发布前验证见[发布与一键安装](plugin-publishing.md)。
+
+本地开发或手动安装时，一个插件就是一个文件夹。把它放进 Tavern 数据目录的 `plugins/` 下就会加载，不需要改 Tavern 的任何文件；插件面板也会自动安装到这里：
 
 ```text
 ~/.dsh/profile-data/tavern/data/plugins/
@@ -86,7 +92,7 @@ Tavern 把 `plugins/` 下的插件登记在 DSH 的 Tavern 配置（`~/.dsh/prof
 
 ### 卡内插件
 
-插件也可以放进 DSH 人物卡（`.dshcard`；分发时建议用 `node examples/dshcard-png.mjs` 转成带封面的 `.dshcard.png`，系统和聊天软件会显示封面，导入照常）的 `plugins/<文件夹>/` 随卡分发，写法和上面的插件文件夹完全一样，并在卡的 `dsh.json` 里登记（见[格式设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Adsh-card-format)）：
+插件也可以放进 DSH 人物卡（`.dshcard`）的 `plugins/<文件夹>/` 随卡分发，写法和上面的插件文件夹完全一样，并在卡的 `dsh.json` 里登记（见[格式设计](https://github.com/flizzywine/dsh-tavern/wiki/%E8%AE%BE%E8%AE%A1%EF%BC%9Adsh-card-format)）：
 
 - 导入卡时插件随卡启用：Tavern 把它放进 `plugins/` 加载（宿主侧几秒内生效，浏览器侧刷新页面后生效）。人物卡库的卡片详情里可以随时停用、再启用。
 - **只在这张卡的局里生效**：别的局里，它注册的回调不触发、提示词与结算内容不加入、界面（面板、舞台画面、正文标记、按钮）不出现；带别的局的 `gameId` 或别的卡的 `card` 调用接口会被拒绝；`listCards` 只看得到本卡。

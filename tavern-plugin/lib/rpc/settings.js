@@ -1,5 +1,6 @@
 import { readBackgroundModelReasoning } from '../domain/background-model-selection.js'
 import { SYSTEM_PROMPT_NAMES } from '../prompt-catalog.js'
+import { configuredBodyGeneration } from '../domain/plugin-body-generation.js'
 
 // Tavern settings, system prompts, user profile and background model requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
@@ -8,6 +9,28 @@ export function createSettingsHandlers(deps) {
     llm, playCardSnapshots, presentSystemPrompts, presentUserPreferenceProfile, readTavernSettings,
     sessionActivity, str, tavernModelCatalog, updateChat, updateTavernSettings, userPreferenceProfile } = deps
   const handlers = {
+    async getBodyGenerationSettings(args) {
+      const chat = await chatForSession(str(args?.sessionId))
+      if (!chat || groupOfMode(chat.mode) !== 'play') throw new Error('请先打开游玩会话')
+      return { ...configuredBodyGeneration(chat, await readTavernSettings()),
+        inherited: chat.storyGenerationMode === undefined,
+        providers: await deps.pluginApi.bodyGenerators.list(chat.sessionId) }
+    },
+    async setBodyGenerationSettings(args) {
+      const chat = await chatForSession(str(args?.sessionId))
+      if (!chat || groupOfMode(chat.mode) !== 'play') throw new Error('请先打开游玩会话')
+      if (args.inherit !== true) {
+        if (!['host', 'plugin-direct', 'plugin-tool-call'].includes(args.mode)) throw new Error('正文生成方式无效')
+        if (typeof args.provider !== 'string' || args.provider.length > 300) throw new Error('正文生成器无效')
+        if (args.mode !== 'host') await deps.pluginApi.bodyGenerators.require(args.provider, chat.sessionId)
+      }
+      await updateChat(chat.id, current => {
+        if (args.inherit === true) { delete current.storyGenerationMode; delete current.storyGenerationProvider }
+        else { current.storyGenerationMode = args.mode; current.storyGenerationProvider = args.provider }
+        return current
+      }, { source: 'settings.body-generation' })
+      return handlers.getBodyGenerationSettings(args)
+    },
     async getUserPreferenceProfile(args) {
       const chat = args?.sessionId && args.globalDefaults !== true ? await chatHeaderForSession(args.sessionId, ['userProfileEnabled','userProfileContextSnapshot','userProfileId','userProfileRevision']) : null
       return {
@@ -68,7 +91,7 @@ export function createSettingsHandlers(deps) {
 
     async getTavernSettings(args) {
       const { scoringCatalog, readTavernSettings, slotDeclarations, tavernModelCatalog } = deps
-return { settings: await readTavernSettings(), modModelSlots: await slotDeclarations(), scoringCatalog: scoringCatalog(), modelCatalog: await tavernModelCatalog() }
+return { bodyGenerationProviders: await deps.pluginApi?.bodyGenerators?.list(), settings: await readTavernSettings(), modModelSlots: await slotDeclarations(), scoringCatalog: scoringCatalog(), modelCatalog: await tavernModelCatalog() }
     },
     async updateTavernSettings(args) {
       const { checkSlotSelection, autoChoices, modelSelectionChanged, updateTavernSettings } = deps
@@ -107,9 +130,12 @@ return { settings: await readTavernSettings(), modModelSlots: await slotDeclarat
       if (!['create', 'duplicate', 'select', 'rename', 'delete'].includes(action)) throw new Error('未知的系统提示词方案操作')
       return { systemPrompts: presentSystemPrompts(await updateTavernSettings({ promptSet: { action, id: args.id, name: args.name } })) }
     },
-    async getModelPricing(args, method, serverTemplate, authority) {
-      const { modelSelection, routerPricing } = deps
-return await routerPricing.quote(modelSelection(args && args.sessionId))
+    // Prices come from a plugin (tavern.pricingProvider); Tavern itself keeps no price tables.
+    async getModelPricing(args) {
+      const { modelSelection, pluginApi } = deps
+      const [provider] = pluginApi.pricingProviders()
+      if (!provider) return { available: false, reason: '没有插件提供模型价格' }
+      return await provider.quote(modelSelection(args && args.sessionId))
     },
   }
   handlers.getConversationBackgroundConfig = handlers.getConversationBackgroundModel

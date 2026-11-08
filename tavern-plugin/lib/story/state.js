@@ -7,7 +7,7 @@ export function staleVariablesOf(chat) {
     if (!message || message.role !== 'assistant') continue
     const stale = message.variablesStale
     return stale && typeof stale === 'object'
-      ? { turn: Number(message.turn), replySeq: Number(stale.replySeq) }
+      ? { turn: Number(message.turn), replySeq: stale.replySeq }
       : null
   }
   return null

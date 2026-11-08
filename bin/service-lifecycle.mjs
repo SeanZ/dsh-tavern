@@ -8,7 +8,7 @@ import { resolveDesktopAsarCommand, resolveDshCliEntry } from './plugin-dependen
 import path from 'node:path'
 import { migrateSessionPrefixEvents } from './session-prefix-migration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
-import { PROFILE_DIR, PID_FILE, PROFILE, SOURCE_ROOT, CLI_PORT, CLI_HOST, LOG_DIR, LOG_FILE, DSH_ROOT, FRONTEND_BOOTSTRAP_FILE, FRONTEND_BOOTSTRAP_VERSION, commandExists, runtimeEnvironment, RUNTIME_HOST, findDshCommand, resolveDshInvocation, sleep } from './launcher-environment.mjs'
+import { PROFILE_DIR, PID_FILE, PROFILE, SOURCE_ROOT, CLI_PORT, CLI_HOST, LOG_DIR, LOG_FILE, DSH_ROOT, BACKUP_ROOT, FRONTEND_BOOTSTRAP_FILE, FRONTEND_BOOTSTRAP_VERSION, commandExists, runtimeEnvironment, RUNTIME_HOST, findDshCommand, resolveDshInvocation, sleep } from './launcher-environment.mjs'
 
 // Own process identity, readiness, shutdown, and validated browser access.
 export function webUrlFromLogChunk(source) {
@@ -300,6 +300,15 @@ export async function stopService() {
   throw new Error(`服务未能在 10 秒内停止；没有强制结束进程，请手动检查 PID ${state.record.pid}。`)
 }
 
+export function serviceDshArgs(bindHost, port) {
+  const args = ['--profile', PROFILE, '--host', bindHost, '--port', String(port), '--no-open']
+  if (!isLoopbackHost(bindHost)) {
+    const { hostname } = new URL(serviceOrigin(bindHost, port))
+    args.push('--trusted-host', `${hostname}:${port}`)
+  }
+  return args
+}
+
 export async function startService() {
   verifyProfile()
   ensureSidebarDefaults()
@@ -339,7 +348,7 @@ export async function startService() {
 
   const prefixRepairs = await migrateSessionPrefixEvents({
     sessionsRoot: path.join(DSH_ROOT, 'profile-data', PROFILE, 'sessions'),
-    backupRoot: path.join(DSH_ROOT, 'backups', 'tavern-stable-prefix-v1'),
+    backupRoot: path.join(BACKUP_ROOT, 'tavern-stable-prefix-v1'),
   })
   if (prefixRepairs.length) console.log(`已兼容修复 ${prefixRepairs.length} 份旧会话的固定背景事件，原文件已备份。`)
 
@@ -350,7 +359,7 @@ export async function startService() {
   const dsh = findDshCommand(runtimeHost)
   const invocation = resolveDshInvocation(
     dsh,
-    ['--profile', PROFILE, '--host', state.bindHost, '--port', String(state.port), '--no-open'],
+    serviceDshArgs(state.bindHost, state.port),
     runtimeHost,
   )
   // A pinned desktop DSH (DSH_DESKTOP_DSH_BOOTSTRAP) is already the Electron executable plus

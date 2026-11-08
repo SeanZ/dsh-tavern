@@ -4,6 +4,7 @@ const key = row => row.kind + '/' + row.id
 const active = row => row.enabled !== false
 const primary = row => row.kind === 'figure' ? row.aliases || [] : row.recall?.keywords || []
 const words = row => [...primary(row), ...Object.values(row.recall?.synonyms || {}).flat()]
+const bands = /^(?:mygo!{0,5}|ave\s*mujica|crychic|aqours|μ'?s|muse|liella!?|roselia|poppin'?party|b小町|放课后茶会)$/iu
 const categories = /^(?:魔女结界|魔女|结界|演唱|歌曲|音乐|bgm|音效|背景|服装|场景)$/u
 const epithet = /(?:魔女|之王|女王|使者|化身)$/u
 function entries({manifest, figures = {}}) {
@@ -33,6 +34,8 @@ export function lintTriggers(document, {before} = {}) {
     // Directions are always-on instructions; their schema deliberately forbids trigger words. An entrance plays as the stage
     // opens and is never recalled (blue or off), so it has none either.
     if (row.kind === 'figure' || row.kind === 'directions' || row.kind === 'entrances' || row.kind === 'videos') continue
+    // A picture the illustrator drew for one moment of a chat (scene-cg.js) waits in 回想 without words until the player gives it some.
+    if (row.kind === 'cg' && row.extensions?.dsh_tavern?.scenePicture && !words(row).length) continue
     // An empty blue audience needs no recall keywords: it is available without a story match.
     if (row.kind === 'audience' && row.recall?.mode === 'constant' && !words(row).length) continue
     const list = primary(row).map(norm), unique = new Set(words(row).map(norm))
@@ -41,7 +44,7 @@ export function lintTriggers(document, {before} = {}) {
     for (const word of unique) {
       const peers = usage.get(scope(row)+'/'+word)
       const nameForm = names.has(word) || !epithet.test(word) && [row.name,row.label,...row.aliases || []].filter(Boolean).some(name => norm(name) === word)
-      const unit = row.kind === 'music' && !names.has(word) && /(?:乐队|组合|ユニット)$/.test(word)
+      const unit = row.kind === 'music' && !names.has(word) && (bands.test(word) || /(?:乐队|组合|ユニット)$/.test(word))
       if (list.filter(w=>w===word).length > 1) add(row,word,'duplicate','主关键词重复；同义表中的复用不算独立重复')
       if (nameForm) continue
       // Sound nouns/idioms (雷声、钟声、泣不成声) are prose, not mechanically appended labels.

@@ -1,3 +1,4 @@
+import { createHostToolPolicy } from '../host/tools.js'
 import { assistantResultForTurn } from '../domain/session-turn-result.js'
 import { inputEventForTurn } from '../domain/session-turn-input.js'
 import { roundAnchor } from '../domain/round-anchor.js'
@@ -12,8 +13,19 @@ import { isSurfaceEditTurn, sessionEvents } from '../domain/session-events.js'
 import { withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
 import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
 
+function reachedOutputLimit(assistant) {
+  const stream = Array.isArray(assistant?.event?.data?.stream) ? assistant.event.data.stream : []
+  return stream.some(entry => {
+    const chunk = entry?.type === 'chunk' ? entry.chunk : entry
+    if (chunk?.type !== 'finish') return false
+    const reason = chunk.reason === undefined ? chunk : chunk.reason
+    return reason?.kind === 'max-tokens'
+  })
+}
+
 export function registerTurnLifecycleHooks({
   autoChoices,
+  pluginBodyGeneration,
   reconcileWhenIdle,
   backgroundAgentRunner,
   hookChatForSession,
@@ -37,6 +49,8 @@ export function registerTurnLifecycleHooks({
   turnStarted,
   userMessageForTurn,
 }) {
+  const hostTools = createHostToolPolicy(ctx)
+
   ctx.on('agent/turn-stopping', async function (payload) {
     const session = payload.agent && payload.agent.session
     if (session === undefined) return
@@ -52,6 +66,11 @@ export function registerTurnLifecycleHooks({
     if (userText === '' && !inputAttachments(userContent).length) return
     const requestId = requestIdForTurn(session, payload.turn)
     const assistant = assistantResultForTurn(session, payload.turn)
+    try { await pluginBodyGeneration?.validateResult(session, payload.turn, assistant) }
+    catch (error) {
+      await turnOrchestrator.recordFailure({ sessionId, turn: payload.turn, requestId, code: 'plugin-generation', message: error.message, failure: error.failure })
+      throw error
+    }
     if (assistant === null || assistant.text === '') {
       const reasoningOnly = assistant !== null && assistant.reasoningOnly === true
       const message = reasoningOnly
@@ -72,7 +91,10 @@ export function registerTurnLifecycleHooks({
       requestId,
       userText,
       userContent,
+      pluginBodyGeneration: assistant?.pluginBodyGeneration === true,
       assistantText: assistant === null ? '' : assistant.text,
+      incomplete: reachedOutputLimit(assistant),
+      incompleteReason: '这次生成达到输出上限或被中断，保留了已生成的部分正文',
       nativeAnchor: roundAnchor(payload.turn, inputEventForTurn(session, payload.turn), assistant.event)
     })
     // A submit_story call and its receipt both carry the body; fold them into one
@@ -127,14 +149,14 @@ export function registerTurnLifecycleHooks({
         ? { restore: false } : undefined)
       fixedSystemSections = (native ? withVirtualWorldbook : withCurrentWorldbook)(fixedSystemSections, projected.prefixContext ?? '', chat.disabledForegroundTools)
     }
-    const assembled = await foregroundStrategies.assembleSystemPrompt(assembly, {
+    const assembled = await hostTools.assemble(assembly, context, (value, tools) => foregroundStrategies.assembleSystemPrompt(value, {
       sessionId: agent.session.id,
-      tools: assembly.tools || ctx.tools.schemas(context.scope || agent, context.toolSet),
+      toolDefinitions: tools,
       chat,
       cwd: agent.session.header && agent.session.header.cwd,
       workspaceProjection,
       fixedSystemSections
-    })
+    }))
     // Third-party plugin sections join the play prompt only, after Tavern's own.
     if (pluginPromptSections && chat && chat.requestMode !== 'sillytavern' && ['story', 'script'].includes(await turnOrchestrator.modeFor(agent.session.id))) {
       const extra = await pluginPromptSections({ gameId: agent.session.id })
@@ -142,6 +164,8 @@ export function registerTurnLifecycleHooks({
     }
     // The final reminder goes after those sections, so their length cannot bury
     // the one contract that must be the last thing the model reads.
+    const pluginContract = assembled.sections?.find(section => section.name === 'tavern:plugin-body-generation')
+    if (pluginContract) assembled.sections = [...assembled.sections, { ...pluginContract, name: 'tavern:plugin-body-generation-reminder' }]
     const hasSubmission = (assembled.sections || []).some(section => section.name === 'tavern:story-tool-submission')
     const outputToolCall = hasSubmission && typeof storyOutputToolCall === 'function' ? (await storyOutputToolCall()) === true : false
     return markTavernSectionsLiteral(prependSystemInstruction(appendStorySubmissionReminder(assembled, outputToolCall), chat ? runtimePrompt('system-append') : ''))

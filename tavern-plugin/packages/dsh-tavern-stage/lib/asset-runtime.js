@@ -10,7 +10,7 @@ export { assetVoiceBinding } from '../../../lib/domain/figure-voice.js'
 
 // The authenticated Tavern carrier owns sessions; pack services own bytes and leases.
 export function createAssetRuntime({ctx, readWorkspace, engineSettings, onInvalidate = () => {},
-  getBinding = (_ref, voice, options) => assetVoiceBinding(ctx.get('tts'), engineSettings.read().values.voiceServices, voice, options)}) {
+  getBinding = (_ref, voice, options) => assetVoiceBinding(ctx.get('tts'), voice, options)}) {
   const consumers = new Map(), listeners = new Set()
   let generation = 0, disposed = false
   const service = () => { const value = ctx.get('assetLibrary'); return value?.apiVersion === 2 ? value : undefined }
@@ -32,7 +32,8 @@ export function createAssetRuntime({ctx, readWorkspace, engineSettings, onInvali
     lifecycle('service-installed')
     const off = child.get(name)?.subscribe?.(event => {
       if (name !== 'tts') clear(undefined,{kind:event.revision === null ? 'revoked' : 'refresh',scope:{packId:event.packId},reason:'service-event'})
-      else if (['providerChanged','providerRemoved','disposed','cacheInvalidated'].includes(event.type)) {
+      // readingChanged: 旁白配音's global layer (tts.reading) changed, so each card's config.narrator is projected again.
+      else if (['providerChanged','providerRemoved','disposed','cacheInvalidated','readingChanged'].includes(event.type)) {
         for (const entry of consumers.values()) {entry.speech?.dispose(); entry.speech = null}
         clear()
       }
@@ -93,11 +94,11 @@ export function createAssetRuntime({ctx, readWorkspace, engineSettings, onInvali
         }
         onInvalidate(chat.cardPath,event)
       }})
-      const speech = createAssetPackSpeech({presentation, getEngine:() => engineSettings.read().values, getTts:() => ctx.get('tts'), getBinding, cardId:workspace.meta.id, scope:'dsh-browser'})
+      const speech = createAssetPackSpeech({getLibrary:service,presentation, getEngine:() => engineSettings.read().values, getTts:() => ctx.get('tts'), getBinding, cardId:workspace.meta.id, scope:'dsh-browser'})
       entry = {cardPath:chat.cardPath, revision, origin, presentation, speech}
       consumers.set(id, entry)
     }
-    if (!entry.speech) entry.speech = createAssetPackSpeech({presentation:entry.presentation,getEngine:() => engineSettings.read().values,getTts:() => ctx.get('tts'),getBinding,cardId:workspace.meta.id,scope:'dsh-browser'})
+    if (!entry.speech) entry.speech = createAssetPackSpeech({getLibrary:service,presentation:entry.presentation,getEngine:() => engineSettings.read().values,getTts:() => ctx.get('tts'),getBinding,cardId:workspace.meta.id,scope:'dsh-browser'})
     entry.allowedPackIds = [...new Set([...entry.presentation.extension.assetBindings.boundPackIds,
       ...(ctx.get('assetPackSettings')?.read().values.globalEnabledPackIds || [])])]
     return entry

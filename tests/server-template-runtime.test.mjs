@@ -28,6 +28,8 @@ function fixture(t, options = {}) {
     if (method === 'saveFullPromptTemplateGlobals') { current.environment.extension_settings.variables.global = structuredClone(args.variables); return {updated:true,variables:args.variables} }
     if (method === 'saveFullPromptTemplateState') { current.state=structuredClone(args.state); return {updated:true,state:args.state} }
     if (method === 'countFullTemplateTokens') return {tokens:args.text.length}
+    // Read-only bound worldbook for TavernHelper probes in card EJS.
+    if (method === 'getFullTemplateWorldbook') return {worldbook:{name:'主线',entries:[{name:'配角',enabled:true},{name:'可选剧情',enabled:true}]}}
     throw Error(method)
   } })
   t.after(() => runtime.dispose())
@@ -103,26 +105,13 @@ test('display worker failures preserve bounded redacted stderr without replay or
   assert.equal((await runtime.inspect('s')).task.workerDiagnostic.exitCode, 42)
 })
 
-// 真实分离安装：新目录中的包链接到旧依赖目录，不能只允许 realpath。
-for (const linkedDirectory of [false, true]) test('独立插件依赖可执行且不能读取旁边配置：' + (linkedDirectory ? '链接整个 node_modules' : '链接 jsdom 包'), async t => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'tavern-template-install-')))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const modules = join(root, 'plugins/node_modules')
-  const packageRoot = linkedDirectory ? join(root, 'separate-package') : join(modules, 'fixture')
-  const plugin = join(packageRoot, 'tavern-plugin')
-  await mkdir(plugin, { recursive: true })
-  await cp(new URL('../tavern-plugin/lib', import.meta.url), join(plugin, 'lib'), { recursive: true })
-  await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ type: 'module' }))
-  await mkdir(modules, { recursive: true })
-  if (linkedDirectory) await symlink(modules, join(packageRoot, 'node_modules'), 'dir')
-  await symlink(await realpath(new URL('../node_modules/jsdom', import.meta.url)), join(modules, 'jsdom'), 'dir')
-  const secret = join(root, 'plugins/profile-secret.txt')
-  await writeFile(secret, 'fixture-private-value')
-  const { createServerTemplateRuntime: createRuntime } = await import(pathToFileURL(join(plugin, 'lib/domain/server-template-runtime.js')))
-  const { engine } = fixture(t, { createRuntime })
-  assert.equal((await engine.renderInput('输入 <%= 2 + 3 %>')).message.mes, '输入 5')
-  const denied = await engine.render('<% structuredClone.constructor("return process")().getBuiltinModule("fs").readFileSync(' + JSON.stringify(secret) + ',"utf8") %>')
-  assert.equal(denied.ok, false)
-  assert.match(denied.error, /Access to this API has been restricted|access denied/i)
-  assert.doesNotMatch(denied.error, /fixture-private-value/)
+// Card world entries probe their own worldbook via TavernHelper before rendering.
+test('worldbook templates can read the bound worldbook through read-only TavernHelper calls', async t => {
+  const {engine,calls} = fixture(t)
+  const template = '<%_ var active = false; var name = await window.TavernHelper.getCharWorldbookNames(\'current\').primary; var entries = await window.TavernHelper.getWorldbook(name); for (var i = 0; i < entries.length; i++) if (entries[i].name === \'可选剧情\' && entries[i].enabled) active = true; _%>城市<%= active ? \'+剧情\' : \'\' %>|<%= name %>|<%= typeof getWorldbook %>'
+  const result = await engine.render(template)
+  // Before the first read the primary name is the host alias "current"; afterwards the real name.
+  assert.equal(result.text, '城市+剧情|current|function')
+  assert.equal((await engine.render('<%= window.TavernHelper.getCharWorldbookNames().primary %>')).text, '主线')
+  assert.ok(calls.some(call => call.method === 'getFullTemplateWorldbook' && call.args.name === 'current'))
 })

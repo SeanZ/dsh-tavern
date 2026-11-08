@@ -24,10 +24,10 @@ function figurePng([r, g, b], width = 120, height = 200) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))])
 }
 
-// Stage panels open from the right sidebar's start page (其他); the full-screen reader can send the next input.
+// Stage panels open from the right sidebar's start page (舞台装置); the full-screen reader can send the next input.
 export async function openStagePanel(page, title) {
   await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).filter({ visible: true }).first().click()
-  await page.locator('.dsh-tavern-start section[aria-label="其他"] .dsh-tavern-start-card').filter({ hasText: new RegExp('^' + title + '$') }).filter({ visible: true }).first().click()
+  await page.locator('.dsh-tavern-start section[aria-label="舞台装置"] .dsh-tavern-start-card').filter({ hasText: new RegExp('^' + title + '$') }).filter({ visible: true }).first().click()
 }
 export async function castStageChecks({ page, step, output, report }) {
   await step('舞台：舞台素材里导入角色立绘包', async () => {
@@ -201,7 +201,7 @@ export async function castCardFileChecks({ page, step, report, savedChat }) {
 
 // 大肥鱼.dshcard (examples/dafeiyu-card): it carries no plugin; Tavern's stage draws it from its bound packs.
 // Import it, turn the stage on, open a game and enter the stage. Runs last: it opens a game of another card.
-const DEMO_CARD = fileURLToPath(new URL('../../examples/dafeiyu-card/大肥鱼.dshcard.png', import.meta.url))
+const DEMO_CARD = fileURLToPath(new URL('../../examples/dafeiyu-card/大肥鱼.dshcard', import.meta.url))
 
 export async function dshCardPlayChecks({ page, step, output, report }) {
   const cardFile = process.env.TAVERN_E2E_DSHCARD || (existsSync(DEMO_CARD) ? DEMO_CARD : '')

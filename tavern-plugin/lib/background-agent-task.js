@@ -1,4 +1,4 @@
-import { filterBackgroundTools } from './domain/tool-presentation-policy.js'
+import { createHostToolPolicy } from './host/tools.js'
 import { backgroundRequestTemperature } from './domain/background-request-temperature.js'
 import { withWorldbookFileInstructions } from './domain/worldbook-virtual-surface.js'
 import { createBackgroundProgress } from './domain/background-progress.js'
@@ -139,8 +139,11 @@ export function createBackgroundAgentTask(options) {
     return async function (childCtx) {
       if (setupAgent !== null) await setupAgent(childCtx)
       state.ctx = childCtx
-      // 0.2.1 由可变引用选择模型；alpha.2 只用此钩子显示切换提示，实际选择在任务开始时写入 Agent。
       state.modelSelection = { current: { ...state.input.selection }, assembled: undefined }
+      // 0.2.1 routes each request through this mutable selection. 0.2.2 ignores
+      // the second argument and only adds the switch notice: the Agent's own
+      // model/selection event decides the route (set at creation and on reuse
+      // in background-agent-sessions.js). Passing it keeps both host lines.
       installModelSelection(childCtx, state.modelSelection)
       childCtx.on('agent/assistant-stream', ({frame}) => state.progress?.frame(frame))
       childCtx.on('agent/pre-step', async function ({ agent, turn, step }, next) {
@@ -191,31 +194,35 @@ export function createBackgroundAgentTask(options) {
       })
       childCtx.systemPrompt.suppressRuntimeContext()
       childCtx.tools.restrict({ allow: isolated ? [] : state.input.task === 'phone' ? [] : ['skill', 'read', 'worldbook_list', 'worldbook_grep', 'tavern_read_skill_reference', 'web_search', ...(childCtx.tools.get?.('web_fetch') ? ['web_fetch'] : [])] })
-      childCtx.on('system-prompt/assemble', async function (_assembly, _context, next) {
-        const assembly = await next()
-        if (Array.isArray(assembly.tools)) assembly.tools = filterBackgroundTools(assembly.tools, { ...state.input, toolNames: (state.input.tools || []).map(tool => tool.name) })
-        if (state.input.task === 'polish' || state.input.ownPrefix === true) {
-          const names = new Set((state.input.tools || []).map(tool => tool.name))
-          assembly.sections = (assembly.sections || []).filter(section => !section?.name?.startsWith('tool:') || names.has(section.name.slice(5)))
+      const hostTools = createHostToolPolicy(childCtx)
+      childCtx.on('system-prompt/assemble', async function (_assembly, context, next) {
+        return hostTools.assemble(await next(), context, async (assembly, tools) => {
+          if (tools) assembly.tools = tools
+          if (state.input.task === 'polish' || state.input.ownPrefix === true) {
+            const names = new Set((state.input.tools || []).map(tool => tool.name))
+            assembly.tools = (assembly.tools || []).filter(tool => names.has(tool.name))
+            assembly.sections = (assembly.sections || []).filter(section => !section?.name?.startsWith('tool:') || names.has(section.name.slice(5)))
+            markTavernSectionsLiteral(assembly)
+            return assembly
+          }
+          if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
           markTavernSectionsLiteral(assembly)
+          if (state.input.task === 'phone') {
+            assembly.sections = (assembly.sections || []).filter(function (section) {
+              return !section || typeof section.name !== 'string' || !section.name.startsWith('tool:')
+            })
+            assembly.tools = []
+            return assembly
+          }
+          if (!state.input.worldbookSkillsEnabled) {
+            assembly.sections = (assembly.sections || []).filter(section => !['tool:read', 'tool:worldbook_list', 'tool:worldbook_grep'].includes(section?.name))
+            assembly.tools = (assembly.tools || []).filter(tool => !['read', 'worldbook_list', 'worldbook_grep'].includes(tool?.name))
+          }
+          if (state.input.webSearchEnabled === true) return assembly
+          assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })
+          assembly.tools = (assembly.tools || []).filter(function (tool) { return tool && !['web_search', 'web_fetch'].includes(tool.name) })
           return assembly
-        }
-        if (!isolated) prependSystemInstruction(assembly, options.systemAppend?.())
-        markTavernSectionsLiteral(assembly)
-        if (state.input.task === 'phone') {
-          assembly.sections = (assembly.sections || []).filter(function (section) {
-            return !section || typeof section.name !== 'string' || !section.name.startsWith('tool:')
-          })
-          assembly.tools = []
-          return assembly
-        }
-        if (!state.input.worldbookSkillsEnabled) {
-          assembly.sections = (assembly.sections || []).filter(section => !['tool:read', 'tool:worldbook_list', 'tool:worldbook_grep'].includes(section?.name))
-        }
-        if (state.input.webSearchEnabled === true) return assembly
-        assembly.sections = (assembly.sections || []).filter(function (section) { return section && !['tool:web_search', 'tool:web_fetch'].includes(section.name) })
-        assembly.tools = (assembly.tools || []).filter(function (tool) { return tool && !['web_search', 'web_fetch'].includes(tool.name) })
-        return assembly
+        })
       })
       state.refreshConfiguredTools = function () {
         if (isolated || state.stableToolDisposers) return
@@ -411,8 +418,6 @@ export function createBackgroundAgentTask(options) {
 
     try {
       input.signal?.throwIfAborted()
-      // alpha.2 恢复会话时优先使用已记录模型；在回退之后、首个 pre-step 之前应用本任务的完整选择。
-      agent.model?.select(input.selection)
       if (persistent && typeof input.onPersistentSessionReady === 'function') {
         // Persist the native session before publishing its identity, even if the first task fails.
         if (typeof options.flushSession === 'function') await options.flushSession(agent.session)
@@ -442,7 +447,7 @@ export function createBackgroundAgentTask(options) {
       const eventStart = sessionEvents(agent.session).length
       const scriptContext = projectCandidateScriptContext(agent.session, input)
       const snapshot = turnWorldbookSource && typeof turnWorldbookSource === 'object'
-        ? worldbookSnapshot(agent.session, turnWorldbook) : null
+        ? worldbookSnapshot(agent.session, [{ ref: 'background:worldbook', text: turnWorldbook }]) : null
       const systemUpdate = input.task === 'candidate' && typeof input.systemPromptText === 'string'
         ? cardSystemPromptSnapshot(agent.session, input.systemPromptText) : null
       // Tool definitions stay fixed for the cache; which ones may be called is stated each

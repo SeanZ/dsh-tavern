@@ -9,6 +9,7 @@ import { createThumbnailCache } from './thumbnails.js'
 import { PACK_LEASE_PATH } from './leases.js'
 import { PACK_LIMITS } from './validation.js'
 import { check, parseJson } from '../asset-packs/common.js'
+import { requestAuthorityOrigin } from '../shared/request-origin.js'
 
 export const PACK_CONTROL_PATH = '/api/dsh-asset-library/v2/control'
 export const PACK_UPLOAD_PATH = '/api/dsh-asset-library/v2/upload'
@@ -27,9 +28,10 @@ const fields = Object.freeze({
   savePackVoice:['figureId','packId','expectedRevision','voiceId','voiceSpec','confirmShared'], saveFigureVoiceBinding:['packId','figureId','expectedRevision','binding'], createAndAssignPackVoice:['packId','figureId','expectedRevision','voiceSpec'],
   savePackVoiceVariant:['figureId','packId','expectedRevision','voiceId','variantId','variant','confirmShared'],
   deletePackVoiceVariant:['figureId','packId','expectedRevision','voiceId','variantId','confirmShared'],
-  listVoiceTemplates:[], saveVoiceTemplate:['templateId','expectedRevision','packId','packRevision','voiceId','binding'],
+  listVoiceCatalogue:[], listVoiceTemplates:[], saveVoiceTemplate:['templateId','expectedRevision','packId','packRevision','voiceId','binding'],
   deleteVoiceTemplate:['templateId','expectedRevision'], assignVoiceTemplate:['templateId','templateRevision','packId','figureId','expectedRevision'],
   createPack:['name','description','expectedRevision'], patchPack:['packId','expectedRevision','patch','fileUpdates','force'], removePack:['packId','expectedRevision'],
+  putModMedia:['modId','packId','kind','slot','mime','bytes'], leaseModMedia:['modId','packId','path'],
   putBlob:['packId','expectedRevision','bytes','descriptor'], removeBlob:['packId','expectedRevision','hash'],
   putBundle:['packId','expectedRevision','bundleKey','descriptor','files'], removeBundle:['packId','expectedRevision','bundleKey'],
   copyFigure:['source','target'], copyItems:['sourcePackId','itemRefs','target'],
@@ -58,15 +60,14 @@ export function packRequestOrigin(request, expected, widget = false) {
   const host = request.headers.get('host'), origin = request.headers.get('origin'), site = request.headers.get('sec-fetch-site')
   // Only exact authorized widget resource routes accept opaque-frame subresources.
   if (widget && expected && host === new URL(expected).host && (!origin || origin === 'null') && ['script','style','image','font'].includes(request.headers.get('sec-fetch-dest'))) return expected
-  check(host && (!site || site === 'same-origin'), '$.origin', 'Same-origin request required', 'FORBIDDEN')
-  check(origin ? origin === 'http://' + host || origin === 'https://' + host : site === 'same-origin', '$.origin', 'Same-origin request required', 'FORBIDDEN')
+  // Never derive authority from dsh.internal: it is the page's Origin, or the retained Host for the desktop app.
+  const authority = requestAuthorityOrigin({host, origin, fetchSite:site})
+  check(authority, '$.origin', 'Same-origin request required', 'FORBIDDEN')
   if (expected) {
     check(new URL(expected).host === host && (!origin || origin === expected), '$.origin', 'Lease origin changed', 'FORBIDDEN')
     return expected
   }
-  // Issuance/control POSTs require Origin; never infer a public scheme from dsh.internal.
-  check(origin || ['GET','HEAD'].includes(request.method), '$.origin', 'Origin required', 'FORBIDDEN')
-  return origin
+  return authority
 }
 async function readBytes(request, maximum, reserve = () => {}, unreserve = () => {}) {
   const declared = request.headers.get('content-length')
@@ -91,6 +92,7 @@ async function readBytes(request, maximum, reserve = () => {}, unreserve = () =>
 
 /** Owns one v2 service and its exact authenticated routes. No v1 adapter or disk reader. */
 export function createAssetPackTransport({settings, ...options}) {
+  let modMedia
   const now = options.now || Date.now, limits = {...PACK_LIMITS, ...options.limits}
   const uploads = new Map(), downloads = new Map(), leases = new Map(), changes = [], outbox = new Set(), cleanup = new Set()
   const outboxBytes = () => [...outbox].reduce((sum,item) => sum + item.size,0)
@@ -189,6 +191,24 @@ export function createAssetPackTransport({settings, ...options}) {
       return lease
     } catch (error) { for (const stop of stops) stop(); core.releaseLease(lease.ticket); throw error }
   }
+  async function leaseModMedia(input) {
+    alive();sweep()
+    check(connection && modMedia,'$','Mod media unavailable','ASSET_UNAVAILABLE')
+    const carrier=connection,epoch=generation
+    await modMedia.read(input)
+    check(connection===carrier && epoch===generation,'$','Transport detached','ASSET_UNAVAILABLE')
+    const ticket=randomBytes(24).toString('base64url'),url=PACK_LEASE_PATH+ticket+'/media',expiresAt=now()+limits.previewTtlMs
+    // Do not pin a multi-MiB buffer for the lease lifetime; read under the current pack authority on demand.
+    const stop=carrier.fetch.register({path:url,methods:['GET','HEAD'],requestBody:'buffered',fetch:request=>guarded(request,async()=>{
+      check(leases.has(ticket),'$','Lease expired','ASSET_UNAVAILABLE')
+      const media=await modMedia.read(input)
+      check(leases.has(ticket),'$','Lease expired','ASSET_UNAVAILABLE')
+      return new Response(request.method==='HEAD'?null:media.bytes,{headers:{'Content-Type':media.mime,'Content-Length':String(media.bytes.length),'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}})
+    },input.origin)})
+    const lease={ticket,url,expiresAt,resources:[url]}
+    leases.set(ticket,{...lease,stops:[stop]})
+    return lease
+  }
   async function guarded(request, action, expected, widget = false) {
     try { alive(); sweep(); packRequestOrigin(request,expected,widget); return await action() }
     catch (error) { await request.body?.cancel().catch(() => {}); return errorResponse(error) }
@@ -231,7 +251,14 @@ export function createAssetPackTransport({settings, ...options}) {
         if (Object.hasOwn(args,'files')) args.files = fileMap(args.files,consumed,false)
         let result
         if(args.packId && !['exportPack'].includes(input.method))check(!await core.isPrivatePack({packId:args.packId}),'$.packId','Mod config storage is not an editable asset pack','UNKNOWN_FIELD')
-        if(input.method==='saveSettings')for(const packId of args.globalEnabledPackIds || [])check(!await core.isPrivatePack({packId}),'$.globalEnabledPackIds','Mod config packs have no lamp state','UNKNOWN_FIELD')
+        if(input.method==='saveSettings') {
+          check(settings, '$.settings', 'Native settings unavailable', 'SETTINGS_UNAVAILABLE')
+          const current = settings.read(), enabled = new Set(current.values.globalEnabledPackIds)
+          check(current.revision === args.expectedRevision, '$.expectedRevision', 'Pack settings changed', 'REVISION_CONFLICT')
+          // Existing lamps were checked on ingress; only additions need pack metadata.
+          // settings.save still performs its authoritative CAS after these async reads.
+          for(const packId of args.globalEnabledPackIds || [])if(!enabled.has(packId))check(!await core.isPrivatePack({packId}),'$.globalEnabledPackIds','Mod config packs have no lamp state','UNKNOWN_FIELD')
+        }
         // the browser lists summaries only; full documents are per pack.
         if (input.method === 'listPackSummaries') result=(await core.listPackSummaries()).filter(pack=>!pack.privateConfig)
         else if (input.method === 'capabilities') result = {apiVersion:core.apiVersion,capabilities:core.capabilities}
@@ -240,6 +267,8 @@ export function createAssetPackTransport({settings, ...options}) {
           result = input.method === 'settings' ? settings.read() : await settings.save(args)
         } else if (input.method === 'discardUpload') result = {released:drop(uploads,args.ticket)}
         else if (input.method === 'releaseLease') result = {released:release(args.ticket)}
+        else if (input.method === 'putModMedia') {check(modMedia,'$','Mod media unavailable','ASSET_UNAVAILABLE');result=await modMedia.put(args)}
+        else if (input.method === 'leaseModMedia') result=await leaseModMedia({...args,origin:packRequestOrigin(request)})
         else if (input.method === 'leaseMedia' || input.method === 'leaseBundle') result = await issue(input.method,{...args,scope:PRINCIPAL,origin:packRequestOrigin(request)})
         else result = await core[input.method](args)
         alive()
@@ -306,6 +335,8 @@ export function createAssetPackTransport({settings, ...options}) {
     for (const item of [...outbox]) removeArchive(item)
   }
   const service = Object.freeze({...core,
+    registerModMedia(owner) {check(!modMedia,'$','Mod media already registered');modMedia=owner;return ()=>{if(modMedia===owner)modMedia=null}},
+    putModMedia:input=>{check(modMedia,'$','Mod media unavailable','ASSET_UNAVAILABLE');return modMedia.put(input)},leaseModMedia,
     leaseMedia:input => issue('leaseMedia',input), leaseBundle:input => issue('leaseBundle',input), leaseWidget:input => issue('leaseWidget',input), releaseLease:release,
     async dispose() { if (!active) return; active = false; detach(); stopChanges(); stopSettings?.(); clearInterval(timer); await thumbnails.dispose(); await core.dispose(); await Promise.all(cleanup) }
   })

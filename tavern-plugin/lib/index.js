@@ -1,7 +1,9 @@
 import {installHttpStreamPatch} from './domain/http-stream-patch.js'
+import {selectSessionModel} from './domain/session-model-selection.js'
 import {createExtensionRequests} from './domain/extension-requests.js'
 import {createModelSlotRegistry} from './domain/model-slot-registry.js'
 import {createPresentationObservers} from './domain/presentation-observers.js'
+import {createSpeechRecognitionHost} from './speech-recognition-host.js'
 import { installPluginSettingsMigration } from './settings-config.js'
 export { Config } from './settings-config.js'
 import { CORE_MODEL_MANIFESTS, modelSlotRows, resolveModelSlotOffered } from './domain/model-slots.js'
@@ -12,8 +14,8 @@ import { appendWorldbookSkillChanges } from './domain/worldbook-skill-changes.js
 // Must stay first: it has to run before anything loads jsdom.
 import './domain/host-punycode-request.js'
 import { createSessionViewProjection, sessionViewMessageFields } from './domain/session-view-projection.js'
+import { restoreGameModeForeground } from './domain/game-mode-foreground.js'
 import { createNetworkToolPolicy, installNetworkToolPolicy } from './domain/network-tools.js'
-import { filterBackgroundTools, installToolPresentationPolicy } from './domain/tool-presentation-policy.js'
 import { clearRetiredSearchProvider } from './domain/retired-search-provider.js'
 import { createConversationBackgroundSettings } from './domain/conversation-background-settings.js'
 import { createChatWrites } from './domain/chat-writes.js'
@@ -25,12 +27,15 @@ import { createCardEditor, CARD_PROJECTION_REVISIONS, cardProjectionRevisionOf, 
 import { ensureSessionVariableDirectory } from './domain/session-variable-directory.js'
 import {createTavernClientAssets} from './domain/tavern-client-assets.js'
 import { registerTavernHttpRoutes } from './http/routes.js'
+import { verifyPublicHostname } from './http/public-hostname.js'
 import { installChatAnswerBootPatch } from './domain/chat-answer-boot-patch.js'
+import { installGenerationStreamModeBootPatch } from './domain/generation-stream-mode-boot-patch.js'
+import { createGenerationStreamModeStore, installGenerationStreamModeHook } from './domain/generation-stream-mode.js'
 import { registerRequestHooks } from './hooks/request.js'
 import { createWholeReadGuard, scopeTurnHooks } from './domain/whole-read-guard.js'
 import { createChatReads } from './domain/chat-reads.js'
 import { diffJson } from './domain/json-mutation.js'
-import { syncUserPlugins, watchUserPlugins, userPluginPaths } from './domain/user-plugins.js'
+import { loaderReload, readPatchedUserPlugins, syncUserPlugins, watchUserPlugins, userPluginPaths } from './domain/user-plugins.js'
 import { createUserPluginInstaller } from './domain/user-plugin-install.js'
 import { createPluginDataStore } from './domain/plugin-data-store.js'
 import { createPluginAssets } from './domain/plugin-assets.js'
@@ -67,6 +72,7 @@ import { createTaskStateReader, taskStateFields } from './domain/task-state-read
 import { installHostProjectionReplay } from './domain/host-projection-replay.js'
 import { installHostTurnRailFilter } from './domain/host-turn-rail.js'
 import { createBoundedHistory, readRecentWindow, readRowsAt, storyContextMessageFields } from './domain/bounded-history.js'
+import { createStoryTranscriptReader } from './domain/story-transcript-reader.js'
 import { createHelperHistoryAccess } from './domain/helper-history-access.js'
 import { isScopedMessages } from './domain/scoped-messages.js'
 import {registerVariableReadTool} from './domain/read-variables.js'
@@ -108,12 +114,14 @@ import { createServerTemplateRuntime } from './domain/server-template-runtime.js
 import { createForegroundStyleReferenceTool, foregroundStyleReferencePrompt, rememberStyleReference } from './domain/style-reference.js'
 import { adoptConversationFeatures, adoptConversationBackground } from './domain/conversation-background.js'
 import { clearLegacyTavernDefault } from './domain/legacy-agent-default.js'
-import { conversationStateAtTurn, conversationForkBoundary } from './domain/conversation-fork-point.js'
+import { conversationStateAtMessage, conversationStateAtTurn, conversationForkBoundary } from './domain/conversation-fork-point.js'
+import { legacyMessageUid } from './domain/message-uid.js'
 import { createCardResponseTest } from './domain/card-response-test.js'
 import { createGameplayApi } from './gameplay-api.js'
 import { cardOpeningChoices } from './domain/card-openings.js'
 import { marked } from 'marked'
-import { resolveAgentCompaction } from './agent-compaction.js'
+import { resolveAgentCompaction, compactNativePlayIfNeeded } from './agent-compaction.js'
+import { warnCompactionPressureOnce } from './domain/compaction-pressure-guard.js'
 import { compactForegroundIfNeeded } from './domain/foreground-compaction.js'
 import { compactBackgroundIfNeeded, measureBackgroundBudget } from './domain/background-compaction.js'
 import { createAutoCompaction, installCompactionPolicy } from './domain/auto-compaction.js'
@@ -127,6 +135,7 @@ import { generateHelper, generateHelperRaw, defaultOrderedRawConfig } from './do
 import { validateHelperGenerateConfig, resolveHelperGenerationPreset } from './domain/helper-generation-prompts.js'
 import { createHelperGenerationTasks } from './domain/helper-generation-tasks.js'
 import { createBodyEditor } from './domain/body-editor.js'
+import { createMessageDeletion } from './domain/message-deletion.js'
 import { appendHelperUserSessionContext } from './domain/helper-user-session-context.js'
 import { userMessageForTurn, requestIdForTurn, requestIdForMessages } from './domain/session-turn-input.js'
 import { createStoryReconciliation } from './domain/story-reconciliation.js'
@@ -137,6 +146,7 @@ import { createChatHistoryImportService } from './domain/chat-history-import-ser
 import { appendSessionEvent, sessionEvents } from './domain/session-events.js'
 import { setAgentResolver } from './domain/agent-lookup.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { withHostSession } from './host/sessions.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createBackgroundAgentRunner, executeBackgroundCompaction } from './background-agent-runner.js'
@@ -182,7 +192,8 @@ import { createFileResourceStore, normalizeResourcePath } from './domain/file-re
 import { createMobileCardImport } from './domain/mobile-card-import.js'
 import { createForegroundHandoff } from './domain/foreground-handoff.js'
 import { createForegroundFrameBuilder, foregroundRequestContext } from './domain/agent-input-frame.js'
-import { retireForegroundFrames } from './domain/foreground-frame-retirement.js'
+import { wholeTurnCompactionRange } from './domain/context-turns.js'
+import { compactWholeTurnsNow } from './domain/whole-turn-maintenance.js'
 import { compactionFailureMessage } from './domain/compaction-failure.js'
 import { createForegroundFrameSessionAdapter } from './domain/foreground-frame-session-adapter.js'
 import { HISTORY_RECALL_TOOL, createHistoryRecall, renderHistoryRecall } from './domain/history-recall.js'
@@ -212,7 +223,8 @@ import { applyPolishEdits } from './domain/polish-review.js'
 import { createCardAutoReload } from './domain/card-auto-reload.js'
 import { createRuntimeLogBuffer, runtimeHealthReport } from './domain/runtime-health.js'
 import { createCastAssets } from './domain/cast-assets.js'
-import { createSpeech } from './domain/speech.js'
+import { createLineSpeech, createSpeechProviderBridge } from './domain/speech.js'
+import { speechAudioToWav } from './speech-wav.js'
 import { deploymentActivity } from './domain/deployment-activity.js'
 import { buildCharx, cardImport, cardImportFromCard, pngCardTextChunk, pngWithTextChunks } from './domain/card-assets.js'
 import { createAssetPacks } from './domain/asset-packs.js'
@@ -233,8 +245,10 @@ import { createPresetLibrary } from './domain/preset-library.js'
 import { createForegroundOrchestrationStrategies } from './domain/foreground-orchestration-strategies.js'
 import { clearFailedTurnSurface, rollbackAvailability, reshadowRolledBackRounds, interruptedSurfaceTurns } from './domain/rollback-surface.js'
 import { replyBody } from './domain/round-body.js'
+import { paragraphSpeech } from './domain/paragraph-speech.js'
 import { createDisplayRuntimeCapture } from './domain/display-runtime-capture.js'
-import { createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
+import { createPluginBodyGeneration } from './domain/plugin-body-generation.js'
+import { STORY_GENERATE_TOOL_NAME, createStorySubmissionTool, foldStorySubmission, STORY_SUBMIT_TOOL_NAME } from './domain/story-tool-submission.js'
 import { readHistoryLayoutFile } from './domain/history-tool-call.js'
 import { createTavernRetryLimiter } from './domain/tavern-retry-limiter.js'
 import { lastTavernHelperVariables, HELPER_MESSAGE_COLD_WINDOW } from './domain/tavern-helper-context.js'
@@ -253,15 +267,20 @@ import { createStageChatCache } from './domain/stage-chat-cache.js'
 import { createStageReads, stageReadScope } from './domain/stage-read-projection.js'
 import {createOptionalStage} from './optional-stage.js'
 import {createStageSwitch} from './stage-switch.js'
-import {cardAssetExtensionPointer} from './domain/card-asset-bindings.js'
+import {cardAssetExtensionPointer, readCardAssetExtension} from './domain/card-asset-bindings.js'
+import {effectiveAutoChoices, activeStageSkin, cardStageVoicing} from './domain/card-stage-settings.js'
+import {ENGINE_SECTION} from './domain/asset-engine-settings.js'
+import {settingsSectionProvider} from './native-settings.js'
 import { createTavernScriptHostAdapter } from './domain/tavern-script-host-adapter.js'
 import { createTavernRemoteAssetPinStore } from './domain/tavern-remote-assets.js'
 import { OFFICIAL_MVU_VERSION, inspectOfficialMvuAsset } from './domain/official-mvu-assets.js'
 import { createTavernStaticResourceCache } from './domain/tavern-static-resource-cache.js'
 import { SILLYTAVERN_CSS_COMPAT_URLS } from './domain/sillytavern-css-compatibility.js'
 import { createRoundHistory } from './domain/round-history.js'
+import { buildBodyRegenerationMaterials } from './domain/body-regeneration-materials.js'
 import { createResourceWorkspaceProjection } from './domain/resource-workspace-projection.js'
 import { projectAgentContent, projectAgentMessageText, projectRuntimeReply } from './domain/runtime-content-projection.js'
+import { projectProcessedReply } from './domain/reply-presentation.js'
 import { plainReplyProse } from './domain/reply-prose.js'
 import { createScriptContinuity } from './domain/script-continuity.js'
 import { appendWritingSkillState } from './domain/skill-visibility.js'
@@ -299,6 +318,7 @@ import { createChatPersistence } from './domain/chat-persistence.js'
 import { createChatJournalStore } from './domain/chat-journal-store.js'
 import { createResourceGraph } from './domain/resource-graph.js'
 import { normalizeBackgroundTasks, applyTavernSettingsPatch, presentTavernSettings, resolveSystemPrompt } from './domain/tavern-settings.js'
+import { registerModelSamplingHook } from './hooks/model-sampling.js'
 import { createSettingsTransfer } from './domain/settings-transfer.js'
 import { createSystemPromptDocuments } from './domain/system-prompt-documents.js'
 // Runtime reads go through runtimePrompt() so panel overrides apply; the raw
@@ -314,10 +334,13 @@ import { createResourceHandlers } from './rpc/resources.js'
 import { createRegexHandlers } from './rpc/regex.js'
 import { createMediaHandlers } from './rpc/media.js'
 import { createSettingsHandlers } from './rpc/settings.js'
+import { createGenerationStreamModeHandlers } from './rpc/generation-stream-mode.js'
 import { createPluginHandlers } from './rpc/plugins.js'
 import { createConversationHandlers } from './rpc/conversations.js'
 import { createPlayHandlers } from './rpc/play.js'
 import { createTransferHandlers } from './rpc/transfer.js'
+import { createImageCharacterHandlers } from './rpc/image-characters.js'
+import { appearanceFromImageCharacter, findFigureImageCharacter } from './domain/image-character-appearance.js'
 import { createTransferExportStore } from './domain/transfer-store.js'
 // dsh-tavern 宿主插件（profile 组合行）
 // RPC：同源 HTTP 路由 /api/dsh-tavern/<method>（客户端 fetch 调用）
@@ -370,6 +393,7 @@ export async function apply(ctx) {
   }))
   await clearLegacyTavernDefault(ctx.get('settings'))
   const llm = ctx.get('llm')
+  registerModelSamplingHook(ctx)
   const agentRegistry = ctx.get('agents')
   const sessionStore = ctx.get('sessions')
   // New games are named after their card until the first turn (domain/game-titles.js).
@@ -430,11 +454,17 @@ export async function apply(ctx) {
   const sourceRoot = fileURLToPath(new URL('../../', import.meta.url))
   const dataRoot = resolveTavernDataRoot()
   // Folders in <data>/plugins become profile patch entries, so both plugin halves load without editing Tavern.
+  // The entries DSH started with: a later sync that moves one (managed mods republished below) restarts it from its new
+  // folder through the loader, or the old release's code would run against the new release's files until a restart.
+  const loadedUserPlugins = await readPatchedUserPlugins({ dataRoot })
   try { await syncUserPlugins({ dataRoot }) } catch (error) { console.warn('dsh-tavern: 同步用户插件失败', error?.message || error) }
-  ctx.effect(() => watchUserPlugins({ dataRoot }))
+  const reloadUserPlugin = loaderReload(ctx.get('loader'), ctx.fiber)
+  ctx.effect(() => watchUserPlugins({ dataRoot, loaded: loadedUserPlugins, reload: reloadUserPlugin }))
   const cardMemory = createCardMemory({ dataRoot })
   const stablePrefixStorage = createSessionStablePrefixStorage(dataRoot + '/session-prefixes')
   const profileData = createProfileDataStore({ dataRoot })
+  const generationStreamModes = createGenerationStreamModeStore(profileData)
+  ctx.effect(() => installGenerationStreamModeHook(ctx, () => generationStreamModes.get()))
   const frameStorage = createFrameStorage(profileData)
   const transferExports = createTransferExportStore({ root: dataRoot + '/tmp-exports' })
   const displayRuntimeStore = createDisplayRuntimeStore({ store: profileData })
@@ -503,7 +533,7 @@ export async function apply(ctx) {
     readJson: async function (path) { return await profileData.readJson(path) },
     updateJson: async function (path, updater) { return await profileData.updateJson(path, updater) }
   })
-  const tavernStaticResources = createTavernStaticResourceCache({ rootDir: dataRoot + '/cache/static-assets' })
+  const tavernStaticResources = createTavernStaticResourceCache({ rootDir: dataRoot + '/cache/static-assets', verifyHostname: verifyPublicHostname })
   void tavernStaticResources.warm(SILLYTAVERN_CSS_COMPAT_URLS).then(function (results) {
     const failures = results.filter(function (result) { return result.status === 'rejected' })
     if (failures.length > 0) console.warn('dsh-tavern: 部分静态运行库暂未缓存，将在使用时重试:', failures.map(function (result) { return str(result.reason && result.reason.message || result.reason) }).join('；'))
@@ -542,9 +572,12 @@ export async function apply(ctx) {
   ctx.inject(['settings'], async sctx => { await clearRetiredSearchProvider(sctx.settings) })
   const promptDocuments = createSystemPromptDocuments()
   const presentSystemPrompts = promptDocuments.present
+  const nativeProfile = ctx.get('desktopProfiles')?.current
+  const desktopHost = process.versions.electron && typeof process.send === 'function'
   const applicationUpdater = createApplicationUpdater({
     dataRoot,
     sourceRoot,
+    runtimeHost: nativeProfile?.dir && nativeProfile.dir === ctx.get('profileContext')?.dir ? 'next' : desktopHost ? 'desktop' : undefined,
     hostDependencyAnchor: fileURLToPath(import.meta.url),
   })
   const modelRequestLog = createModelRequestLog({
@@ -761,6 +794,12 @@ export async function apply(ctx) {
     preset: 'card-task-preset',
     'debug-play': 'card-task-debug-play'
   })
+  // A card's stage extension (null without stage settings): the card layer of its narrator and of its 自动生成候选项
+  // switch (effectiveAutoChoices).
+  async function cardStageExtension(cardPath) {
+    const raw = (await readCardWorkspace(cardPath))?.raw
+    return raw && hasCardAssetBindings(raw) ? readCardAssetExtension(raw) : null
+  }
   async function readCardWorkspace(cardPath) {
     if (str(cardPath) === '') return undefined
     const normalized = normalizeResourcePath(cardPath, 'card')
@@ -817,9 +856,11 @@ export async function apply(ctx) {
     if (workspace === undefined) return undefined
     return cardPreparation.present({ card: workspace, as: 'card-extensions' })
   }
-  async function readCardExtensions(cardPath, chat, settings) {
-    const extensions = await readCardExtensionSources(cardPath, chat)
+  async function readCardExtensions(cardPath, chat, includeMuted = false, settings) {
+    let extensions = await readCardExtensionSources(cardPath, chat)
     if (extensions === undefined) return undefined
+    // shared by views, opening previews and script-work eligibility; no snapshot writes.
+    if (!includeMuted) extensions = { ...extensions, helperScripts: await cardScripts.filter(extensions.helperScripts, cardPath) }
     return withGlobalRegexScripts(extensions, settings ?? await tavernExtensionSettings.read(), chat && chat.regexOverrides)
   }
   function presetRegexScripts(chat) {
@@ -1043,6 +1084,7 @@ export async function apply(ctx) {
     }, { source: 'body-edit.stale-clear' })
   }
   conversationRegistry = createTavernConversationRegistry({
+    trace: requestPerformance,
     store: {
       readAutomationOwner: async sessionId => readJson('automation/' + sessionId + '.json'),
       readLinks: async function () { return await readJson('sessions.json') },
@@ -1114,7 +1156,7 @@ export async function apply(ctx) {
   const readRoundOps = (sessionId, turn, count) => readStageChat.ops(sessionId,{turn:Number(turn) || 0,chainOnly:true},count)
   // Header plus floor count; null keeps the complete reader for legacy stories.
   async function openingStateForSession(sessionId) {
-    const selected = await chatSliceForSession(sessionId, [], [...taskStateFields, 'preparedWorldBook'])
+    const selected = await chatSliceForSession(sessionId, [], [...taskStateFields, 'preparedWorldBook', 'mvu'])
     if (!selected?.denseMessages || Object.values(selected.chat.timeline?.operations || {}).some(op => op?.kind === 'body' && op.status === 'foreground-completed')) return null
     const first = selected.messageCount === 1 ? (await chatSliceForSession(sessionId, [0], ['_storageRevision']))?.chat.messages[0] : undefined
     return { chat: selected.chat, messageCount: selected.messageCount, firstGreeting: first?.greeting === true }
@@ -1163,8 +1205,12 @@ export async function apply(ctx) {
   const userPluginInstaller = createUserPluginInstaller({ dataRoot, sync: () => syncUserPlugins({ dataRoot }) })
   const cardPlugins = createCardPlugins({ dataRoot, pluginsDir: userPluginPaths(dataRoot).plugins, keyOf: castAssets.keyOf })
   void uploads.sweep().catch(() => {})
-  // Voiced dialogue: channels are Tavern's and the plugins' (pluginApi is created later; read lazily).
-  const speech = createSpeech({ store: profileData, credentials: () => ctx.get('credentials'), plugins: () => pluginApi.speechProviders() })
+  // 台词朗读 goes through the voice service; plugin speech providers join it as its providers (pluginApi is created later; read lazily).
+  const voiceService = () => ctx.get('tts')
+  const speech = createLineSpeech({ getTts: voiceService, getLibrary: () => ctx.get('assetLibrary') })
+  const speechBridge = createSpeechProviderBridge({ providers: () => pluginApi.speechProviders(), toWav: speechAudioToWav, warn: error => ctx.logger.warn('dsh-tavern: 插件配音渠道无法接入语音服务 %s', error?.message || error) })
+  ctx.inject(['tts'], child => { const detach = speechBridge.attach(voiceService()); child.effect(() => detach) })
+  ctx.effect(() => () => speech.dispose())
   resourceGraph = createResourceGraph({
     castAssets,
     cardPlugins,
@@ -1192,9 +1238,9 @@ export async function apply(ctx) {
     }
   })
   // Card files in and out: imports (JSON, PNG, CHARX, DSH card, plugin formats) and exports.
-  const { importCard, importCardArchiveFile, importPluginCardFile, presentCardText, exportCardPng, exportCardFile } = createCardFiles({
+  const { replaceCard, importCard, importCardArchiveFile, importPluginCardFile, presentCardText, exportCardPng, exportCardFile } = createCardFiles({
     cardPreparation, fileResources, castAssets, assetPacks, cardPlugins, cardSummaries, presetLibrary, importPreset,
-    readCardWorkspace, worldBooks, pluginApi: () => pluginApi, assetLibrary: () => ctx.get('assetLibrary')
+    readCardWorkspace, worldBooks, pluginApi: () => pluginApi, assetLibrary: () => ctx.get('assetLibrary'), withCardBackup: (...args) => ctx.get('assetLibraryCardBackup')(...args), exportRoot: path.join(dataRoot, 'exports')
   })
   async function listCards() {
     const cardPaths = await fileResources.list('card')
@@ -1316,7 +1362,7 @@ export async function apply(ctx) {
       for (const opening of previews.openings) if (hasHelperScripts || hasOpeningScript(opening)) {
         opening.openingPreview = { swipes, openingIds, selectedIndex: openingIds.indexOf(opening.id),
           messageHtml: opening.projection.parts.map(part => part.kind === 'markdown' ? marked.parse(str(part.text), { gfm: true }) : str(part.content)).join('\n'),
-          preparationId: preparation.id, characterName: card.name, ...openingPreviewPayload(preparation, previewTransport) }
+          preparationId: preparation.id, characterName: card.name, playerName: str(userName).trim() || '你', ...openingPreviewPayload(preparation, previewTransport) }
       }
     }
     success = true
@@ -1413,31 +1459,36 @@ export async function apply(ctx) {
     const next = await castAssets.setPlugins(cardPath, plugins.map(plugin => ({ ...plugin, enabled: enabled === true })))
     return next.plugins
   }
-  async function deleteCard(cardPath) {
-    const plugins = (await castAssets.read(normalizeResourcePath(cardPath, 'card')).catch(() => null))?.plugins || []
-    const result = await cardDeletion.remove(cardPath)
-    if (result.deleted && plugins.length) await cardPlugins.remove({ cardKey: castAssets.keyOf(normalizeResourcePath(cardPath, 'card')), cardPath: normalizeResourcePath(cardPath, 'card'), plugins }).catch(error => console.warn('dsh-tavern: 删除卡内插件失败', error?.message || error))
-    if (result.deleted) await cardOrganization.movePath(normalizeResourcePath(cardPath, 'card'), null)
-    return result
-  }
-  // 人物卡库「复制」：与卡片工作台的 tavern_copy_card 同一份复制（工作数据与封面，换新的人物卡身份，
-  // 否则 mod 设置会跟错卡）。默认名「原名 副本」，重名时依次编号；副本放进原卡所在的分组。
+  // 人物卡库「复制」/「另存副本」: a new file with a new meta.id (or mod settings would follow the wrong card); the stage
+  // settings and pack bindings live in the card JSON (extensions.dsh_tavern) and come along. Without a name the copy
+  // keeps the card's name and is numbered 「原名 (n)」. The world book binding is keyed by card path, so the copy gets the
+  // same books (its own embedded book instead of the source's); it goes into the source's group. Chats, CG unlocks
+  // and the bound script stay with the source card.
   async function duplicateCard(cardPath, name) {
     const source = normalizeResourcePath(cardPath, 'card')
-    const workspace = await fileResources.readCard(source)
-    if (!workspace) throw new Error('人物卡不存在: ' + source)
     const chosen = str(name).trim()
-    const base = chosen || (cardPreparation.isWorkspace(workspace) ? cardPreparation.project(workspace).name : path.basename(source, '.json')) + ' 副本'
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const copied = await fileResources.copyCard(source, attempt === 1 ? base : base + ' ' + attempt)
-        const group = (await cardOrganization.read()).cards[source]?.group
-        if (group) await cardOrganization.update({ action: 'cards', paths: [copied.path], group }, [copied.path])
-        return { path: copied.path, sourcePath: source, imageCopied: copied.imageCopied }
-      } catch (error) {
-        if (chosen || attempt >= 50 || !str(error?.message).startsWith('副本名称已存在')) throw error
-      }
+    const copy = chosen ? await fileResources.copyCard(source, chosen) : await fileResources.copyCard(source, source.split('/').pop(), { keepName: true, numbered: true })
+    const binding = await fileResources.worldBookBindingForCard(source)
+    const own = item => item.cardPath === source ? copy.path : item.cardPath
+    if (binding.kind === 'multiple') await fileResources.bindWorldBooks(copy.path, binding.sources.filter(item => item.available)
+      .map(item => item.kind === 'embedded' ? { kind: 'embedded', cardPath: own(item) } : { kind: 'standalone', path: item.path }))
+    else if (binding.kind === 'standalone' && binding.available) await fileResources.bindWorldBook(copy.path, binding.path)
+    else if (binding.kind === 'embedded' && binding.available) await fileResources.bindWorldBook(copy.path, { kind: 'embedded', cardPath: own(binding) })
+    else if (binding.kind === 'none') await fileResources.unbindWorldBook(copy.path)
+    const group = (await cardOrganization.read()).cards[source]?.group
+    if (group) await cardOrganization.update({ action: 'cards', paths: [copy.path], group }, [copy.path])
+    return { path: copy.path, sourcePath: source, imageCopied: copy.imageCopied }
+  }
+  async function deleteCard(cardPath) {
+    const normalized = normalizeResourcePath(cardPath, 'card')
+    const cardId = await cardStorage.resolve(normalized)
+    const plugins = (await castAssets.read(normalized)).plugins || []
+    const result = await cardStorage.withCardLock(cardId,() => cardDeletion.remove(cardPath))
+    if (result.deleted) {
+      if (plugins.length) await cardPlugins.remove({ cardKey: castAssets.keyOf(normalized), cardPath: normalized, plugins })
+      await cardOrganization.movePath(normalized, null)
     }
+    return result
   }
   const sessionInventory = createSessionInventory({
     persistence: ctx.get('sessionPersistence'), sessions: sessionStore, agents: agentRegistry,
@@ -1564,7 +1615,7 @@ export async function apply(ctx) {
     return { filename: exported.filename, text: exported.text }
   }
   const gameSaveSnapshot = createGameSaveSnapshot({
-    readChat,
+    readChat, readWorldSnapshot: chatPersistence.readWorldSnapshot,
     assertIdle: chat => assertConversationForkable(chat, { agentRunning: agentRegistry.get(chat.sessionId)?.phase?.kind === 'running' }),
     readSession: async sessionId => {
       const live = sessionStore.get(sessionId)
@@ -1953,6 +2004,7 @@ export async function apply(ctx) {
     tavernExtensionSettings,
     readCardExtensions: (cardPath, chat, settings) => readCardExtensions(cardPath, chat, false, settings),
     readLiveCardStage, stageReadScope, readStageChat,
+    readCardStageMode: cardPath => stageRuntime.assets.cardStageMode(cardPath),
     tavernRemoteAssets,
     liveCardUpdate,
     activityOf: chat => backgroundTasks.activity(chat),
@@ -1989,6 +2041,14 @@ export async function apply(ctx) {
       || window.chat.messages.some(message=>message.role==='assistant' && !Number.isSafeInteger(message.turn))) return null
     return window
   }
+  const readStoryTranscriptWindow = createStoryTranscriptReader({
+    readSessionMap,
+    readWindow: chatPersistence.readWindow,
+    readRecentSummaries: chatPersistence.readRecentSummaries,
+    readChat,
+    messageFields: sessionViewMessageFields,
+    limit: HELPER_MESSAGE_COLD_WINDOW
+  })
   // Results of story operations: the same bounded window the browser keeps in
   // sync, never a complete-history view. Short and old saves keep view().
   async function presentStory(chat) {
@@ -2010,13 +2070,16 @@ export async function apply(ctx) {
       const chatId = (await readSessionMap())[sessionId]
       return chatId ? chatPersistence.readSessionState(chatId) : undefined
     },
+    readStoryWindow: readStoryTranscriptWindow,
     resourceVersion: async chat => {
       if (!chat.cardPath || chat.mode === 'card') return ''
       const binding = await fileResources.worldBookBindingForCard(chat.cardPath)
       const paths = new Set([chat.cardPath])
       for (const source of binding.sources || [binding]) if (source.path || source.cardPath) paths.add(source.path || source.cardPath)
       const versions = await Promise.all([...paths].map(path => profileData.version('resources/' + path)))
-      return JSON.stringify([binding, versions, await profileData.version('tavern-extension-settings.json'), await profileData.version('prompt-template-variables.json')])
+      // machine-local mute changes invalidate the cached helper-script view.
+      // The stage runtime state too: view.stage (readCardStageMode) has no stage until the runtime is there.
+      return JSON.stringify([binding, versions, await profileData.version('tavern-extension-settings.json'), await profileData.version('prompt-template-variables.json'), await cardScripts.version(chat.cardPath), stageRuntime.status()])
     },
     readChanges: chatPersistence.readChangedIndices,
     readViewDelta: chatPersistence.readViewDelta,
@@ -2068,7 +2131,9 @@ export async function apply(ctx) {
   const conversationInitialization = createConversationInitialization({
     cards: { read: readCard, readChat: readChatCard, script: readScript, extensions: readCardExtensions,
       startDefaults: async cardPath => (await castAssets.read(normalizeResourcePath(cardPath, 'card'))).startDefaults || null },
-    chats: { resolve: chatForSession, publish: conversationRegistry.publish, write: writeChat },
+    chats: { resolve: chatForSession, publish: conversationRegistry.publish, write: writeChat,
+      writeHeader: chat => updateChatHeader(chat.id, ['nativeOpeningAppended', 'updatedAt', '_storageRevision'],
+        current => ({ ...current, nativeOpeningAppended: true }), { source: 'opening.native-append' }) },
     trace: requestPerformance,
     timeline: storyTimeline,
     snapshots: playCardSnapshots,
@@ -2085,9 +2150,10 @@ export async function apply(ctx) {
       selection: modelSelection,
       async selectModel(target, selection) {
         const controller = ctx.get('sessionController')
-        if (!target.agent || typeof controller?.agents?.selectForNextRequest !== 'function') throw new Error('无法设置新游戏默认前台模型')
+        if (!target.agent) throw new Error('无法设置新游戏默认前台模型')
         const resolved = await llm.resolveCallConfig(selection)
-        controller.agents.selectForNextRequest(target.agent, { provider: resolved.provider, model: resolved.model, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) })
+        selectSessionModel({ agent: target.agent, controller, unsupported: '无法设置新游戏默认前台模型',
+          selection: { provider: resolved.provider, model: resolved.model, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) } })
         await sessionStore.flush(target.session)
       }
     },
@@ -2224,31 +2290,48 @@ export async function apply(ctx) {
     await updateChat(chat.id, current => { current.messages = [...(current.messages || []), ...appended.messages]; return current }, { source: 'test.append-rounds' })
     return { appended: rounds.length, lastTurn: appended.lastTurn }
   }
-  async function prepareConversationFork(sourceChatId, sourceSessionId, requestedTurn) {
+  async function prepareConversationFork(sourceChatId, sourceSessionId, requestedTurn, requestedMessageIndex, requestedRevision, requestedMessageUid) {
     const source = str(sourceChatId) === '' ? await chatForSession(str(sourceSessionId)) : await readChat(str(sourceChatId))
     if (!source) throw new Error('找不到要分叉的源对话')
     assertConversationForkable(source, { agentRunning: agentRegistry.get(source.sessionId)?.phase?.kind === 'running' })
+    if (requestedMessageIndex !== undefined && requestedMessageIndex !== null) {
+      if (!Number.isSafeInteger(requestedMessageIndex) || requestedMessageIndex < 0) throw new Error('分叉消息位置无效')
+      const messageUid = requestedMessageUid === undefined || requestedMessageUid === null ? '' : str(requestedMessageUid)
+      if (requestedMessageUid !== undefined && requestedMessageUid !== null && messageUid === '') throw new Error('分叉消息身份无效')
+      let requestedIndex = requestedMessageIndex
+      if (messageUid) {
+        const matches = []
+        for (let index = 0; index < (source.messages || []).length; index++) {
+          if (legacyMessageUid(source.messages[index], index) === messageUid) matches.push(index)
+        }
+        if (matches.length !== 1) throw new Error('分叉消息已经变化，请重新选择')
+        requestedIndex = matches[0]
+      } else if (requestedRevision !== source._storageRevision) throw new Error('剧情已变化，请重新选择分叉消息')
+      const { state, turn, messageIndex } = await conversationStateAtMessage(source, requestedIndex, readChatRevision)
+      // A story fork starts a blank native Session. The committed Chat prefix is
+      // bound first; native repair then projects that prefix into model context.
+      return { source, state, turn, messageIndex, atSeq: null, storyDirect: true, ...(messageUid ? { messageUid } : {}) }
+    }
     const { state, turn } = await conversationStateAtTurn(source, requestedTurn, readChatRevision)
-    let handle
-    let session = sessionStore.get(source.sessionId) || agentRegistry.get(source.sessionId)?.session
-    if (!session) { handle = await agentRegistry.resume({ resumeSessionId: source.sessionId }); session = handle.agent.session }
-    try {
+    return withHostSession({ sessions: sessionStore, agents: agentRegistry }, source.sessionId, session => {
       const references = upgradeReferences(sessionEvents(session))
       const mapped = structuredClone(state)
       for (const message of mapped.messages || []) {
         if (message.nativeAnchor) message.nativeAnchor = upgradedAnchor(message.nativeAnchor, references)
         if (message.bodyEdit) message.bodyEdit = { ...message.bodyEdit, seq: references.sequence(message.bodyEdit.seq, message.bodyEdit.formatVersion), formatVersion: 4 }
       }
-      return { source, state: mapped, turn, atSeq: conversationForkBoundary(session, state, turn) }
-    } finally { if (handle) await handle.dispose() }
+      return { source, state: mapped, turn, atSeq: conversationForkBoundary(session, state, turn), storyDirect: false }
+    })
   }
   // Plugin data and media are bound to text versions, whose keys hash the game id:
   // map the fork's visible turns to the new game's keys. A failure never undoes the fork.
-  async function forkPluginState(source, state, fork, lastTurn) {
+  async function forkPluginState(source, state, fork, lastTurn, includedTurns) {
     try {
       const keyMap = new Map()
       for (const turn of await pluginApi.forkTurns(source.id)) {
-        if (turn > lastTurn) continue
+        // The selected message prefix, not a numeric upper bound, defines the
+        // branch. Legacy saves may contain missing, duplicate or reordered turns.
+        if (!includedTurns.has(Number(turn))) continue
         try { keyMap.set(turn + '\u0000' + computeSceneTarget({ ...state, id: source.id }, turn).key, computeSceneTarget(fork, turn).key) } catch {}
       }
       await pluginApi.gameForked({ sourceChatId: source.id, targetChatId: fork.id, targetSessionId: fork.sessionId, keyMap })
@@ -2256,23 +2339,55 @@ export async function apply(ctx) {
     } catch (error) { console.warn('dsh-tavern: 分叉时处理插件数据失败:', str(error?.message || error)) }
   }
 
-  async function forkChat(sourceChatId, sourceSessionId, targetSessionId, requestedTurn, expectedRevision, expectedAtSeq) {
-    const { source, state, turn, atSeq } = await prepareConversationFork(sourceChatId, sourceSessionId, requestedTurn)
-    if (expectedRevision !== source._storageRevision || expectedAtSeq !== atSeq) throw new Error('源对话已变化，请重新选择分叉回合')
+  async function forkChat(sourceChatId, sourceSessionId, targetSessionId, requestedTurn, expectedRevision, expectedAtSeq, requestedMessageIndex, requestedMessageUid) {
+    const { source, state, turn, atSeq, messageIndex, storyDirect, messageUid } = await prepareConversationFork(sourceChatId, sourceSessionId, requestedTurn, requestedMessageIndex, expectedRevision, requestedMessageUid)
+    // Stable story identity covers unrelated writes between prepare and execute.
+    // Legacy story requests and native atSeq forks retain their original fences.
+    const sourceChanged = !(storyDirect && messageUid) && expectedRevision !== source._storageRevision
+    if (sourceChanged || (!storyDirect && expectedAtSeq !== atSeq)) throw new Error('源对话已变化，请重新选择分叉位置')
     const targetId = str(targetSessionId)
     if (targetId === '' || await chatForSession(targetId) !== undefined) throw new Error('分叉目标必须是尚未绑定对话的新 Session')
-    const target = sessionStore.get(targetId) || agentRegistry.get(targetId)?.session
-    const targetEnd = sessionEvents(target).findLast(event => event.type === 'turn/end')
-    if (!targetEnd || targetEnd.seq !== atSeq) throw new Error('原生分叉没有停在指定回合，已拒绝绑定游戏状态')
-    const lastNativeTurn = Number(sessionEvents(target).findLast(event => event.type === 'turn/start')?.data?.turn) || 0
-    const fork = forkConversationChat(state, { chatId: uid('chat'), sessionId: targetId, id: uid, now: Date.now, lastNativeTurn })
-    fork.forkedFrom = { ...fork.forkedFrom, chatId: source.id, sessionId: source.sessionId, storageRevision: source._storageRevision,
-      stateChatId: state.id, stateRevision: state._storageRevision, turn, atSeq }
-    await conversationRegistry.publish(fork)
-    await saveMaintenance.recordFork(fork).catch(error => console.warn('dsh-tavern: 记录分叉来源失败', str(error?.message || error)))
-    await sceneWorldbookArchive.copyRefs(state.id, fork.id, turn).catch(() => {})
-    await forkPluginState(source, state, fork, turn)
-    return conversationForkReceipt(fork, { lastTurn: turn, messageCount: fork.messages.length })
+    let targetHandle
+    let target = sessionStore.get(targetId) || agentRegistry.get(targetId)?.session
+    try {
+      if (!target) { targetHandle = await agentRegistry.resume({ resumeSessionId: targetId }); target = targetHandle.agent.session }
+      if (!target) throw new Error('分叉目标原生会话尚未就绪')
+      if (storyDirect) assertBlankStoryForkTarget(targetId, target)
+      else {
+        const targetEnd = sessionEvents(target).findLast(event => event.type === 'turn/end')
+        if (!targetEnd || targetEnd.seq !== atSeq) throw new Error('原生分叉没有停在指定回合，已拒绝绑定游戏状态')
+      }
+      const lastNativeTurn = storyDirect ? 0 : Number(sessionEvents(target).findLast(event => event.type === 'turn/start')?.data?.turn) || 0
+      const includedTurns = new Set((state.messages || []).filter(message => message?.role === 'assistant')
+        .map(message => Number(message.turn)).filter(turn => Number.isSafeInteger(turn) && turn >= 0))
+      const fork = forkConversationChat(state, { chatId: uid('chat'), sessionId: targetId, id: uid, now: Date.now, lastNativeTurn })
+      fork.forkedFrom = { ...fork.forkedFrom, chatId: source.id, sessionId: source.sessionId, storageRevision: source._storageRevision,
+        stateChatId: state.id, stateRevision: state._storageRevision, turn, ...(storyDirect ? { messageIndex, atSeq: null } : { atSeq }) }
+      if (storyDirect) {
+        fork.nativeSync = { status: 'stale', reason: '故事分叉等待原生上下文同步', at: Date.now() }
+        // Do not suppress opening recovery until the native prefix really exists.
+        fork.nativeOpeningAppended = false
+      }
+      await conversationRegistry.publish(fork, storyDirect ? {
+        assertUnboundSession: () => assertBlankStoryForkTarget(targetId, target)
+      } : undefined)
+      await saveMaintenance.recordFork(fork).catch(error => console.warn('dsh-tavern: 记录分叉来源失败', str(error?.message || error)))
+      await sceneWorldbookArchive.copyRefs(state.id, fork.id, includedTurns).catch(() => {})
+      await forkPluginState(source, state, fork, turn, includedTurns)
+      if (storyDirect) {
+        const repaired = await seedNativeStory(targetId, target, '故事分叉后按消息历史建立原生上下文')
+          .catch(error => { console.warn('dsh-tavern: 故事分叉原生上下文修复失败:', str(error?.message || error)); return null })
+        if (repaired?.applied) {
+          fork.nativeOpeningAppended = true
+          await updateChatHeader(fork.id, ['nativeOpeningAppended'], () => ({ nativeOpeningAppended: true }), { source: 'conversation.story-fork-native-ready' })
+            .catch(error => console.warn('dsh-tavern: 保存故事分叉开场白状态失败:', str(error?.message || error)))
+        }
+      }
+      const receiptTurn = turn > 0 ? turn : Math.max(0, ...includedTurns)
+      return conversationForkReceipt(fork, { lastTurn: receiptTurn, messageCount: fork.messages.length })
+    } finally {
+      if (targetHandle) await targetHandle.dispose().catch(error => console.warn('dsh-tavern: 释放分叉目标 Session 句柄失败:', str(error?.message || error)))
+    }
   }
 
   const backgroundRetirement = createBackgroundSessionRetirement(profileData, { readState: taskStateReader.forSession, isRunning: id => agentRegistry.get(id)?.status === 'running' })
@@ -2304,6 +2419,7 @@ export async function apply(ctx) {
   const taskPolicy = input => backgroundTaskPolicies.get(input?.task) || {}
   const frozenContext = input => taskPolicy(input).frozenContext?.(input) || null
   const backgroundAgentRunner = createBackgroundAgentRunner({
+    allowRun: async input => (await pluginApi.hostBehavior.forGame(input.sessionId)).backgroundAgents,
     retirement: backgroundRetirement,
     onRunFinished: run => { try { storyEvents.emit('task-finished', run) } catch (error) { console.warn('dsh-tavern: 任务完成通知失败', str(error?.message || error)) } },
     // The browser's session list keeps a disposed subagent as an idle row until the list is
@@ -2364,7 +2480,10 @@ export async function apply(ctx) {
     setupAgent: async function (childCtx) {
       await agentPresets.mount(childCtx, 'tavern-background')
     },
-    compactAgent: executeBackgroundCompaction,
+    compactAgent: async (agent, signal) => {
+      await configureAgentCompaction(agent)
+      return executeBackgroundCompaction(agent, signal)
+    },
     flushSession: async function (session) {
       const sessions = ctx.get('sessions')
       if (sessions === undefined) throw new Error('dsh-tavern: 缺少 sessions 服务')
@@ -2434,7 +2553,7 @@ export async function apply(ctx) {
   // 舞台、导演与 mod（stage-module.js）。
   // Work other modules report as busy to the deployment gate (getDeploymentActivity).
   const deploymentWork = []
-  await stageRuntime.start({dataRoot,
+  await stageRuntime.start({dataRoot, activeStageSkin,
     presentationObservers, workflow, modelSlots, chatHeaderForSession, dialogueBubbles, activeRoundBodies,
     readReplyPrefix:(sessionId,turn) => assistantResultForTurn(sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session,turn)?.text || '',
  worldBooks, containStage, cardsActive: () => assetCardsActive, llm, requestPerformance, sessionSignals, coordinationEvents, fileResources, cardPreparation, cardStorage, cardPlugins, bumpCardProjectionRevision, syncCardName, readChat, readChatCard, readStageChat, stageReads, readRoundView, storyEvents, deploymentWork, backgroundTaskPolicies, chatForSession, chatPersistence, chatJournalStore, rawUpdateChat, updateChat, updateChatMessage, patchChat, storyTimeline, replyDisplayForChat, sessionActivity, modelSelection, resolveSlot, readTavernSettings, callModel, modelRequestLog, backgroundAgentRunner, tavernScriptHostAdapter, tavernScriptDispatch})
@@ -2446,7 +2565,12 @@ export async function apply(ctx) {
   })
   ctx.effect(() => () => backgroundAgentRunner.dispose(), 'dsh-tavern: dispose resident background agents')
   // Asset pictures come from an image plugin (tavern.imageProvider); Tavern keeps no image channels.
-  const assetGeneration = createAssetGeneration({store:profileData, imageProvider:() => pluginApi.imageProviders()[0], getLibrary:() => ctx.get('assetLibrary')})
+  const assetGeneration = createAssetGeneration({store:profileData, imageProvider:() => pluginApi.imageProviders()[0], getLibrary:() => ctx.get('assetLibrary'),
+    // a figure linked to the 配图 人物库 takes its 外貌 from there (the one store); unlinked figures keep the pack text.
+    linkedAppearance: async ({packId, figureId, outfitKey}) => {
+      const linked = await findFigureImageCharacter(pluginApi, {packId, figureId})
+      return linked.status === 'linked' ? appearanceFromImageCharacter(linked.character, outfitKey) : null
+    }})
   ctx.effect(() => () => assetGeneration.dispose(), 'dsh-tavern: dispose asset generation')
   // Public extension service for third-party DSH plugins (docs/plugin-api.md).
   const pluginMedia = createPluginMedia({ store: profileData })
@@ -2582,38 +2706,14 @@ export async function apply(ctx) {
       background: background ? '/api/dsh-tavern/cast-asset?' + new URLSearchParams({ card: castAssets.keyOf(card.path), file: background.file }).toString() : '',
       cast: await castView(sessionId, card.path, manifest), turns }
   }
-  // One line in its speaker's voice: its 配音来源 (cast-presentation.md 22/N), else the chosen channel; { skip } when voicing is
-  // off or narration is silent.
-  async function speakLine(sessionId, { speaker, text, emotion, narration } = {}) {
-    const current = await speech.active()
-    if (!current) return { skip: true, reason: 'off' }
+  // One line in its voice through the voice service (domain/speech.js): { url, mediaType, loudness }, { browser, voice, text }
+  // or { skip, reason } (TTS_UNAVAILABLE without a voice service). A figure voice needs the stage's card speech, which only
+  // a page's authenticated origin opens; without it the line uses the 台词朗读 voice.
+  async function speakLine(sessionId, { speaker, text, emotion, narration } = {}, origin) {
     const card = await castCardOf(str(sessionId)).catch(() => null)
-    const name = str(speaker).trim()
-    const character = card && name ? (await castAssets.read(card.path)).characters.find(item => item.name === name || (item.aliases || []).includes(name)) : null
-    const channel = narration === true ? current : await speech.channelFor({ character, current })
-    const voice = speech.voiceFor({ character, provider: channel.provider, config: channel.config, narration: narration === true })
-    if (voice === null) return { skip: true, reason: 'narration' }
-    // A clone sends the character's own clips inline (cast-presentation.md 22/N).
-    const references = speech.referencesFor({ character, provider: channel.provider, narration: narration === true })
-    return speechReply(await speech.synthesize({ provider: channel.provider.id, text, voice, emotion, gameId: str(sessionId), speaker: name, narration: narration === true,
-      ...(references.length ? { references, readReference: file => castAssets.readFile(card.path, file) } : {}) }))
-  }
-  // The stage opening with 配音 on: the voices its cast speaks with on the channel in use, readied when the service offers it
-  // (cast-presentation.md 21/N). Never awaited by a line; a voice that fails to warm is still said when its line comes.
-  async function prepareVoices(sessionId) {
-    const current = await speech.active()
-    if (!current?.provider.prepare) return { prepared: 0 }
-    const card = await castCardOf(str(sessionId)).catch(() => null)
-    const characters = card ? (await castAssets.read(card.path)).characters : []
-    // Only who speaks with this channel's voices: a clone (its own inline clips) has no reference_id to warm.
-    const voices = new Set([...characters.filter(character => (character.voiceSource?.provider || current.provider.id) === current.provider.id && !character.voiceSource?.clone)
-      .map(character => speech.voiceFor({ character, ...current })), current.config.narratorVoice].filter(Boolean))
-    let prepared = 0
-    for (const voice of voices) if (await speech.prepare({ voice }).catch(() => false)) prepared++
-    return { prepared }
-  }
-  function speechReply(result) {
-    return result.browser ? result : { url: '/api/dsh-tavern/speech-audio?id=' + result.id, mediaType: result.mediaType }
+    const figures = card && origin ? await stageRuntime.assets.cardSpeech({ sessionId: str(sessionId), cardPath: card.path }, origin) : null
+    const extension = card && !figures && narration === true ? await cardStageExtension(card.path).catch(() => null) : null
+    return speech.speak({ text, speaker: str(speaker), emotion: str(emotion) || 'neutral', narration: narration === true, figures, extension: extension || undefined })
   }
   // The asset packs this game's card carries, with the base address of their files.
   async function cardPacksOf(sessionId) {
@@ -2678,7 +2778,7 @@ export async function apply(ctx) {
   // A plugin's one-off task: a fresh background Session, never the resident one settlement uses.
   // A member with a prefix of its own (`system`): that prefix, and the prompt as the task's one
   // message; the plugin hands it whatever story it needs.
-  async function runPluginTask({ gameId, owner, prompt, tools, call, signal, member = '', system }) {
+  async function runPluginTask({ gameId, owner, prompt, tools, call, signal, member = '', system, id = '', rewindTo, rewindFormatVersion, resolvePersistentSessionId, onPersistentSessionReady }) {
     const selection = backgroundModelSelection(await backgroundConfigForSession(gameId))
     if (!selection) throw new Error('这局没有可用的后台模型')
     const chat = await storyContext({ sessionId: gameId })
@@ -2686,7 +2786,8 @@ export async function apply(ctx) {
       .map(message => ({ role: message.role, content: [{ type: 'text', text: pluginSource(message).slice(-2400) }] }))
     // With a plugin member, its resident Session (one per game) instead of a fresh one.
     const own = system !== undefined ? { ownPrefix: true, system, taskText: prompt, messages: [] } : { system: prompt, messages: recent }
-    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: owner, member, persistent: Boolean(member), sessionId: gameId, selection, signal,
+    return await backgroundAgentRunner.run({ task: 'plugin', pluginName: id ? owner + '/' + id : owner, member, persistent: Boolean(member), sessionId: gameId, selection, signal,
+      rewindTo, rewindFormatVersion, resolvePersistentSessionId, onPersistentSessionReady,
       turn: Number(chat?.messages?.at(-1)?.turn) || 0, ...own, tools, maxToolCalls: 16,
       onToolCall: request => call(request.name, typeof request.arguments === 'string' ? JSON.parse(request.arguments || '{}') : request.arguments) })
   }
@@ -2696,6 +2797,7 @@ export async function apply(ctx) {
     const header = await chatHeaderForSession(id, ['cardPath'])
     return header ? { sessionId: id, cardPath: str(header.cardPath) } : null
   }
+  const gameForegroundQueues = new Map()
   const pluginApi = createTavernPluginApi({
     ctx,get modHost() {return ctx.get('tavernManagedModules')},
     logger: console,
@@ -2705,13 +2807,30 @@ export async function apply(ctx) {
     settingsChanged: (gameId, plugin) => sessionSignals.publish(gameId, { kind: 'plugin-settings', version: plugin + ':' + Date.now() + ':' + Math.random().toString(36).slice(2) }),
     // A plugin published new state for its page side (tavernUi.watchState re-reads it).
     publishState: (gameId, plugin, name) => sessionSignals.publish(gameId, { kind: 'plugin-state:' + plugin + ':' + name, version: Date.now() + ':' + Math.random().toString(36).slice(2) }),
-    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat(['style_reference_submit', STORY_SUBMIT_TOOL_NAME, 'character_design_finish', 'worldbook_search', 'web_search', 'web_fetch', 'skill']).filter(Boolean),
+    reservedToolNames: [...BACKGROUND_TOOLS, HISTORY_RECALL_TOOL].map(tool => tool?.name).concat(['style_reference_submit', STORY_SUBMIT_TOOL_NAME, STORY_GENERATE_TOOL_NAME, 'character_design_finish', 'worldbook_search', 'web_search', 'web_fetch', 'skill']).filter(Boolean),
     media: pluginMedia,
     data: pluginData,
+    projectGameForeground(gameId, projection) {
+      const prior = gameForegroundQueues.get(gameId) || Promise.resolve()
+      const work = prior.catch(() => {}).then(async () => {
+        const chat = await chatHeaderForSession(gameId, [])
+        const latest = chat && await pluginData.readMode(chat.id)
+        if (!latest || latest.revision !== projection.revision) return
+        if (!sessionPatch.serverReady) throw new Error('玩法前台记录需要会话兼容模块，请重启酒馆后重试')
+        await restoreGameModeForeground({ sessions: sessionStore, agents: agentRegistry }, gameId, projection)
+      })
+      gameForegroundQueues.set(gameId, work)
+      void work.finally(() => { if (gameForegroundQueues.get(gameId) === work) gameForegroundQueues.delete(gameId) }).catch(() => {})
+      return work
+    },
     pluginData: pluginDataStore,
     ...pluginTurns,
     resolveGalleryContext,
     backgroundModel: async sessionId => backgroundModelSelection(await backgroundConfigForSession(sessionId)),
+    readDefaultPlayerName: async () => (await readTavernSettings()).defaultPlaySettings.playerName,
+    readPlayerName: async sessionId => (await chatHeaderForSession(sessionId, ['macroState']))?.macroState?.userName,
+    writeDefaultPlayerName: async playerName => (await updateTavernSettings({ defaultPlaySettings: { playerName } })).defaultPlaySettings.playerName,
+    writePlayerName: setPlayerName,
     readCard: readPluginCard,
     readCharacterDesigns: async sessionId => projectCharacterDesignDocument((await chatForSession(sessionId))?.characterDesignDocument),
     saveCharacterDesign: async (sessionId, input) => {
@@ -2787,6 +2906,8 @@ export async function apply(ctx) {
       return { data: await readFile(found.path), mediaType: found.mediaType, size: found.size }
     },
     synthesizeSpeech: (sessionId, line) => speakLine(sessionId, line),
+    speechProvidersChanged: () => speechBridge.sync(),
+    generateImage: (input, source) => assetGeneration.image(input, source),
     readCastAssets: async sessionId => {
       const card = await castCardOf(sessionId)
       return { player: card.player, card: { name: card.name, imageUrl: '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) },
@@ -2807,6 +2928,11 @@ export async function apply(ctx) {
     startManualTask: ({ gameId, key, input }) => startPluginTask(gameId, key, input),
     publish: sessionId => sessionSignals.publish(sessionId, { kind: 'plugin-media', version: String(Date.now()) + ':' + Math.random().toString(36).slice(2) })
   })
+  const pluginBodyGeneration = createPluginBodyGeneration({ chatForSession, routeChatForSession: sessionId => chatHeaderForSession(sessionId, ['mode', 'foregroundFrames', 'timeline', 'storyGenerationMode', 'storyGenerationProvider']), readRevision: readChatRevision,
+    updateChat, settings: readTavernSettings, providers: pluginApi.bodyGenerators,
+    isWorldbookPath: filePath => worldbookSkillProvider.ownsPath(filePath),
+    isBackground: sessionId => backgroundAgentRunner.owns(sessionId),
+    regenerateWithProvider: input => regenerateWithProvider(input) })
   ctx.provide('tavern', pluginApi.service)
   cardRevisionListeners.add((cardPath, revision) => pluginApi.cardChanged(cardPath, revision))
   // Tell plugins the story line changed (informational: their turn data follows text versions
@@ -2820,7 +2946,7 @@ export async function apply(ctx) {
     void pluginApi.turnSettled(id).catch(error => console.warn('dsh-tavern: 插件轮次通知失败:', str(error?.message || error)))
     void announceCast(id).catch(error => console.warn('dsh-tavern: 台词通知失败', str(error?.message || error)))
   }
-  const { readPluginMediaFile, readPluginGalleryImage, removePluginMediaVersion, pluginMediaTurns, pluginMediaForTurn, pluginGalleryItems, removePluginGalleryItems } =
+  const { readPluginMediaFile, readPluginGalleryImage, removePluginMediaVersion, removePluginPicture, pluginMediaTurns, pluginMediaForTurn, pluginGalleryItems, removePluginGalleryItems } =
     createPluginMediaViews({ pluginMedia, pluginTurns, sessionSignals, attachments: () => ctx.get('attachments'), mediaRemoved: pluginApi.mediaRemoved,
       resolveGalleryContext,
       listGalleryProviderItems: pluginApi.listGalleryProviderItems, readGalleryProviderImage: pluginApi.readGalleryProviderImage,
@@ -2833,7 +2959,6 @@ export async function apply(ctx) {
     discarded: target => backgroundAgentRunner.discardRun(target),
     lockEvent: event => backgroundAgentRunner.noteLock(event)
   })
-  const configuredCompactionEngines = new WeakSet()
   const overflowingCompactions = new Set()
   // Rounds kept verbatim after a story summary, bounded by a share of the model window.
   async function storyRetention({ sessionId, provider, model, signal }) {
@@ -2870,11 +2995,6 @@ export async function apply(ctx) {
       agentOptions: { provider: selection.provider, model: selection.model } })
     try { return await work(handle.agent) } finally { await handle.dispose() }
   }
-  async function retireOldForegroundFrames(agent, keepTurn) {
-    const count = retireForegroundFrames(agent.session, { keepTurn })
-    if (count) await sessionStore.flush(agent.session)
-    return count
-  }
   autoCompaction = createAutoCompaction({
     readChat: chatForSession, readState: sessionStateForSession, readMetadata: taskStateReader.forSession, updateChat,
     policy: async () => (await readTavernSettings()).contextCompaction,
@@ -2884,7 +3004,7 @@ export async function apply(ctx) {
     pressure: (agent, signal, pendingMessages = [], sessionId) => {
       const measure = target => measureForegroundPressure({
         agent: target, signal, pendingMessages, projections: ctx.get('sessionProjections'),
-        defaultModel: agentDefaultModel, llm: ctx.llm, meter: ctx.get('tokenMeter')
+        defaultModel: agentDefaultModel, llm: ctx.llm, meter: ctx.get('tokenMeter'), logger: ctx.logger
       })
       return agent ? measure(agent) : withCompactionSession(sessionId, measure)
     },
@@ -2913,21 +3033,27 @@ export async function apply(ctx) {
       if (retained) return { message: `最近 ${retained} 轮剧情保留原文，暂无更早的历史需要压缩` }
       if (options.openTurnCompact) return options.openTurnCompact()
       return withCompactionSession(id, async agent => {
-        await retireOldForegroundFrames(agent, agent.phase?.kind === 'running' ? agent.phase.turn : undefined)
-        return (await agentCompaction(agent)).compactNow(agent, signal)
+        return (await configureAgentCompaction(agent)).compactNow(agent, signal)
       })
     }
   })
   async function configureAgentCompaction(agent) {
     const engine = await agentCompaction(agent)
-    if (configuredCompactionEngines.has(engine)) return engine
-    configuredCompactionEngines.add(engine)
     const dispose = installCompactionPolicy(engine, async (target, trigger, signal, fallback, forced) => {
       if (trigger !== 'context-overflow') return compactionPolicyFor(target, trigger, signal, fallback, forced)
       overflowingCompactions.add(target.session.id)
       try { return await compactionPolicyFor(target, trigger, signal, fallback, forced) }
       finally { overflowingCompactions.delete(target.session.id) }
-    }, { beforeRegion: compactionRegionGuard })
+    }, { compactNow: async (native, target, signal, sourceCommandId) => {
+      const chat = backgroundAgentRunner.owns(target.session.id) ? null : await sessionStateForSession(target.session.id)
+      return backgroundAgentRunner.owns(target.session.id) || chat && ['story', 'script', 'card'].includes(chat.mode)
+        ? compactWholeTurnsNow(engine, native, target, signal, sourceCommandId) : native.call(engine, target, signal, sourceCommandId)
+    }, selectRegion: async (target, range) => {
+      if (backgroundAgentRunner.owns(target.session.id)) return wholeTurnCompactionRange(target.session, range.start, range.end)
+      const chat = await sessionStateForSession(target.session.id)
+      return chat && ['story', 'script', 'card'].includes(chat.mode)
+        ? wholeTurnCompactionRange(target.session, range.start, range.end) : range
+    }, beforeRegion: compactionRegionGuard })
     async function compactionPolicyFor(target, trigger, signal, fallback, forced) {
       // Our early pre-step and the host hook share one pressure attempt. Overflow
       // recovery remains independent and retains the host request retry budget.
@@ -2940,7 +3066,7 @@ export async function apply(ctx) {
         return compactBackgroundIfNeeded({
           trigger, forced, native: fallback,
           pressure: () => measureBackgroundBudget({
-            agent: target, background, signal, llm: ctx.llm, meter: ctx.get('tokenMeter'),
+            agent: target, background, signal, llm: ctx.llm, meter: ctx.get('tokenMeter'), logger: ctx.logger,
             pending: pendingCompactionMessages.get(target) || []
           })
         })
@@ -2949,10 +3075,10 @@ export async function apply(ctx) {
       if (!chat || !['story', 'script'].includes(chat.mode)) return fallback()
       const pendingMessages = pendingCompactionMessages.get(target) || []
       return compactForegroundIfNeeded({
-        trigger, native: fallback, forced,
+        trigger, native: () => compactNativePlayIfNeeded(engine, target, trigger, signal, fallback), forced,
         pressure: () => measureForegroundPressure({
           agent: target, signal, pendingMessages, projections: ctx.get('sessionProjections'),
-          defaultModel: agentDefaultModel, llm: ctx.llm, meter: ctx.get('tokenMeter')
+          defaultModel: agentDefaultModel, llm: ctx.llm, meter: ctx.get('tokenMeter'), logger: ctx.logger
         }),
         record: () => autoCompaction.recordForeground(target.session.id),
         scheduled: () => autoCompaction.run(target.session.id, { agent: target, signal, openTurnCompact: forced, pendingMessages })
@@ -2973,17 +3099,22 @@ export async function apply(ctx) {
         return current
       }, { source: 'compaction.background' })
     }
-    compactionDisposers.add(dispose)
-    collectedCompactionEngines.register(engine, dispose, dispose)
+    if (dispose) {
+      compactionDisposers.add(dispose)
+      collectedCompactionEngines.register(engine, dispose, dispose)
+    }
     return engine
   }
   ctx.on('agent/pre-step', async (payload, next) => {
     const id = payload.agent.session.id, background = backgroundAgentRunner.requestContext(id)
-    // Every model step asks: the header's mode answers it.
-    const chat = background ? null : await chatHeaderForSession(id, [])
-    // Keep historical turn frames byte-stable during normal generation. Retire
-    // scaffolding only at an explicit compaction boundary, never before each step.
-    if (background && background.task === 'phone') return next()
+    const chat = background ? null : await chatHeaderForSession(id, ['contextCompaction'])
+    // old frames stay model-visible until a whole-turn compaction consumes them.
+    // ephemeral director corrections must not acquire/prune a story compaction surface.
+    if (background?.task === 'stage-director') return next()
+    if ((background && ['phone'].includes(background.task)) || chat?.mode === 'card') {
+      await configureAgentCompaction(payload.agent)
+      return next()
+    }
     if (background || chat && ['story', 'script'].includes(chat.mode)) {
       const engine = await configureAgentCompaction(payload.agent)
       pendingCompactionMessages.set(payload.agent, payload.messages || [])
@@ -2994,7 +3125,7 @@ export async function apply(ctx) {
           // Match native pressure behavior: warn, then let the request proceed.
           // A provider-confirmed overflow still has its own bounded recovery.
           const warning = compactionFailureMessage(error)
-          console.warn('dsh-tavern: 自动容量压缩未完成:', warning)
+          warnCompactionPressureOnce(payload.agent.session, ctx.logger, error)
           if (chat) await updateChatHeader(chat.id, ['contextCompaction'], header => {
             header.contextCompaction = { ...header.contextCompaction, warning }
             return header
@@ -3097,7 +3228,7 @@ export async function apply(ctx) {
   })
   // 自动生成候选项: fed by live turn ends only, submitting through candidateTasks like the button.
   const autoChoices = createAutoChoices({
-    preferences: readTavernSettings,
+    enabled: async chat => !!chat && (await pluginApi.hostBehavior.forGame(chat.sessionId)).backgroundAgents && effectiveAutoChoices(await cardStageExtension(chat.cardPath), (await readTavernSettings()).candidateAutoGenerate),
     async read(sessionId) {
       const chat = await chatForSession(sessionId)
       const session = sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session
@@ -3132,6 +3263,7 @@ export async function apply(ctx) {
     if (chat.macroState === null || typeof chat.macroState !== 'object') chat.macroState = { userName: name, local: {}, global: {} }
     else chat.macroState.userName = name
     await writeChat(chat, { source: 'player-name.set' })
+    sessionSignals.publish(sessionId, { kind: 'tavern-state', version: 'player-name:' + Date.now() + ':' + Math.random().toString(36).slice(2) })
     return name
   }
   // ---------- 后台结算 ----------
@@ -3172,6 +3304,7 @@ export async function apply(ctx) {
     pluginApi, readPendingTurn: gameId => pluginTurns.readPendingTurn(gameId) })
   const plainSettlementEngine = createPlainSettlementEngine({ pluginApi, pluginSettlementProgress, settlementItems, backgroundModelSelection, postureItem, backgroundAgentRunner, agentRegistry, sessionStore })
   const settlementRun = createSettlementRun({
+    backgroundAgentRunner,
     backgroundTasks, chatPersistence, readChat, writeChat, readChatCard, taskStateReader, worldBookScanDepth,
     mvuSettlementEngine, plainSettlementEngine, pluginApi, pluginSettlementProgress, agentRegistry, storyEvents
   })
@@ -3250,6 +3383,8 @@ export async function apply(ctx) {
   const turnOrchestrator = createTurnOrchestrator({
     // Either direction needs submit_story declared: output to submit this turn,
     // input because the replayed history calls name that tool.
+    prepareBodyGeneration: sessionId => pluginBodyGeneration.prepare(sessionId),
+    bodyGeneration: sessionId => pluginBodyGeneration.route(sessionId),
     storyToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
     storyInputToolCall: async () => (await readTavernSettings()).storyInputToolCall,
     modEnabled: (modId, cardPath) => cardPath ? ctx.get('tavernManagedModules')?.enabled({modId,cardPath}) ?? false : false,
@@ -3273,6 +3408,7 @@ export async function apply(ctx) {
     scripts: scriptContinuity,
     timeline: storyTimeline,
     frameBuilder: foregroundFrameBuilder,
+    resolvePreset: resolveChatRuntimePreset,
     cards: cardPreparation,
     workspace: {
       prepare: prepareWorkspace,
@@ -3291,11 +3427,13 @@ export async function apply(ctx) {
       return [...(sections || []), { owner: 'dsh-tavern', name: 'style-reference', position: 'after',
         text: '【本轮先做文风联想】写正文之前，先按「前台文风联想」的要求调用 style_reference_submit，记下一段贴合本轮场景的范文；调用成功后再写本轮正文。' }]
     },
-    projectUserTemplate: async ({chat,text}) => {
+    projectUserTemplate: async ({chat,text,preview}) => {
       const global = await readPromptTemplateGlobalVariables()
       const result = await fullTemplateRuntime.forSession(chat.sessionId).renderInput(text, {userName:chat.macroState?.userName || '你',scopes:{global,local:chat.variables || {},initial:chat.promptTemplateInitialVariables || {},message:lastTavernHelperVariables(chat.messages) || {}}})
       const row = result.message
-      await tavernScriptHostAdapter.saveFullPromptTemplateGlobals(chat.sessionId, result.scopes.global, global)
+      // A regeneration preview builds the same request but owns no story write:
+      // template globals advance only when the real turn is prepared.
+      if (!preview) await tavernScriptHostAdapter.saveFullPromptTemplateGlobals(chat.sessionId, result.scopes.global, global)
       return {scopes:result.scopes,message:{role:'user',text:row.mes,sourceText:row.mes,swipeId:row.swipe_id,swipes:row.swipes,variables:row.variables,tavernPluginData:Object.fromEntries(['is_ejs_processed','variables_initialized','template_display'].filter(key=>row[key]!==undefined).map(key=>[key,row[key]]))}}
     },
     projectReply: projectRuntimeReply,
@@ -3310,7 +3448,7 @@ export async function apply(ctx) {
   const storyReconciliation = createStoryReconciliation({
     agentRegistry, sessionStore, chatForSession, chatSliceForSession, updateChat, turns: turnOrchestrator
   })
-  const { reconcileStory, reconcileWhenIdle, repairNativeStory } = storyReconciliation
+  const { reconcileStory, reconcileWhenIdle, assertBlankStoryForkTarget, seedNativeStory } = storyReconciliation
   const storyLifecycle = createStoryLifecycle({ settings: readTavernSettings,
     sessionFor: sessionId => sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session,
     agentFor: sessionId => agentRegistry.get(sessionId),
@@ -3322,6 +3460,7 @@ export async function apply(ctx) {
     gameTitles, saveMaintenance, pluginApi, candidateWorldbookPreparation, backgroundTasks, queueSettlement, settlementJobs, settlementRun })
   const foregroundHandoff = createForegroundHandoff({
     turns: turnOrchestrator,
+    scriptDispatch: tavernScriptDispatch,
     store: { chatForSession, readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, openingStateForSession },
     tasks: backgroundTasks,
     queueBackground: queueSettlement,
@@ -3421,7 +3560,7 @@ export async function apply(ctx) {
     void mvuSettlementReconciler.scan()
   }
   // ---------- 重新生成正文（生成即替换，无确认） ----------
-  const { regenerate: regenBody, replayFailed: replayFailedTurn, recover: recoverRegeneration, rollback: rollbackTurn, rollbackTo: rollbackToTurn, interrupt: interruptTurn, undoRollback: undoRollbackTurn } = createRoundHistory({
+  const { regenerate: nativeRegenBody, regenerateWithProvider, recover: recoverRegeneration, rollback: rollbackTurn, rollbackTo: rollbackToTurn, interrupt: interruptTurn, undoRollback: undoRollbackTurn } = createRoundHistory({
     diagnostics: mvuDiagnostics,
     chats: { read: readChat, readState: taskStateReader.read, stateForSession: taskStateReader.forSession, forSession: chatForSession, readCard: readChatCard,
       readRevision: readChatRevision, write: writeChat, update: updateChat, patch: patchChat,
@@ -3446,9 +3585,17 @@ export async function apply(ctx) {
     queueSettlement,
     replyCommitted: sessionId => storyEvents.emit('reply-committed', { sessionId }),
     cancelSettlement,
+    readRegenerationMaterials: buildBodyRegenerationMaterials,
+    // Build the replacement request from the save as it is now. This is the same
+    // preparation a normal send runs, without writing a candidate story row.
+    prepareRegenerationFrame: input => turnOrchestrator.preview(input),
+    // Providers return already-processed prose. Their imported regexes must not
+    // run again in the host, including when the view is refreshed later.
+    prepareRegenerationReply: ({ text }) => projectProcessedReply(text),
+    notifyRegeneration: (sessionId, { turn }) => notifyPluginTimeline(sessionId, 'regenerate', { turn }),
     present: presentStory,
+    trace: requestPerformance,
     sessionPatch,
-    repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '回退或重新生成时找不到原生位置'),
   })
 
   async function bodyEditorProject(text, chat) {
@@ -3456,18 +3603,37 @@ export async function apply(ctx) {
     return projectRuntimeReply(text, { charName: chat.cardName, macroState: chat.macroState,
       regexScripts: composeTavernRegexScripts(extensions, chat.runtimePresetSnapshot?.regexScripts, chat?.regexOverrides?.preset), placement: 2, isEdit: false, depth: 0 })
   }
+
+  async function regenBody(chatId, guidance, sessionId, target) {
+    const id = sessionId || (await requestPerformance.stage('regen.resolve', () => readChat(chatId)))?.sessionId
+    const generated = await requestPerformance.stage('regen.plugin-generate', () => pluginBodyGeneration.regenerate(id, str(guidance), target))
+    return generated === null ? nativeRegenBody(chatId, guidance, sessionId, target)
+      : requestPerformance.stage('regen.plugin-present', async () => presentStory(await chatForSession(id)))
+  }
   const bodyEditor = createBodyEditor({
-    chats: { forSession: hookChatForSession, update: updateChat, patch: patchChat },
+    // Story editing resolves an absolute row/UID and must not read a sparse
+    // request-hook window that can omit the selected floor.
+    chats: { forSession: chatForSession, update: updateChat, patch: patchChat },
     sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
     timeline: storyTimeline,
     activity: chat => backgroundTasks.activity(chat),
     project: bodyEditorProject,
     present: presentStory,
     sessionPatch,
-    repairNative: (sessionId, session) => repairNativeStory(sessionId, session, '编辑正文时找不到原生位置'),
+  })
+
+  const messageDeletion = createMessageDeletion({
+    // Deletion resolves absolute story indices and may follow a persisted UID
+    // across the whole history; request-hook bounded projections are not writable
+    // Chat reads and can omit the selected row.
+    chats: { forSession: chatForSession, update: updateChat },
+    sessions: { get: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
+    activity: chat => backgroundTasks.activity(chat),
+    view: sessionView,
+    sessionPatch,
   })
   const storyService = createStoryService({
-    snapshots: floorSnapshots, chats: { forSession: hookChatForSession, update: updateChat },
+    snapshots: floorSnapshots, chats: { forSession: chatForSession, update: updateChat },
     sessions: { agent: id => ctx.get('agents')?.get(id),
       get: id => sessionStore.get(id) || agentRegistry.get(id)?.session, flush: session => sessionStore.flush(session) },
     timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch,
@@ -3497,8 +3663,7 @@ export async function apply(ctx) {
     native: async id => {
       const live = sessionDebugEvidence(id)
       if (live.loaded) return live.events
-      const handle = await agentRegistry.resume({ resumeSessionId: id })
-      try { return sessionEvents(handle.agent.session) } finally { await handle.dispose() }
+      return withHostSession({ sessions: sessionStore, agents: agentRegistry }, id, session => sessionEvents(session))
     },
     requiresBrowser: async chat => hasTavernScriptRuntime(chat, (await readCardExtensions(chat.cardPath, chat))?.helperScripts)
   })
@@ -3561,35 +3726,40 @@ export async function apply(ctx) {
     },
   })
 
+  // Speech recognition is the host's shared service (ctx 'asr'); the phone's calls are one of its users.
+  const speechRecognition = await createSpeechRecognitionHost({store:profileData,credentials:() => ctx.get('credentials'),providers:() => pluginApi.speechProviders('recognize')})
+  ctx.provide('asr', speechRecognition.service)
+  ctx.effect(() => () => speechRecognition.service.dispose())
 
   // Request handlers by area live in rpc/; bindings assigned later are read through getters.
-  const rpcDeps = { frameStorage, worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds,
+  // paragraphSpeech: a paragraph's spoken line, the core's voice selection (the stage's clip export reads it).
+  const rpcDeps = { readCardAssetExtension, frameStorage, worldbookSkillProvider, sessionDebugEvidence, TAVERN_PACKAGE_VERSION, agentCompaction, agentRegistry, appendStoryRounds, paragraphSpeech,
     applicationUpdater, autoChoices, attachPlayChatDebug, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow,
-    backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload,
+    backgroundConfigForSession, bindScript, bodyEditor, branchOrigin, callModel, candidateGenerator, candidateTasks, polishPrereview, polishRecords, polishReviewer, chatHeaderWithLatestFloors, applyCardUpdate, cardAutoReload, messageDeletion,
     cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation, cardSummaries, cardTaskPrompts, castAssets,
     castCardOf, castEdit, castStage, castView, chatForSession, chatHeaderForSession,
     chatHistoryImporter, chatPersistence, commands, compactionAbort, compatibilityDiagnostics,
     conversationBackgroundSettings, conversationGuides, ctx, dataRoot, deleteCard, deleteChat, deleteChats,
     deletePreset, deleteResource, deleteScript, displayRuntimeCaptures, ensureNativeCardWorkspace,
     ensureNativeOpening, exportConversation, exportGameSave, exportSettingsBundle, exportTavernLogs,
-    fileResources, forkChat, fullTemplateRuntime, getCardOpenings, groupOfMode, guideLibrary,
-    helperGenerationPreset, helperGenerationTasks, helperHistoryAccess, hostCompatibility, importCard,
-    importCardArchiveFile, importChatHistoryText, importGameSave, importPluginCardFile, importPreset,
+    fileResources, forkChat, fullTemplateRuntime, generationStreamModes, getCardOpenings, groupOfMode, guideLibrary,
+    helperGenerationPreset, helperGenerationTasks, helperHistoryAccess, hostCompatibility, importCard, exportCardFile,
+    replaceCard, importCardArchiveFile, importChatHistoryText, importGameSave, importPluginCardFile, importPreset,
     importScript, importSettingsBundle, importSource, ledgerEditor, listCards, listTavernResources,
     listTavernSessions, liveCardUpdate, llm, manualCharacterDesign, manualLedger, mobileCardImport,
     modelRequestLog, mvuDiagnostics, notifyPluginTimeline, openingPreparation, pagesInFront,
-    playCardSnapshots, pluginApi, pluginDataStore, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns,
+    playCardSnapshots, pluginApi, pluginBodyGeneration, pluginDataStore, pluginGalleryItems, pluginMediaForTurn, pluginMediaTurns,
     pluginSettlementProgress, prepareConversationFork, preparedSaveSessions, presentSystemPrompts, promptDocuments, transferExports,
     presentUserPreferenceProfile, presetLibrary, previewPreset, profileData, projectOpeningWindow,
     readBackgroundSuppression, readCard, readCardExtensions, readCardExtensionSources, readCardWorkspace, readChat, readChatCard,
     readOpeningWindow, readRawTavernSettings, readScript, readSessionMap, readTavernSettings, reconcileStory, reconcileWhenIdle,
-    regenBody, regexLibrary, regexManager, removePluginGalleryItems, removePluginMediaVersion, renameResource,
-    replayFailedTurn, requestPerformance, retrySettlement, retryStyleReference, rollbackTurn, rollbackToTurn,
+    regenBody, regexLibrary, regexManager, removePluginGalleryItems, removePluginMediaVersion, removePluginPicture, renameResource,
+    requestPerformance, retrySettlement, retryStyleReference, rollbackTurn, rollbackToTurn,
     runtimeGeneration, runtimePresets, runtimePrompt, saveUpgrade, scriptContinuity,
     scriptNavigation, sessionActivity, sessionInventory, sessionOperation, sessionPatch,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setCardPlugins, setPlayerName,
-    skillImportFiles, sleep, speakLine, speech, speechReply, startChat, startPluginTask, stopBackground, str,
-    tavernModelCatalog, tavernScriptHostAdapter, tavernSkills, templateHistoryFrom, undoRollbackTurn,
+    skillImportFiles, sleep, speakLine, speech, startChat, startPluginTask, stopBackground, str,
+    tavernModelCatalog, tavernScriptHostAdapter, tavernSkills, templateHistoryFrom, turnOrchestrator, undoRollbackTurn,
     updateCard, updateChat, updateTavernSettings, uploads, userPluginInstaller, userPreferenceProfile, view,
     withCompactionSession, worldBooks, worldbookRecallLog,
     get autoCompaction() { return autoCompaction },
@@ -3658,6 +3828,7 @@ export async function apply(ctx) {
     scoringCatalog: { get: () => scoringCatalog },
     modelSelectionChanged: { get: () => () => presentationObservers.modelChanged() },
     speech: { get: () => speech },
+    speechRecognition: { get: () => speechRecognition },
     str: { get: () => str },
     taskStateReader: { get: () => taskStateReader },
     tavernModelCatalog: { get: () => tavernModelCatalog },
@@ -3678,12 +3849,21 @@ export async function apply(ctx) {
     createRegexHandlers(rpcDeps),
     createMediaHandlers(rpcDeps),
     createSettingsHandlers(rpcDeps),
+    createGenerationStreamModeHandlers(rpcDeps),
     createPluginHandlers(rpcDeps),
     createConversationHandlers(rpcDeps),
     createPlayHandlers(rpcDeps),
     createStoryHandlers({ ...storyService, refreshDisplay: sessionId => sessionViews.refresh(sessionId), interruptQueued: storyLifecycle.interruptQueued, notifyTimeline: notifyPluginTimeline }),
-    createTransferHandlers(rpcDeps))
+    createTransferHandlers(rpcDeps),
+    createImageCharacterHandlers(rpcDeps))
   const stageSwitch = await createStageSwitch({runtime:stageRuntime,store:profileData,builtin:true})
+  rpcHandlers.readAloudLine = async args => speech.read({text:args?.text})
+  rpcHandlers.readAloudState = async args => {
+    const card = await castCardOf(str(args?.sessionId)).catch(() => null)
+    const extension = card ? await cardStageExtension(card.path) : null
+    const engine = settingsSectionProvider(ctx, ENGINE_SECTION)?.describe().find(row => row.ns === ENGINE_SECTION)?.value
+    return {stepAside:stageRuntime.status() === 'ready' && cardStageVoicing(extension, engine), auto:ctx.get('tts')?.reading().readAloud.auto === true}
+  }
   rpcHandlers.getStageRuntimeStatus = async () => stageSwitch.read()
   rpcHandlers.setStageEnabled = async args => stageSwitch.setEnabled(args?.enabled)
   rpcHandlers.getCardScripts = rpcHandlers.setCardScriptMuted
@@ -3770,7 +3950,6 @@ export async function apply(ctx) {
     ctx,
     clientAssets,
     castAssets,
-    speech,
     exportCardFile,
     assetPacks,
     uploads,
@@ -3794,6 +3973,7 @@ export async function apply(ctx) {
   })
   // A desktop host's chat view sits in a read-only app.asar: patch its answer step in the page.
   installChatAnswerBootPatch(ctx)
+  installGenerationStreamModeBootPatch(ctx)
   // Card scripts run on the server by default; DSH_TAVERN_SERVER_SCRIPTS=0 leaves them to the page.
   if (process.env.DSH_TAVERN_SERVER_SCRIPTS !== '0') {
     serverScripts = createServerScriptExecutor({
@@ -3841,7 +4021,7 @@ export async function apply(ctx) {
   // A game keeps a snapshot of its preset, but edits to that preset apply from the
   // next request: a changed preset file rebuilds and stores the snapshot. A missing
   // or unreadable file keeps the saved snapshot, so the game never loses its preset.
-  async function resolveChatRuntimePreset(chat) {
+  async function resolveChatRuntimePreset(chat, options = {}) {
     if (!chat || groupOfMode(chat.mode) !== 'play') return null
     const saved = chat.runtimePresetSnapshot && typeof chat.runtimePresetSnapshot === 'object' ? chat.runtimePresetSnapshot : null
     if (!saved?.presetPath || !chat.id) return saved
@@ -3851,6 +4031,11 @@ export async function apply(ctx) {
     let fresh
     try { fresh = await runtimePresets.fullSnapshot(saved.presetPath) } catch { return saved }
     if (!fresh) return saved
+    // Regeneration preview needs the live preset but owns no stored request yet.
+    if (options.preview === true) {
+      chat.runtimePresetSnapshot = fresh
+      return fresh
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       const head = (await chatPersistence.readSlice(chat.id, [], ['_storageRevision', 'runtimePresetSnapshot.presetPath']))?.chat
       // Applying another preset meanwhile wins over refreshing this one.
@@ -3868,7 +4053,9 @@ export async function apply(ctx) {
       const sessionId = agent && agent.session ? agent.session.id : ''
       if (sessionId === '') return false
       return backgroundAgentRunner.owns(sessionId) || Boolean(await chatHeaderForSession(sessionId, []))
-    }
+    },
+    // 设置 › 高级 › 请求失败自动重试: read per request so the switch needs no restart.
+    enabled: async function () { return (await readTavernSettings()).retryOnFailure !== false }
   })
 
   function clearRuntimePresetRequestState(agent) {
@@ -3879,12 +4066,13 @@ export async function apply(ctx) {
     foregroundStrategies.clearRequestState(sessionId)
   }
 
-  const skillGatedTools = createSkillGatedTools()
-  const controlledToolNames = new Set(['tavern_roll', 'style_reference_submit', STORY_SUBMIT_TOOL_NAME, 'tavern_read_variables', 'worldbook_list', 'worldbook_grep', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'web_fetch', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
+  const skillGatedTools = createSkillGatedTools({ pluginSkills: name => pluginApi.toolSkillsFor(name) })
+  const controlledToolNames = new Set(['tavern_roll', 'style_reference_submit', STORY_SUBMIT_TOOL_NAME, STORY_GENERATE_TOOL_NAME, 'tavern_read_variables', 'worldbook_list', 'worldbook_grep', ...CARD_MEMORY_TOOLS, 'bash', 'pwsh', ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'web_search', 'web_fetch', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_user_profile_confirm', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_script', 'tavern_recall_history', 'worldbook_search', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response'])
   const foregroundStrategies = createForegroundOrchestrationStrategies({
     nativePlay: {
       // Input side: replay past bodies as calls of the submission tool.
       styleReferencePrompt: chat => foregroundStyleReferencePrompt(chat, runtimePrompt('style-reference-recall'), runtimePrompt('style-reference')),
+      bodyGeneration: sessionId => pluginBodyGeneration.route(sessionId),
       historyToolCall: async () => (await readTavernSettings()).storyInputToolCall,
       // Output side: whether a new body must be submitted through the tool.
       storyOutputToolCall: async () => (await readTavernSettings()).storyOutputToolCall,
@@ -3913,6 +4101,9 @@ export async function apply(ctx) {
         const names = await turnOrchestrator.visibleTools(sessionId)
         return skillGatedTools(names, sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session)
       },
+      pluginToolsUnlocked: function (sessionId, names) {
+        return skillGatedTools(names, sessionStore.get(sessionId) || agentRegistry.get(sessionId)?.session)
+      },
       // Cache the plugin/extra tools that reached a play request. The settings
       // panel reads this map; Tavern's own tools come from the static catalog.
       recordTools: function (sessionId, tools) {
@@ -3935,6 +4126,7 @@ export async function apply(ctx) {
   })
 
   registerRequestHooks({
+    gameModes: pluginApi.gameModes,
     projectWorldbookRecovery: async (chat, options) => nativeWorldBookTemplateContext(chat, await readChatCard(chat), options),
     backgroundAgentRunner,
     cardMemory,
@@ -3954,20 +4146,13 @@ export async function apply(ctx) {
     capabilityFor: name => pluginApi.toolNetworkFor(name)
   })
   installNetworkToolPolicy(ctx, networkToolPolicy)
-  installToolPresentationPolicy(ctx, {
-    sessionFor: id => sessionStore.get(id) || agentRegistry.get(id)?.session || backgroundAgentRunner.requestSession(id),
-    async filter(tools, session) {
-      const background = backgroundAgentRunner.requestContext(session.id)
-      const chat = background ? null : await hookChatForSession(session.id)
-      const visible = background ? filterBackgroundTools(tools, background) : chat ? await foregroundStrategies.filterTools(tools, { sessionId: session.id, chat }) : tools
-      return networkToolPolicy.filter(visible, session)
-    }
-  })
+
 
 
   // 正文开始, once per turn: a reply makes several model requests (tool steps).
   const startedReplies = new Map()
   registerModelStreamHooks({
+    pluginBodyGeneration,
     replyStarted: (sessionId, turn) => {
       if (startedReplies.get(sessionId) === String(turn)) return
       startedReplies.set(sessionId, String(turn))
@@ -3996,6 +4181,7 @@ export async function apply(ctx) {
     storyRetention,
   })
   registerTurnLifecycleHooks({
+    pluginBodyGeneration,
     turnStarted: (sessionId, turn) => storyEvents.emit('turn-started', { sessionId, turn }),
     autoChoices,
     backgroundAgentRunner,
@@ -4024,8 +4210,10 @@ export async function apply(ctx) {
   // ---------- 模型可选工具 ----------
   const tools = ctx.get('tools')
   if (tools !== undefined) {
+    tools.register(defineTool(pluginBodyGeneration.tool))
     tools.register(defineTool(createStorySubmissionTool({
       chatForSession,
+      pluginGeneration: async sessionId => (await pluginBodyGeneration.route(sessionId)).mode?.startsWith('plugin-'),
       // Input-only requests still declare the tool for their replayed history;
       // accepting a real submission there is harmless.
       enabled: async () => {

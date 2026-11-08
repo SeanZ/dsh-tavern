@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import vm from './fixtures/client-vm.mjs'
 import { deferred } from './fixtures/sync-clock.mjs'
 const source = fs.readFileSync(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
-function harness() {
+function harness(overrides = {}) {
   const reads = [], generations = []
   const scope = vm.createContext({ window: { setTimeout: fn => setTimeout(fn, 0) }, performance, Date, Math, AbortController,
+    clipExportTransport: null,
     performanceReportAt: Date.now(), pagePerformanceStarted: Date.now(), pagePerformance: {},
     performanceRequests: [], performanceActiveRequests: 0, historyFromSessions: new Map(), rememberHistoryWindow() {},
     tavernRuntimeGenerationMonitor: { observe(value) { generations.push(value) } },
@@ -15,7 +16,8 @@ function harness() {
     roundLoadCounts: new Map(), roundLoadTrace: { mark() {} },
     expandTavernOpeningWindow: view => view,
     fetch(url, request) { const task = deferred(); reads.push({ ...task, url, request,
-      reply(value, status = 200) { task.resolve({ status, json: async () => value }) } }); return task.promise }
+      reply(value, status = 200) { task.resolve({ status, json: async () => value }) } }); return task.promise },
+    ...overrides
   })
   const modules = ['../tavern-plugin/lib/domain/indexed-array.js', '../tavern-plugin/src/client/modules/session-view-sync.js', '../tavern-plugin/src/client/rpc-transport.cjs']
   vm.runInContext(modules.map(path => fs.readFileSync(new URL(path, import.meta.url), 'utf8').replace(/^export .*$/gm, '')).join('\n') + '\nconst beginSessionViewRead = createSessionViewReader(1);', scope)
@@ -26,6 +28,19 @@ function harness() {
   vm.runInContext(source.slice(start, end + 4), scope)
   return { rpc: scope.rpc, reads, generations }
 }
+test('卸载页面的租约释放绕过 Remote，保留 HTTP keepalive', async () => {
+  let controls = 0
+  const h = harness({ tavernSessionSignals: { control: async () => { controls++; return { ok: true, active: true } } } })
+  await h.rpc('claimTavernScriptWork', { runtimeId: 'page' }, 'A')
+  assert.equal(controls, 1)
+  const release = h.rpc('releaseTavernHelperRuntime', { runtimeId: 'page' }, 'A', { keepalive: true })
+  assert.equal(controls, 1)
+  assert.equal(h.reads.length, 1)
+  assert.equal(h.reads[0].request.keepalive, true)
+  assert.equal(JSON.parse(h.reads[0].request.body).runtimeId, 'page')
+  h.reads[0].reply({ ok: true, released: true })
+  assert.equal((await release).released, true)
+})
 for (const outcome of ['old success', 'network error', 'server error']) test(`real RPC suppresses ${outcome} after a newer accepted session response`, async () => {
   const h = harness(), old = h.rpc('getSession', {}, 'A'), next = h.rpc('getSession', {}, 'A')
   h.reads[1].reply({ ok: true, runtimeGeneration: 'new', viewCursor: 'v2', view: { done: true } })

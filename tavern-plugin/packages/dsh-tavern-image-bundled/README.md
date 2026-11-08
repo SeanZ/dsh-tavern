@@ -160,6 +160,8 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 
 ### 自动规划和正文标记有什么区别
 
+ComfyUI 能提供采样步数时，正文插图卡和舞台会显示当前进度，直到图片可用才显示完成。通过代理连不上进度通道时，图片仍会照常生成，界面显示等待状态。只返回排队状态的渠道也显示等待状态。
+
 插件还保留了另一种方式：让前台模型在正文里输出 `image###提示词###` 标记，再按标记生成图片。
 
 | 方式 | 控制项 | 用途 |
@@ -170,7 +172,11 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 
 后台规划默认开启，正文标记默认关闭。只想手动生图时，可以关闭后台自动规划；若也不需要自动记录角色外貌历史，可以同时关闭角色自动更新，避免结算后继续调用规划模型记录外貌。
 
+「换装时参考本卡服装库」默认关闭。启用后，当前人物卡的配图服装会以简短提示随正文请求发送，方便剧情写到换装时沿用配图中的颜色和款式。优先列出本轮点名的服装，最多 12 套、1200 字。玩家指定的衣服和已经写明的剧情优先。尚未读到当前人物卡时，这一轮跳过服装提示。
+
 ## 生图渠道
+
+支持 `imageModels: 1` / `imageLibrary: 1` 的 Tavern 还能把本插件的已配置模型、人物与服装提供给其他插件复用。模型可以按保存的渠道选择，人物按卡片绑定筛选；通用服装与角色服装都有独立 ID。接口读取当前资料，编辑仍走本插件原有的保存和备份流程。接口定义与示例见 [Tavern 媒体与数据接口](https://github.com/flizzywine/dsh-tavern/blob/main/presets/tavern/skills/tavern-plugin/references/plugin-api-data.md)。
 
 | 提供商 | 接入方式 |
 |---|---|
@@ -186,6 +192,12 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 | 自定义 API | 选择 OpenAI Images、Gemini、Gemini Chat、AtlasCloud 原生异步接口、Seedream、Grok、Qwen、SD WebUI 或 NovelAI 协议 |
 
 同一个提供商可以配置多条渠道，分别保存名称、地址、模型和鉴权；自定义 API 渠道可选择受支持的协议，包括 AtlasCloud。可以在自己的服务和不同中转之间切换，无需把原配置删掉再重新填写。复制渠道后，需要给副本填写自己的密钥。
+
+OpenAI Images 协议的渠道（含选择该协议的自定义 API）可以设置**画质**：自动 / 低 / 中 / 高，只对 gpt-image 模型生效。画质越低出图越快、费用越低。默认「自动」不改变请求，与之前完全一致；其他协议没有对应的画质参数，因此不显示这一项。
+
+维护接入代码时，协议请求留在 `lib/image-providers.js`，能力判断留在 `lib/image-provider-capabilities.js`，渠道配置留在 `lib/image-channels.js`；对外模型与人物、服装投影集中在 `lib/image-catalog.js`。新增平台兼容已有协议时，优先配置自定义渠道；新增协议时再实现适配器。适配器不负责写剧情、保存人物或渲染界面。
+
+设置页运行任务时通过轻量 `/runtime` 读取进度，完成后同步完整状态；隐藏页面暂停轮询，慢请求不会重叠。这减少世界书、人物库和诊断信息的重复传输，不改变模型服务本身的生成耗时。
 
 这里接的是平台 API，网页登录账号不能代替 API Key。第三方服务只有在兼容相应协议时才能使用；单有网址和密钥，并不代表所有平台都能接入。
 
@@ -212,11 +224,11 @@ if ($LASTEXITCODE -ne 0) { throw 'DSH 官方 CLI 未能登记新包；保留备�
 默认生图模式为文生图；仅保存角色或服装参考图不会自动启用参考图模式；即使全局默认参考图，单张图片仍可明确选择文生图并忽略已保存的参考图。
 
 1. 选择支持参考图的渠道并填写准备使用的模型 ID。不同协议和模型的参考图能力、张数与参数限制可能不同，插件不维护模型允许名单，也不替你改成另一个型号。
-2. 在人物库中给角色或某套服装上传一张参考图，并保存人物库。角色、角色自己的服装和通用服装均可保存参考图；支持 PNG、JPEG、WebP，单张最多 32 MiB，可补充该对象的一致性要求。
-3. 在配图设置中把「默认生图模式」切换为参考图；单张图片的重绘界面可以覆盖本次模式，不改变全局选择。
+2. 在人物库中上传参考图并保存。角色自己的服装可以另存一张「角色×服装设定图」。生成选择这套服装时，优先使用合图约束该角色和服装，省去分别上传两张图。普通角色图、单独服装图及通用服装图仍按原用途使用。支持 PNG、JPEG、WebP，单张最多 32 MiB。
+3. 在配图设置中把「默认生图模式」切换为参考图，或选「自动（有参考图就用）」；单张图片的重绘界面可以覆盖本次模式，不改变全局选择。
 4. 生成后可查看实际提交的提示词、参考图编号与对象对应、平台错误。无需给规划模型开启视觉能力：规划读取正文和文字清单，参考图本身上传给所选生图渠道。
 
-**按对象选择，不按整个图库发送。** 每张图只使用该画面实际出现的角色及其当刻服装；同一对象不重复添加，但不同对象恰好使用同一张图片时仍保留各自编号与绑定。有图用图、缺图用文字；如果整张图没有任何可用参考图，会暂停并提示。全部选中的参考图按顺序提交，不自动裁掉超限图片；上传或模型校验失败时展示错误，不丢弃失败图片后悄悄提交剩余部分。
+**按对象选择，不按整个图库发送。** 每张图只使用该画面实际出现的角色及其当刻服装；同一对象不重复添加，但不同对象恰好使用同一张图片时仍保留各自编号与绑定。有图用图、缺图用文字；如果整张图没有任何可用参考图，参考图模式会暂停并提示，自动模式则把这一张按文生图提交（例如纯背景或只有未建档人物的画面）。渠道不支持参考图时，自动模式每张都按文生图提交。每张图的实际模式和选择原因记录在作业里，可在提示词编辑器的「实际提交输入」中查看。自动模式不会把上传失败、文件丢失或对象选择错误当成无图，也不会重试已提交请求。ComfyUI 只在无 LoadImage 的工作流中直接按文生图提交；带图片输入的工作流若本张无参考图，会在提交前提示切换工作流，避免误用导入时的旧图。重绘默认沿用原作业实际模式与参考图快照。全部选中的参考图按顺序提交，不自动裁掉超限图片；上传或模型校验失败时展示错误，不丢弃失败图片后悄悄提交剩余部分。
 
 **角色图与服装图职责不同。** 角色图用于面部、发型和体态，不继承其中的衣服、姿势、表情或背景；服装图用于服饰设计，不继承模特身份。动作、场景，以及剧情明确的换装、湿衣、破损、脱衣或外观变化优先，不能照搬参考场景。已有图的对象不再机械堆叠完整固定外貌词，缺图对象继续使用文字；一致性模板会自动加入，用户可以补充要求。
 
@@ -375,6 +387,82 @@ NovelAI 原生协议支持分角色提示词；启用世界书第 **11 条「分
 | 更新按钮不可用 | 检查是否 Git 安装、是否在 master、有无代码修改或重复目录 |
 
 只想少画几张，可以降低数量上限、开启智能选图，或改用手动生成。出图速度主要取决于模型、分辨率、显卡和远端队列，插件不会为了提速绕过服务端的执行规则。
+
+## 卡片工作台生图
+
+内置配图插件 3.9.0 起，卡片工作台提供 `gen_image`、`read_character`、`read_outfit`、`read_image_config`、`find_prompt` 五个工具。设置中的「启用工作台生图」独立控制这组工具；它们只在卡片模式出现。人物、服装、画风、渠道和 ComfyUI 工作流与剧情配图共用，修改后立即生效。
+
+3.10.1 修复工作台对话图片地址与画廊混入问题。`gen_image` 返回完整 HTTP(S) 图片地址和可原样使用的 `markdown`，从宿主 Web 服务读取当次端口；没有可用地址时在提交生图前停止。图片读取支持对话跨来源嵌入，管理接口仍保留同源限制。设置 → 配图 → 画廊中，游玩画廊只显示游玩来源，卡片图片在「卡片画廊」查看；共用队列不会把两边的图片混排。任务历史仍保留所有记录，`GET /history?source=play|card` 可按来源读取；旧工作台记录继续识别，图片不删除、不重新生成。
+
+卡片画廊删除遇到文件占用时会保留失败项供重试；批量清空只移除真正删除成功的记录，不把仍在磁盘上的图片误报为空。
+
+`read_image_config` 返回已保存渠道、精确 ID、实际提示词格式及参考图/种子能力，不联网探测。`gen_image` 的 `channel` 可临时指定任一已保存渠道，或填 `comfyui` 使用现有本地工作流，不改变默认设置。现有 NovelAI（含聊天中转）、OpenAI、Gemini 原生及聊天兼容、Grok、Seedream、Qwen、AtlasCloud、SD WebUI/Forge、自定义协议均复用同一份渠道适配器。标签模型使用标签；自然语言模型可使用中文或英文句子；结构化模式保留分节。
+
+参考图用 `generation_mode: reference` 和 `subjects: [{characterId, outfitId}]`，精确 ID 从查询工具取得，角色×服装成套图沿用共用引擎的优先级。多人物可传 `characters: [{prompt, centers, uc}]`，NovelAI 使用原生分角色输入，其他渠道由引擎合成。接口不支持的参考图、种子或采样器会在提交前报错；只传该渠道实际支持的参数。
+
+工作台沿用现有任务记录、在线渠道并发限制、取消和平台任务恢复。一次生成 1–4 张，后续失败时会返回已生成图片。遇到不确定任务先到配图记录查询，不自动重复生成。卡片画廊按出图会话归属展示，保留最近 500 张并提供删除入口；它与剧情配图记录分别展示。
+
+卡片世界书首次从 `card-worldbook.default.json` 初始化，以 `card-worldbook.json` 为准，规则索引按需生成且只在内容变化时写入。设置页里逐条编辑即写入，单条动作走串行队列；整本保存接口仍按读取时的 `revision` 校验，冲突时保留当前草稿。工作台规则不会注入普通剧情提示词。更新保留卡片世界书、开关、生成规则投影和用户工作流，下载源码包仅包含默认规则及静态 Skill。旧 `/dsh-tavern-gen/api` 地址继续可用，配置与人物库写入统一经过现有保存流程。
+
+## 其他插件按需复用
+
+3.10.0 将生图能力与完整插件入口分开。其他插件使用用户已保存的模型、人物和服装时，优先通过 Tavern 服务查询，不读取本插件的私有 JSON，也不用复制设置页。
+
+| 需要的能力 | Tavern 接口 |
+| --- | --- |
+| 读取可用模型 | `listImageModels({ gameId })` |
+| 只查人物 | `listImageCharacters({ gameId, query, limit })` |
+| 只查服装 | `listImageOutfits({ gameId, characterId, query, limit })` |
+| 按用户选择的模型出一张图 | `generateImage({ gameId, providerId, modelId, prompt, width, height, references, signal })` |
+
+在 `ctx.inject(['tavern'], scoped => { ... })` 中取得 `scoped.tavern`；以上调用放在用户操作或工具执行中。`gameId` 是当前游玩会话 ID，卡片插件仍受自己的卡片范围约束。模型列表中的 `providerId`、`modelId` 应原样传回；选中的模型被删除时应重新选择，不能悄悄切到另一个收费渠道。目录查询只读本地资料，不探测平台、不启动出图。人物和服装目录是分页的只读投影，修改记录继续使用带版本检查的共用人物接口。
+
+如果插件需要自己管理配置和数据，可以直接引用以下独立入口：
+
+| 包入口 | 用途与边界 |
+| --- | --- |
+| `dsh-tavern-image/channels` | 渠道元数据、协议能力、配置规范化及脱敏；可在浏览器使用 |
+| `dsh-tavern-image/generation` | `createImageGenerator(getConfig)`：在线渠道适配器，真正出图时才加载网络实现 |
+| `dsh-tavern-image/library` | `createImageLibrary(getDefinitions)`：从调用方持有的数据生成只读人物、服装目录 |
+| `dsh-tavern-image/prompts` | 提示词格式选择与组合；可在浏览器使用 |
+| `dsh-tavern-image/providers` | 服务端底层协议调用、平台任务恢复及连接测试 |
+| `dsh-tavern-image/client/transport` | 自定义前端复用 JSON 请求、只读重试与取消；不加载 React 和默认界面 |
+
+例如，一个只提供在线出图能力、没有设置页和图库的服务：
+
+~~~js
+import { createImageGenerator } from 'dsh-tavern-image/generation'
+
+export function createDrawingFeature(getConfig) {
+  const images = createImageGenerator(getConfig)
+  return {
+    models: () => images.models(),
+    draw: input => images.generate(input),
+  }
+}
+~~~
+
+`getConfig()` 返回调用方自己的 `imageBackend/activeImageChannel/imageChannels/maxImageBytes`，渠道可先用 `normalizeChannels` 规范化。`draw` 接受 `prompt/modelId/references/width/height/background/quality/signal`，返回 `{ data: Uint8Array, mediaType }`。出图前快照选中渠道，不修改全局默认；模型目录不读取凭据。`generation` 和 `library` 附带 TypeScript 类型定义，旧 `stageImageProvider/imageLibraryProvider` 名称继续兼容。
+
+独立适配器不登记工具、剧情钩子、HTTP 路由、图库或后台定时器，也不替调用方管理配置、并发、图片持久化和付费任务状态。ComfyUI 的工作流、排队与恢复继续由完整插件的任务引擎管理。需要现成队列和任务记录时复用运行中的插件；自己调用底层适配器时应保留取消信号和 `requestMayHaveSucceeded`，不自动重试结果不确定的付费请求。
+
+### 前后端维护边界
+
+浏览器源码在 `src/client/`：`main.js` 负责宿主注册，`media.js` 负责图片与提示词编辑，`settings-fields.js/settings.js` 负责设置，`card-worldbook.js/card-gallery.js` 负责工作台。`lib/client/transport.js` 只处理请求与取消；协议和参考图能力与后端共用 `lib/image-provider-capabilities.js`。前端通过 HTTP 交换数据，不直接引用服务端配置、凭据、文件存储或任务实现。
+
+服务端 `lib/http/routes.js` 只注册路由，模型目录与出图适配在 `lib/model-provider.js`，人物/服装投影在 `lib/library-provider.js`，剧情任务与持久化仍由 `lib/index.js` 组装。原 HTTP 地址、旧包入口和 Tavern 接口保持兼容。
+
+修改前端后运行 `node bin/build-image-client.mjs`，提交生成的 `client.js`；`pnpm build:client` 和 `pnpm check:client` 也会构建或检查它。运行时仍只加载这一份浏览器文件，不增加模块请求；源码分片不进入运行安装包。错误源码或过期产物会在检查时失败，生成前先验证语法。
+
+## 共用人物记录
+
+Tavern 内置配图插件 3.8.0 支持素材库「人物 → 生图 → 配图人物库」直接编辑同一条人物记录。可新建记录或选择已有记录，编辑名字、别名、分视角外貌、当前服装，并把素材包设定图写入配图参考图。多个人物库并存时需要选择来源。
+
+共用接口通过 `registerImageLibrary` 注册 `schemaVersion: 4` 与 `getCharacter/patchCharacter/createCharacter/putReferenceImage`。读取返回 `{version: 4, character}`。修改带上完整的 `expected` 人物快照，`traits` 按字段合并，`outfits` 按 ID 合并；未修改的字段与未列出的服装保留。允许编辑名字、别名、一致性文字、外貌、服装及参考图，不能修改人物卡绑定等插件专有字段。
+
+关联存为 `figurePackId + figureId`，人物图存为 `referenceImage`，穿指定服装的成套图存为服装的 `characterOutfitImage`。成套图优先于角色图与独立服装图；使用本地模型或 LoRA 时仍可不上传成套图。
+
+所有编辑、导入和重载共用保存队列，磁盘写入成功后才更新内存。人物库整页保存须原样携带 `GET /state` 返回的 `definitions.revision`；旧页面、旧脚本缺少版本或资料已改变时返回 HTTP 409 与 `REVISION_CONFLICT`，不会覆盖新内容。界面保留当前草稿，提供「重新载入最新人物库」；放弃未保存修改前会确认。外部脚本也应重新读取、由用户核对修改后再提交。素材库生图只在准备生成时读取已关联人物的正面外貌与服装文字，普通剧情和进度轮询不增加此查询。
 
 ## 兼容与许可
 

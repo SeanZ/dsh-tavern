@@ -1,8 +1,7 @@
 import { preserveInstallationFonts } from './preserve-font-assets.mjs'
-import officialDesktopRuntime from './official-desktop-runtime.cjs'
-import { beginDesktopProfileInstallation } from './desktop-profile-installation.mjs'
-import { ensureInitialTavernShortcut } from '../tavern-plugin/packages/dsh-profile-bridge/lib/shortcut.mjs'
-import { importUserHome } from './import-user-home.mjs'
+import { beginDesktopProfileInstallation, clearUninstalledInstallationRecord } from './desktop-profile-installation.mjs'
+import { assertLauncherSlotAvailable, hasNextTavern, LAUNCHER_BUNDLE, launcherBundles } from '../tavern-plugin/packages/dsh-tavern/lib/state.mjs'
+import { assertDesktopStopped, importUserHome } from './import-user-home.mjs'
 import { randomUUID } from 'node:crypto'
 import installationState from './installation-state.cjs'
 import { recordInstallationReceipt } from './installation-receipt.mjs'
@@ -12,11 +11,14 @@ import { recordUpdateDiagnostic } from './update-diagnostics.mjs'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { stopService } from './service-lifecycle.mjs'
 import { installCliRuntime, migrateCliHome } from './cli-runtime.mjs'
 import { extractDshVersion, assertCompatibleDshVersion, dshCompatibilityNotice } from './dsh-compatibility.mjs'
 import { patchThemeFontLimit } from './theme-font-limit.mjs'
 import { patchChatAnswerStep } from './chat-answer-step-patch.mjs'
+import { patchDeepSeekStreamOption } from './deepseek-stream-option-patch.mjs'
+import { patchPiAiNonStream } from './pi-ai-nonstream-patch.mjs'
 import { installPluginDependencies, resolveHostDependencies } from './plugin-dependencies.mjs'
 import { installBundledSceneImagePlugin } from './bundled-scene-image-plugin.mjs'
 import { isAsarPath } from './desktop-host-paths.mjs'
@@ -26,7 +28,7 @@ import { ensureUserExtensions } from '../tavern-plugin/lib/domain/user-extension
 import { beginProfileConfigurationUpdate, loadProfileManifest, mergeProfileManifest, prepareProfilePatch, prepareProfileWorkspace, syncProfileDependencyPatches } from './profile-configuration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
 import { assertProfileBundlesLoad } from './profile-bundle-check.mjs'
-import { INSTALL_HOSTS, SOURCE_ROOT, DSH_ROOT, LEGACY_DSH_ROOT, CLI_RUNTIME_ROOT, RUNTIME_HOST, PROFILE_DIR, LOG_DIR, SCRIPT_PATH, PROFILE, RELEASE_FILE, DEFAULT_COMMIT_URL, REQUIRED_SOURCE_FILES, findDshCommand, pinnedDesktopDsh, requireCommand, run, runInstallCommand, runInstallDsh } from './launcher-environment.mjs'
+import { INSTALL_HOSTS, SOURCE_ROOT, DSH_ROOT, BACKUP_ROOT, writeInstallationFile, LEGACY_DSH_ROOT, CLI_RUNTIME_ROOT, RUNTIME_HOST, PROFILE_DIR, LOG_DIR, SCRIPT_PATH, PROFILE, RELEASE_FILE, DEFAULT_COMMIT_URL, REQUIRED_SOURCE_FILES, findDshCommand, pinnedDesktopDsh, requireCommand, run, runInstallCommand, runInstallDsh } from './launcher-environment.mjs'
 
 // Own installation transaction and legacy-source discovery. Desktop never installs a CLI shim.
 export { extractDshVersion } from './dsh-compatibility.mjs'
@@ -59,8 +61,13 @@ function verifySource() {
 
 function prepareProfileConfiguration(host, dshVersion) {
   const source = JSON.parse(readFileSync(path.join(SOURCE_ROOT, 'package.json'), 'utf8'))
-  let current = loadProfileManifest({ profileDir: PROFILE_DIR })
-  if (current.name && current.name !== 'dsh-profile-tavern' && !(host === 'desktop' && current.name === 'dsh-profile-desktop')) {
+  const current = loadProfileManifest({ profileDir: PROFILE_DIR })
+  const desktop = host === 'desktop' || host === 'next'
+  const legacyNext = desktop && hasNextTavern(DSH_ROOT)
+  if (desktop && current.dsh?.profile?.bundles?.includes('dsh-tavern-bundle') && !legacyNext) {
+    throw new Error('无法核对现有 NEXT 酒馆包的来源，请先检查 tavern Profile。')
+  }
+  if (current.name && current.name !== 'dsh-profile-tavern' && !legacyNext && !(host === 'desktop' && current.name === 'dsh-profile-desktop')) {
     throw new Error(`目标 profile 已属于其他项目：${current.name}`)
   }
 
@@ -68,6 +75,11 @@ function prepareProfileConfiguration(host, dshVersion) {
   const manifest = mergeProfileManifest({
     source,
     current,
+    previousLaunchers: [
+      ...launcherBundles(current, PROFILE_DIR, 'desktop'),
+      ...launcherBundles(current, PROFILE_DIR, 'next'),
+      ...(legacyNext ? ['dsh-tavern-bundle'] : []),
+    ],
     pluginPath,
     dataRoot: resolveTavernDataRoot({ dshHome: DSH_ROOT }),
     host,
@@ -77,13 +89,16 @@ function prepareProfileConfiguration(host, dshVersion) {
     profileDir: PROFILE_DIR,
     templateText: readFileSync(path.join(SOURCE_ROOT, 'cordis.patch.yml'), 'utf8'),
     legacyManagedText: readFileSync(path.join(SOURCE_ROOT, 'config', 'legacy-profile-patch-v0.6.yml'), 'utf8'),
+    host,
     profileConfigurationVersion: current.dshTavern && current.dshTavern.profileConfigurationVersion,
   })
-  if (host === 'desktop') {
+  if (desktop) {
+    assertLauncherSlotAvailable(current, PROFILE_DIR, { replaceNext: true })
     manifest.dshTavern.officialDesktop = true
     manifest.dshTavern.profileBridge = true
-    manifest.dsh.profile.bundles = [...new Set([...manifest.dsh.profile.bundles, 'dsh-profile-bridge'])]
-    manifest.dependencies['dsh-profile-bridge'] = `link:${path.join(pluginPath, 'packages/dsh-profile-bridge').replaceAll(path.sep, '/')}`
+    if (!manifest.dsh.profile.bundles.includes(LAUNCHER_BUNDLE)) manifest.dsh.profile.bundles.push(LAUNCHER_BUNDLE)
+    manifest.dependencies[LAUNCHER_BUNDLE] = `link:${path.join(pluginPath, 'packages/dsh-tavern').replaceAll(path.sep, '/')}`
+    manifest.dshTavern.managedBundles.push(LAUNCHER_BUNDLE)
   }
   return { manifest, patchText }
 }
@@ -241,7 +256,17 @@ export async function recordInstalledRelease(options = {}) {
   return release
 }
 
-export async function installProfile(host = RUNTIME_HOST) {
+export async function installProfile(host = RUNTIME_HOST, { guiRoot } = {}) {
+  if (host === 'next') {
+    for (const directory of [DSH_ROOT, path.dirname(PROFILE_DIR), PROFILE_DIR]) {
+      if (pathExistsNoFollow(directory) && !lstatSync(directory).isDirectory()) throw new Error(`Next 需要真实的 Profile 目录：${directory}`)
+    }
+    const desktop = path.join(DSH_ROOT, 'profiles', 'desktop')
+    if (pathExistsNoFollow(desktop) && !lstatSync(desktop).isDirectory()) {
+      throw new Error('NEXT 需要真实的 desktop 目录。请先在官方桌面切回原版 DSH，再安装酒馆。')
+    }
+    assertDesktopStopped([DSH_ROOT], { requireGuiClosed: true, guiRoot })
+  }
   const attemptId = process.env.DSH_TAVERN_INSTALL_ATTEMPT || randomUUID()
   const lease = installationState.acquireInstallation({ dshHome: DSH_ROOT, sourceRoot: SOURCE_ROOT, host, attemptId })
   let safeToRelease = true
@@ -262,11 +287,11 @@ export async function installProfile(host = RUNTIME_HOST) {
   const runInstall = (command, args, options = {}) => stage(options.label || command, () => runInstallCommand(command, args, { ...options, ...supervisedOptions() }))
   const runDsh = (command, args, options = {}) => stage(args.includes('--dump-config') ? '验证 Tavern 配置' : '读取 DSH 版本', () => runInstallDsh(command, args, { ...options, ...supervisedOptions() }))
   try {
-    const receipt = await installProfileOwned(host, { attemptId, runInstall, runDsh })
+    const receipt = await installProfileOwned(host, { attemptId, runInstall, runDsh, guiRoot })
     // A manual local install is authoritative only after the same complete
     // validation/finalization path succeeds. Nested installs leave final status
     // to their updater, which still has to verify the bootstrap outcome.
-    if (lease.created) await state.write({ phase: 'completed', host, attemptId, completedAt: receipt.verifiedAt, requiresRestart: host === 'desktop' }, { attemptId })
+    if (lease.created) await state.write({ phase: 'completed', host, attemptId, completedAt: receipt.verifiedAt, requiresRestart: host === 'desktop' || host === 'next' }, { attemptId })
   } catch (error) {
     if (error.unsafeToRetry) { safeToRelease = false; lease.retain(String(error.message || error)) }
     if (lease.created) await state.write({ phase: safeToRelease ? 'failed' : 'blocked', host, attemptId, failedAt: Date.now(), repairSince: Date.now(), repairRequired: true, error: String(error.message || error) }, { attemptId })
@@ -274,8 +299,12 @@ export async function installProfile(host = RUNTIME_HOST) {
   } finally { if (safeToRelease) lease.release() }
 }
 
-async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
-  requireCommand('node', '请安装 Node.js 22.19 或更高版本')
+async function installProfileOwned(host, { attemptId, runInstall, runDsh, guiRoot }) {
+  const publishGate = host === 'desktop' && process.env.DSH_TAVERN_LATE_PUBLISH === '1' ? process.env.DSH_TAVERN_PUBLISH_GATE : undefined
+  const installInactive = Boolean(publishGate && process.env.DSH_TAVERN_INSTALL_INACTIVE === '1')
+  const preparingForPid = publishGate ? Number(process.env.DSH_TAVERN_PREPARING_DESKTOP_PID) : undefined
+  if (publishGate && (!Number.isInteger(preparingForPid) || preparingForPid <= 1)) throw Error('缺少正在准备安装的桌面进程。')
+  requireCommand('node', '请安装 Node.js 22.19 或更高版本（DSH 0.2.2 起需要 24.9 或更高版本）')
   requireCommand('pnpm', '请运行 npm install -g pnpm')
   verifySource()
   if (host === 'cli' && existsSync(path.join(LOG_DIR, 'tavern.pid.json'))) await stopService()
@@ -295,8 +324,10 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
       const imported = importUserHome({ source: process.env.DSH_TAVERN_IMPORT_HOME, target: DSH_ROOT })
       console.log(`${imported.alreadyImported ? '已继承过该目录，保留当前进度' : '旧目录数据继承完成'}；双方备份：${imported.backup}`)
     }
-    if (host === 'desktop') {
-      bridge = beginDesktopProfileInstallation({ home: DSH_ROOT, sourceRoot: SOURCE_ROOT })
+    // DSH_TAVERN_UNIFIED_DESKTOP: both desktop hosts publish the same profile and launcher.
+    if (host === 'desktop' || host === 'next') {
+      const launcherGate = host === 'next' && process.env.DSH_TAVERN_LAUNCHER_INSTALL === '1' ? process.env.DSH_TAVERN_PUBLISH_GATE : undefined
+      bridge = beginDesktopProfileInstallation({ home: DSH_ROOT, sourceRoot: SOURCE_ROOT, host, guiRoot, preparingForPid, launcherGate })
       if (bridge) console.log(`${bridge.refreshOnly ? '原版切换组件备份' : 'Profile 完整备份'}：${bridge.backup}`)
     }
     mkdirSync(PROFILE_DIR, { recursive: true })
@@ -304,7 +335,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
     const dataRoot = resolveTavernDataRoot({ dshHome: DSH_ROOT })
     const migration = await migrateLegacyTavernData({
       targetRoot: dataRoot,
-      backupRoot: path.join(DSH_ROOT, 'backups', 'dsh-tavern-data-upgrade'),
+      backupRoot: path.join(BACKUP_ROOT, 'dsh-tavern-data-upgrade'),
       legacyRoots: legacyDataRoots(),
     })
     for (const directory of ['cards', 'chats', 'scripts', 'sources', 'skills', 'diffs']) {
@@ -344,7 +375,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
       syncProfileDependencyPatches({ sourceRoot: SOURCE_ROOT, profileDir: PROFILE_DIR, workspaceText })
       // pnpm keeps an existing link whose target text matches, so untraversable Windows links
       // (they stop the desktop host at startup) must be replaced before it runs.
-      for (const directory of [PROFILE_DIR, bridge?.refreshOnly ? null : bridge?.desktopStage].filter(Boolean)) {
+      for (const directory of [PROFILE_DIR, bridge?.refreshOnly || publishGate ? null : bridge?.desktopStage].filter(Boolean)) {
         for (const link of repairDirectoryLinksSync(path.join(directory, 'node_modules'))) console.log(`已修复无法访问的依赖链接：${link}`)
       }
       // This generated profile changes dependencies and patch settings on upgrade.
@@ -369,7 +400,7 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
         if (patched === null) console.log('当前 DSH 的字号设置与补丁不符，已跳过；界面字号仍以宿主上限为准。')
         else if (patched) console.log('已将 DSH 原有字号上限放宽到 32px。')
       }
-      const [chat] = resolveHostDependencies({ dsh, host, requiredExports: { '@deepseek-ai/dsh-client-ui-chat': null } })
+      const [chat, deepseek] = resolveHostDependencies({ dsh, host, requiredExports: { '@deepseek-ai/dsh-client-ui-chat': null, '@deepseek-ai/dsh-llm-deepseek': null } })
       // An asar host is read-only: the page applies the same patch when the chat view loads
       // (tavern-plugin/lib/domain/chat-answer-boot-patch.js). A mismatch is skipped, never rolled back.
       if (!isAsarPath(chat.directory)) {
@@ -377,12 +408,44 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
         if (patched === null) console.log('当前 DSH 的对话界面与回复步骤补丁不符，已跳过。')
         else if (patched) console.log('已修正 DSH 对话界面：整理过正文的回合不再被当作过程收起。')
       }
+      if (!isAsarPath(deepseek.directory)) {
+        const patched = patchDeepSeekStreamOption(deepseek.directory)
+        if (patched === null) console.log('当前 DSH 的 DeepSeek 适配器与流式设置补丁不符，已跳过；非流式仍在响应完成后一次性显示。')
+        else if (patched) console.log('已为 DeepSeek 适配器启用流式/非流式请求切换。')
+      }
+      let piAi = null
+      try {
+        const [adapter] = resolveHostDependencies({ dsh, host, requiredExports: {
+          '@deepseek-ai/dsh-llm-pi-ai': null,
+        } })
+        // pi-ai's package exports map has no CommonJS entry, so resolve it as a sibling
+        // of the adapter instead of asking resolveHostDependencies for its main module.
+        const sdkDirectory = [
+          path.join(path.dirname(path.dirname(adapter.directory)), '@earendil-works', 'pi-ai'),
+          path.join(adapter.directory, 'node_modules', '@earendil-works', 'pi-ai'),
+        ].find(candidate => existsSync(path.join(candidate, 'package.json')))
+        if (sdkDirectory) piAi = { adapter, sdkDirectory }
+      } catch {}
+      // pi-ai only needs this when an OpenAI-compatible provider is configured. Missing
+      // packages are not an install failure; the common buffer remains the fallback.
+      if (piAi && !isAsarPath(piAi.adapter.directory) && !isAsarPath(piAi.sdkDirectory)) {
+        const patched = patchPiAiNonStream({ adapterDirectory: piAi.adapter.directory, sdkDirectory: piAi.sdkDirectory })
+        if (patched === null) console.log('当前 DSH 的 pi-ai 适配器与非流式补丁不符，已跳过；非流式仍在响应完成后一次性显示。')
+        else if (patched) console.log('已为 pi-ai 的 OpenAI 兼容模型启用上游非流式请求。')
+      }
       if (bridge) {
         // Refresh publication is reversible until the installation receipt exists.
         // Validate the newly published independent bridge, not its stale predecessor.
         if (bridge.refreshOnly) bridge.finish()
         await runInstall('node', [path.join(SOURCE_ROOT, 'bin', 'validate-desktop-profile.mjs'), bridge.desktopStage], { label: '验证原版 Desktop 切换入口', timeoutMs: 60_000 })
-        if (!bridge.refreshOnly) bridge.finish()
+        if (publishGate && !installInactive) {
+          writeFileSync(publishGate + '.progress', '安装和验证完成，等待确认重启…')
+          writeFileSync(publishGate + '.ready', '')
+          const deadline = Date.now() + 15 * 60_000
+          while (!existsSync(publishGate) && Date.now() < deadline) await delay(250)
+          if (!existsSync(publishGate) || readFileSync(publishGate, 'utf8') !== 'publish') throw Error('未完成重启确认，已取消配置切换。')
+        }
+        if (!bridge.refreshOnly && !installInactive) bridge.finish()
       }
       transaction.commit()
     } catch (error) {
@@ -396,22 +459,17 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh }) {
       console.warn(`未能记录安装提交号，不影响本次安装：${String(error?.message || error)}`)
     }
 
-    writeFileSync(path.join(SOURCE_ROOT, '.dsh-tavern-local.json'), JSON.stringify({ host, dshHome: DSH_ROOT }) + '\n')
+    writeInstallationFile({ host, dshHome: DSH_ROOT })
     runtime?.commit()
     const receipt = await recordInstallationReceipt({ sourceRoot: SOURCE_ROOT, dshHome: DSH_ROOT, host, attemptId, bridgeUpdateId: bridge?.bridgeUpdateId })
     bridge?.commit()
-    if (host === 'desktop') {
-      try {
-        const shortcut = ensureInitialTavernShortcut({ paths: { home: DSH_ROOT, profilesDir: path.join(DSH_ROOT, 'profiles') }, runner: pinnedDesktopDsh(host)?.executable || officialDesktopRuntime.discover() })
-        if (!shortcut.skipped) console.log(`桌面快捷方式已就绪：${shortcut.path}`)
-      } catch (error) {
-        console.warn(`未能添加桌面快捷方式，可稍后在设置中手动添加：${error?.message || error}`)
-      }
-    }
+    if (!clearUninstalledInstallationRecord(DSH_ROOT)) console.warn('未能清除卸载标记：请检查 profile-bridge/installation.json；本次安装已完成。')
     console.log('DSH Tavern 已安装。')
     console.log(host === 'cli' ? `已安装独立 DSH ${dshVersion}：${CLI_RUNTIME_ROOT}；不使用全局 DSH。` : `已复用当前 DSH ${dshVersion} 的本地依赖；未升级或降级宿主。`)
     if (host === 'desktop') {
       console.log(`请重启官方桌面版 DeepSeek Harness，酒馆已安装到 ${path.basename(PROFILE_DIR)} 配置；原 Tavern 数据目录保持不变。`)
+    } else if (host === 'next') {
+      console.log('请在 DSH NEXT 的「设置 → 桌面设置 → Profile」选择 tavern。')
     } else if (host === 'android') {
       console.log('Android Tavern Profile 已配置。')
     } else {

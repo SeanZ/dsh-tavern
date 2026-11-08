@@ -1,3 +1,46 @@
+		// The regeneration RPC returns only after the model finishes, while its durable
+		// regenInProgress marker is written after request preparation. Keep re-reading
+		// until that marker is actually visible; a fixed burst can all run before the
+		// marker exists and leaves the replaced reply on screen for the whole request.
+		function createTavernRegenerationViewRefresher(options) {
+			const liveView = options.liveTavernView;
+			const storyChanged = options.storyChanged || function () {};
+			const schedule = options.schedule || function (run, delay) { return window.setTimeout(run, delay); };
+			const cancel = options.cancel || function (timer) { window.clearTimeout(timer); };
+			const pending = new Map();
+			function stop(id) {
+				const ticket = pending.get(id);
+				if (!ticket) return;
+				pending.delete(id);
+				if (ticket.timer !== null) cancel(ticket.timer);
+			}
+			function refresh(id) {
+				liveView.invalidate(id);
+				try { storyChanged(id); } catch (_) { /* the live view still refreshes without DOM events */ }
+			}
+			return function notifyRegenerating(sessionId, active) {
+				const id = String(sessionId || "");
+				if (id === "") return;
+				stop(id);
+				refresh(id);
+				if (active !== true) return;
+				const ticket = { timer: null };
+				pending.set(id, ticket);
+				function confirmMarker() {
+					if (pending.get(id) !== ticket) return;
+					refresh(id);
+					if (pending.get(id) !== ticket) return;
+					const snapshot = liveView.getSnapshot(id);
+					if (snapshot && snapshot.view && snapshot.view.regenInProgress === true) {
+						pending.delete(id);
+						return;
+					}
+					ticket.timer = schedule(confirmMarker, 500);
+				}
+				ticket.timer = schedule(confirmMarker, 500);
+			};
+		}
+
 		function createPlayControlsFeatureModule() {
 			const historyProjection = createTurnHistoryProjection();
             const displayRefreshes = new Map();
@@ -368,23 +411,47 @@
 		// @include status-panel.js
 		// @include gal-choices.js
 
+		const TAVERN_CARD_APP_IDLE = Object.freeze({ visible: false, attached: false, recovering: false, expanded: false });
+
 		function TavernCardAppDock(props) {
 			const slotRef = React.useRef(null);
 			const controllerRef = React.useRef(null);
-			const presence = React.useSyncExternalStore(tavernCardAppPresence.subscribe, tavernCardAppPresence.inspect);
+			const activeRef = React.useRef(props.active !== false);
+			activeRef.current = props.active !== false;
+			const [presence, setPresence] = React.useState(TAVERN_CARD_APP_IDLE);
 			React.useEffect(function () {
+				setPresence(TAVERN_CARD_APP_IDLE);
 				if (!slotRef.current) return;
-				const controller = createTavernCardAppDock({ document: document, slot: slotRef.current, sessionId: props.sessionId, onChange: tavernCardAppPresence.change });
+				const presenceStore = createTavernCardAppPresence({ onChange: setPresence });
+				const controller = createTavernCardAppDock({
+					document: document,
+					slot: slotRef.current,
+					sessionId: props.sessionId,
+					active: activeRef.current,
+					onChange: presenceStore.change
+				});
 				controllerRef.current = controller;
-				return function () { controllerRef.current = null; controller.dispose(); };
-			}, []);
-			return React.createElement("section", { className: "dsh-tavern-status-section dsh-tavern-card-app-section", hidden: !presence.attached },
+				return function () {
+					controllerRef.current = null;
+					controller.dispose();
+					presenceStore.dispose();
+				};
+			}, [props.sessionId]);
+			React.useEffect(function () {
+				if (controllerRef.current && typeof controllerRef.current.setActive === "function") {
+					controllerRef.current.setActive(props.active !== false);
+				}
+			}, [props.active]);
+			return React.createElement("section", { className: "dsh-tavern-status-section dsh-tavern-card-app-section", hidden: !presence.visible },
 				React.createElement("div", { className: "dsh-tavern-card-app-head" },
 					React.createElement("div", { className: "dsh-tavern-status-label" }, "人物卡应用"),
-					React.createElement("button", { className: "dsh-tavern-btn", disabled: !presence.attached, onClick: function () { if (controllerRef.current) controllerRef.current.open(); } }, presence.attached ? "打开手机" : "恢复中…")
+					React.createElement("div", { className: "dsh-tavern-card-app-actions" },
+						presence.attached ? React.createElement("button", { type: "button", className: "dsh-tavern-btn", title: "刷新手机界面", onClick: function () { if (controllerRef.current) controllerRef.current.trigger("刷新"); } }, "刷新") : null,
+						React.createElement("button", { type: "button", className: "dsh-tavern-btn", disabled: !presence.attached, onClick: function () { if (controllerRef.current) controllerRef.current.toggle(); } }, presence.attached ? (presence.expanded ? "收起手机" : "打开手机") : "恢复中…")
+					)
 				),
 				presence.recovering ? React.createElement("div", { className: "dsh-tavern-card-app-recovering", role: "status" }, "正在恢复人物卡应用…") : null,
-				React.createElement("div", { ref: slotRef, className: "dsh-tavern-card-app-slot" })
+				React.createElement("div", { ref: slotRef, className: "dsh-tavern-card-app-slot", "data-collapsed": presence.attached && !presence.expanded ? "true" : undefined })
 			);
 		}
 
@@ -394,6 +461,12 @@
 				function () { return props.sessions.binding(props.sessionId); },
 				function () { return props.sessions.binding(props.sessionId); }
 			);
+			const activeSessionId = React.useSyncExternalStore(
+				function (listener) { return props.sessions.list.subscribe(listener); },
+				function () { return String(tavernMainSessionId(props.sessions) || ""); },
+				function () { return String(tavernMainSessionId(props.sessions) || ""); }
+			);
+			const active = !activeSessionId || activeSessionId === String(props.sessionId || "");
 			const h = React.createElement;
 			if (!binding) return h("aside", { className: "dsh-tavern-status" },
 				h("div", { className: "dsh-tavern-status-head" }, h("div", { className: "dsh-tavern-status-title" }, "酒馆状态")),
@@ -414,12 +487,19 @@
 					function () { return selector(chat.getSnapshot()); }
 				);
 			}
-			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab });
+			return h(TavernStatusPanel, { sessionId: props.sessionId, active: active, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab });
 		}
 
+        const notifyRegenerating = createTavernRegenerationViewRefresher({
+            liveTavernView,
+            storyChanged: id => {
+                if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("dsh-tavern-story-mutated", { detail: { sessionId: id } }));
+            }
+        });
         const interactions = createPlayInteractionFlow({ rpc, coordinationView, coordination: tavernCoordination,
             applyBodyResult: (sessionId, view, tail) => applyBodyRegenerationResult({ liveTavernView, historyProjection, sessionId, view, tail }),
             reportError: (source, error) => tavernErrorHub.report(source, error),
+            notifyRegenerating,
             bodyErrorText: error => playerErrorText(error, { fallback: "重新生成没有完成" }), timers: window
         });
         const setCandidatePanel = interactions.candidates.set;
@@ -443,31 +523,16 @@
 
         // @include gal-regenerate.js
 
-		// A failed turn never committed a story round, so recovering it is not a
-		// rollback: remove the interrupted reply and resend the same input, which
-		// lets the provider reuse the cached prompt prefix.
-		async function submitFailedTurnReplay(sessionId) {
-			const res = await rpc("replayTurn", {}, sessionId);
-			applyBodyRegenerationResult({ liveTavernView: liveTavernView, historyProjection: historyProjection, sessionId: sessionId, view: res.view, tail: null });
-			setRegenPanel(null);
-			setCandidatePanel(null);
-			setCandidateGuidePanel(null);
-			notifyTavernDataChanged(["sessions"], "play-controls");
-			tavernCoordination.invalidate(sessionId);
-			return res;
-		}
-		// the stage's 「⚠ 正文生成失败 · 重新生成」 is this same replay.
-		function replayFailedStageTurn(sessionId) {
-			return submitFailedTurnReplay(sessionId)
-				.catch(function (err) { tavernErrorHub.report("重新生成本轮", err); })
-				.finally(function () { liveTavernView.invalidate(sessionId); });
-		}
+		// @include features/send-long-press.js
 
 		// Clear the failed or stopped latest round back to before it began (story, variables
 		// and progress stay as they were) and hand its input back to the box.
 		async function withdrawFailedTavernTurn(sessionId, inputActions, currentDraft) {
 			const result = await rpc("rollbackTurn", { expectedTurn: null }, sessionId) || {};
 			historyProjection.rolledBack(sessionId, result.view);
+			// The story transcript reads Chat.messages, not the native rows hidden above.
+			// Re-read it now so the withdrawn persisted bubble leaves before a page reload.
+			window.dispatchEvent(new CustomEvent("dsh-tavern-story-mutated", { detail: { sessionId: sessionId } }));
 			setCandidatePanel(null); setRegenPanel(null); setCandidateGuidePanel(null);
 			const text = String(result.view && result.view.clearedInput || "");
 			if (text.trim() !== "") {
@@ -516,6 +581,16 @@
 				} }));
 		}
 
+		function MobileComposerStatsToggle() {
+			const [open, setOpen] = React.useState(false);
+			const label = open ? "收起运行信息" : "展开运行信息";
+			return React.createElement("button", {
+				type: "button", className: "dsh-tavern-mobile-stats-toggle",
+				"aria-label": label, title: label, "aria-expanded": open,
+				onClick: function () { setOpen(!open); }
+			}, React.createElement("span", { "aria-hidden": "true", className: "dsh-tavern-mobile-stats-glyph" }, "⌃"));
+		}
+
 		function CandidateDockActions(props) {
 			const address = props.sessions && props.sessions.subagentAddress(props.sessionId);
 			const ownerSessionId = address ? address.parentSessionId : props.sessionId;
@@ -534,12 +609,16 @@
 				!compacting && live.view.contextCompaction.warning ? h("button", { type: "button", className: "fork-compaction-dismiss", "aria-label": "关闭这条提示", title: "关闭这条提示", onClick: function () {
 					rpc("dismissCompactionWarning", { sessionId: ownerSessionId }, ownerSessionId).then(function () { liveTavernView.invalidate(ownerSessionId); }, function (error) { tavernErrorHub.report("关闭压缩提示", error); });
 				} }, "×") : null) : null;
-			if (address) return isPlayMode(sessionMode) ? h("div", { className: "dsh-tavern-dock-actions" }, h(TavernStopBackgroundAction, { sessionId: ownerSessionId })) : null;
+			if (address) return isPlayMode(sessionMode) ? h("div", { className: "dsh-tavern-dock-actions" },
+				h("div", { className: "dsh-tavern-dock-actions-primary" }, h(TavernStopBackgroundAction, { sessionId: ownerSessionId })),
+				h(MobileComposerStatsToggle)) : null;
 			return h("div", { className: "dsh-tavern-dock-actions",
 				"data-compacting": live.view && live.view.contextCompaction && live.view.contextCompaction.operation && live.view.contextCompaction.operation.status === "running" || undefined },
-				isPlayMode(sessionMode) && latestMessageId && !storyView ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
-				isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null,
+				h("div", { className: "dsh-tavern-dock-actions-primary" },
+					isPlayMode(sessionMode) && !storyView ? React.createElement(CandidateAction, Object.assign({}, props, { messageId: latestMessageId })) : null,
+					isPlayMode(sessionMode) && live.view && !live.view.canClearIncompleteReply ? React.createElement(TavernPluginComposerActions, { sessionId: props.sessionId, turn: imageTurn, running: running }) : null),
 				isPlayMode(sessionMode) ? React.createElement(TavernMoreActions, props) : React.createElement(TavernCompactionAction, props),
+				React.createElement(MobileComposerStatsToggle),
                 compactionStatus
 			);
 		}
@@ -596,20 +675,20 @@
 			const hideProcess = play && !(preferences && preferences.showPlayProcess === true);
 			const turns = state.view && state.view.suppressedDshErrorTurns || [];
 			const hiddenTurns = state.view && state.view.hiddenDshErrorTurns;
-			const replayTurn = state.view && state.view.canReplayFailedTurn ? Number(state.view.replayFailedTurn) || null : null;
+			// The failure still owning the tail: its row offers withdraw and rewind.
+			const failedTailTurn = state.view && state.view.failedTailTurn !== null && state.view.failedTailTurn !== undefined
+				? (state.view.failedTailPersisted === true && Number(state.view.failedTailTurn) === 0 ? 0 : Number(state.view.failedTailTurn))
+				: null;
 			const staleTurns = state.view && state.view.staleDshErrorTurns || [];
 			const filteredStreak = Number(state.view && state.view.filteredFailureStreak) || 0;
-			// 右侧「轮次导航」只列正文行计划里真的画了正文的轮次；点击时自己滚、缺行时自己往前翻。
-			const railPlan = React.useMemo(function () { return state.view ? tavernPlanOf(state.view) : null; }, [state.view && state.view.transcriptTurns, state.view && state.view.transcriptFrom]);
-			const railAccept = railPlan ? function (turn) { return tavernPlanShowsRow(railPlan, turn, "reply"); } : null;
-			const railKey = railPlan ? JSON.stringify(railPlan) : "";
+			// 右侧「楼层跳转」照页面上真的画出来的楼层画刻度，不再需要正文行计划。
 			const canRewind = !!(state.view && state.view.canRegenerate === true);
 			const draft = props.useInput(snapshot => snapshot.draft);
 			const chatShown = useTavernChatShown(props.sessionId);
 			const draftRef = React.useRef(draft);
 			draftRef.current = draft;
-			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(replayTurn || "")
-				+ ":" + staleTurns.join(",") + ":" + filteredStreak + ":" + canRewind + ":rail:" + railKey;
+			const revision = turns.join(",") + ":" + (Array.isArray(hiddenTurns) ? "saved:" + hiddenTurns.join(",") : "local") + ":" + String(failedTailTurn === null ? "" : failedTailTurn)
+				+ ":" + staleTurns.join(",") + ":" + filteredStreak + ":" + canRewind;
 			// Clearing a failed tail is the first half of both recovery actions.
 			async function clearFailedTail() {
 				const result = await rpc("rollbackTurn", { expectedTurn: null }, props.sessionId);
@@ -626,31 +705,27 @@
 				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
-				const rail = createTurnRailFilter(root);
+				const rail = createStoryFloorRail(root);
 				const controls = createTurnErrorControls(root, {
-                    sessionId: props.sessionId, storage: window.localStorage, hiddenTurns: hiddenTurns, replayTurn: replayTurn,
+                    sessionId: props.sessionId, storage: window.localStorage, hiddenTurns: hiddenTurns, failedTailTurn: failedTailTurn,
+                    onVisible: function (turn) { tavernPlayEvents.emitOnce(props.sessionId + ":" + turn, "native_error", props.sessionId, { nativeTurn: turn }); },
                     onToggle: !Array.isArray(hiddenTurns) ? undefined : async function (turn, hidden) {
                         const result = await rpc("setFailedErrorVisibility", { sessionId: props.sessionId, turn: turn, hidden: hidden });
                         liveTavernView.setView(props.sessionId, result.view);
                     },
                     // Clearing the stacked line only touches the cleared failures;
-                    // the tail failure keeps its replay and withdraw buttons.
+                    // the tail failure keeps its withdraw and rewind buttons.
                     onRemoveStale: !Array.isArray(hiddenTurns) ? undefined : async function (turns) {
                         const result = await rpc("setAllFailedErrorVisibility", { sessionId: props.sessionId, hidden: true, turns: turns });
                         liveTavernView.setView(props.sessionId, result.view);
                     },
-                    onReplay: replayTurn === null ? undefined : async function () {
-                        try { await submitFailedTurnReplay(props.sessionId); }
-                        catch (error) { tavernErrorHub.report("重新生成本轮", error); }
-                        finally { liveTavernView.invalidate(props.sessionId); }
-                    },
                     staleTurns: staleTurns, filteredStreak: filteredStreak, canRewind: canRewind,
-                    onWithdraw: replayTurn === null ? undefined : async function () {
+                    onWithdraw: failedTailTurn === null ? undefined : async function () {
                         try { await withdrawFailedTavernTurn(props.sessionId, props.inputActions, draftRef.current); }
                         catch (error) { tavernErrorHub.report("撤回这条输入", error); }
                         finally { refreshAfterRecovery(); }
                     },
-                    onRewind: replayTurn === null || !canRewind ? undefined : async function () {
+                    onRewind: failedTailTurn === null || !canRewind ? undefined : async function () {
                         try {
                             const cleared = await clearFailedTail();
                             const target = Number(cleared.view && cleared.view.rollbackTargetTurn) || null;
@@ -666,7 +741,7 @@
 				// The live round keeps its
 				// progress, and the error row below owns the one control that brings them back.
 				const stepFold = createStepFoldControls(root, { running: running === true, play: hideProcess });
-				const apply = function () { projection.apply(turns); controls.apply(); stepFold.apply(); rail.apply({ accept: railAccept }); };
+				const apply = function () { projection.apply(turns); controls.apply(); stepFold.apply(); rail.apply(); };
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
 				return function () { observer.disconnect(); controls.dispose(); stepFold.dispose(); projection.dispose(); rail.dispose(); };
@@ -705,7 +780,8 @@
 				let frame = null;
 				function applyProjectionState() {
 					frame = null;
-					historyProjection.apply(props.sessionId, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null, backgroundTurns);
+					historyProjection.apply(props.sessionId, transcriptTurns ? { turns: transcriptTurns, from: transcriptFrom } : null, backgroundTurns,
+						{ regenerating: Boolean(suppressionState.view && suppressionState.view.regenInProgress === true) });
 				}
 				function scheduleProjection() {
 					if (frame === null) frame = window.requestAnimationFrame(applyProjectionState);
@@ -728,7 +804,7 @@
 			return null;
 		}
         const { CandidateQuestion, CandidateGuidePanel, RegenPanel } = createPlayInteractionPanels({
-            interactions, useCandidatePanel, useCandidateGuidePanel, useRegenPanel, dismissCandidateError, usePhonePlay: usePhonePlay
+            interactions, useCandidatePanel, useCandidateGuidePanel, useRegenPanel, dismissCandidateError
         });
         const { HeaderItems: TavernHeaderItems } = createTavernHeaderFeature({
             StatusAction: TavernConversationSettingsAction, ExportAction: TavernConversationExportAction,
@@ -834,10 +910,12 @@
 			)), ctx.sessions), "dsh-tavern: rollback-to-turn action");
 			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-actions", order: -130, label: "候选项操作" },
-				function (props) { return React.createElement(CandidateDockActions, Object.assign({}, props, {
+				function (props) { return React.createElement(React.Fragment, null,
+                    !ctx.sessions.subagentAddress(props.sessionId) && React.createElement(tavernReplyObserverFeature.GamePage, { sessionId: props.sessionId }),
+                    React.createElement(CandidateDockActions, Object.assign({}, props, {
 					sessions: ctx.sessions,
 					executeCompact: function (sessionId) { return ctx.remote.commands.execute(sessionId, "/compact", []); }
-				})); }
+				}))); }
 			)), "dsh-tavern: candidate dock actions");
 			// 故事视图模式下不注册候选项面板（「下一步行动」与「重新生成候选项」）；条目里的失败轮投影只服务 Tavern 聊天行。
 			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
@@ -852,12 +930,17 @@
 				{ name: "conversation.input.dock", id: "dsh-tavern-candidate-guide", order: -115, label: "重新生成候选项" },
 				function (props) { return React.createElement(CandidateGuidePanel, props); }
 			)), ctx.sessions), "dsh-tavern: candidate guide panel");
+			// 长按监听放在常驻会话层：input.dock 在 session/inputState 未就绪时会整棵卸载，不能承载全局手势。
+			ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
+				{ name: "conversation.session.header.utilities", id: "dsh-tavern-send-hold", order: -105, label: "长按发送键重新生成" },
+				function (props) { return React.createElement(TavernSendLongPress, { sessionId: props.sessionId }); }
+			)), "dsh-tavern: long press send key");
 			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-fork-session-shell", order: -200, label: "会话外壳" },
 				function (props) { return React.createElement(React.Fragment, null,
 					tavernStageBoundary("舞台", React.createElement(CardStageHost, { key: "stage:" + props.sessionId, sessionId: props.sessionId, executeSlash: executeSlash })),
 					// galgame stage view
-					tavernStageBoundary("舞台", React.createElement(GalStageHost, { key: "gal:" + props.sessionId, sessionId: props.sessionId, Regenerate: GalRegenerate, replayFailed: replayFailedStageTurn, Choices: GalChoices, choiceProps: { useChat: props.useChat, useSession: props.useSession, executeSlash: executeSlash, interruptTurn: interruptStageTurn } }))); }
+					tavernStageBoundary("舞台", React.createElement(GalStageHost, { key: "gal:" + props.sessionId, sessionId: props.sessionId, Regenerate: GalRegenerate, Choices: GalChoices, choiceProps: { useChat: props.useChat, useSession: props.useSession, executeSlash: executeSlash, interruptTurn: interruptStageTurn } }))); }
 			)), "dsh-tavern: fork session shell");
             ctx.effect(() => slots.inject("conversation.chat.node", () => slots.register({
                 name: "conversation.chat.node", key: "manual-compaction", priority: -1
@@ -893,7 +976,7 @@
 			)), ctx.sessions), "dsh-tavern: regen body panel");
 		}
 		// Fork contract C5: the story service (story/service.js) reuses these flows.
-		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, refreshDisplay: refreshDisplay, replayFailedTurn: submitFailedTurnReplay }) });
+		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, refreshDisplay: refreshDisplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();

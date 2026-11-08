@@ -19,7 +19,7 @@ test('native list, grep and read pipeline isolates files and background leases w
     : await (await import('./helpers/native-skill-source.mjs')).nativeSkillSource(process.env.DSH_SOURCE_ROOT)
   t.after(native.close)
   const ctx = new native.Context()
-  for (const plugin of [native.SkillRegistry, native.SystemPrompt, native.ToolsService, native.ToolExecutor].filter(Boolean)) {
+  for (const plugin of [native.SkillRegistry, native.SystemPrompt, native.ToolsService, native.nativeToolExecutor].filter(Boolean)) {
     const fiber = ctx.plugin(plugin, {})
     await fiber
     t.after(() => fiber.dispose())
@@ -59,13 +59,13 @@ test('native list, grep and read pipeline isolates files and background leases w
   }, { limit: 2000, maxLineLength: 2000, maxBytes: 50 * 1024, streamMinSize: 10 * 1024 * 1024 })
   t.after(installWorldbookSkillRead(ctx, provider, { virtualOnly: async () => true }))
   let callId = 0
-  // alpha.2 通过原生执行器提交工具批次；源码入口保留其版本对应的单工具接口。
   const execute = async (caller, name, args, customSignal = signal) => {
     const id = `native-${++callId}`
-    if (!native.ToolExecutor) return ctx.tools.execute({ agent: caller, signal: customSignal, callId: id, name, arguments: args })
-    const batch = await ctx.tools.execute({ agent: caller, signal: customSignal,
-      calls: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }] })
-    return batch.results[0].result
+    if (typeof ctx.tools.selectExecutor === 'function') {
+      const batch = await ctx.tools.execute({ calls: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }], agent: caller, signal: customSignal })
+      return batch.results[0].result
+    }
+    return ctx.tools.execute({ agent: caller, signal: customSignal, callId: id, name, arguments: args })
   }
   const read = (caller, path, extras = {}) => execute(caller, 'read', { file_path: path, ...extras })
   const output = result => result.content.map(block => block.text || '').join('\n')

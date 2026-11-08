@@ -5,6 +5,7 @@ import {modelCall,modelHandle,modelArguments} from './helpers/director-model-cal
 import { directorPromptData } from './fixtures/asset-packs/prompt.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { syntheticPack, distinctMedia, cardExtension, PACK_ID, OTHER_PACK_ID, FIGURE_ID, OTHER_FIGURE_ID } from './fixtures/asset-packs/pack.mjs'
 import { assetRefKey } from '../tavern-plugin/packages/dsh-presentation-protocol/src/asset-packs.js'
 import { reduceAssetPackScene, applyAssetPackLight, assetPackBackgroundVariant, assetPackLookLayer } from '../tavern-plugin/packages/dsh-presentation-protocol/src/asset-pack-stage.js'
@@ -443,6 +444,14 @@ test('ambience is director-selected, retains full refs and uses handles', async 
   const f = await fixture(), p = f.prepare(), tx = transact(p)
   assert.equal(tx.submit(batch([scene(), {op:'ambience.set', refs:[ref('ambience','rain')]}])).ok, true)
   assert.deepEqual(tx.effect().end.soundscape.layer1, ref('ambience', 'rain'))
+  // the director's soundscape keys are slots the stage soundscape player plays (regression: invalid-slot).
+  const {createSoundscapePlayer} = createRequire(import.meta.url)('../tavern-plugin/packages/dsh-tavern-stage/src/client/soundscape.cjs')
+  const player = createSoundscapePlayer({now:() => 0, requestFrame:() => 1, cancelFrame() {}, mixer:{bind() {}, level:() => 0},
+    Audio:class {addEventListener() {} removeEventListener() {} pause() {} removeAttribute() {} load() {} play() {return Promise.resolve()}}})
+  const played = player.apply({version:1, layers:Object.entries(tx.effect().end.soundscape).map(([slot, value]) => ({slot, identity:value.assetId, id:value.assetId, url:'/' + value.assetId, gain:1}))})
+  assert.deepEqual(played.warnings, [])
+  assert.equal(played.slots.layer1.current.id, 'rain')
+  player.dispose()
   assert.ok(directorPromptData(tx.request).catalogue.ambience.length)
   assert.equal(p.context.catalogue.candidates.ambience[0].consumer, 'director')
   // ambience belongs to a place: any beat where the carried loop no longer fits must re-check it, not only a location change.
@@ -804,7 +813,7 @@ test('director baseline and reset use stored outfit order', async () => {
   assert.equal(tx.effect().end.actors[ACTOR].outfitKey,'casual')
 })
 // frozen pack ruler inputs replace display-lock sidecars.
-test('pack ruler freezes heights, replays only prefixes, carries across turns and resets only at a director cut', async () => {
+test('pack ruler freezes heights, shrinks on exit, replays prefixes and carries across turns', async () => {
   const f=await fixture(), extension=f.input.raw.extensions.dsh_tavern
   const first=f.input.snapshots[0].figures[FIGURE_ID];first.heightCm=160
   const second=distinctMedia(first,'tall-figure');second.id=OTHER_FIGURE_ID;second.heightCm=220
@@ -822,16 +831,17 @@ test('pack ruler freezes heights, replays only prefixes, carries across turns an
   const entrance=assetPackStateAt(saved,2).figureScale
   assert.equal(entrance.hMax,220);assert.equal(entrance.rescales,1)
   assert.deepEqual(entrance.event,{kind:'rescale',at:2,from:160,warning:'mid-scene rescale'})
-  assert.equal(assetPackStateAt(saved,3).figureScale.hMax,220)
-  assert.equal(saved.end.figureScale.hMax,220);assert.equal(saved.end.figureScale.event,undefined)
+  assert.equal(assetPackStateAt(saved,3).figureScale.hMax,160)
+  assert.equal(assetPackStateAt(saved,3).figureScale.rescales,2)
+  assert.equal(saved.end.figureScale.hMax,160);assert.equal(saved.end.figureScale.event,undefined)
   first.heightCm=900;second.heightCm=20
   assert.deepEqual(assetPackStateAt(JSON.parse(JSON.stringify(saved)),1).figureScale,prefix)
   assert.equal(assetPackStateAt(saved,2).actors[TALL].ruler.heightCm,220)
   f.input.record=saved;f.input.target={...f.input.target,sourceKey:'reply-2'}
   const carried=f.prepare(), continued=transact(carried)
-  assert.equal(carried.baseline.figureScale.hMax,220)
+  assert.equal(carried.baseline.figureScale.hMax,160)
   assert.equal(continued.submit(batch([])).ok,true)
-  assert.equal(continued.effect().end.figureScale.hMax,220)
+  assert.equal(continued.effect().end.figureScale.hMax,160)
   const cut=transact(carried)
   assert.equal(cut.submit(batch([scene(),{op:"transition.play", transition:'cut'}])).ok,true)
   assert.equal(cut.effect().end.figureScale.hMax,900) // a new cut uses this turn's newly frozen inputs
@@ -1254,4 +1264,35 @@ test('remarks add zero director section, tool schema and smart-judge request byt
   assert.equal(toolSchemaBytes-Buffer.byteLength(JSON.stringify(request.tools),'utf8'),0)
   assert.deepEqual(judgeRequests(f.input.engine.judge,{material:f.input.units.join('\n'),questions:after.judgeQuestions}),judge)
   t.diagnostic(JSON.stringify({sections:sectionBytes(next),toolSchemaBytes,delta:0,judgeBytes:judge.reduce((n,r)=>n+r.bytes,0),judgeDelta:0}))
+})
+
+test('director preparation and catalogue use the injected active-skin resolver', async () => {
+  const {assetPackDirectorCatalogue} = await import('../tavern-plugin/packages/dsh-tavern-stage/lib/domain/stage-asset-pack-director.js')
+  const {input} = await fixture()
+  const calls = []
+  input.activeStageSkin = value => { calls.push(value); return null }
+  const prepared = prepareAssetPackDirector(input)
+  assert.ok(prepared)
+  assetPackDirectorCatalogue(input)
+  assert.equal(calls.length, 2)
+  for (const call of calls) {
+    assert.equal(call.engine, input.engine)
+    assert.deepEqual(call.manifests, input.snapshots.map(pack => pack.manifest))
+    assert.deepEqual(call.extension, input.raw.extensions.dsh_tavern)
+    assert.ok(call.state)
+  }
+})
+
+test('opening-scene request reads card bindings through its injected core contract', async () => {
+  const {createStageHandlers} = await import('../tavern-plugin/packages/dsh-tavern-stage/lib/rpc.js')
+  const {input} = await fixture()
+  let read = 0
+  const handlers = createStageHandlers({
+    readCardWorkspace:async () => ({raw:input.raw}),
+    assetRuntime:{snapshot:async () => ({snapshots:input.snapshots, engine:input.engine})},
+    describeOpeningScenes:() => ({scenes:{}}),
+    readCardAssetExtension:raw => { assert.equal(raw, input.raw); read++; return raw.extensions.dsh_tavern }
+  })
+  assert.deepEqual(await handlers.getCardOpeningScenes({path:'fixture'}), {scenes:{}, entranceChoices:[]})
+  assert.equal(read, 1)
 })

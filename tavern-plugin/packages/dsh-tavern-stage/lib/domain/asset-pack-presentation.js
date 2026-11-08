@@ -5,7 +5,7 @@ import { activeWidgetKeys, widgetIsActive } from '../../../../lib/domain/widget-
 import {figureCatalogue, resolution} from '../../../../lib/domain/figure-catalogue.js'
 import skinContract from '../../../dsh-presentation-protocol/src/stage-skin.cjs'
 import performanceContract from '../../../dsh-presentation-protocol/src/performance-contract.cjs'
-import { effectiveCardStage, cardStageSkin, cardStageSkinPackIds } from '../../../../lib/domain/card-stage-settings.js'
+import { effectiveCardStage, activeStageSkin, cardStageSkin, cardStageSkinPackIds } from '../../../../lib/domain/card-stage-settings.js'
 import { readCardAssetExtension } from '../../../../lib/domain/card-asset-bindings.js'
 import { rawData } from '../../../../lib/domain/card-preparation.js'
 import {expandPerformanceDependencies, performanceWidgetDefaults} from './performance-projection.js'
@@ -114,7 +114,7 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
     figures.clear(); assets.clear(); snapshots.clear(); projections.clear()
     const previous = service
     // Refresh invalidates candidates, not already acquired non-executable media.
-    for (const [id, value] of leases) if (id.startsWith('widget:') || id.startsWith('source-avatar:') || event.kind === 'revoked' && (event.scope?.authority || event.scope?.packId && id.startsWith(event.scope.packId + ':'))) {
+    for (const [id, value] of leases) if (id.startsWith('widget:') || event.kind === 'revoked' && (event.scope?.authority || event.scope?.packId && id.startsWith(event.scope.packId + ':'))) {
       value.then(lease => previous?.releaseLease(lease.ticket)).catch(() => {})
       leases.delete(id)
     }
@@ -388,7 +388,7 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
       const unavailable = ref => ({...plan,dependencies:[],executionDependencies:[],unavailable:{code:'PERFORMANCE_DEPENDENCY_UNAVAILABLE',ref:plan.ref,dependency:ref}})
       const widgetAllowed = (ref,asset,pack) => effectiveCardStage(extension, getEngine?.()).widgets && performanceWidgetDefaults(pack.widgets?.[ref.assetId]) !== null
       const expanded = expandPerformanceDependencies({ref:plan.ref,document:packs.get(plan.ref.packId)?.performances?.[plan.ref.assetId],snapshots:metadata,
-        authorization:{boundPackIds:extension.assetBindings.boundPackIds,widgetAllowed}})
+        authorization:{boundPackIds:getAllowedPackIds?.() || extension.assetBindings.boundPackIds,widgetAllowed}})
       if (expanded.unavailable) return {...unavailable(expanded.unavailable.dependency),unavailable:expanded.unavailable}
       const dependencies = [], executionDependencies = []
       for (const ref of expanded.refs) {
@@ -446,40 +446,7 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
       const sfx = (await Promise.all((preferences.sfx ? ops : []).map(op => op.op === 'event' ? op.value : op).filter(op => op.op === 'sfx').map(op => track(op.value)))).filter(Boolean)
       return {music, soundscape:{version:1,layers,warnings:[]}, sfx}
     },
-    async sourceAvatars({avatarSources,grantKey,isCurrent,authorizeSource}) {
-      const active=current(),generation=epoch,cacheKey='source-avatar:'+grantKey
-      const allowed=getAllowedPackIds?.() || extension.assetBindings.boundPackIds
-      const historyAvatars = {}, avatarCache = new Map()
-      for (const source of avatarSources) {
-        // saved FigureRef is identity; today's colliding name cannot rebind history.
-        const actor=source.actor, figure=actor?.figure
-        if (!figure || !allowed.includes(figure.packId)) continue
-        const identity=JSON.stringify([figure,actor.outfitKey])
-        if (!avatarCache.has(identity)) {
-          if (avatarCache.size>=8) continue
-          avatarCache.set(identity,null)
-          try {
-            const character=await api.character(source.contact,{actor,historical:true})
-            if (!character.avatar) continue
-            const name=cacheKey+':avatar:'+identity
-            let pendingAvatar=leases.get(name)
-            if (pendingAvatar && (await pendingAvatar).expiresAt<=now()+1000) {active.releaseLease((await pendingAvatar).ticket);leases.delete(name);pendingAvatar=null}
-            if (!pendingAvatar) {
-              pendingAvatar=active.leaseMedia({packId:figure.packId,hash:character.avatar,origin,scope,
-                authorize:async()=>!disposed && generation===epoch && getService()===active && isCurrent() && leases.get(name)===pendingAvatar && await authorizeSource()})
-              leases.set(name,pendingAvatar)
-              if (leases.size>256) {const oldest=leases.keys().next().value;leases.get(oldest).then(value=>active.releaseLease(value.ticket)).catch(()=>{});leases.delete(oldest)}
-              pendingAvatar.catch(()=>{if(leases.get(name)===pendingAvatar)leases.delete(name)})
-            }
-            const avatarLease=await pendingAvatar
-            avatarCache.set(identity,{url:avatarLease.url,crop:character.avatarCrop})
-          } catch { /* Missing decoration never withholds readable history. */ }
-        }
-        if (avatarCache.get(identity)) historyAvatars[source.turn+':'+source.para]=avatarCache.get(identity)
-      }
-      return disposed || generation!==epoch || !isCurrent() ? {} : historyAvatars
-    },
-    async widgets(state, {engine, isCurrent, strict = false, sourceRefs = [], grantKey = '', authorizeSource, avatarSources = []}) {
+    async widgets(state, {engine, isCurrent, strict = false, sourceRefs = [], grantKey = '', authorizeSource}) {
       if (!effectiveCardStage(extension, getEngine?.()).widgets || !state) return []
       const result = [], active = current(), generation = epoch
       const allowedPackIds = getAllowedPackIds?.() || extension.assetBindings.boundPackIds
@@ -497,7 +464,7 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
           try { resolvedSettings = widgetContract.stageWidgetResolveSettings(document,asset.settingsDefaults,override) }
           catch { continue } // Optional settings failure cannot block even a strict stage projection.
           const cachePrefix = 'widget:' + id + ':' + resolved.revision + ':', cacheKey = cachePrefix + grantKey
-          if (grantKey) for (const [name,value] of leases) if (name.startsWith(cachePrefix) && name !== cachePrefix && name !== cacheKey && !name.startsWith(cacheKey+':avatar:')) {
+          if (grantKey) for (const [name,value] of leases) if (name.startsWith(cachePrefix) && name !== cachePrefix && name !== cacheKey) {
             leases.delete(name); value.then(lease => active.releaseLease(lease.ticket)).catch(() => {})
           }
           let pending = leases.get(cacheKey)
@@ -534,9 +501,8 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
               resolvedSettings.settings[field.key] = null; resolvedSettings.diagnostics[field.key] = ['image-format','image-bytes'].includes(failure.code) ? failure.code : 'asset-unavailable'
             }
           }
-          const historyAvatars = await api.sourceAvatars({avatarSources,grantKey:cacheKey,isCurrent,authorizeSource})
           if (disposed || generation !== epoch || !isCurrent()) continue
-          result.push({...clone(widget), historyAvatars, widgetId, slot:widget.slot || document.presentation.open.anchor || 'corner-right', originKey:id+':'+widget.bornStoryTime, bornAt:widget.bornStoryTime, order:result.length,
+          result.push({...clone(widget), widgetId, slot:widget.slot || document.presentation.open.anchor || 'corner-right', originKey:id+':'+widget.bornStoryTime, bornAt:widget.bornStoryTime, order:result.length,
             mediaPolicy:{music:preferences.music && engine.dimensions.music !== false,sfx:preferences.sfx && engine.dimensions.sfx !== false},
             definition:{id, ref:clone(ref), title:asset.name, note:asset.directorNote, thirdParty:true, url:lease.url, revision:resolved.revision, contentIdentity:pack.manifest.bundles[asset.bundleKey].contentHash,
               document:clone(document), assets, ...resolvedSettings, settingsFeedback:widgetContract.stageWidgetSettingsFeedback(resolvedSettings), settingAssets, settingsDefaults:clone(asset.settingsDefaults || {}), settingsOverride:clone(override), stateSchema:document.stateSchema, samples:document.samples, caps:document.caps, slot:document.presentation.open.anchor}})
@@ -584,7 +550,8 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
       const manifests=await Promise.all(cardStageSkinPackIds(extension, getEngine?.(), getAllowedPackIds?.() || []).map(id => snapshot(id).then(pack => pack?.manifest, () => null)))
       const defaultSkin=cardStageSkin(extension, getEngine?.(), manifests).skin
       const override=skinAllowed && state.skin?.ref
-      const selectedSkin=override ? state.skin : typeof defaultSkin==='string' ? defaultSkin : {ref:defaultSkin}
+      const activeSkin=activeStageSkin({extension,engine:getEngine?.(),manifests,state:skinAllowed ? state : null})
+      const selectedSkin=activeSkin ? {ref:activeSkin,...(override ? {level:state.skin.level} : {})} : defaultSkin
       const builtin=typeof selectedSkin === 'string' ? selectedSkin : null
       let skin = builtin ? {builtin:true,document:clone(skinContract.BUILTIN_STAGE_SKINS[builtin])} : null
       if (selectedSkin?.ref) try {

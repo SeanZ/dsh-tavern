@@ -9,6 +9,7 @@
 			const messageActions = [];
 			const composerActions = [];
 			const panels = new Map();
+			const gameModeViews = new Map();
 			const startGroups = [];
 			const cardListViews = [];
 			const statusSections = [];
@@ -23,6 +24,7 @@
 			const replySubscribers = new Map();
 			const replyPresenterFailures = new Map();
 			const replyPresenterDisabled = new Set();
+			const stageViewWarnedOwners = new Set();
 			// Work status (apiVersion 7): what a game is doing right now, for plugins such as a
 			// companion pet. One shared record per session, fed by Tavern's live view and the
 			// reply observer; success is a short pulse after a busy turn settles.
@@ -272,7 +274,7 @@
 				try {
 					if (typeof liveTavernView !== "undefined" && liveTavernView && typeof liveTavernView.subscribe === "function") {
 						const stop = liveTavernView.subscribe(id, function () { refreshWorkStatus(record, { settle: true, notify: true }); },
-							[["activity"], ["settleStatus"], ["settleError"], ["latestAssistantTurn"], ["settlementTurn"]]);
+							[["activity"], ["settleStatus"], ["settleError"], ["latestAssistantTurn"], ["settlementTurn"]], { deferLoad: true });
 						record.stopView = typeof stop === "function" ? stop : null;
 					}
 				} catch (_) {}
@@ -417,7 +419,7 @@
 
 			const service = {
 				ctx: undefined,
-				apiVersion: 7,
+				apiVersion: 8,
 				registerMediaRenderer(kind, render) {
 					if (typeof kind !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/.test(kind)) throw new TypeError("只能为插件自定义的 <插件名>/<类型> 注册显示方式");
 					if (typeof render !== "function") throw new TypeError("registerMediaRenderer 需要 render 函数");
@@ -441,6 +443,19 @@
 				registerComposerAction(input) {
 					const entry = Object.assign({ owner: ownerOf(this) }, action(input, "registerComposerAction"));
 					return owned(this, function () { return addTo(composerActions, entry); }, "tavernUi.registerComposerAction()");
+				},
+				// presentation 'stage': the game borrows the stage (stageLeases) while a stage consumer is
+				// attached for the session; otherwise the view behaves exactly like presentation 'page'.
+				registerGameModeView(input) {
+					if (!input || !/^[a-z][a-z0-9._-]{0,63}$/.test(input.name) || typeof input.render !== 'function') throw new Error('玩法界面需要 name 和 render');
+					const stage = input.presentation === 'stage' ? input.stage : null;
+					if (input.presentation === 'stage' && (!stage || typeof stage.scene !== 'function' || (stage.hud !== undefined && typeof stage.hud !== 'function'))) throw new Error('舞台玩法界面需要 stage.scene 函数（stage.hud 可选，须为函数）');
+					const owner = ownerOf(this), key = owner + ':' + input.name;
+					return owned(this, function () {
+						if (gameModeViews.has(key)) throw new Error('玩法界面已注册');
+						gameModeViews.set(key, { owner: owner, render: input.render, page: input.presentation === 'page' || !!stage, stage: stage ? { scene: stage.scene, hud: stage.hud || null } : null, lobby: typeof input.lobby === 'function' ? input.lobby : null }); changed();
+						return function () { gameModeViews.delete(key); changed(); };
+					}, 'tavernUi.registerGameModeView()');
 				},
 				// Call a host handler registered with tavern.handle(name, handler); JSON in, JSON out.
 				callHost(name, args) {
@@ -470,6 +485,10 @@
 					return rpc("gameTitles", { gameIds: Array.isArray(gameIds) ? gameIds : [] }).then(function (reply) { return (reply && reply.games) || {}; });
 				},
 				// The plugin's own data, not tied to a game; the same copy its host side reads (tavern.readPluginData).
+				getPluginDataLimits() {
+					const owner = ownerOf(this);
+					return rpc("pluginData", { plugin: owner, op: "limits" });
+				},
 				readPluginData() {
 					let owner;
 					try { owner = ownerOf(this); } catch (error) { return Promise.reject(error); }
@@ -541,7 +560,7 @@
 							const next = list.getSnapshot().byId[gameId]?.running === true;
 							if (next !== running) { running = next; refresh(); }
 						}) : function () {};
-						const stopView = liveTavernView.subscribe(gameId, refresh, [["latestAssistantTurn"], ["activity"], ["settlementTurn"], ["settleStatus"]]);
+						const stopView = liveTavernView.subscribe(gameId, refresh, [["latestAssistantTurn"], ["activity"], ["settlementTurn"], ["settleStatus"]], { deferLoad: true });
 						return function () { disposed = true; stopView(); if (typeof stopSessions === "function") stopSessions(); };
 					}, "tavernUi.watchTurnState()");
 				},
@@ -609,6 +628,26 @@
 					const record = workStatusRecords.get(sessionId);
 					if (record) return record.state;
 					return projectWorkStatus(sessionId, workStatusInput(sessionId), null);
+				},
+				// What the player does in the games open here (apiVersion 8), for play statistics or a
+				// companion that reacts: listener({ type, gameId, turn, at, ...fields }) after the action.
+				// Counts and indices only, never story text; returns the unsubscribe function.
+				onPlayEvent(listener) {
+					if (typeof listener !== "function") throw new TypeError("onPlayEvent 需要 listener 函数");
+					const owner = ownerOf(this);
+					return owned(this, function () {
+						let failures = 0;
+						const stop = tavernPlayEvents.subscribe(function (event) {
+							if (event.gameId && !tavernPluginAllowed(owner, event.gameId)) return;
+							try { listener(event); }
+							catch (error) {
+								// The report is itself an error event: a listener that keeps throwing is dropped, not looped.
+								if (++failures >= 3) stop();
+								try { tavernErrorHub.report("插件 " + owner + " 的游玩事件回调", error); } catch (_) {}
+							}
+						});
+						return stop;
+					}, "tavernUi.onPlayEvent()");
 				},
 				// One holder per (session, scope), with a TTL (apiVersion 7). Scopes are the
 				// plugin's own names ("voice", "stage", "composer", …); Tavern enforces who may
@@ -709,12 +748,16 @@
 					}, "tavernUi.watchStage()");
 				},
 				// Retired with the old stage (#424): Tavern now draws the stage itself from the card's 素材包 and
-				// the director; a plugin can no longer replace its scene. Says so in the error notice instead of
-				// registering a view nothing would show. Never throws: a throw while a plugin applies fails the
-				// whole page's boot, not just that plugin.
+				// the director; a plugin can no longer replace its scene. Says so once per plugin in the developer
+				// console instead of registering a view nothing would show, and raises no player-facing error: the
+				// call usually comes from a plugin still being developed, which would toast on every reload.
+				// Never throws: a throw while a plugin applies fails the whole page's boot, not just that plugin.
 				registerStageView() {
-					const message = "插件 " + ownerOf(this) + " 调用了已停用的 registerStageView：舞台改由 Tavern 按人物卡绑定的素材包绘制，这个舞台视图不会显示。请给人物卡绑定素材包并打开对话气泡，改用 Tavern 的舞台。";
-					try { tavernErrorHub.report("舞台", new Error(message)); } catch (_) { console.warn(message); }
+					const owner = ownerOf(this);
+					if (!stageViewWarnedOwners.has(owner)) {
+						stageViewWarnedOwners.add(owner);
+						console.warn("dsh-tavern: 插件 " + owner + " 调用了已停用的 registerStageView：舞台改由 Tavern 按人物卡绑定的素材包绘制，这个舞台视图不会显示。请给人物卡绑定素材包并打开对话气泡，改用 Tavern 的舞台。");
+					}
 					return function () {};
 				},
 				// This plugin's own settings in a game (declared on the host side with tavern.gameSettings):
@@ -773,7 +816,7 @@
 					if (typeof gameId !== "string" || !gameId) return Promise.reject(new TypeError("getCardPacks 需要 gameId"));
 					return rpc("cardPacks", {}, gameId).then(function (reply) { return reply ? reply.packs || [] : []; });
 				},
-				// Say a line in its character's voice on the channel the player chose (apiVersion 2);
+				// Say a line in its character's voice through the voice service (apiVersion 2);
 				// resolves true when it was heard to the end. A new line stops the one being said.
 				speak(input) {
 					if (!input || typeof input.gameId !== "string" || !input.gameId) return Promise.reject(new TypeError("speak 需要 gameId"));
@@ -908,10 +951,35 @@
 				presentReply: presentReply,
 				replyPresenters: function () { return replyPresenters.slice(); },
 				composerSlotFor: function (mode) { for (const slot of composerSlots) if (slot.modes.indexOf(mode) >= 0) return slot; return null; },
+				gameModeView: function (key) { return gameModeViews.get(key); },
 				composerSlots: function () { return composerSlots.slice(); }
 			};
 		}
 		const tavernUiExtensions = createTavernUiExtensions();
+
+		// Stage leases (舞台借用): a gameMode view with presentation 'stage' lends the game a whole,
+		// ephemeral stage snapshot per session. Memory only: never Story Timeline, stage state or a save.
+		// The stage attaches as consumer; with no consumer the game keeps its page view.
+		function createTavernStageLeases() {
+			const leases = new Map(), consumers = new Map(), watchers = new Map();
+			function notify(sessionId) { for (const fn of Array.from(watchers.get(sessionId) || [])) fn(leases.get(sessionId) || null); }
+			return Object.freeze({
+				publish(sessionId, lease) { leases.set(sessionId, Object.freeze({ owner: lease.owner, scene: lease.scene, hud: lease.hud || null, props: lease.props })); notify(sessionId); },
+				release(sessionId, owner) { const lease = leases.get(sessionId); if (!lease || lease.owner !== owner) return; leases.delete(sessionId); notify(sessionId); },
+				get(sessionId) { return leases.get(sessionId) || null; },
+				subscribe(sessionId, fn) {
+					const set = watchers.get(sessionId) || new Set(); set.add(fn); watchers.set(sessionId, set);
+					return function () { set.delete(fn); if (!set.size && watchers.get(sessionId) === set) watchers.delete(sessionId); };
+				},
+				attach(sessionId) {
+					consumers.set(sessionId, (consumers.get(sessionId) || 0) + 1); notify(sessionId);
+					let attached = true;
+					return function () { if (!attached) return; attached = false; const count = consumers.get(sessionId) - 1; if (count > 0) consumers.set(sessionId, count); else consumers.delete(sessionId); notify(sessionId); };
+				},
+				attached(sessionId) { return consumers.has(sessionId); }
+			});
+		}
+		const tavernStageLeases = createTavernStageLeases();
 
 		// Which of several plugin views (stage, turn text) a game shows: Tavern's own, or a plugin's;
 		// remembered per browser. With no choice made a plugin view is used: installing one is asking for it.
@@ -1074,7 +1142,26 @@
 			};
 		})();
 		const TAVERN_ILLUSTRATION_NOTICE_MS = 8000;
-		async function runTavernIllustrator(illustrator, sessionId, turn, instruction) {
+		// Calls onStart once the turn gains a plugin item it did not have when watching began: the illustrator has accepted
+		// the request and its pictures are in progress (生成中… / 「正在生成 CG…」). Resolves to stop(), or null when the turn's
+		// items cannot be read (then only draw settling counts).
+		async function watchTavernIllustrationStart(sessionId, turn, onStart) {
+			const read = function () { return rpc("pluginMediaForTurn", { turn: turn }, sessionId).then(function (result) { return Array.isArray(result && result.items) ? result.items : []; }); };
+			let known;
+			try { known = new Set((await read()).map(function (item) { return item.id; })); } catch (_) { return null; }
+			let stopped = false, unsubscribed = false;
+			const stop = tavernPluginMediaIndex.subscribe(sessionId, function () {
+				if (stopped || !tavernPluginMediaIndex.has(sessionId, turn)) return;
+				read().then(function (items) {
+					if (!stopped && items.some(function (item) { return !known.has(item.id); })) { stopped = true; onStart(); }
+				}, function () {});
+			});
+			return function () { stopped = true; if (!unsubscribed) { unsubscribed = true; stop(); } };
+		}
+		// draw settles only when the pictures are done (or it planned none). onAccepted, given by a request form, is called once
+		// the illustrator has taken the request - its first picture for the turn appears, or draw succeeds first - so the form
+		// closes then and the progress stays with the turn. A failure before that rejects with the form still open.
+		async function runTavernIllustrator(illustrator, sessionId, turn, instruction, onAccepted) {
 			let normalizedInstruction;
 			if (instruction !== undefined) {
 				if (typeof instruction !== "string") throw new TypeError("配图要求必须是文本");
@@ -1085,18 +1172,65 @@
 			tavernIllustrationDrafts.set(sessionId, turn, planning);
 			let draft = null;
 			let failure = null;
+			let accepted = false, stopWatch = null;
+			const accept = function () { if (accepted) return; accepted = true; if (stopWatch) stopWatch(); onAccepted(); };
 			try {
+				if (onAccepted) stopWatch = await watchTavernIllustrationStart(sessionId, turn, accept);
 				const request = { gameId: sessionId, turn: turn };
 				if (normalizedInstruction) request.instruction = normalizedInstruction;
 				const result = await illustrator.draw(request);
 				const notice = result && typeof result.notice === "string" ? result.notice.trim() : "";
 				if (notice) draft = { text: notice.slice(0, 200) };
+				if (onAccepted) accept();
 			} catch (error) { failure = error; draft = { text: String(error && error.message || error).slice(0, 200), failed: true }; }
+			finally { if (stopWatch) stopWatch(); }
 			if (tavernIllustrationDrafts.get(sessionId, turn) === planning) {
 				tavernIllustrationDrafts.set(sessionId, turn, draft);
 				if (draft) setTimeout(function () { if (tavernIllustrationDrafts.get(sessionId, turn) === draft) tavernIllustrationDrafts.set(sessionId, turn, null); }, TAVERN_ILLUSTRATION_NOTICE_MS);
 			}
 			if (failure && instruction !== undefined) throw failure;
+		}
+		const TAVERN_ILLUSTRATE_TITLE = "点击直接配图；长按或右键填写本次画面要求";
+		// The 配图 button's gestures, in the chat and on the stage: a click draws at once; a long press (550 ms), a right click
+		// or Shift+F10 opens this time's picture request instead (openManual). `release` after that request closes.
+		function useTavernIllustratePress(busy, draw, openManual) {
+			const pressRef = React.useRef(null), suppressRef = React.useRef(false);
+			function clear() {
+				if (pressRef.current) clearTimeout(pressRef.current.timer);
+				pressRef.current = null;
+			}
+			function manual() { suppressRef.current = true; clear(); openManual(); }
+			React.useEffect(function () { return clear; }, []);
+			return {
+				release: function () { suppressRef.current = false; },
+				handlers: {
+					onClick: function (event) {
+						if (suppressRef.current) { suppressRef.current = false; event.preventDefault(); return; }
+						return draw();
+					},
+					onPointerDown: function (event) {
+						if (busy || event.button !== 0 || event.isPrimary === false) return;
+						suppressRef.current = false;
+						clear();
+						const press = { id: event.pointerId, x: event.clientX, y: event.clientY, timer: null };
+						press.timer = setTimeout(function () {
+							if (pressRef.current !== press) return;
+							pressRef.current = null;
+							manual();
+						}, 550);
+						pressRef.current = press;
+					},
+					onPointerMove: function (event) {
+						const press = pressRef.current;
+						if (press && press.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 10) { clear(); suppressRef.current = true; }
+					},
+					onPointerUp: function (event) { if (pressRef.current && pressRef.current.id === event.pointerId) clear(); },
+					onPointerCancel: function () { if (pressRef.current) suppressRef.current = true; clear(); },
+					onPointerLeave: function () { if (pressRef.current) { clear(); suppressRef.current = true; } },
+					onContextMenu: function (event) { event.preventDefault(); event.stopPropagation(); manual(); },
+					onKeyDown: function (event) { if (event.shiftKey && event.key === "F10") { event.preventDefault(); manual(); } }
+				}
+			};
 		}
 		// `items` are the turn's plugin media: once the illustrator attaches a new one, planning is
 		// over and that item's own card shows the drawing, so the placeholder goes.

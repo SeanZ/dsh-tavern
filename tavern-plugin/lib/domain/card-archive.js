@@ -1,7 +1,6 @@
 import path from 'node:path'
 import { validPackId } from './asset-packs.js'
 import { pluginManifestProblem } from './plugin-manifest.js'
-import { openZipFile } from './zip-file.js'
 
 // Card archives read from disk (zip-file.js): a DSH card (.dshcard, Wiki「设计：dsh-card-format」),
 // the Galgame fork's card bundle (dsh-tavern-card-bundle.json), or a plain CHARX.
@@ -36,21 +35,10 @@ function referencedPaths(card) {
   for (const asset of Array.isArray(data.assets) ? data.assets : []) uris.push(asset && asset.uri)
   for (const entry of Array.isArray(data.extensions?.risuai?.emotions) ? data.extensions.risuai.emotions : []) uris.push(Array.isArray(entry) ? entry[1] : null)
   for (const character of Array.isArray(data.extensions?.dsh_tavern?.cast?.characters) ? data.extensions.dsh_tavern.cast.characters : []) {
-    uris.push(character && character.avatar, ...Object.values(character && character.sprites || {}))
+    uris.push(character && character.avatar, ...Object.values(character && character.sprites || {}),
+      ...(Array.isArray(character?.voiceReferences) ? character.voiceReferences.map(clip => clip && clip.audio) : []))
   }
   return [...new Set(uris.filter(uri => typeof uri === 'string' && uri.startsWith('embeded://')).map(uri => uri.slice('embeded://'.length)))].slice(0, MAX_REFERENCED)
-}
-
-/**
- * A card archive with its cover in front: the file is a PNG (the cover, carrying the card as
- * chara/ccv3 for other tavern apps) followed by a DSH card, CHARX or card bundle, so systems and
- * chat apps show the cover as its icon. A plain card PNG, or any other file, is not one.
- */
-export async function pngCarriesCardArchive(file) {
-  let zip
-  try { zip = await openZipFile(file) } catch { return false }
-  try { return zip.prefix > 0 && ['dsh.json', 'card.json', 'dsh-tavern-card-bundle.json'].some(entry => zip.entries.has(entry)) }
-  finally { await zip.close() }
 }
 
 /**

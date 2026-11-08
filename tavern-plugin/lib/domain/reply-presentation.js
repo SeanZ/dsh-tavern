@@ -29,6 +29,15 @@ function targetOptions(options, isMarkdown) {
   }
 }
 
+/** A provider already resolved its output. Only split display parts; never run macros or regexes. */
+export function projectProcessedReply(value) {
+  const text = str(value)
+  const display = projectDisplayParts(text)
+  return { sourceText: text, projectionText: text, sessionText: text, displayText: text,
+    displayMode: display.parts.some(part => part.kind === 'html') ? 'html' : 'markdown',
+    displayParts: display.parts, warnings: display.warnings, applied: { session: [], display: [] } }
+}
+
 /**
  * Project one authoritative model reply independently for Session and display.
  * Regex execution only transforms strings; it never extracts HTML or changes
@@ -164,6 +173,19 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
       const templateDisplay = message.tavernPluginData?.template_display
       const validDisplay = templateDisplay && templateDisplay.source === sourceText && templateDisplay.swipe === (message.swipeId || 0)
       const ordinaryDisplay = validDisplay && typeof templateDisplay.formattingText === 'string'
+      // A regeneration provider already applied its output pipeline. Preserve
+      // it on refresh too, rather than applying the game's preset a second time.
+      // A matching template result is already final as well: fall through to the
+      // zero-regex ordinaryDisplay path instead of discarding its HTML conversion.
+      if (message.bodyRegenerationProcessed === true && !ordinaryDisplay) {
+        const processed = projectProcessedReply(projectionText)
+        projections.push({ version: 2, turn, text: projectionText,
+          mode: processed.displayMode,
+          parts: structuredClone(processed.displayParts), warnings: [...processed.warnings] })
+        latestSourceBacked = hasSource
+        continue
+      }
+
       if (validDisplay && !ordinaryDisplay
         && !isDegenerateTemplateDisplay(templateDisplay.html, sourceText, options)) {
         let repaired = templateDisplay

@@ -2,6 +2,13 @@ import type { PackManifest, VoiceSpec, Voice, Figure, SpriteManifest, BlobDescri
 import type { CatalogueService, CatalogueSettingsProvider, Distribution, MergeSummary } from '../pack-catalogue/contract.js'
 import type { AssetRef, FigureRef } from '../asset-packs/protocol.js'
 export declare const PACK_LEASE_PATH: '/api/dsh-asset-library/v2/lease/'
+/** Host-created file references, never accepted from an uploaded archive. */
+export declare class StoredFile { readonly length: number; readonly file?: string; constructor(size: number, file?: string) }
+export interface PackExportSnapshot { manifest: PackManifest; files: Map<string, Uint8Array | StoredFile> }
+/** Stream host-owned buffers or files into an archive. */
+export declare function writePackZip(filename: string, entries: Array<{path: string; data?: Uint8Array; file?: string}>): Promise<{size: number; entries: number; uncompressedSize: number}>
+/** Detached export projection; no storage writes. */
+export declare function projectPackFigures<T extends PackExportSnapshot>(packs: T[], excludeFigures: string[]): Promise<{packs: T[]; figures: Array<Figure & {ref: FigureRef}>}>
 type ReadonlyPackValue<T> = T extends object ? {readonly [K in keyof T]: ReadonlyPackValue<T[K]>} : T;
 /** Shared immutable host view. Copy only the fields needed for authoring. */
 export type PackSnapshot = ReadonlyPackValue<{ privateConfig?: true; manifest: PackManifest; figures: Record<string, Figure>; sprites: Record<string, SpriteManifest>; widgets: Record<string,WidgetDocument>; variantDocuments?: Record<string,Record<string,Record<string,unknown>>>; diagnostics?: Array<{ref: AssetRef<'widgets'>; name: string; code: 'WIDGET_UNAVAILABLE'; message: string}>; skins?: Record<string, Record<string, unknown>>; performances?: Record<string, Record<string, unknown>>; revision: string; installedAt: number; updatedAt: number; distribution?: Distribution }>;
@@ -12,6 +19,8 @@ export interface WidgetDefaultExportWarning { code: 'external-widget-default'; r
 export interface StageSetupStatus {path: string; cardId: string; cardRevision: string; libraryRevision: string; boundPackIds: string[]; hasBoundPacks: boolean; hasAssets: boolean; wizardPack: {packId: string; name: string; revision: string} | null; shouldAutoOpen: boolean}
 export interface PackWrite { packId: string; expectedRevision: string; force?: boolean }
 export interface VoiceTemplate {templateId:string; revision:string; name:string; voiceSpec:VoiceSpec; binding:Voice}
+export type VoiceCatalogueRef = {packId:string; voiceId:string} | {templateId:string};
+export interface VoiceCatalogueEntry {ref:VoiceCatalogueRef; name:string; packName?:string; revision:string; voiceSpec:VoiceSpec; binding:Voice}
 export interface PackRemoval { status: 'removed'; packId: string }
 export interface PackMutation { status: 'installed' | 'updated' | 'noop'; snapshot: PackSnapshot; forcedOverrides?: Array<{entry:string;trigger:string;rule:string;message:string}> }
 export interface FigureDelivery {
@@ -45,6 +54,10 @@ export interface CardBundleAdapter {
   remapRaw(raw: unknown, mappings: Array<PackMapping & {from: string}>): unknown;
   /** the same raw with these packs appended to the card's bound packs (card export of global packs). */
   bindRaw(raw: unknown, packIds: string[]): unknown;
+  /** the same raw bound to exactly these packs plus its config pack (a DSH card export with a chosen pack list). */
+  retainRaw(raw: unknown, packIds: string[]): unknown;
+  /** The card as an export carries it (its stage declaration only, card-stage-export.js). */
+  exportRaw(raw: unknown): unknown;
   withPrepared(input: {path: string; expectedRevision: string | null; raw: unknown; cover?: Uint8Array; packSnapshots?: Array<Omit<PackSnapshot, 'revision' | 'installedAt' | 'updatedAt'>>; disableWidgets?: boolean}, publish: (card: {record: unknown; commit(): Promise<void>; status(): Promise<'before' | 'after' | 'unknown'>}) => Promise<void>): Promise<void>;
   recover(record: unknown): Promise<'before' | 'after' | 'unknown'>;
 }
@@ -117,13 +130,17 @@ export interface AssetPackService extends CatalogueService {
   migrateFigureNames(input: PackWrite): Promise<PackMutation>;
   /** one-time removal of recall.priority (entries, figures, outfits, publisher baseline); offline only. */
   migrateRecallPriority(input: PackWrite): Promise<PackMutation>;
-  patchPack(input: PackWrite & {dryRun:true; patch?: Partial<Omit<PackManifest, 'id' | 'format' | 'schemaVersion' | 'contentHash' | 'files'>>; fileUpdates?: Map<string, Uint8Array | null>; imageResolutions?: Array<{figureId:string; outfitKey:string; imageId:string; expectedMedia:string; removeImageId?:string}>}): Promise<{status:'dry-run'|'noop'; snapshot:PackSnapshot}>;
-  patchPack(input: PackWrite & {dryRun?:false; patch?: Partial<Omit<PackManifest, 'id' | 'format' | 'schemaVersion' | 'contentHash' | 'files'>>; fileUpdates?: Map<string, Uint8Array | null>; imageResolutions?: Array<{figureId:string; outfitKey:string; imageId:string; expectedMedia:string; removeImageId?:string}>}): Promise<PackMutation | PackRemoval>;
+  patchPack(input: PackWrite & {dryRun:true; patch?: Partial<Omit<PackManifest, 'id' | 'format' | 'schemaVersion' | 'contentHash' | 'files'>>; fileUpdates?: Map<string, Uint8Array | null>; imageResolutions?: Array<{figureId:string; outfitKey:string; imageId:string; expectedMedia:string; removeImageId?:string}>; avatarReplacements?: Array<{figureId:string; outfitKey:string; imageId:string; expectedAvatar:string|null}>; imageRemovals?: Array<{figureId:string; outfitKey:string; imageId:string}>}): Promise<{status:'dry-run'|'noop'; snapshot:PackSnapshot}>;
+  patchPack(input: PackWrite & {dryRun?:false; patch?: Partial<Omit<PackManifest, 'id' | 'format' | 'schemaVersion' | 'contentHash' | 'files'>>; fileUpdates?: Map<string, Uint8Array | null>; imageResolutions?: Array<{figureId:string; outfitKey:string; imageId:string; expectedMedia:string; removeImageId?:string}>; avatarReplacements?: Array<{figureId:string; outfitKey:string; imageId:string; expectedAvatar:string|null}>; imageRemovals?: Array<{figureId:string; outfitKey:string; imageId:string}>}): Promise<PackMutation | PackRemoval>;
   savePackVoice(input: PackWrite & {voiceId:string; voiceSpec:VoiceSpec; figureId?:string; confirmShared?:boolean}): Promise<PackMutation>;
   saveFigureVoiceBinding(input: PackWrite & {figureId:string; binding:Voice|null}): Promise<PackMutation>;
   createAndAssignPackVoice(input: PackWrite & {figureId:string; voiceSpec:VoiceSpec}): Promise<PackMutation & {voiceId:string}>;
   savePackVoiceVariant(input: PackWrite & {voiceId:string; variantId:string; variant:NonNullable<VoiceSpec['variants']>[string]; figureId?:string; confirmShared?:boolean}): Promise<PackMutation & {affectedFigures:Array<{id:string;name:string}>}>;
   deletePackVoiceVariant(input: PackWrite & {voiceId:string; variantId:string; figureId?:string; confirmShared?:boolean}): Promise<PackMutation & {affectedFigures:Array<{id:string;name:string}>}>;
+  /** Read-only installed pack voices and templates; no stage settings, service routing or new storage. */
+  listVoiceCatalogue(): Promise<{voices:VoiceCatalogueEntry[]; errors:PackListError[]}>;
+  /** Host-only template reference bytes; never exposed by the browser transport. */
+  readVoiceTemplateMedia(input: {templateId:string; expectedRevision:string; hash:string}): Promise<{bytes:Uint8Array; descriptor:BlobDescriptor}>;
   listVoiceTemplates(): Promise<{templates:VoiceTemplate[]}>;
   saveVoiceTemplate(input: {templateId?:string; expectedRevision:string|null; packId:string; packRevision:string; voiceId:string; binding?:Voice}): Promise<VoiceTemplate>;
   deleteVoiceTemplate(input: {templateId:string; expectedRevision:string}): Promise<{deleted:true}>;
@@ -161,6 +178,9 @@ export interface AssetPackService extends CatalogueService {
   applyImport(input: {inspectionId: string; expectedRevision: string | null; decision: ImportDecision; acceptScriptRisk?: boolean}): Promise<(PackMutation & {mapping?: PackMapping}) | PackRemoval | {status: 'cancelled'}>;
   exportPack(input: PackWrite): Promise<PackArchive & {contentHash: string; revision: string; warnings: WidgetDefaultExportWarning[]}>;
   exportPacks(input: {packs: PackWrite[]}): Promise<(PackArchive | {archives: PackArchive[]}) & {packs: Array<{packId: string; contentHash: string; revision: string}>; warnings: WidgetDefaultExportWarning[]}>;
+  /** Host-only export callback; absent from the remote method table. */
+  /** packIds: the chosen packs (default: every bound pack); the exported card stays bound to them plus keepPackIds only. */
+  withCardExport<T>(input: {path: string; expectedRevision?: string; packIds?: string[]; keepPackIds?: string[]}, consume: (snapshot: {path: string; revision: string; raw: Record<string, unknown>; packs: PackExportSnapshot[]}) => Promise<T>): Promise<T>;
   exportCardBundle(input: {path: string; expectedRevision: string; packIds: string[]}): Promise<PackArchive & {dependencies: CardBundleInspection['dependencies']}>;
   inspectCardBundleUrl(input: {path: string; url: string}): Promise<CardBundleInspection>;
   inspectCardBundle(input: {path: string; bytes: Uint8Array}): Promise<CardBundleInspection>;

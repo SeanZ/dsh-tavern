@@ -58,6 +58,12 @@ export function createStagePlayback(direction) {
   return {version:STAGE_PLAYBACK_VERSION,algorithm:FIGURE_ALGORITHM,displayVersion:FIGURE_DISPLAY.version,source:stagePlaybackIdentity(direction),
     acceptedPrefix:clone(direction.token), reconstructed:direction.complete === true, nodes:[],frames:{},measurements:{}}
 }
+// Stored playback was fully validated by saveStagePlayback; reuse needs only the same derivation identity.
+const reusable = (old, direction) => old?.version === STAGE_PLAYBACK_VERSION && old.algorithm === FIGURE_ALGORITHM &&
+  old.displayVersion === FIGURE_DISPLAY.version && same(old.source,stagePlaybackIdentity(direction))
+export function reuseStagePlayback(old, direction) {
+  return reusable(old,direction) ? clone(old) : createStagePlayback(direction)
+}
 // Structural deltas: only changed nodes and their ancestor paths are appended.
 // All object/array children are references; scalars stay inline, including numbers.
 export function stagePlaybackWriter(metadata) {
@@ -130,7 +136,7 @@ export function validateStagePlayback(raw, direction) {
       return
     }
     for (const [key,item] of Object.entries(value)) {
-      if (['figureScale','ruler','locks','hMax'].includes(key) || typeof item === 'string' && /^(blob:|https?:|file:)/.test(item)) fail()
+      if (FRAME_DROPPED_KEYS.includes(key) || typeof item === 'string' && /^(blob:|https?:|file:)/.test(item)) fail()
       visit(item)
     }
   }
@@ -145,6 +151,9 @@ export function validateStagePlayback(raw, direction) {
   }
   return clone(raw)
 }
+// Figure ruler/locks are frozen in the record, never in a frame: the writer drops exactly the keys the validator refuses
+// (a skin document's own `figures.ruler` or a mod's `locks` included), so a frame it wrote always validates.
+const FRAME_DROPPED_KEYS = ['figureScale','ruler','locks','hMax']
 const FRAME_FIGURE_FIELDS = ['alias','ref','revision','form','appearance','outfitKey','state','avatar','avatarCrop','avatarStateId','avatarOutfitKey','geometry','modelUrl','spriteUrls','avatarUrl']
 // Only host-built descriptor DTOs enter frames. Ruler/height are already frozen in the record.
 export function stagePlaybackFrame(value, cache) {
@@ -152,7 +161,7 @@ export function stagePlaybackFrame(value, cache) {
     if (!value || typeof value !== 'object') return value
     if (cache?.clean.has(value)) return cache.clean.get(value)
     const result = Array.isArray(value) ? value.map(clean)
-      : Object.fromEntries(Object.entries(value).filter(([key]) => !['ruler','figureScale'].includes(key)).map(([key,item]) => [key,clean(item)]))
+      : Object.fromEntries(Object.entries(value).filter(([key]) => !FRAME_DROPPED_KEYS.includes(key)).map(([key,item]) => [key,clean(item)]))
     cache?.clean.set(value,result)
     return result
   }
@@ -181,8 +190,7 @@ export function saveStagePlayback(chat, turn, direction, candidate) {
   if (record ? record.digest !== direction.token.digest : !draft?.state || draft.state.nextSequence - 1 !== direction.token.prefixRevision ||
       !same(draft.state.entries,direction.preview?.entries) || draft.state.through !== direction.through) fail()
   const next = validateStagePlayback(candidate,direction), old = message[STAGE_PLAYBACK_FIELD]
-  if (old?.version === STAGE_PLAYBACK_VERSION && same(old.source,next.source)) {
-    validateStagePlayback(old,direction)
+  if (reusable(old,direction)) {
     const frames = stagePlaybackFrames(next), append = stagePlaybackWriter(next)
     for (const [key,value] of Object.entries(stagePlaybackFrames(old))) {
       if (Object.hasOwn(frames,key) && !same(frames[key],value)) fail()
@@ -190,8 +198,8 @@ export function saveStagePlayback(chat, turn, direction, candidate) {
     }
     next.measurements = {...next.measurements,...clone(old.measurements)}
     next.reconstructed = old.reconstructed
+    validateStagePlayback(next,direction)
   }
-  validateStagePlayback(next,direction)
   if (old?.version === STAGE_PLAYBACK_VERSION && same(old,next)) return old
   message[STAGE_PLAYBACK_FIELD] = next
   return next

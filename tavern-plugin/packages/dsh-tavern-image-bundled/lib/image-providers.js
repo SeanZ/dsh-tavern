@@ -6,24 +6,8 @@ export { effectiveImageProvider, supportsImageReferences, supportsImageTaskResum
 
 const DEFAULT_MAX = 32 * 1024 * 1024
 const DEFAULT_TIMEOUT = 300_000
-const PROVIDERS = {
-  novelai: ['NovelAI / 同协议第三方', 'https://image.novelai.net', 'nai-diffusion-4-5-full'],
-  openai: ['OpenAI / Images 兼容中转', 'https://api.openai.com/v1', 'gpt-image-2.5-flare'],
-  gemini: ['Google Gemini 原生', 'https://generativelanguage.googleapis.com/v1', 'gemini-3.1-flash-image'],
-  'gemini-chat': ['Banana / Gemini 聊天兼容中转', 'https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-2.5-flash-image'],
-  grok: ['Grok Images', 'https://api.x.ai/v1', 'grok-imagine-image-2.0'],
-  seedream: ['Seedream / 火山方舟', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seedream-5-0-pro-260628'],
-  qwen: ['百炼 Qwen-Image', 'https://dashscope-intl.aliyuncs.com/api/v1', 'qwen-image-3.0'],
-  atlascloud: ['atlas cloud', 'https://api.atlascloud.ai/api/v1', 'black-forest-labs/flux-schnell'],
-  sdwebui: ['Stable Diffusion WebUI / Forge', 'http://127.0.0.1:7860', ''],
-  custom: ['自定义兼容渠道', '', '']
-}
-
-// Atlas Cloud remains a supported wire adapter, but users configure it as an
-// explicitly selected protocol under the single custom channel type.
-export const IMAGE_PROVIDERS = Object.entries(PROVIDERS)
-  .filter(([id]) => id !== 'atlascloud')
-  .map(([id, [label, baseUrl, model]]) => ({ id, label, baseUrl, model }))
+import { IMAGE_PROVIDERS, PROVIDER_DEFAULTS as PROVIDERS } from './provider-definitions.js'
+export { IMAGE_PROVIDERS } from './provider-definitions.js'
 
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 const secretValues = channel => [channel?.apiKey, channel?.password,
@@ -150,7 +134,7 @@ async function fetchJson(fetchImpl, url, init, limit, signal, channel) {
   }
   try { return JSON.parse(bytes.toString('utf8')) } catch { throw new Error('生图服务返回了无效 JSON') }
 }
-function combinedPrompt(request) {
+export function combinedPrompt(request) {
   const prompt = String(request.positive ?? '').trim()
   const negative = String(request.negative ?? '').trim()
   if (request.promptMode === 'structured') return combineStructuredPrompt(prompt, negative)
@@ -252,11 +236,12 @@ function imageDataUrl(reference) { return `data:${reference.mediaType};base64,${
 // 对话格式：有些中转站把 NovelAI 包成 chat/completions。它按固定的中文字段模板校验
 // 用户消息、优先读 nai 对象里的值；每个采样器单列一个模型（nai-diffusion-4-5-full:k_euler）；
 // 回复文字里带图片链接。移植自 Tavern 原生生图的 novelaiChatRequest。
+export const novelaiChatPrompt = text => String(text || '').replace(/\s*,?\s*\n+\s*/g, ', ').trim()
+
 async function generateNovelaiChat(ch, request, ctx) {
   const { base, fetchImpl, signal, max, jsonLimit } = ctx
   const { width, height } = requestedDims(ch, request)
-  const oneLine = text => String(text || '').replace(/\s*,?\s*\n+\s*/g, ', ').trim()
-  const tags = oneLine(request.positive), negative = oneLine(request.negative)
+  const tags = novelaiChatPrompt(request.positive), negative = novelaiChatPrompt(request.negative)
   const sampler = String(option(ch, 'sampler', 'k_euler_ancestral'))
   const size = width === height ? '方图' : width > height ? '横图' : '竖图'
   const scale = clampedNumber(request.cfg ?? option(ch, 'cfg', option(ch, 'scale', 5)), 0, 30, 5)
@@ -423,7 +408,9 @@ function requestedDims(channel, request) {
   if (request.exactSize === true) return { width, height }
   // 宽高分开填：两个都填了就以它们为准（优先于下面的 size 文本）
   const rawWidth = Number(option(channel, 'sizeWidth', 0)), rawHeight = Number(option(channel, 'sizeHeight', 0))
-  if (Number.isFinite(rawWidth) && Number.isFinite(rawHeight) && rawWidth > 0 && rawHeight > 0) {
+  // explicitSize：调用方已经算好了尺寸（卡片工作台的三档画幅或自定义宽高）。
+  // 这时渠道里那对「游玩默认宽高」只是兜底值，不能反过来盖掉请求。
+  if (request.explicitSize !== true && Number.isFinite(rawWidth) && Number.isFinite(rawHeight) && rawWidth > 0 && rawHeight > 0) {
     width = bounded(rawWidth, 64, 8192); height = bounded(rawHeight, 64, 8192)
   } else {
     const rawSize = String(option(channel, 'size', '')).trim()

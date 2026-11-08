@@ -1,8 +1,8 @@
-import { sessionEvents, openTurnStep } from './session-events.js'
+import { sessionEvents } from './session-events.js'
 import { createSessionSurfaceMutator } from './session-surface-mutations.js'
 import { createRoundAnchorResolver, roundAnchor, validAnchor } from './round-anchor.js'
 import { isCompactionCheckpoint } from './compaction-checkpoint.js'
-import { isTurnInput, inputEventForTurn, isFailedTurnEnd } from './session-turn-input.js'
+import { isTurnInput } from './session-turn-input.js'
 import { nativeOpeningMessageId } from './native-opening.js'
 import { RETAINED_STORY_ROUNDS } from './story-compaction.js'
 
@@ -18,26 +18,31 @@ function textOf(content) {
 
 function chatRounds(chat) {
   const rounds = []
-  let users = []
-  let inputs = 0
+  let pending = null
   for (const [index, message] of (chat.messages || []).entries()) {
-    if (message?.role === 'user') { users.push(String(message.text ?? '')); inputs++; continue }
+    if (message?.role === 'user') {
+      // Only the last adjacent user can pair with the next reply. Earlier users are
+      // story messages in their own right, not lines to merge into that reply's input.
+      if (pending) rounds.push({ ...pending, standalone: true })
+      pending = { messageIndex: index, userText: String(message.text ?? '') }
+      continue
+    }
     if (message?.role !== 'assistant') continue
     // The native reply holds the raw model output (sourceText) unless an edit wrote the
     // projected text; both are this round. Saved texts are trimmed, native ones may not be.
     const texts = new Set([message.text, message.sourceText, message.projectionText].filter(value => typeof value === 'string').map(value => value.trim()))
-    // 旧存档没有 turn：与行计划 setFloors 同样推算，开场为 1，否则为此前玩家输入数加 1。
-    const turn = Number(message.turn) || (message.greeting === true ? 1 : inputs + 1)
-    rounds.push({ messageIndex: index, turn, greeting: message.greeting === true,
-      userText: users.length ? users.join('\n\n') : null, replyText: String(message.text ?? ''), texts, anchor: message.nativeAnchor })
-    users = []
+    rounds.push({ messageIndex: index, turn: Number(message.turn) || 0, greeting: message.greeting === true,
+      userText: pending?.userText ?? null, replyText: String(message.text ?? ''), texts, anchor: message.nativeAnchor })
+    pending = null
   }
+  if (pending) rounds.push({ ...pending, standalone: true })
   return rounds
 }
 
 // What a model would read as story after the last reply: a pending input, more
 // prose, or tool traffic. Injected context and empty tombstones are harmless.
 function isStoryResidue(event) {
+  if (event?.type === 'assistant/message' && String(event.data?.message?.id || '').startsWith('tavern-game-mode:')) return false
   if (event?.type === 'tool/result') return true
   if (event?.type === 'user/message') return isTurnInput(event.data) && textOf(event.data.content) !== ''
   if (event?.type === 'assistant/message') return textOf(event.data?.message?.content) !== ''
@@ -76,52 +81,91 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
   const covered = checkpoint < 0 ? 0 : Math.max(0, ...(at(checkpoint)?.sourceEventSeqs || []).map(seq => turnOfSeq.get(seq) || 0))
   const nativeTurn = round => validAnchor(round.anchor) ? Number(round.anchor.turn) : round.turn
   const summarizedRound = round => covered > 0 && !round.greeting && nativeTurn(round) <= covered
-  let replies = null
-  function replyByText(texts) {
+  let replies = null, inputs = null
+  function replyByText(texts, before = nodes.length) {
     if (replies === null) {
       replies = new Map()
       for (let index = checkpoint + 1; index < nodes.length; index++) {
         const event = at(index)
         if (event?.type !== 'assistant/message' || event.data?.message?.source?.kind !== 'model') continue
-        replies.set(textOf(event.data.message.content).trim(), index)
+        const text = textOf(event.data.message.content).trim()
+        if (!replies.has(text)) replies.set(text, [])
+        replies.get(text).push(index)
       }
     }
-    return Math.max(-1, ...[...texts].map(text => replies.get(text) ?? -1))
+    return Math.max(-1, ...[...texts].map(text => replies.get(text)?.findLast(index => index < before) ?? -1))
+  }
+  function inputByText(text, before = nodes.length) {
+    if (inputs === null) {
+      inputs = new Map()
+      for (let index = checkpoint + 1; index < nodes.length; index++) {
+        const event = at(index)
+        if (event?.type !== 'user/message' || !isTurnInput(event.data)) continue
+        const value = textOf(event.data.content)
+        if (!inputs.has(value)) inputs.set(value, [])
+        inputs.get(value).push(index)
+      }
+    }
+    return inputs.get(text)?.findLast(index => index < before) ?? -1
   }
   // Where this round's reply stands, if the surface still says what the Chat says.
-  function locate(round) {
+  function locate(round, before = nodes.length) {
+    if (round.standalone) {
+      const index = inputByText(round.userText, before)
+      return { index, start: index, summarized: false }
+    }
     if (round.greeting) {
       const index = nodes.findIndex(seq => bySeq.get(seq)?.data?.message?.id === openingId)
-      return index > checkpoint ? index : -1
+      return { index: index > checkpoint && index < before ? index : -1, start: index, summarized: false }
     }
     if (validAnchor(round.anchor)) {
       const found = resolve(round.anchor)
-      if (found?.ambiguous) return { index: -1, summarized: false }
       if (found?.reply != null) {
         const index = nodes.indexOf(found.reply)
         const event = at(index)
-        const intact = index > checkpoint && event?.type === 'assistant/message' && round.texts.has(textOf(event.data?.message?.content).trim())
-        return { index: intact ? index : -1, summarized: checkpoint >= 0 && (found.reply === nodes[checkpoint] || found.input === nodes[checkpoint]) }
+        const intact = index > checkpoint && index < before && event?.type === 'assistant/message' && round.texts.has(textOf(event.data?.message?.content).trim())
+        const input = round.userText === null || found.input === null ? -1 : nodes.indexOf(found.input)
+        return { index: intact ? index : -1, start: input >= 0 && input < index ? input : index,
+          summarized: checkpoint >= 0 && (found.reply === nodes[checkpoint] || found.input === nodes[checkpoint]) }
       }
     }
-    return { index: replyByText(round.texts), summarized: false }
+    const index = replyByText(round.texts, before)
+    const input = round.userText === null ? -1 : inputByText(round.userText, index)
+    return { index, start: input >= 0 ? input : index, summarized: false }
   }
   // A failed, stopped or still running turn left on the surface is the failed-turn
   // replay's to clear or resend (CONTEXT.md, Failed Turn Replay); only a completed
   // turn the save does not have is residue.
   const residue = seq => isStoryResidue(bySeq.get(seq)) && ended.get(turnOfSeq.get(seq)) === 'completed'
   // Keeping every node and writing nothing is no repair at all.
-  const failedInputs = new Set([...ended].filter(([, reason]) => isFailedTurnEnd(reason))
-    .map(([turn]) => inputEventForTurn({ events }, turn)?.seq).filter(Number.isSafeInteger))
-  // 失败输入本身总受保护：只发附件的输入没有文字，不算残留，但仍要留给失败重放。
-  const protectedNode = seq => failedInputs.has(seq) ||
-    (isStoryResidue(bySeq.get(seq)) && isFailedTurnEnd(ended.get(turnOfSeq.get(seq))))
-  const plan = (status, keep, rewrite) => {
-    // 未完成回合及失败输入有独立的恢复入口，普通正文修复不能顺带吞掉它们。
-    if ((rewrite.length || keep < nodes.length) && (openTurnStep(events).turn !== null || nodes.slice(keep).some(protectedNode))) {
-      return { status: 'deferred', keep: nodes.length, rounds: [], checkpoint }
+  const plan = (status, keep, rewrite) => ({ status: !rewrite.length && keep >= nodes.length ? 'intact' : status, keep, rounds: rewrite, checkpoint })
+  // A deleted middle row can leave the last reply intact, so the ordinary last-intact
+  // shortcut is insufficient for an unpaired history. Walk every such unit and treat
+  // completed story between two matched units as the deleted rows' stale projection.
+  if (rounds.some(round => round.standalone || (!round.greeting && round.userText === null))) {
+    let nextStart = nodes.length, dirty = false
+    for (let position = rounds.length - 1; position >= 0; position--) {
+      const round = rounds[position], found = locate(round, nextStart)
+      if (found.index >= 0) {
+        if (dirty || nodes.slice(found.index + 1, nextStart).some(residue)) return plan('tail', found.index + 1, rounds.slice(position + 1))
+        nextStart = found.start
+        continue
+      }
+      if (found.summarized || summarizedRound(round)) {
+        if (!dirty && !nodes.slice(checkpoint + 1, nextStart).some(residue)) return plan('intact', nodes.length, [])
+        return plan('tail', checkpoint + 1, rounds.slice(position + 1))
+      }
+      dirty = true
     }
-    return { status: !rewrite.length && keep >= nodes.length ? 'intact' : status, keep, rounds: rewrite, checkpoint }
+    if (!dirty) {
+      let prefix = checkpoint + 1
+      if (checkpoint < 0) { prefix = 0; while (prefix < nodes.length && isPrefixNode(at(prefix), openingId)) prefix++ }
+      if (!nodes.slice(prefix, nextStart).some(residue)) return plan('intact', nodes.length, [])
+    }
+    if (checkpoint >= 0) return plan('tail', checkpoint + 1, rounds.filter(round => !round.greeting && !summarizedRound(round)).slice(-RETAINED_STORY_ROUNDS))
+    let keep = 0
+    while (keep < nodes.length && isPrefixNode(at(keep), openingId)) keep++
+    return plan('full', keep, rounds)
   }
   for (let position = rounds.length - 1; position >= 0; position--) {
     const round = rounds[position]
@@ -144,7 +188,7 @@ export function planNativeSurfaceRepair({ chat, events = [], nodes = [] }) {
 
 /** Write a plan onto the surface: one replacement over the stale tail, then appends. */
 export function applyNativeSurfaceRepair(session, chat, plan, { repairId }) {
-  if (plan.status === 'intact' || plan.status === 'deferred') return { applied: false, anchors: [] }
+  if (plan.status === 'intact') return { applied: false, anchors: [] }
   if (!/^[\w-]{1,100}$/.test(String(repairId || ''))) throw new Error('修复标识无效')
   const mutator = createSessionSurfaceMutator(session, sessionEvents(session))
   const targets = (session.surface?.nodes || []).slice(plan.keep)
@@ -159,24 +203,26 @@ export function applyNativeSurfaceRepair(session, chat, plan, { repairId }) {
   const source = { kind: 'model', provider: 'dsh-tavern', model: 'native-repair' }
   const storySource = turn => Number.isSafeInteger(Number(turn)) && Number(turn) > 0 ? { ...source, tavernStoryTurn: Number(turn) } : source
   const anchors = []
-  // 宿主按步骤绘制最终正文。每个故事轮单独结束步骤，不能让后轮覆盖前轮。
-  for (const [index, round] of plan.rounds.entries()) {
-    mutator.editStep(() => {
+  // The repair runs between rounds, where no step is open: all its writes share one
+  // edit step. Each reply keeps its story turn in tavernStoryTurn (story alignment
+  // reads it), since its event carries the edit step's numbers.
+  mutator.editStep(() => {
+    for (const [index, round] of plan.rounds.entries()) {
       const id = `tavern-native-repair:${repairId}:${index}`
       const turn = round.turn
-      // 没有玩家输入承接替换时，先清掉旧尾部，再追加可绘制的开场正文。
-      if (pending && round.userText === null) write('assistant/message', { turn, step: 1,
-        message: { id: id + ':clear', role: 'assistant', content: [], source } })
       const input = round.userText === null ? null : write('user/message', { id: id + ':input', role: 'user',
         content: [{ type: 'text', text: round.userText }], source: { kind: 'user', repair: { id: repairId } } })
+      if (round.standalone) continue
       const reply = write('assistant/message', { turn, step: 1, message: { id: round.greeting ? nativeOpeningMessageId(chat.id) : id + ':reply',
         role: 'assistant', content: [{ type: 'text', text: round.replyText }], source: storySource(turn) } })
-      anchors.push({ messageIndex: round.messageIndex, anchor: input ? roundAnchor(turn, input, reply) : null })
-    })
-  }
-  // 没有需要恢复的正文时，只用空节点遮蔽已撤回的尾部。
-  if (pending) mutator.editStep(() => write('assistant/message', { turn: 0, step: 1,
-    message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } }))
+      // The story turn belongs in the source marker; the anchor and display mapping
+      // locate the actual edit turn that the mutator assigned to this reply.
+      const replyTurn = Number(reply?.data?.turn) || turn
+      anchors.push({ messageIndex: round.messageIndex, anchor: input ? roundAnchor(replyTurn, input, reply) : null, replyTurn })
+    }
+    // A stale tail with nothing to write in its place: shadow it with an empty node.
+    if (pending) write('assistant/message', { turn: 0, step: 1, message: { id: `tavern-native-repair:${repairId}:empty`, role: 'assistant', content: [], source } })
+  })
   return { applied: true, anchors }
 }
 
@@ -192,13 +238,40 @@ export function repairNativeSurface(session, chat, options) {
 export function recordNativeSurfaceRepair(current, repaired, anchors) {
   let changed = false
   if (current.nativeSync) { delete current.nativeSync; changed = true }
-  for (const { messageIndex, anchor } of anchors) {
+  for (const { messageIndex, anchor, replyTurn } of anchors) {
     const row = current.messages?.[messageIndex], read = repaired.messages?.[messageIndex]
-    if (!anchor || row?.role !== 'assistant' || row.text !== read?.text || (Number(row.turn) || 0) !== (Number(read?.turn) || 0)) continue
-    row.nativeAnchor = anchor
+    // Missing legacy turns are equal to themselves; NaN !== NaN must not make an
+    // unchanged row keep an anchor into the source Session after a story fork.
+    const sameTurn = Object.is(row?.turn, read?.turn) || Number(row?.turn) === Number(read?.turn)
+    if (row?.role !== 'assistant' || row.text !== read?.text || !sameTurn) continue
+    // A reply whose input was deleted has no valid pair anchor. Clear the stale
+    // anchor instead of leaving it to resolve against an older reply (often the
+    // opening) on every subsequent reconciliation.
+    if (!anchor) {
+      if (row.nativeAnchor !== undefined) { delete row.nativeAnchor; changed = true }
+    } else {
+      row.nativeAnchor = anchor
+      changed = true
+    }
+    const storyTurn = Number(read?.turn)
+    const nativeTurn = Number(replyTurn) || Number(anchor?.turn)
+    if (Number.isSafeInteger(storyTurn) && storyTurn > 0 && Number.isSafeInteger(nativeTurn) && nativeTurn > 0) {
+      const key = String(storyTurn)
+      const mappings = current.regeneratedDshTurns && typeof current.regeneratedDshTurns === 'object' && !Array.isArray(current.regeneratedDshTurns)
+        ? current.regeneratedDshTurns : {}
+      if (nativeTurn === storyTurn && Object.hasOwn(mappings, key)) {
+        const next = { ...mappings }
+        delete next[key]
+        if (Object.keys(next).length) current.regeneratedDshTurns = next
+        else delete current.regeneratedDshTurns
+        changed = true
+      } else if (nativeTurn !== storyTurn && Number(mappings[key]) !== nativeTurn) {
+        current.regeneratedDshTurns = { ...mappings, [key]: nativeTurn }
+        changed = true
+      }
+    }
     // The rewritten reply already carries the edit; replaying the marker would target a shadowed node.
     delete row.bodyEdit
-    changed = true
   }
   return changed
 }

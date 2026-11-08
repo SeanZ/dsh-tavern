@@ -133,9 +133,24 @@ test('4K media mounts across an unrelated publication without entering the thumb
   assert.equal(encodes,0)
 })
 
+test('the desktop app\'s header-less authenticated requests act for the retained Host; foreign origins stay rejected',async t => {
+  const f = await fixture(t), {pack} = await f.install()
+  // the desktop app forwards without Origin and Sec-Fetch-Site, or names itself as dsh-app://app.
+  const desktop = (path,options = {}) => f.fetch(new Request('http://dsh.internal' + path,{...options,headers:{host:'localhost:123',...options.headers}}))
+  const control = (method,args,headers = {}) => desktop(PACK_CONTROL_PATH,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({method,args})})
+  for (const headers of [{},{origin:'dsh-app://app'},{origin}]) {
+    const response = await control('capabilities',{},headers)
+    assert.equal(response.status,200,JSON.stringify(headers)); assert.equal((await response.json()).apiVersion,2)
+  }
+  for (const headers of [{origin:'http://evil.example.com'},{origin:'http://localhost:999'},{'sec-fetch-site':'cross-site'}]) assert.equal((await control('capabilities',{},headers)).status,403,JSON.stringify(headers))
+  const lease = await (await control('leaseMedia',{packId:PACK_ID,hash:Object.keys(pack.manifest.blobs)[0]})).json()
+  assert.equal((await desktop(lease.url)).status,200)
+  assert.equal((await desktop(lease.url,{headers:{origin:'http://evil.example.com'}})).status,403)
+})
+
 test('transport gates forged authority, client scope, duplicate JSON, oversize and stale handlers',async t => {
   const f = await fixture(t,{limits:{totalSize:64,spoolBytes:128}})
-  for (const headers of [{origin:'null'},{origin:'http://dsh.internal'},{'sec-fetch-site':'cross-site'},{host:''},{origin:''}]) assert.equal((await f.control('capabilities',{},headers)).status,403)
+  for (const headers of [{origin:'null'},{origin:'http://dsh.internal'},{'sec-fetch-site':'cross-site'},{host:''}]) assert.equal((await f.control('capabilities',{},headers)).status,403)
   assert.equal((await f.control('leaseMedia',{packId:PACK_ID,hash:'a'.repeat(64),scope:'other'})).status,400)
   const duplicate = await f.fetch(request(PACK_CONTROL_PATH,{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"listPacks","method":"dispose"}'}))
   assert.equal(duplicate.status,400)
@@ -263,4 +278,22 @@ test('change stream pushes mutations, resumes by sequence and closes on detach',
   await second.cancel()
   f.detach()
   assert.equal((await reader.read()).done,true)
+})
+test('mod media is uploaded to and leased from the registered mod owner, read on demand',async t => {
+  const f = await fixture(t)
+  assert.equal((await f.control('leaseModMedia',{modId:'dsh.demo',packId:PACK_ID,path:'media/a.png'})).status,503,'no owner yet')
+  const reads = [], bytes = new Uint8Array([1,2,3,4])
+  const stop = f.service.registerModMedia({put:async input => ({path:'media/'+input.slot+'.png',size:input.bytes.length}),read:async input => {reads.push(input.path);return {mime:'image/png',bytes}}})
+  assert.throws(() => f.service.registerModMedia({put(){},read(){}}),/already registered/)
+  const lease = await (await f.control('leaseModMedia',{modId:'dsh.demo',packId:PACK_ID,path:'media/a.png'})).json()
+  assert.equal(reads.length,1,'the lease checks the media exists once')
+  const response = await f.fetch(request(lease.url))
+  assert.equal(response.status,200); assert.equal(response.headers.get('content-type'),'image/png')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()),bytes)
+  assert.equal(reads.length,2,'bytes are read per request, not pinned for the lease')
+  assert.equal((await f.control('releaseLease',{ticket:lease.ticket})).status,200)
+  assert.equal(f.routes.has(lease.url),false)
+  assert.deepEqual(await f.service.putModMedia({modId:'dsh.demo',packId:PACK_ID,kind:'k',slot:'icon',mime:'image/png',bytes}),{path:'media/icon.png',size:4})
+  stop()
+  assert.equal((await f.control('leaseModMedia',{modId:'dsh.demo',packId:PACK_ID,path:'media/a.png'})).status,503)
 })

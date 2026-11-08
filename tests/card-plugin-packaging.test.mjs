@@ -79,7 +79,7 @@ test('dafeiyu build and distribution compressor produce a card without a plugin 
 
 test('all card packagers reject missing, blank, and non-string identity before reading inputs or writing output', async t => {
   const dir = await temp(t)
-  await symlink(path.join(root, 'tavern-plugin'), path.join(dir, 'tavern-plugin'), 'dir')
+  await symlink(path.join(root, 'tavern-plugin'), path.join(dir, 'tavern-plugin'), process.platform === 'win32' ? 'junction' : 'dir')
   for (const relative of ['dshcard-hello/build.mjs']) {
     const script = path.join(dir, 'examples', relative), plugin = path.join(path.dirname(script), 'plugin')
     await mkdir(plugin, { recursive: true })

@@ -1,10 +1,14 @@
 // 上游接线边界：业务实现由 Tavern 持有，故事层只负责投影、受控操作与渲染契约。
 // @include-story story-rounds.js
+// @include-story-client transcript.js
 // @include-story-client service.js
 // @include-story-client render.js
 
+const storyTranscript = createStoryTranscriptAdapter({ createTavernStoryTranscriptDataModule, tavernProjectionForTurn });
+
 const { createTavernStoryService, tavernStoryTurnArgument, tavernStorySessionArgument } = createStoryServiceAdapter({
 	window,
+	storyTranscript,
 	rpc,
 	liveTavernView,
 	notifyTavernDataChanged,
@@ -25,6 +29,7 @@ const { createTavernStoryService, tavernStoryTurnArgument, tavernStorySessionArg
 
 const { createTavernStoryRender } = createStoryRenderAdapter({
 	window,
+	storyTranscript,
 	React,
 	liveTavernView,
 	tavernProjectionForTurn,

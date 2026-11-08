@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { Session } from './fixtures/dsh-session-host.mjs'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
+import { dshFileToolNames } from '../tavern-plugin/lib/domain/turn-orchestration.js'
 import { createForegroundOrchestrationStrategies, createNativePlayOrchestrationStrategy } from "../tavern-plugin/lib/domain/foreground-orchestration-strategies.js"
 import { ensureSessionStablePrefix, sessionStablePrefixSections } from '../tavern-plugin/lib/domain/session-stable-prefix.js'
 import { ensureSessionSeedTrajectory } from '../tavern-plugin/lib/domain/session-seed-trajectory.js'
@@ -25,7 +26,7 @@ function strategies(overrides = {}) {
       async resolvePreset() { return { front: { text: 'preset' } } },
       async synchronizeTail(input) { calls.push(['native.sync', input.sessionId]) },
       async prepareTurn(input) {
-        calls.push(['native.prepare', input.userText, input.requestId])
+        calls.push(['native.prepare', input.userText, input.requestId, input.userContent])
         return { frame: { frameId: 'frame-1', branchId: 'b', basedOnRevision: 1, source: {}, userInput: { projectedText: 'projected' } } }
       },
       appendFrame(input) { return { messages: input.messages.concat([{ role: 'user', content: [{ type: 'text', text: 'frame' }] }]), receipt: { appended: true } } },
@@ -49,15 +50,19 @@ test('retired conversation mode is rejected before native preparation or system 
   assert.deepEqual(run.calls, [])
 })
 
-test('alpha.2 提示词表示不含工具时，读取公开工具快照并保持表示层形状', async () => {
+test('正文准备保留当前玩家消息的原始附件 content', async () => {
   const run = strategies()
-  const presentation = { sections: [], contexts: [], variables: {} }
-  const result = await run.value.assembleSystemPrompt(presentation, {
-    sessionId: 'native', chat: run.chats.get('native'), tools: [{ name: 'bash' }]
+  const incoming = [userMessage('查看附件')]
+  incoming[0].content.push({ type: 'image', source: { type: 'base64', data: 'IMAGE_DATA' } })
+  await run.value.prepareStep({
+    sessionId: 'native', requestId: 'request-attachment',
+    payload: { turn: 2, step: 1, messages: incoming },
+    decision: { kind: 'enter', messages: incoming }, chat: run.chats.get('native')
   })
-  assert.equal(Object.hasOwn(result, 'tools'), false)
-  assert.ok(result.sections.some(section => section.name === 'tavern:no-foreground-tools'))
-  assert.deepEqual(await run.value.filterTools([{ name: 'bash' }, { name: 'external' }], { sessionId: 'native', chat: run.chats.get('native') }), [{ name: 'external' }])
+  const prepared = run.calls.find(call => call[0] === 'native.prepare')
+  assert.equal(prepared[1], '查看附件')
+  assert.equal(prepared[2], 'request-attachment')
+  assert.deepEqual(prepared[3], incoming[0].content)
 })
 
 test('游玩固定背景来自原生系统装配，预设前后段保持顺序，快照不重复发送', async () => {
@@ -143,7 +148,7 @@ test('旧 Session 的 Tavern 开场白在请求边界恢复为合成模型来源
 
 test('新版 DSH 文件工具只向卡片 Agent 开放，不泄漏给正文 Agent', async () => {
   async function assembledToolNames(mode) {
-    const fileTools = ['read', 'write', 'edit', 'read_image']
+    const fileTools = dshFileToolNames
     const run = strategies({
       nativePlay: {
         async modeFor() { return mode },
@@ -167,7 +172,7 @@ test('新版 DSH 文件工具只向卡片 Agent 开放，不泄漏给正文 Agen
     return assembly.tools.map(function (tool) { return tool.name })
   }
 
-  assert.deepEqual(await assembledToolNames('card'), ['read', 'write', 'edit', 'read_image'])
+  assert.deepEqual(await assembledToolNames('card'), ['read', 'write', 'edit', 'read_image', 'apply_patch'])
   assert.deepEqual(await assembledToolNames('story'), ['tavern_recall_history'])
 })
 
@@ -393,16 +398,87 @@ test('style instructions appear only with its offered tool, never inject polish 
   assert.ok(!off.sections.some(section => section.name === 'tavern:foreground-style-reference'))
 })
 
+test('插件工具声明了解锁 Skill 时，未加载前不进入工作台请求', async () => {
+  const unlocked = new Set()
+  const strategy = createNativePlayOrchestrationStrategy({
+    modeFor: async () => 'card', visibleTools: async () => ['bash'], controlledToolNames: new Set(['bash', 'tavern_save_skill']),
+    workspaceContext: () => '', pluginToolModes: name => name === 'stage_play_only' ? ['play'] : null,
+    pluginToolsUnlocked: async (sessionId, names) => names.filter(name => name !== 'stage_patch' || unlocked.has(sessionId))
+  })
+  const tools = () => ['bash', 'tavern_save_skill', 'stage_patch', 'stage_lookup', 'stage_play_only'].map(name => ({ name }))
+  const input = { sessionId: 'card', chat: { mode: 'card' }, fixedSystemSections: [] }
+  const before = { sections: [], tools: tools() }
+  await strategy.assembleSystemPrompt(before, input)
+  assert.deepEqual(before.tools.map(tool => tool.name), ['bash', 'stage_lookup'])
+  unlocked.add('card')
+  const after = { sections: [], tools: tools() }
+  await strategy.assembleSystemPrompt(after, input)
+  assert.deepEqual(after.tools.map(tool => tool.name), ['bash', 'stage_patch', 'stage_lookup'])
+})
 
-test('alpha.2 提示词表示不带 tools 时复用已筛选列表，不补写宿主字段', async () => {
-  const strategy = createNativePlayOrchestrationStrategy({ modeFor: async () => 'story',
-    visibleTools: async () => ['style_reference_submit'], resolvePreset: async () => null,
-    controlledToolNames: new Set(['style_reference_submit']), styleReferencePrompt: () => '前台选段后继续写正文' })
+test('宿主 system-prompt/assemble waterfall 中 assembly.tools 为 undefined 时不崩溃', async () => {
+  const strategy = createNativePlayOrchestrationStrategy({
+    modeFor: async () => 'story',
+    visibleTools: async () => [],
+    resolvePreset: async () => null,
+    controlledToolNames: new Set()
+  })
   const input = { sessionId: 'game', chat: { mode: 'story' }, fixedSystemSections: [] }
-  const empty = await strategy.assembleSystemPrompt({ sections: [] }, input)
-  assert.equal(Object.hasOwn(empty, 'tools'), false)
-  assert.ok(!empty.sections.some(section => section.name === 'tavern:foreground-style-reference'))
-  const offered = await strategy.assembleSystemPrompt({ sections: [] }, { ...input, tools: [{ name: 'style_reference_submit' }] })
-  assert.equal(Object.hasOwn(offered, 'tools'), false)
-  assert.ok(offered.sections.some(section => section.name === 'tavern:foreground-style-reference'))
+  // DSH host waterfall passes assembly with sections, contexts, variables, but NO tools property
+  const assembly = { sections: [], contexts: [], variables: {} }
+  const result = await strategy.assembleSystemPrompt(assembly, input)
+  assert.ok(result)
+  assert.ok(Array.isArray(result.sections))
+  assert.ok(!result.sections.some(section => section.name === 'tavern:no-foreground-tools'), 'missing metadata is not an empty tool set')
+})
+
+test('宿主 tools 不在 assembly 中时仍回写过滤结果并按批准工具生成契约', async () => {
+  const strategy = createNativePlayOrchestrationStrategy({
+    modeFor: async () => 'story', visibleTools: async () => ['submit_story'],
+    storyOutputToolCall: async () => true, resolvePreset: async () => null,
+    controlledToolNames: new Set(['submit_story', 'tavern_generate_body', 'style_reference_submit']),
+    styleReferencePrompt: () => '前台选段后继续写正文'
+  })
+  const assembly = { sections: [], contexts: [], variables: {} }
+  const result = await strategy.assembleSystemPrompt(assembly, {
+    sessionId: 'game', chat: { mode: 'story' }, fixedSystemSections: [],
+    toolDefinitions: [{ name: 'submit_story' }]
+  })
+  assert.ok(result.sections.some(section => section.name === 'tavern:story-tool-submission'))
+  assert.ok(!result.sections.some(section => section.name === 'tavern:no-foreground-tools'))
+  assert.deepEqual(result.tools, [{ name: 'submit_story' }])
+  const actual = await strategy.assembleSystemPrompt({ sections: [] }, {
+    sessionId: 'game', chat: { mode: 'story', disabledForegroundTools: ['plugin_tool'] },
+    toolDefinitions: ['submit_story', 'plugin_tool', 'tavern_generate_body', 'style_reference_submit'].map(name => ({ name }))
+  })
+  assert.deepEqual(actual.tools.map(tool => tool.name), ['submit_story'])
+  assert.match(actual.sections.find(section => section.name === 'tavern:story-tool-submission').text, /不要调用任何其他工具/)
+  assert.ok(!actual.sections.some(section => ['tavern:plugin-body-generation', 'tavern:foreground-style-reference'].includes(section.name)))
+})
+
+test('宿主全量工具表含 tavern_generate_body 时，未启用插件生成仍要求模型直接写正文', async () => {
+  let pluginGeneration = false
+  const strategy = createNativePlayOrchestrationStrategy({
+    modeFor: async () => 'story',
+    visibleTools: async () => pluginGeneration ? ['submit_story', 'tavern_generate_body'] : ['submit_story'],
+    storyOutputToolCall: async () => false,
+    resolvePreset: async () => null,
+    controlledToolNames: new Set(['submit_story', 'tavern_generate_body'])
+  })
+  const input = {
+    sessionId: 'game', chat: { mode: 'story' }, fixedSystemSections: [],
+    toolDefinitions: [{ name: 'submit_story' }, { name: 'tavern_generate_body' }, { name: 'tavern_read_variables' }]
+  }
+  const assemble = () => strategy.assembleSystemPrompt({ sections: [], contexts: [], variables: {} }, input)
+
+  const hostGenerated = await assemble()
+  assert.equal(hostGenerated.sections.some(section => section.name === 'tavern:plugin-body-generation'), false,
+    '宿主下发 tavern_generate_body 不代表本局启用了插件生成')
+  assert.match(hostGenerated.sections.find(section => section.name === 'tavern:story-tool-submission').text,
+    /历史里的 submit_story 调用只是过去正文的记录/)
+
+  pluginGeneration = true
+  const pluginGenerated = await assemble()
+  assert.ok(pluginGenerated.sections.some(section => section.name === 'tavern:plugin-body-generation'),
+    '真正启用插件生成时仍要注入插件正文契约')
 })

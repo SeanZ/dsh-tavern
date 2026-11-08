@@ -265,7 +265,7 @@ test("候选项操作条在故事视图模式下不放「生成候选项」按�
   );
   assert.match(
     body,
-    /latestMessageId && !storyView \? React\.createElement\(CandidateAction,/,
+    /isPlayMode\(sessionMode\) && !storyView \? React\.createElement\(CandidateAction,/,
   );
   assert.match(body, /React\.createElement\(TavernPluginComposerActions,/);
   assert.match(body, /React\.createElement\(TavernMoreActions, props\)/);

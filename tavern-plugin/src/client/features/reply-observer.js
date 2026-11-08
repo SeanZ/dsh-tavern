@@ -76,6 +76,103 @@
 			}
 
 			// The first registered plugin slot that asks for this mode, in its own boundary.
+			function TavernGameModeSurface(props) {
+				const extensionsVersion = useTavernUiExtensions();
+				const h = React.createElement, sessionId = props.sessionId;
+				const [launchRoot, setLaunchRoot] = React.useState(null);
+				const launchRef = React.useCallback(function (node) { if (node) setLaunchRoot(node.shadowRoot || node.attachShadow({ mode: 'open' })); }, []);
+				const [snapshot, setSnapshot] = React.useState(null), [modes, setModes] = React.useState([]);
+				const [error, setError] = React.useState(''), [pending, setPending] = React.useState(false);
+				const [paused, setPaused] = React.useState(false);
+                const [pageOpen, setPageOpen] = React.useState(true);
+				const actionLocks = TavernGameModeSurface.actionLocks || (TavernGameModeSurface.actionLocks = new Set());
+				React.useEffect(function () {
+					let disposed = false;
+					async function refresh() {
+						try {
+							const result = await rpc('gameMode', { op: 'view' }, sessionId);
+							if (!disposed) setSnapshot(result.mode);
+							if (!result.mode) { const list = await rpc('gameMode', { op: 'list' }, sessionId); if (!disposed) setModes(list.modes); }
+						} catch (e) { if (!disposed) setError(e.message); }
+					}
+					refresh();
+					const stop = tavernSessionSignals.subscribe(sessionId, 'plugin-state:@tavern:game-mode', refresh);
+					return function () { disposed = true; stop(); };
+				}, [sessionId, extensionsVersion]);
+				async function act(input) {
+					if (input.op === 'stop' || input.op === 'seek') setPaused(true);
+					if (actionLocks.has(sessionId) && input.op !== 'stop') return false;
+					if (input.op !== 'stop') actionLocks.add(sessionId);
+					setPending(true); setError('');
+					try { const result = await rpc('gameMode', Object.assign({ revision: snapshot && snapshot.revision, actionId: crypto.randomUUID() }, input), sessionId); if (result.mode) setSnapshot(result.mode); return true; }
+					catch (e) { setError(e.message); setPaused(true); return false; }
+					finally { if (input.op !== 'stop') actionLocks.delete(sessionId); setPending(false); }
+				}
+				// Stop / step back / undo step back, as a component the stage HUD can place too.
+				const controlsRef = React.useRef(null);
+				controlsRef.current = { snapshot: snapshot, pending: pending, act: act };
+				const GameControls = React.useMemo(function () {
+					return function TavernGameControls() {
+						const current = controlsRef.current, snapshot = current.snapshot, pending = current.pending, act = current.act;
+						if (!snapshot) return null;
+						return h(React.Fragment, null,
+							h('button', { disabled: !pending && !snapshot.busy, onClick: function () { act({ op: 'stop' }); } }, '停止'),
+							h('button', { disabled: pending || snapshot.busy || snapshot.cursor < 1, onClick: function () { act({ op: 'seek', cursor: snapshot.cursor - 1 }); } }, '回退一步'),
+							h('button', { disabled: pending || snapshot.busy || snapshot.cursor + 1 >= snapshot.length, onClick: function () { act({ op: 'seek', cursor: snapshot.cursor + 1 }); } }, '撤销回退'));
+					};
+				}, []);
+				const renderProps = snapshot ? { gameId: sessionId, data: snapshot.data, foreground: props.pageHost ? false : snapshot.foreground, page: !!props.pageHost, revision: snapshot.revision, paused: paused, error: error, resume: function () { setError(''); setPaused(false); }, busy: pending || snapshot.busy, advance: function (input) { return act({ op: 'advance', input: input }); } } : null;
+				// presentation 'stage': while a stage consumer is attached, the page host lends the game the
+				// stage as one in-memory lease and renders no page; scene null releases it (story returns).
+				const stageView = props.pageHost && snapshot ? tavernUiExtensions.gameModeView(snapshot.key) : null;
+				const stageCapable = !!(stageView && stageView.stage);
+				const watchConsumers = React.useCallback(function (changed) { return stageCapable ? tavernStageLeases.subscribe(sessionId, changed) : function () {}; }, [sessionId, stageCapable]);
+				const stageAttached = React.useSyncExternalStore(watchConsumers, function () { return stageCapable && tavernStageLeases.attached(sessionId); });
+				let leasing = stageCapable && stageAttached, lease = null, sceneError = '';
+				if (leasing) {
+					const leaseProps = Object.assign({}, renderProps, { GameControls: GameControls });
+					try { const scene = stageView.stage.scene(leaseProps); if (scene) lease = { owner: stageView.owner, scene: scene, hud: stageView.stage.hud, props: leaseProps }; }
+					catch (e) { leasing = false; sceneError = e.message; }
+				}
+				const publishedRef = React.useRef(null);
+				React.useEffect(function () {
+					if (lease) { tavernStageLeases.publish(sessionId, lease); publishedRef.current = lease.owner; }
+					else if (publishedRef.current) { tavernStageLeases.release(sessionId, publishedRef.current); publishedRef.current = null; }
+				});
+				React.useEffect(function () {
+					return function () { if (publishedRef.current) { tavernStageLeases.release(sessionId, publishedRef.current); publishedRef.current = null; } };
+				}, [sessionId]);
+				if (leasing) return null;
+				if (!snapshot && !modes.length && !error) return null;
+                const pageRenderer = snapshot ? tavernUiExtensions.gameModeView(snapshot.key) : modes.map(mode => tavernUiExtensions.gameModeView(mode.key)).find(view => view?.page);
+                if (props.pageHost && !pageRenderer?.page) return null;
+                if (!props.pageHost && pageRenderer?.page) return null;
+				if (!props.pageHost && snapshot?.foreground && !props.foreground) return null;
+				if (props.foreground && (!snapshot || props.messageId !== snapshot.foregroundMessageId)) return null;
+				const renderer = snapshot && tavernUiExtensions.gameModeView(snapshot.key);
+				const surface = h('section', { className: 'dsh-tavern-game-mode', 'aria-label': '自定义玩法', 'data-revision': snapshot && snapshot.revision },
+					error || sceneError ? h('p', { role: 'alert' }, error || sceneError) : null,
+					!snapshot && props.pageHost && pageRenderer?.lobby ? h(tavernPluginBoundary(), { owner: pageRenderer.owner }, h(pageRenderer.lobby, { busy: pending, start: function () { const mode = modes.find(mode => tavernUiExtensions.gameModeView(mode.key) === pageRenderer); if (mode) return act({ op: 'create', key: mode.key }); } })) : !snapshot ? h('div', { ref: launchRef }, launchRoot && ReactDOM.createPortal(h(React.Fragment, null,
+						h('style', null, ':host{display:block;margin:24px 0}*{box-sizing:border-box}.launch{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:24px;border:1px solid #bda16c66;border-radius:16px;background:linear-gradient(120deg,#101a2c,#1e2940);color:#f2eadb;font:14px/1.6 system-ui;box-shadow:0 12px 32px #07102018}.title{font-size:20px;font-weight:650}.hint{color:#b9c5d7;margin-top:4px;font-size:12px}button{flex-shrink:0;border:1px solid #eddbb6;border-radius:10px;padding:13px 24px;background:linear-gradient(120deg,#efdcaf,#c4a36c);color:#1b2230;font:650 15px/1.5 system-ui;cursor:pointer;box-shadow:0 4px 18px #0003}button:hover{filter:brightness(1.1)}button:focus-visible{outline:3px solid #fff;outline-offset:4px}button:disabled{opacity:.6;cursor:wait}@media(max-width:600px){.launch{flex-wrap:wrap;padding:20px}button{width:100%}}'),
+						modes.map(function (mode) { return h('div', { key: mode.key, className: 'launch' }, h('div', null, h('div', { className: 'title' }, mode.title), h('div', { className: 'hint' }, '准备就绪，开启你的游戏')), h('button', { type: 'button', disabled: pending, onClick: function () { act({ op: 'create', key: mode.key }); } }, pending ? '正在开启…' : '开始 ' + mode.title)); })), launchRoot)) : null,
+					snapshot ? h('div', null,
+						h(GameControls),
+						renderer ? h(tavernPluginBoundary(), { owner: renderer.owner, fallback: h('p', null, '玩法界面出错，请恢复插件') },
+							h(renderer.render, renderProps)) : h('p', null, '请加载对应的玩法界面插件')) : null);
+                if (!props.pageHost) return surface;
+                if (!pageOpen) return h('button', { className: 'dsh-tavern-btn', onClick: function () { setPageOpen(true); } }, '返回游戏页面');
+                return ReactDOM.createPortal(h('div', { className: 'dsh-tavern-game-page', role: 'dialog', 'aria-modal': 'true', 'aria-label': '专属游玩页面', style: { position: 'fixed', inset: '36px 0 0', zIndex: 10000, background: '#080e19', color: '#edf2fa', overflow: 'auto' } },
+                    h('style', null, '.dsh-tavern-game-page>.page-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;border-bottom:1px solid #ffffff20;font:14px system-ui}.dsh-tavern-game-page button{cursor:pointer}.dsh-tavern-game-page>.dsh-tavern-game-mode{max-width:1600px;margin:auto;padding:12px 24px}.dsh-tavern-game-page>.dsh-tavern-game-mode>div>button{background:#1b293d;border:1px solid #53647d;color:#edf2fa;border-radius:6px;padding:7px 14px;margin:0 8px 10px 0}'),
+                    h('nav', { className: 'page-nav' }, h('strong', null, 'DSH Tavern · 游戏'), h('button', { className: 'dsh-tavern-btn', onClick: function () { setPageOpen(false); } }, '返回酒馆')), surface), document.body);
+
+			}
+
+            function TavernGamePage(props) {
+                const sessionId = String(props.sessionId || '');
+                if (!sessionId) return null;
+                return React.createElement(TavernGameModeSurface, { key: sessionId, sessionId: sessionId, pageHost: true });
+            }
+
 			function TavernComposerSlot(props) {
 				useTavernUiExtensions();
 				const sessionId = String(props.sessionId || "");
@@ -83,16 +180,18 @@
 				const mode = live && live.view && typeof live.view.mode === "string" ? live.view.mode : "";
 				const slot = mode === "" ? null : tavernUiExtensions.composerSlotFor(mode);
 				const busy = props.useSession(function (snapshot) { return snapshot.running === true; });
+
 				if (sessionId === "" || !slot || !tavernPluginAllowed(slot.owner, sessionId)) return null;
 				const h = React.createElement;
 				const fallback = h("div", { className: "dsh-tavern-plugin-slot-error" }, "插件 " + slot.owner + " 的界面出错了");
-				return h("div", { className: "dsh-tavern-composer-slot", "data-plugin": slot.owner },
+				return h(React.Fragment, null, h("div", { className: "dsh-tavern-composer-slot", "data-plugin": slot.owner },
 					h(tavernPluginBoundary(), { owner: slot.owner, fallback: fallback },
-						h(slot.render, { sessionId: sessionId, busy: busy === true })));
+						h(slot.render, { sessionId: sessionId, busy: busy === true }))));
 			}
 
 			function register(input) {
 				const slots = input.slots;
+
 				input.ctx.effect(function () {
 					return slots.inject("conversation.input.dock", function () {
 						return slots.register({ name: "conversation.input.dock", id: "dsh-tavern-reply-observer", order: -300, label: "回复观察" }, TavernReplyObserver);
@@ -106,7 +205,7 @@
 				return function () {};
 			}
 
-			return Object.freeze({ register: register, tavernReplyState: tavernReplyState });
+			return Object.freeze({ register: register, tavernReplyState: tavernReplyState, GamePage: TavernGamePage, GameModeSurface: TavernGameModeSurface });
 		}
 		const tavernReplyObserverFeature = createTavernReplyObserverFeatureModule();
 

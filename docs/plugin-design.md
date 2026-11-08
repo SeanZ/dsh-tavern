@@ -1,5 +1,11 @@
 # 插件开放层设计
 
+## 自定义玩法（gameMode）
+
+通用玩法接口已发布到 main。宿主注册、持久成员、状态投影和恢复契约见[玩法 API](../presets/tavern/skills/tavern-plugin/references/plugin-api-game.md)；独立页面与大厅见[浏览器 API](../presets/tavern/skills/tavern-plugin/references/plugin-api-ui.md)。
+
+狼人杀是独立人物卡，其规则、界面、构建与测试由 [dshcard-werewolf](https://github.com/flizzywine/dshcard-werewolf) 维护；[下载最新版人物卡](https://github.com/flizzywine/dshcard-werewolf/releases/latest/download/werewolf.dshcard)。Tavern 只维护通用玩法能力，不内置狼人杀规则。
+
 状态：**已确认**（2026-10-09）。按「实施分期」分批实现；每一批都不改已发布的接口。
 
 ## 1. 为什么要系统设计
@@ -132,11 +138,14 @@ const data = await ctx.tavern.readGameData({ gameId })
 | `settlementTask`、`manualTask`、`startTask` | 结算、手动任务 | 添加；带 `member` 时在该成员的常驻会话里按顺序跑 |
 | `runTask` | 后台任务 | 默认开一次性临时 Agent；带 `member` 时进该成员的常驻会话排队。示例见 examples/tavern-plugin-diarist |
 | `candidateSection` | 候选 | 添加 |
+| `speechProvider`、`imageProvider` | 配音、生图渠道 | 添加：插件提供渠道，Tavern 自己不保存渠道 |
+| `synthesizeSpeech`、`generateImage` | 配音、生图 | 借用：任何插件用玩家配好的渠道合成一句或画一张图；`generateImage` 与素材库生图共用同时至多四张的限制 |
 | `compactionSection` | 压缩 | 添加 |
 | `tavernUi.registerPanel` | 界面 | 添加 |
 | `tavernUi.openOverlay` | 界面 | 添加 |
 | `tavernUi.assetUrl` | 界面（插件 `assets/` 静态资源） | — |
 | `tavernUi.setInput`、`tavernUi.submitInput` | 玩家输入 | 代玩家填写或发送，走玩家输入的同一条路径 |
+| `tavernUi.onPlayEvent` | 玩家操作（选项、翻页停留、重播、报错） | 观察：只有计数和序号，不含正文 |
 | `saveTurnData`、`readTurnData`、`saveGameData`、`readGameData` | （存档数据，见第 4 节） | — |
 | `attach`、`update`、`remove`、`list` | 界面 | 添加 |
 | `tavernUi` 全部 | 界面、回复 | 添加 |
@@ -159,3 +168,16 @@ const data = await ctx.tavern.readGameData({ gameId })
 1. **编辑正文后通知插件**：编辑产生新的正文版本后，也发一次 `onTurnSettled`（新的 `textVersion`），插件据此重算这一轮的数据。
 2. **替换冲突**：同一阶段有多个插件要替换时，都不生效，用 Tavern 自己的。
 3. **导出存档**：带上当前剧情线上的插件按轮数据、整局数据和媒体项（含媒体文件），导入时按新游戏的正文版本重新绑定；被回退的版本不带。
+
+## 9. 语音服务
+
+配音由语音插件（`dsh-tavern-tts`）提供，本体与舞台只通过契约读写，不 import 插件文件，也不拼插件的 HTTP 地址：
+
+- **契约唯一来源**：`dsh-presentation-protocol/tts`（`src/types/tts.d.ts`）。插件的类型从这里 re-export；本体与舞台不另抄一份。
+- **三个服务**：`ctx.get('tts')`（宿主侧 `Tts`：合成、缓存、服务列表、素材包声音来源与授权）、`ctx.get('ttsClient')`（浏览器侧 `TtsClient`：`available()`、`synthesize`、`audioUrl`、`jobStatus`、`cancelJob`）与 `ctx.get('ttsControl')`（配音设置页的控制 RPC）。插件未启用时这些服务都不提供，每次使用前重新 `ctx.get`。
+- **没有服务时**：调用方保持安静，以 `TTS_UNAVAILABLE` 作为诊断；正文、存档和聊天照常，错误不进聊天。
+- **内置朗读**：普通聊天正文的「🔊 朗读」通过 `readAloudLine({text})` 使用独立的 `tts.reading.readAloud.voice`，自动开关为 `readAloud.auto`，默认关闭；两项都在 酒馆设置 › 酒馆插件。`readAloudState()` 返回 `{stepAside, auto}`，是客户端唯一使用的舞台相关信号；有效舞台配音开启时让位，舞台画面不整篇朗读。仅对本页观察到完成的流式回复自动读一次，不在刷新或重挂载时补读。合成复用语音服务，播放复用同一个播放器，不读取通用声音或旁白设置。
+- **台词朗读**：角色配音的正文 🔊 与插件的 `synthesizeSpeech` 都经 `speakLine` 交给语音服务（`domain/speech.js`）；本体没有自己的配音渠道、设置或音频缓存。朗读声音是插件设置 `tts.reading`：`dialogueVoice`（通用声音，所有卡通用：没绑定声音的人物和临时 NPC 使用；可选 `{silent:true}` 表示不配音）与 `narrator`（旁白的全局层，默认关闭；卡片的 `stage.narrator` 逐键覆盖它）。舞台的「配音」使用 `voice` 四态开关，详情页包含通用声音、旁白及旁白声音。「本卡单独指定」写入或移除 `stage.narrator.voice`；旁白没有单独指定声音时由 `effectiveNarrator` 回退至通用声音。声音的写法与人物声音选择器一致：`{browser}` 或 `{serviceId, voice}`。`tavern.speechProvider({synthesize})` 注册的渠道作为语音服务的 provider `tavern-plugin:<owner>:<id>` 接入。
+
+  配音提供者的 `synthesize({text,voice,emotion,signal})` 应返回 `{data,mediaType:"audio/wav"}`，其中 `data` 是带 RIFF/WAVE 头的 PCM16 WAV 字节（不是裸 PCM）。该格式直接进入语音缓存，无需 ffmpeg；建议单声道、24 kHz。已有返回 MP3、Ogg 等压缩音频的插件仍受支持，但需要安装 ffmpeg 才能转换。无需新增输出格式协商字段。
+- **边界守门**：`tests/tts-boundary.test.mjs`（只减不增）检查本体与舞台不以相对路径 import 插件、插件的 HTTP 根不出现在本体与舞台，以及 `ctx.get('tts*')` 调用点与本体 `provide('tts*')` 的上限。

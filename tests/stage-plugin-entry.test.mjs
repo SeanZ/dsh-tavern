@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
 import {pathToFileURL} from 'node:url'
 import {readFile} from 'node:fs/promises'
-import vm from './fixtures/client-vm.mjs'
+import {loadStageClientPlugin} from './fixtures/stage-client-plugin.mjs'
 import * as stage from '../tavern-plugin/packages/dsh-tavern-stage/lib/index.js'
 
 test('independent stage plugin follows real Cordis load, unload and reload',async()=>{
@@ -24,21 +24,18 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
   const require = createRequire(pathToFileURL(process.env.DSH_BOOT_MODULE))
   const local = createRequire(import.meta.url)
   const {Context} = await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href)
-  const {startStageClientLifetime} = local('../tavern-plugin/packages/dsh-tavern-stage/lib/client/lifetime.cjs')
-  const {createStageClientEntry} = local('../tavern-plugin/packages/dsh-tavern-stage/lib/client/entry.cjs')
-  let definition
   const controllerSource=await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/src/client/controller.cjs',import.meta.url),'utf8')
   const controllerCalls=[...new Set([...controllerSource.matchAll(/stageViews\.([A-Za-z0-9_.]+)\(/g)].map(match=>match[1]))]
   const controllerComponents=[...new Set([...controllerSource.matchAll(/React\.createElement\(stageViews\.([A-Za-z0-9_.]+),/g)].map(match=>match[1]))]
   const styles = new Set()
   const document = {addEventListener(){},removeEventListener(){},querySelector:() => null, head:{appendChild:style => styles.add(style),insertBefore:style => styles.add(style)}, createElement:() => ({dataset:{},remove() {styles.delete(this)}})}
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js', import.meta.url),'utf8'), {
-    document, window:{__ModuleLoader__:{load(value) {definition = value}}}
-  })
-  assert.equal(definition.id, 'dsh-tavern-stage')
+  const plugin = await loadStageClientPlugin({document, window:{}})
+  assert.equal(plugin.name, 'dsh-tavern-stage')
+  assert.deepEqual([...plugin.inject], ['tavernStageFrontend'])
   const assembled = []
   const forbidden = () => {throw new Error('host must not supply stage session access')}
-  const seen = [], host = createStageClientEntry({startLifetime:startStageClientLifetime, install:[
+  // The core's stage registrations (main.js stageEffect): the plugin runs them as one owned lifetime per activation.
+  const seen = [], registrations = [
     input => {
       assert.equal(typeof input.createNavigation,'function')
       const React = {
@@ -47,7 +44,7 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
         createElement:(type,props,...children) => ({type,props,children}),
       }
       const views = input.createViews({React,GalStage:forbidden,skinResources:{getSession:forbidden,getResourceOwner:forbidden},backlogPaging:{hydrateText:forbidden,hasOlder:forbidden,loadOlder:forbidden},sceneColorMath:local('../tavern-plugin/shared/color-math.cjs'),navigation:{galEntering:{get:()=>false}},speech:{player:{cancelPrefetch(){}}},loader:{},video:{},music:{foreground:{clearTimeout(){}},audio:{}},bgm:{clock:{clearTimeout(){}}},admission:{performance:{now:() => 0}},
-        text:{defaultTextSpeed:28}})
+        text:{defaultTextSpeed:28},statusPanel:{}})
       assembled.push(views)
       assert.notEqual(views.controller.Stage,forbidden,'the plugin composes its own controller')
       for(const path of [...controllerCalls,...controllerComponents]) {
@@ -62,22 +59,21 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
       const session=views.sessionRuntime.createSessionOwner({sessions:{list:{getSnapshot:()=>({byId:{}}),subscribe:()=>()=>stopped++}}})
       session.start();session.dispose();assert.equal(stopped,1)
       for (const name of ['Host','Toggle','Typewriter','NarrationLines','HudLabels','NamePlate']) assert.equal(typeof views[name],'function')
-      assert.equal(views.Typewriter({text:'完整文字',instant:true}).children[0].children[0],'完整文字')
+      assert.equal(views.Typewriter({text:'完整文字',instant:true}).children[0][0].children[0],'完整文字')
       views.progress.store.begin('s',1)
       assert.equal(views.progress.store.get('s').id,1)
       seen.push('tab')
       return () => {views.dispose(); seen.push('remove-tab')}
     },
-  ]})
+  ]
   const ctx = new Context()
-  ctx.provide('tavernStageFrontend', {mount:host.mount,sessionInputs:()=>({
+  ctx.provide('tavernStageFrontend', {registrations,sessionInputs:()=>({
     native:{sessions:{list:{getSnapshot:()=>({byId:{}}),subscribe:()=>()=>{}}},selectedSessionId:()=>null,settings:{subscribe:()=>()=>{}}},
     io:{},assets:{createOwner:()=>{seen.push('sessions');let closed=false;return {dispose:()=>{if(!closed){closed=true;seen.push('stop-sessions')}}}}},dialogue:{},text:{},performance:{},
     observation:{packs:{subscribe:()=>()=>{},runtimeChanged:()=>()=>{}},portraits:{select(){}},media:{background:{activate(){}}}}
   })})
   assert.deepEqual(seen, [], 'core setup does not start the stage')
   assert.equal(styles.size,0)
-  const plugin = definition.factory()
   const first = ctx.plugin(plugin); await first.await()
   assert.deepEqual(seen,['tab','sessions'])
   // Exercise the compiled composition: private consumers resolve this activation's owner,
@@ -101,9 +97,10 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
     views.sessions.owner = originalOwner
   }
   assert.equal(styles.size,2)
+  // Styles inserted after boot name their owner, or the module loader claims them for the next plugin it materializes.
+  for (const style of styles) assert.equal(style.dataset.plugin, 'dsh-tavern-stage')
   assert.match([...styles][1].textContent, /fork-tc-layer/)
   assert.match([...styles][1].textContent, /fork-widget-source-controls/)
-  assert.throws(() => host.mount(), /already mounted/)
   await first.dispose()
   assert.deepEqual(seen,['tab','sessions','stop-sessions','remove-tab'])
   assert.equal(styles.size,0)
@@ -111,9 +108,53 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
   assert.deepEqual(seen.slice(-2),['tab','sessions'])
   await second.dispose()
   assert.equal(styles.size,0)
-  host.dispose()
-  assert.throws(() => host.mount(), /disposed/)
   await ctx.fiber.dispose()
+})
+
+test('card pages: a card without pages adds no frames, keys or menu rows; an open page keeps auto and skip paused', async () => {
+  const local = createRequire(import.meta.url)
+  const client = '../tavern-plugin/packages/dsh-tavern-stage/src/client/'
+  const controls = local(client + 'controls.cjs').createStageControls()
+  const menu = local(client + 'menu.cjs').createStageMenu({React:{},window:{},document:{},sounds:{},getSession(){}})
+  const {createStageInput} = local(client + 'input.cjs')
+  const {createStageNavigation} = local(client + 'navigation.cjs')
+  const pages = [{id:'title',label:'标题',showOn:{event:'stage-enter'},size:'full'},{id:'status',label:'状态',shortcut:'s',menu:true,size:'window'}]
+  // no pages: the built-in keys and rows only, and no entry page (so the controller never mounts a page frame).
+  assert.deepEqual(controls.shortcuts({pages:[]}),controls.shortcuts({}))
+  assert.ok(controls.shortcuts({pages:[]}).every(([, , action]) => !action.startsWith('page:')))
+  assert.ok(menu.items({pages:[]}).every(item => !item.id.startsWith('page:')))
+  assert.equal(controls.stageEnterPage({pages:[],fresh:true,skip:false}),null)
+  assert.deepEqual(menu.items({pages}).filter(item => item.id.startsWith('page:')).map(item => item.id),['page:status'])
+  const controllerSource = await readFile(new URL(client + 'controller.cjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(controllerSource,/statusOpen|statusPanel\.useStatusPanel|data-status-panel/)
+  assert.match(controllerSource,/pageOpen \? h\(stageViews\.statusPanel\.Overlay/)
+  // every pause the old status panel had reads pageOpen: the playback clock (auto / skip), the insert page's auto, read marks.
+  assert.match(controllerSource,/usePlayback\(\{[^]*?overlay:backlog\|\|configOpen\|\|galleryOpen\|\|pageOpen\|\|menuOpen/)
+  assert.match(controllerSource,/if \(!auto \|\| hidden \|\| backlog \|\| configOpen \|\| galleryOpen \|\| pageOpen \|\| menuOpen\) return;/)
+  // the keyboard: with a page open neither A (auto) nor a held Ctrl (skip) reaches the reader; Esc closes the page.
+  const handlers = new Map(), timers = [], sent = []
+  const target = {addEventListener:(type,fn) => handlers.set(type,[...(handlers.get(type) || []),fn]),removeEventListener(){}}
+  const fire = (type,init) => { const event = {key:'',repeat:false,preventDefault(){},target:null,...init,type}; for (const fn of handlers.get(type) || []) fn(event) }
+  const input = createStageInput({React:{},window:target,document:target,clock:{setTimeout:fn => timers.push(fn),clearTimeout(){}},controls,navigation:{galKeyboardFocus:() => false}})
+  let state = {page:'status',pages,auto:false,skipping:false,atEnd:false}
+  const reader = input.attach(() => state,action => sent.push(action))
+  fire('keydown',{key:'a'}); fire('keydown',{key:'Control'})
+  assert.equal(timers.length,0,'a held Ctrl starts no skip while a page is open')
+  assert.deepEqual(sent,[])
+  fire('keydown',{key:'Escape'})
+  assert.deepEqual(sent,[{type:'page',open:false}])
+  state = {...state,page:null}; sent.length = 0
+  fire('keydown',{key:'s'})
+  assert.deepEqual(sent.filter(action => action.type !== 'held'),[{type:'page',open:true,id:'status'}])
+  reader.dispose()
+  // showOn counts entries from text mode: galOpen bumps the visit, leaving does not.
+  const documentStub = {documentElement:{setAttribute(){},removeAttribute(){}},querySelectorAll:() => [],fullscreenElement:null}
+  const navigation = createStageNavigation({window:{},document:documentStub,navigator:{},playCue(){},getSessionId:() => 's',getSettings:() => null})
+  const stop = navigation.galStageLifetime()
+  assert.equal(navigation.visit(),0)
+  navigation.galOpen('s'); navigation.galLeave(); navigation.galOpen('s')
+  assert.equal(navigation.visit(),2)
+  stop()
 })
 
 test('failed browser stage mount rolls back registrations and can be retried', () => {
@@ -130,29 +171,29 @@ test('failed browser stage mount rolls back registrations and can be retried', (
   fail = false
   const stop = host.mount()
   assert.equal(count,1)
+  assert.throws(() => host.mount(), /already mounted/)
   stop(); stop()
   assert.equal(count,0)
   host.dispose()
+  assert.throws(() => host.mount(), /disposed/)
 })
 
 
 test('browser stage entry removes its style when mounting fails', async () => {
   const styles = new Set()
-  let definition
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js', import.meta.url),'utf8'), {
+  const plugin = await loadStageClientPlugin({
     document:{querySelector:() => null, head:{appendChild:style => styles.add(style),insertBefore:style => styles.add(style)},createElement:() => ({dataset:{},remove() {styles.delete(this)}})},
-    window:{__ModuleLoader__:{load(value) {definition = value}}}
+    window:{}
   })
-  assert.doesNotThrow(() => definition.factory().apply({get:() => ({mount() {throw new Error('failed')}}),effect:run => run()}))
+  assert.doesNotThrow(() => plugin.apply({provide(){},get:() => ({registrations:[() => {throw new Error('failed')}]}),effect:run => run()}))
   assert.equal(styles.size,0)
 })
 
 test('stage activation rolls back partial style insertion and retries without touching unrelated styles',async()=>{
-  let definition,fail=true,mounted=0,stopped=0
+  let fail=true,mounted=0,stopped=0
   const original={name:'ordinary-chat'},styles=new Set([original])
   const document={querySelector:()=>null,createElement:()=>({dataset:{},remove(){styles.delete(this)}}),head:{insertBefore(style){styles.add(style)},appendChild(style){styles.add(style);if(fail)throw Error('style insertion failed')}}}
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js',import.meta.url),'utf8'),{document,window:{__ModuleLoader__:{load(value){definition=value}}}})
-  const plugin=definition.factory(),context={get:()=>({mount(){mounted++;return ()=>stopped++}}),effect:run=>run()}
+  const plugin=await loadStageClientPlugin({document,window:{}}),context={provide(){},get:()=>({registrations:[()=>{mounted++;return ()=>stopped++}]}),effect:run=>run()}
   assert.doesNotThrow(()=>plugin.apply(context))
   assert.deepEqual([...styles],[original]);assert.equal(mounted,0)
   fail=false;let cleanup;plugin.apply({...context,effect:run=>cleanup=run()})
@@ -160,30 +201,29 @@ test('stage activation rolls back partial style insertion and retries without to
 })
 
 test('stage shutdown removes every owned style even when mount cleanup and one removal fail',async()=>{
-  let definition,cleanup
+  let cleanup
   const styles=new Set(),removed=[]
   const document={querySelector:()=>null,createElement:()=>({dataset:{},remove(){removed.push(this.dataset.pluginCss);styles.delete(this);if(this.dataset.pluginCss.endsWith('presentation.css'))throw Error('style cleanup failed')}}),head:{insertBefore:s=>styles.add(s),appendChild:s=>styles.add(s)}}
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js',import.meta.url),'utf8'),{document,window:{__ModuleLoader__:{load(value){definition=value}}}})
-  definition.factory().apply({get:()=>({mount:()=>()=>{throw Error('mount cleanup failed')}}),effect:run=>cleanup=run()})
+  const plugin=await loadStageClientPlugin({document,window:{}})
+  plugin.apply({provide(){},get:()=>({registrations:[()=>()=>{throw Error('mount cleanup failed')}]}),effect:run=>cleanup=run()})
   assert.throws(()=>cleanup(),error=>error.name==='AggregateError'&&error.errors.length===2)
   assert.equal(styles.size,0);assert.equal(removed.length,2);cleanup();assert.equal(removed.length,2)
 })
 
 test('missing stage host degrades without adding styles',async()=>{
-  let definition,created=0
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js',import.meta.url),'utf8'),{document:{createElement(){created++;throw Error('must not allocate')}},window:{__ModuleLoader__:{load(value){definition=value}}}})
-  assert.doesNotThrow(()=>definition.factory().apply({get:()=>null,effect:run=>run()}))
+  let created=0
+  const plugin=await loadStageClientPlugin({document:{createElement(){created++;throw Error('must not allocate')}},window:{}})
+  assert.doesNotThrow(()=>plugin.apply({provide(){},get:()=>null,effect:run=>run()}))
   assert.equal(created,0)
 })
 
 test('activation and rollback errors stay diagnostic and do not reject host startup',async()=>{
-  let definition,cleanup
+  let cleanup
   const styles=new Set(),failures=[]
   const document={querySelector:()=>null,createElement:()=>({dataset:{},remove(){styles.delete(this);throw Error('cleanup failed')}}),
     head:{insertBefore:s=>styles.add(s),appendChild:s=>styles.add(s)}}
-  vm.runInNewContext(await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js',import.meta.url),'utf8'),{
-    document,console:{error:(...args)=>failures.push(args)},window:{__ModuleLoader__:{load(value){definition=value}}}})
-  assert.doesNotThrow(()=>definition.factory().apply({get:()=>({mount(){throw Error('mount failed')}}),effect:run=>cleanup=run()}))
+  const plugin=await loadStageClientPlugin({document,console:{error:(...args)=>failures.push(args)},window:{}})
+  assert.doesNotThrow(()=>plugin.apply({provide(){},get:()=>({registrations:[()=>{throw Error('mount failed')}]}),effect:run=>cleanup=run()}))
   assert.equal(styles.size,0)
   assert.equal(failures.length,1)
   assert.equal(failures[0][1].name,'AggregateError')

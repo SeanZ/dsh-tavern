@@ -7,6 +7,13 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
+// A settlement that commits no floor (the plain engine, a plugin-replaced posture)
+// writes header fields only: the posture, the settlement status and its last run.
+// Naming them lets the commit read and patch the header instead of materializing
+// every floor to diff one posture — on a long save that read was the bulk of a
+// background settlement.
+const SETTLEMENT_HEADER_FIELDS = Object.freeze(['posture', 'settleStatus', 'settleError', 'lastSettle'])
+
 // One turn's background work (Wiki「设计：background-task-pipeline」): plugin tasks before,
 // the main settlement with plugin tasks alongside, plugin tasks after, then "turn settled".
 // The main settlement reads its input, lets the MVU or the plain engine settle, and commits;
@@ -14,7 +21,7 @@ function str(value) {
 // `deps` is read on each call, so a test may swap a service after creation.
 export function createSettlementRun(deps) {
   async function runSettlement(chatId, signal) {
-    const { backgroundTasks, chatPersistence, mvuSettlementEngine, readChat, readChatCard, worldBookScanDepth, writeChat } = deps
+    const { backgroundTasks, chatPersistence, mvuSettlementEngine, readChat, readChatCard, worldBookScanDepth } = deps
     const retryStale = createSettlementProgressGuard({ backgroundTasks, onStopped: ({ operationId, error }) => {
       console.error('dsh-tavern: 结算连续三次未能提交且剧情状态未前进，已停止，可重新结算', chatId, operationId, str(error?.message || error || '提交已过期'))
     } })
@@ -28,6 +35,15 @@ export function createSettlementRun(deps) {
       const trace = { sessionId: str(taskRun.participantRequest.sessionId), boundary: null }
       try {
         signal?.throwIfAborted()
+        if (deps.pluginApi?.hostBehavior && !(await deps.pluginApi.hostBehavior.forGame(snapshot.sessionId)).backgroundAgents) {
+          const completed = await taskRun.commit({ stateChanged: false, headerFields: SETTLEMENT_HEADER_FIELDS,
+            apply(draft) {
+              draft.settleStatus = 'done'; draft.settleError = null
+              draft.lastSettle = { ts: Date.now(), posture: false, raw: '', skipped: 'plugin-host-behavior' }
+            } })
+          if (completed.status === 'stale') continue
+          return
+        }
         const card = await readChatCard(snapshot)
         signal?.throwIfAborted()
         const engine = await runSettlementEngine({ snapshot, taskRun, card, signal, trace })
@@ -37,7 +53,7 @@ export function createSettlementRun(deps) {
         let stat = { postureUpdated: false }
         const mvuCompletion = mvuSettlementEngine.completion({ mvuTarget, mvuResult, backgroundTasksSettings })
         const completion = {
-          ...(mvuCompletion.messageIndices ? { messageIndices: mvuCompletion.messageIndices } : {}),
+          ...(mvuCompletion.messageIndices ? { messageIndices: mvuCompletion.messageIndices } : { headerFields: SETTLEMENT_HEADER_FIELDS }),
           stateChanged: mvuCompletion.stateChanged || str(result && result.posture).trim() !== '',
           participant: taskRun.participant({ sessionId: trace.sessionId, boundary: trace.boundary }),
           apply(draft, scope) {
@@ -66,10 +82,19 @@ export function createSettlementRun(deps) {
           trace.boundary = null
         }
         if (trace.boundary === null && Number.isSafeInteger(err && err.traceBoundary)) trace.boundary = err.traceBoundary
+        const message = str(err && err.message || err) || '后台结算失败'
         const failed = await taskRun.commit({
           status: 'failed',
           stateChanged: false,
-          participant: taskRun.participant({ sessionId: trace.sessionId, boundary: trace.boundary })
+          participant: taskRun.participant({ sessionId: trace.sessionId, boundary: trace.boundary }),
+          apply(draft) {
+            // Close the delivery and the public settlement status in the same CAS
+            // that records the round's settledRevision. A second whole-Chat write
+            // would leave that revision pointing at a still-pending snapshot.
+            mvuSettlementEngine.recordFailure(draft, err, message)
+            draft.settleStatus = 'failed'
+            draft.settleError = message
+          }
         })
         if (failed.status === 'missing') return
         if (failed.status === 'stale') {
@@ -78,13 +103,6 @@ export function createSettlementRun(deps) {
           if (await retryStale(failed.chat, err)) continue
           return
         }
-        const latest = await readChat(chatId)
-        if (latest === undefined) return
-        const message = str(err && err.message || err) || '后台结算失败'
-        const mvuFailed = mvuSettlementEngine.recordFailure(latest, err, message)
-        latest.settleStatus = 'failed'
-        latest.settleError = message
-        await writeChat(latest, { source: mvuFailed ? 'settlement.mvu-failed' : 'settlement.posture-failed' })
         console.error('dsh-tavern: 结算失败', chatId, str(err && err.message || err))
         return
       }
@@ -109,6 +127,12 @@ export function createSettlementRun(deps) {
     const { backgroundTasks, pluginApi, pluginSettlementProgress, taskStateReader } = deps
     const state = await taskStateReader.read(chatId).catch(() => null)
     const gameId = str(state?.sessionId)
+    if (gameId && pluginApi.hostBehavior && !(await pluginApi.hostBehavior.forGame(gameId)).backgroundAgents) {
+      deps.backgroundAgentRunner?.cancel(gameId)
+      await deps.backgroundAgentRunner?.releaseFor(gameId)
+      await runSettlement(chatId, signal)
+      return
+    }
     const onStart = label => pluginSettlementProgress.begin(gameId, label)
     const activity = state ? backgroundTasks.activity(state) : null
     const turnPending = () => Boolean(gameId) && activity?.role === 'settlement' && ['pending', 'running'].includes(activity.phase)
@@ -142,6 +166,7 @@ export function createSettlementRun(deps) {
     const { agentRegistry, backgroundTasks, pluginApi, pluginSettlementProgress, taskStateReader } = deps
     const chat = await taskStateReader.forSession(str(sessionId))
     if (!chat || !['story', 'script'].includes(chat.mode)) throw new Error('当前没有游玩对话')
+    if (pluginApi.hostBehavior && !(await pluginApi.hostBehavior.forGame(chat.sessionId)).backgroundAgents) throw new Error('本局插件已关闭后台任务，请使用前台对话')
     if (agentRegistry.get(chat.sessionId)?.phase?.kind === 'running' || chat.regenInProgress) throw new Error('请等待正文生成完成后再运行插件任务')
     if (pluginTaskJobs.has(chat.id)) throw new Error('已有插件任务在运行，请等它完成')
     await pluginApi.manualTaskFor(chat.sessionId, key, input)

@@ -27,6 +27,7 @@ function setup(t, { retained = false } = {}) {
   t.after(() => { act(() => root.unmount()); Object.assign(globalThis, previous); win.close() })
   return { win, client, render, root }
 }
+const floor = client => ({ messageUid: 'm2', legacyTurn: 2, projection: client.liveTavernView.getSnapshot('s1').view?.replyProjections?.[0] || client.liveTavernView.getSnapshot('s2').view?.replyProjections?.[0] });
 const view = parts => ({ mode: 'story', replyProjections: [{ turn: 2, version: 2, parts }], tavernRuntimePolicy: { trustedCardMode: false }, tavernHelper: { messages: [] } })
 
 test('sanitizeHtml 去掉脚本、内嵌框架、事件属性与脚本链接，页面级样式改为楼层作用域', t => {
@@ -43,28 +44,24 @@ test('sanitizeHtml 去掉脚本、内嵌框架、事件属性与脚本链接，�
 test('FloorBody 非 live：快照或无脚本 HTML 放进 shadow root，不建 iframe', async t => {
   const { win, client, render, root } = setup(t)
   client.liveTavernView.setView('s1', view([{ kind: 'markdown', text: '正文' }, { kind: 'html', content: '<div onclick="x()" class="card">卡<script>evil()</script></div><button>继续</button>' }]))
-  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', storyTurn: 2 })))
+  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', floor: floor(client) })))
   const body = win.document.querySelector('[data-tavern-floor="2"]')
   assert.equal(body.querySelector('.markdown').textContent, '正文')
   const shadow = body.querySelector('.dsh-tavern-floor-static').shadowRoot
   assert.equal(shadow.querySelector('.dsh-tavern-floor-content').innerHTML, '<div class="card">卡</div><button disabled="" type="button">继续</button>', '按钮只作惰性显示')
   assert.equal(win.document.querySelectorAll('iframe').length, 0)
-  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', storyTurn: 2, snapshotHtml: '<p onmouseover="x()">快照</p><script>1</script>' })))
+  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', floor: floor(client), snapshotHtml: '<p onmouseover="x()">快照</p><script>1</script>' })))
   assert.equal(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.querySelector('.dsh-tavern-floor-content').innerHTML, '<p>快照</p>')
-  const projected = await render.projectFloor('s1', 2)
-  assert.equal(projected.hasScript, true)
-  assert.equal(projected.parts.length, 2)
-  assert.equal(projected.trustedCardMode, false)
 })
 
 test('FloorBody live 用 Tavern 的消息 frame；离开 live 即释放保留帧', async t => {
   const { win, client, render, root } = setup(t, { retained: true })
   client.liveTavernView.setView('s2', view([{ kind: 'html', content: '<div>卡</div><script>run()</script>' }]))
-  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's2', storyTurn: 2, live: true, eager: true })))
+  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's2', floor: floor(client), live: true, eager: true })))
   const frames = win.document.querySelectorAll('iframe.dsh-tavern-message-frame')
   assert.equal(frames.length, 1, '带脚本楼层 live 时有一个 iframe')
   assert.equal(frames[0].getAttribute('sandbox'), 'allow-scripts')
-  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's2', storyTurn: 2, live: false })))
+  await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's2', floor: floor(client), live: false })))
   assert.equal(win.document.querySelectorAll('iframe').length, 0, '不再 live 后 iframe 立即销毁，不停放在页面里')
 })
 
@@ -107,7 +104,7 @@ test('白名单净化：svg/math/form 整段移除，未知标签解包，样式
 test('FloorBody 原文兜底保留 Markdown 与配色容器，快照不被原文覆盖', async t => {
   const { win, client, render, root } = setup(t)
   client.liveTavernView.setView('plain', view([]))
-  const props = { sessionId: 'plain', storyTurn: 4, fallbackText: '“普通对白”与 *动作*' }
+  const props = { sessionId: 'plain', floor: { messageUid: 'm4', legacyTurn: 4, projection: null }, fallbackText: '“普通对白”与 *动作*' }
   await act(async () => root.render(React.createElement(render.FloorBody, props)))
   assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown .markdown').textContent, props.fallbackText)
   await act(async () => root.render(React.createElement(render.FloorBody, { ...props, snapshotHtml: '<p>快照</p>' })))

@@ -1,8 +1,10 @@
+import { promptSection, promptSectionBody } from './prompt-section.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { projectPlayerContent } from './player-input-content.js'
 import { resolveRuntimePresetMacros } from './runtime-presets.js'
 import { projectRuntimePresetRequest } from './runtime-preset-lifecycle.js'
-import { STORY_INPUT_ONLY_PROMPT, STORY_SUBMIT_PROMPT, STORY_SUBMIT_PROMPT_STRICT, STORY_SUBMIT_TOOL_NAME, withStorySubmitAck } from './story-tool-submission.js'
+import { BODY_GENERATION_PROMPT } from './plugin-body-generation.js'
+import { STORY_GENERATE_TOOL_NAME, STORY_INPUT_ONLY_PROMPT, STORY_SUBMIT_PROMPT, STORY_SUBMIT_PROMPT_STRICT, STORY_SUBMIT_TOOL_NAME, withStorySubmitAck } from './story-tool-submission.js'
 import { NO_FOREGROUND_TOOLS_PROMPT, normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { projectHistoryAsToolCalls } from './history-tool-call.js'
 import { markRequestHandled, requestHandledBy } from './request-lineage.js'
@@ -18,17 +20,17 @@ export const CARD_REFERENCE_SECTION_LIMIT = 8000
 function cardReferenceSection(section) {
   const text = str(section.text)
   if (section.name === 'tavern:constant-worldbook') {
-    const chars = Array.from(text.replace(/^【常驻世界书】\n?/, '').trim()).length
+    const chars = Array.from(promptSectionBody('constant_worldbook', text).replace(/^【常驻世界书】\n?/, '').trim()).length
     if (chars <= CARD_REFERENCE_WORLDBOOK_LIMIT) return section
-    return { name: section.name, text: '【常驻世界书】\n共约 ' + chars + ' 字，超过预载上限，未放入参考资料。需要时用 tavern_read_worldbook 按关键词或编号读取相关条目。' }
+    return { name: section.name, text: promptSection('constant_worldbook', 'About ' + chars + ' characters exceed the preload limit. Read relevant entries with tavern_read_worldbook by keyword or number when needed.') }
   }
   const chars = Array.from(text).length
   if (chars <= CARD_REFERENCE_SECTION_LIMIT) return section
   const [title, name] = text.split('\n')
   if (section.name === 'tavern:character-card') {
-    return { name: section.name, text: title + '\n' + (/^名字: /.test(name || '') ? name + '\n' : '') + '人物卡设定共约 ' + chars + ' 字，超过预载上限，未放入参考资料。需要时用 tavern_read_card 按字段读取。' }
+    return { name: section.name, text: promptSection('character_card', (/^(?:Name: |名字: )/.test(name || '') ? name + '\n' : '') + 'About ' + chars + ' characters exceed the preload limit. Read card fields with tavern_read_card when needed.') }
   }
-  return { name: section.name, text: title + '\n共约 ' + chars + ' 字，超过预载上限，未放入参考资料。需要时用 tavern_read_card 读取 system_prompt 字段。' }
+  return { name: section.name, text: promptSection('card_system', 'About ' + chars + ' characters exceed the preload limit. Read system_prompt with tavern_read_card when needed.') }
 }
 
 function str(value) {
@@ -50,6 +52,11 @@ function isTurnInput(message) {
 
 function userTextOf(messages) {
   return (Array.isArray(messages) ? messages : []).filter(isTurnInput).map(contentText).filter(Boolean).join('\n').trim()
+}
+
+function userContentOf(messages) {
+  const input = (Array.isArray(messages) ? messages : []).findLast(isTurnInput)
+  return Array.isArray(input?.content) ? input.content : []
 }
 
 function replaceTurnInput(messages, text) {
@@ -312,7 +319,8 @@ export function createNativePlayOrchestrationStrategy(options) {
       // declaration is missing, so replay only when this turn offers submit_story;
       // the per-game tool switch can still remove it after the global settings say on.
       const historyWanted = typeof options.historyToolCall === 'function' ? (await options.historyToolCall()) === true : false
-      const outputWanted = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
+      const pluginGeneration = (await options.bodyGeneration?.(sessionId))?.mode?.startsWith('plugin-')
+      const outputWanted = !pluginGeneration && typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
       const submitVisible = typeof options.visibleTools !== 'function'
         || (await options.visibleTools(sessionId)).includes(STORY_SUBMIT_TOOL_NAME)
       const submitOffered = historyWanted && submitVisible
@@ -328,8 +336,8 @@ export function createNativePlayOrchestrationStrategy(options) {
       })
     }
     if (Number(payload.step) === 1) {
-      const playerInput = (payload.messages || []).some(message => inputKind(message) === 'player')
-      const prepared = await options.prepareTurn({ sessionId, turn: payload.turn, requestId: input.requestId, userText: userTextOf(payload.messages), runtimePresetSnapshot: snapshot, playerInput })
+      const prepared = await options.prepareTurn({ sessionId, turn: payload.turn, requestId: input.requestId,
+        userText: userTextOf(payload.messages), userContent: userContentOf(payload.messages), runtimePresetSnapshot: snapshot })
       if (prepared && prepared.duplicate) throw new Error('该消息已由酒馆处理，请勿重复发送')
       if (mode === 'story' || mode === 'script') {
         agentMessages = replaceTurnInput(agentMessages, prepared.frame.userInput.projectedText)
@@ -434,35 +442,11 @@ export function createNativePlayOrchestrationStrategy(options) {
     frontTexts.delete(str(sessionId))
   }
 
-  // 工具可见性与模型请求、执行门禁共用，避免依赖宿主的提示词表示层携带工具。
-  async function filterTools(tools, input, record = false) {
+  async function assembleSystemPrompt(assembly, input) {
     const mode = await options.modeFor(input.sessionId)
     const visible = new Set(await options.visibleTools(input.sessionId))
     const playMode = mode === 'story' || mode === 'script'
     const disabled = new Set(playMode ? normalizeDisabledForegroundTools(input.chat?.disabledForegroundTools) : [])
-    // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
-    const group = mode === 'card' ? 'card' : 'play'
-    tools = tools.filter(function (schema) {
-      if (options.controlledToolNames.has(schema.name)) return visible.has(schema.name)
-      const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
-      return !modes || modes.includes(group)
-    })
-    // Record the plugin/extra tools before applying the per-game switches: the
-    // settings panel must keep listing a tool the player has switched off.
-    if (record && playMode && typeof options.recordTools === 'function') {
-      try {
-        options.recordTools(input.sessionId, tools
-          .filter(schema => !options.controlledToolNames.has(schema.name))
-          .map(schema => ({ name: schema.name, description: String(schema.description || '') })))
-      } catch { /* the tool catalog must never fail the request */ }
-    }
-    if (playMode) tools = tools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name))
-    return tools
-  }
-
-  async function assembleSystemPrompt(assembly, input) {
-    const mode = await options.modeFor(input.sessionId)
-    const playMode = mode === 'story' || mode === 'script'
     // Play rules arrive in the foreground frame. Still replace the inherited
     // sections explicitly so removing play-mode cannot restore DSH's persona.
     const cardEdit = mode === 'card' && input.chat?.cardEditContext?.version === 1
@@ -489,27 +473,60 @@ export function createNativePlayOrchestrationStrategy(options) {
       renderedFronts.set(input.sessionId, createHash('sha256').update(JSON.stringify(front.map(section => section.text))).digest('hex'))
     }
     if (Array.isArray(assembly.contexts)) assembly.contexts = assembly.contexts.filter(section => section.name !== 'approval:policy')
-    const tools = await filterTools(assembly.tools || input.tools || [], input, true)
-    // alpha.2 的 waterfall 只传提示词表示；工具列表由宿主在返回后另行装配。
-    if (Array.isArray(assembly.tools)) assembly.tools = tools
+    // A plugin's own tool shows everywhere unless the plugin scoped it (tavern.toolModes).
+    const group = mode === 'card' ? 'card' : 'play'
+    // Some hosts supply tool schemas separately from the waterfall assembly.
+    // Missing metadata must not assert that the host offers no tools.
+    const knownTools = Array.isArray(assembly.tools) || Array.isArray(input.toolDefinitions)
+    const tools = Array.isArray(input.toolDefinitions) ? input.toolDefinitions : assembly.tools || []
+    // A plugin tool gated by tavern.toolSkills() waits for its Skill like Tavern's own.
+    const pluginNames = tools.map(schema => schema.name).filter(name => !options.controlledToolNames.has(name))
+    const unlocked = new Set(options.pluginToolsUnlocked ? await options.pluginToolsUnlocked(input.sessionId, pluginNames) : pluginNames)
+    const filteredTools = tools.filter(function (schema) {
+      if (options.controlledToolNames.has(schema.name)) return visible.has(schema.name)
+      if (!unlocked.has(schema.name)) return false
+      const modes = options.pluginToolModes ? options.pluginToolModes(schema.name) : null
+      return !modes || modes.includes(group)
+    })
+    // Record the plugin/extra tools before applying the per-game switches: the
+    // settings panel must keep listing a tool the player has switched off.
+    if (playMode && typeof options.recordTools === 'function') {
+      try {
+        options.recordTools(input.sessionId, filteredTools
+          .filter(schema => !options.controlledToolNames.has(schema.name))
+          .map(schema => ({ name: schema.name, description: String(schema.description || '') })))
+      } catch { /* the tool catalog must never fail the request */ }
+    }
+    const finalTools = playMode ? filteredTools.filter(schema => options.controlledToolNames.has(schema.name) || !disabled.has(schema.name)) : filteredTools
+    if (knownTools) {
+      assembly.tools = finalTools
+    }
     // The submission contract follows the tools that actually survived the
     // per-game switches and the plugin scopes. When only input replay is on, the
     // tool is declared for the history but the model must write prose directly.
     // The strict wording is only true when submit_story is the single tool.
     if (playMode) {
-      const toolNames = new Set(tools.map(schema => schema.name))
+      const toolNames = new Set(finalTools.map(schema => schema.name))
       const outputToolCall = typeof options.storyOutputToolCall === 'function' ? (await options.storyOutputToolCall()) === true : false
-      if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) {
+      // Hosts that overwrite assembly.tools deliver every registered tool,
+      // including tavern_generate_body when plugin generation is off. The
+      // output contract follows Tavern's own tool gate, not those raw
+      // declarations: otherwise the model is told to write no prose, the tool
+      // replies "plugin generation is not enabled" and the turn ends empty.
+      const pluginGeneration = visible.has(STORY_GENERATE_TOOL_NAME)
+      if (pluginGeneration) {
+        sections.push({ name: 'tavern:plugin-body-generation', text: BODY_GENERATION_PROMPT })
+      } else if (toolNames.has(STORY_SUBMIT_TOOL_NAME)) {
         if (outputToolCall) {
           sections.push({ name: 'tavern:story-tool-submission', text: toolNames.size === 1 ? STORY_SUBMIT_PROMPT_STRICT : STORY_SUBMIT_PROMPT })
         } else {
           sections.push({ name: 'tavern:story-tool-submission', text: STORY_INPUT_ONLY_PROMPT })
         }
-      } else if (toolNames.size === 0) {
+      } else if (knownTools && toolNames.size === 0) {
         sections.push({ name: 'tavern:no-foreground-tools', text: NO_FOREGROUND_TOOLS_PROMPT })
       }
     }
-    if (playMode && tools.some(tool => tool.name === 'style_reference_submit') && options.styleReferencePrompt) {
+    if (playMode && finalTools.some(tool => tool.name === 'style_reference_submit') && options.styleReferencePrompt) {
       const text = options.styleReferencePrompt(input.chat)
       if (text) sections.push({ name: 'tavern:foreground-style-reference', text })
     }
@@ -517,7 +534,7 @@ export function createNativePlayOrchestrationStrategy(options) {
     return assembly
   }
 
-  return Object.freeze({ kind: 'native-play', prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt, filterTools })
+  return Object.freeze({ kind: 'native-play', prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt })
 }
 
 export function createForegroundOrchestrationStrategies(options) {
@@ -552,5 +569,5 @@ export function createForegroundOrchestrationStrategies(options) {
     return await nativePlay.assembleSystemPrompt(assembly, input)
   }
 
-  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt, filterTools: nativePlay.filterTools })
+  return Object.freeze({ prepareStep, projectRequest, completeRequest, clearRequestState, assembleSystemPrompt })
 }

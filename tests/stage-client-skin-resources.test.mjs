@@ -6,6 +6,22 @@ import {createRoot} from 'react-dom/client'
 import {JSDOM} from 'jsdom'
 const require=createRequire(import.meta.url)
 const {createStageSkinResources}=require('../tavern-plugin/packages/dsh-tavern-stage/src/client/skin-resources.cjs')
+const {createStageRuntimeStoreModule}=require('../tavern-plugin/packages/dsh-tavern-stage/lib/client/runtime-store.cjs')
+const runtimeKernel=require('../tavern-plugin/src/client/stage-runtime.cjs')
+test('a packaged skin waits on the real runtime store and reads its bundle once the stage authority arrives',async()=>{
+ const dom=new JSDOM('<div id="root"></div>'),before=[globalThis.window,globalThis.document,globalThis.IS_REACT_ACT_ENVIRONMENT]
+ globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true
+ const store=createStageRuntimeStoreModule(runtimeKernel).createStageRuntimeStore(),requests=[];let value
+ const module=createStageSkinResources({React,getSession:()=>store,getResourceOwner:()=>({acquire(descriptor,authority){requests.push(authority);return new Promise(()=>{})}}),setTimeout,clearTimeout})
+ function View(){value=module.useConfig('session-1',{document:{id:'skin'},resource:{kind:'bundle',identity:'skin',revision:1}},'default');return null}
+ const root=createRoot(dom.window.document.getElementById('root'))
+ try{
+  await act(async()=>root.render(React.createElement(View)))
+  assert.equal(value.loading,true);assert.equal(requests.length,0)
+  await act(async()=>store.dispatch({type:'SEND_ACK',source:{sessionId:'session-1',authorityEpoch:1,branchId:'b',turn:1,sourceKey:'n',generation:1}}))
+  assert.equal(requests.length,1)
+ }finally{await act(async()=>root.unmount());module.dispose();store.dispose();dom.window.close();[globalThis.window,globalThis.document,globalThis.IS_REACT_ACT_ENVIRONMENT]=before}
+})
 test('skin bundle ownership survives StrictMode and releases current, held and late pins on unload',async()=>{
  const dom=new JSDOM('<div id="root"></div>'),before=[globalThis.window,globalThis.document,globalThis.IS_REACT_ACT_ENVIRONMENT]
  globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true
@@ -33,4 +49,23 @@ test('prefetch returns a late pin without retaining ownership after disposal',as
  const module=createStageSkinResources({React,getSession:()=>({getSnapshot:()=>({source:{sessionId:'s',authorityEpoch:2}})}),getResourceOwner:()=>({acquire:()=>new Promise(done=>resolve=done)})})
  module.prefetch('s',{kind:'bundle'});module.dispose();resolve({release(){released++}});await Promise.resolve()
  assert.equal(released,1)
+})
+// 经典 is the universal fallback: a pack skin whose bundle fails to load draws classic until a retry reads it.
+test('a skin bundle that fails to load draws classic until the retry reads it',async()=>{
+ const dom=new JSDOM('<div id="root"></div>'),before=[globalThis.window,globalThis.document,globalThis.IS_REACT_ACT_ENVIRONMENT]
+ globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true
+ const classic={id:'classic'},requests=[],timers=[];let value
+ const session={subscribe:()=>()=>{},getSnapshot:()=>({source:{sessionId:'s',authorityEpoch:1}})}
+ const module=createStageSkinResources({React,classic,getSession:()=>session,getResourceOwner:()=>({acquire:()=>new Promise((resolve,reject)=>requests.push({resolve,reject}))}),setTimeout(fn){timers.push(fn);return fn},clearTimeout(){}})
+ function View(){value=module.useConfig('s',{document:{id:'pack-skin'},resource:{kind:'bundle',identity:'skin',revision:1}},'default');return null}
+ const root=createRoot(dom.window.document.getElementById('root'))
+ const warn=console.warn;console.warn=()=>{}
+ try{
+  await act(async()=>root.render(React.createElement(View)))
+  await act(async()=>requests[0].reject(new Error('read failed')))
+  assert.deepEqual(value.skin,{builtin:true,document:classic})
+  await act(async()=>timers.shift()())
+  await act(async()=>requests[1].resolve({handle:{url:'bundle-1',identity:'skin'},release(){}}))
+  assert.equal(value.skin.document.id,'pack-skin');assert.equal(value.skin.url,'bundle-1')
+ }finally{console.warn=warn;await act(async()=>root.unmount());module.dispose();dom.window.close();[globalThis.window,globalThis.document,globalThis.IS_REACT_ACT_ENVIRONMENT]=before}
 })

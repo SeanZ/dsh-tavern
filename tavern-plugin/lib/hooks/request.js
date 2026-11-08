@@ -9,6 +9,9 @@ import { synchronizeTemplateHistory } from '../domain/template-history.js'
 // Appended once at the start of a reply, so it joins the history after the cached prefix.
 export function appendVariableChanges({ chat, payload, decision }) {
   if (!chat || decision.kind !== 'enter' || Number(payload.step) !== 1) return decision
+  // The frozen regeneration frame already contains the target round's input
+  // state. Live post-round variable changes belong to the old body, not this try.
+  if (chat.regenRecovery?.candidateFrame?.kind === 'foreground') return decision
   if (decision.messages.some(message => message.source?.form === 'variable-changes')) return decision
   const text = lastRoundVariableChanges(chat)
   if (!text) return decision
@@ -35,6 +38,7 @@ export async function appendWorldbookRecovery({ chat, payload, decision, project
 
 export function registerRequestHooks({
   backgroundAgentRunner,
+  gameModes,
   cardMemory,
   projectWorldbookRecovery,
   chatForSession,
@@ -64,6 +68,7 @@ export function registerRequestHooks({
     // parentSession alone does not mark a child: a native fork of a game also
     // carries it, but has its own Tavern chat.
     if (backgroundAgentRunner.owns(sessionId) || (payload.agent.session.header?.parentSession && !await chatForSession(sessionId))) return next()
+    if (gameModes && ['story', 'script'].includes((await chatForSession(sessionId))?.mode) && await gameModes.active(sessionId)) throw new Error('本局由玩法插件接管，请在玩法面板中行动')
     const decision = await next()
     if (decision.kind === 'reject') return decision
     const chat = await chatForSession(sessionId)

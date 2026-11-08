@@ -499,7 +499,9 @@
             }
             const installed = function (result) {
                 const plugin = result.plugin;
-                return (plugin.replaced ? "已更新 " : "已安装 ") + plugin.name + (plugin.version ? " " + plugin.version : "") + (plugin.replaced ? "，重启 DSH 后生效。" : "，刷新页面后生效。");
+                // warning 说明这次走了备用线路（jsDelivr）或退回了默认分支，得让用户看见。
+                const note = plugin.warning ? "（" + plugin.warning + "）" : "";
+                return (plugin.replaced ? "已更新 " : "已安装 ") + plugin.name + (plugin.version ? " " + plugin.version : "") + (plugin.replaced ? "，重启 DSH 后生效。" : "，刷新页面后生效。") + note;
             };
             function installUrl() {
                 if (!url.trim()) return;
@@ -556,7 +558,7 @@
                     h("button", { type: "button", className: "dsh-tavern-btn primary", disabled: busy, onClick: installUrl }, busy ? "处理中…" : "安装"),
                     h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { if (zipInput.current) zipInput.current.click(); } }, "上传 ZIP"),
                     h("input", { ref: zipInput, type: "file", accept: ".zip,application/zip", style: { display: "none" }, onChange: installZip })),
-                h("p", { className: "dsh-tavern-settings-desc" }, "插件会运行在你的电脑上，只装信任的作者发布的插件。有 Release 时安装最新 Release，否则安装默认分支；连不上 GitHub 时，可以在仓库页面下载 ZIP 后上传。"),
+                h("p", { className: "dsh-tavern-settings-desc" }, "插件会运行在你的电脑上，只装信任的作者发布的插件。有 Release 时安装最新 Release，否则安装默认分支；连不上 GitHub 时会自动改用 jsDelivr，两边都不通时可以在仓库页面下载 ZIP 后上传。"),
                 notice ? h("p", { className: "dsh-tavern-user-plugins-notice", role: "status" }, notice) : null,
                 error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null,
                 plugins.length ? h("div", { className: "dsh-tavern-user-plugins-head" },
@@ -581,22 +583,28 @@
                             plugin.source.kind === "github" ? updateAction(plugin) : null,
                             (managed || plugin.source.kind === "card" || plugin.source.kind === "builtin") ? null : h("button", { type: "button", className: "dsh-tavern-btn danger", disabled: busy, onClick: function () { void remove(plugin); } }, "删除")));
                 })) : null,
-                manageOpen ? h(packUi.mods.ModManager, {rpc, onClose:()=>setManageOpen(false)}) : null,
+                manageOpen ? h(StagePackView, {view:ui=>ui.mods.ModManager, rpc, onClose:()=>setManageOpen(false)}) : null,
                 h("div", { className: "dsh-tavern-user-plugins-folder" },
                     h("span", { className: "dsh-tavern-settings-desc", title: data ? data.dir : "" }, data ? "插件文件夹：" + data.dir : ""),
                     h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void rpc("openUserPluginsFolder").catch(function (err) { setError(String(err && err.message || err)); }); } }, "打开插件文件夹")));
         }
 
-        // @include-stage-source global-settings.js
         // @include modules/global-settings.js
-        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection } = createGlobalSettingsModule({
+        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, stageGlobalSettingsOptions } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             // Process visibility and developer chrome have separate rows; 配音 has its own settings page.
             TavernDefaultModelSetting, TavernModelSlotGroups, TavernConversationWritingSkills, DisplayPreferencesSettings, SystemNavigationSettings, HeaderItemsSettings,
             CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, DebugSetting, SpineRuntimeEntry,
-            StageGenerationSettings: () => React.createElement(packUi.GenPromptSettings, { call: engineRpc }),
-            // 设置 › 舞台 › 模组管理 (mod-manager.js, in the asset-pack UI factory).
-            ForkModManagerEntry: () => React.createElement(packUi.ModManagerEntry, { rpc, Row: TavernSettingRow }),
+            // both are stage package pages (asset-pack-gen-ui.js / mod-manager.js): drawn once the stage client binds them (StagePackView).
+            StageGenerationSettings: () => React.createElement(StagePackView, { view: ui => ui.GenPromptSettings, call: engineRpc }),
+            // 设置 › 舞台 › 模组管理 (mod-manager.js).
+            ForkModManagerEntry: () => React.createElement(StagePackView, { view: ui => ui.ModManagerEntry, rpc, Row: TavernSettingRow }),
+            VoiceCataloguePicker:packUi.VoiceCataloguePicker, voiceKey:packUi.voiceKey, voiceFromKey:packUi.voiceFromKey,
+            useReadingBinding:() => {
+                usePackRevision(ttsClientAvailable);
+                const service = packClient(), tts = forkTtsScope?.get('ttsClient');
+                return React.useMemo(() => ({service,tts}), [service,tts]);
+            },
             // the shared row and controls of the page.
             TavernSettingRow, InlineField, Switch, HelpTip: typeof HelpTip === "function" ? HelpTip : null
         });

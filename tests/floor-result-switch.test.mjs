@@ -60,6 +60,17 @@ function fixture(name, { agentPhase = 'idle', settleStatus = 'done', mvu } = {})
 }
 const latest = session => foldStoryRounds(sessionEvents(session)).floors.at(-1)
 
+test('消息元数据中的 UUID 结果可切换，同正文仍保留独立选择', async () => {
+  const f = fixture('switch-result-uuid')
+  const first = '4d31153a-9eaa-4b17-bcb2-20f2529fb9fa', second = '8e166c0d-5e57-4dd1-a5a4-e1986450f604'
+  Object.assign(f.chat().messages.at(-1), { storyResults: [{ id: first, text: '重写二' }, { id: second, text: '重写二' }], storyResultId: second })
+  const selected = await f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: first })
+  assert.equal(selected.switched, true)
+  assert.equal(f.chat().messages.at(-1).storyResultId, first)
+  assert.equal(f.chat().messages.at(-1).storyResults.length, 2)
+  assert.equal(latest(f.session).reply.text, '重写二')
+})
+
 test('切换到历史结果：存档正文、模型上下文与故事楼层都换成选中的那份，日志完整；再切回原结果', async () => {
   const f = fixture('switch-basic')
   assert.deepEqual(latest(f.session).history.map(item => [item.seq, item.current]), [[f.seqs.original, false], [f.seqs.first, false], [f.seqs.second, true]])
@@ -122,7 +133,8 @@ test('只允许最新一层、前台空闲、历史里有的结果', async () =>
   const f = fixture('switch-guards')
   await assert.rejects(f.switcher.switchResult({ sessionId: f.session.id, turn: 2, replySeq: f.seqs.original }), /最新一层/)
   await assert.rejects(f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: 1 }), /没有这个历史结果/)
-  await assert.rejects(f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: 'x' }), /参数无效/)
+  await assert.rejects(f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: 'x' }), /没有这个历史结果/)
+  await assert.rejects(f.switcher.switchResult({ sessionId: f.session.id, turn: 3, replySeq: {} }), /参数无效/)
   const running = fixture('switch-running', { agentPhase: 'running' })
   await assert.rejects(running.switcher.switchResult({ sessionId: running.session.id, turn: 3, replySeq: running.seqs.original }), /请等待/)
   const settling = fixture('switch-settling', { settleStatus: 'running' })

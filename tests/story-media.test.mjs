@@ -34,7 +34,7 @@ async function setup(t) {
   return { win, client, render, draws, setItems(value) { items = value }, async show(parts, extra = {}) {
     currentView = view(parts)
     await act(async () => client.liveTavernView.setView('story', currentView))
-    await act(async () => { root.render(React.createElement(render.FloorBody, { sessionId: 'story', storyTurn: 2, ...extra })); await new Promise(resolve => setTimeout(resolve, 5)) })
+    await act(async () => { root.render(React.createElement(render.FloorBody, { sessionId: 'story', floor: { messageUid: 'm2', legacyTurn: 2, projection: { turn: 2, version: 2, parts } }, ...extra })); await new Promise(resolve => setTimeout(resolve, 5)) })
   }, async action(disabled = false) {
     await act(async () => root.render(React.createElement(render.IllustrateAction, { sessionId: 'story', storyTurn: 2, disabled })))
   } }

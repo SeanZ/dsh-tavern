@@ -15,7 +15,7 @@ test('panels use the flow interface and candidate selection preserves user edits
   Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })
   t.after(() => { Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act }); dom.window.close() })
   const { createRoot } = await import('react-dom/client')
-  const calls = [], errors = []
+  const calls = [], errors = [], playEvents = []
   let finishPolish
   dom.window.addEventListener('error', event => errors.push(event.error))
   const interactions = createPlayInteractionFlow({ rpc: async (...args) => { calls.push(args); return { task: {}, view: {} } },
@@ -27,7 +27,7 @@ test('panels use the flow interface and candidate selection preserves user edits
     }, window: dom.window, document: dom.window.document,
     useCandidatePreferences: () => 'after-send', useTavernSessionMode: () => 'story',
     latestTavernAssistantMessageId: () => 'm', isPlayMode: () => true, TAVERN_MOBILE_QUERY: '(max-width: 1023px)',
-    useLiveTavernView: () => ({ view: {} }) })
+    useLiveTavernView: () => ({ view: {} }), tavernPlayEvents: { emit: (...args) => playEvents.push(args) } })
   vm.runInContext(source, context)
   const usePanel = store => () => React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   const panels = context.createPlayInteractionPanels({ interactions, useCandidatePanel: usePanel(interactions.candidates),
@@ -46,12 +46,13 @@ test('panels use the flow interface and candidate selection preserves user edits
   await render(panels.CandidateQuestion)
   await act(async () => dom.window.document.querySelector('.dsh-tavern-question-option').click())
   assert.equal(draft, '玩家原文\n慢慢走近')
+  assert.equal(JSON.stringify(playEvents), JSON.stringify([['choice', 'a', { choiceIndex: 0 }]]), 'picking a choice is a play event; taking it back is not')
   interactions.guide.set({ sessionId: 'a', messageId: 'm', phase: 'input' })
   await render(panels.CandidateGuidePanel)
   await act(async () => dom.window.document.querySelector('.dsh-tavern-regen-submit').click())
   assert.equal(calls[0][0], 'submitTask')
   assert.equal(interactions.guide.getSnapshot(), null)
-  interactions.regeneration.set({ sessionId: 'a', phase: 'input' })
+  interactions.regeneration.set({ sessionId: 'a', messageId: 'm', phase: 'input' })
   await render(panels.RegenPanel)
   assert.equal(dom.window.document.querySelectorAll(".dsh-tavern-regen-submit").length, 1)
   await act(async () => dom.window.document.querySelector('.dsh-tavern-regen-submit').click())
@@ -67,3 +68,40 @@ test('panels use the flow interface and candidate selection preserves user edits
   assert.deepEqual(errors, [])
   await act(async () => root.unmount())
 })
+
+test('正文重生成在途时重复长按复用请求，但立即给出可见反馈', async () => {
+  let finish
+  const errors = [], seen = []
+  let calls = 0
+  const flow = createPlayInteractionFlow({
+    rpc: async () => { calls += 1; return new Promise(resolve => { finish = resolve }) },
+    coordinationView: value => value, coordination: { setView() {}, invalidate() {} }, applyBodyResult() {},
+    reportError: (source, error) => errors.push([source, error.message, error.code]),
+    notifyRegenerating: (sessionId, active) => seen.push([sessionId, active])
+  })
+  const first = flow.submitBodyRegeneration('a', { tail: null }, '')
+  const replay = flow.submitBodyRegeneration('a', { tail: null }, '')
+  assert.strictEqual(replay, first)
+  assert.deepEqual(errors, [['正文重新生成', '正文正在重新生成，请等待完成', 'regen-busy']])
+  await Promise.resolve()
+  finish({ view: {} })
+  await Promise.all([first, replay])
+  assert.equal(calls, 1)
+  assert.deepEqual(seen, [['a', true], ['a', false]])
+})
+
+test('正文重新生成在开始时通知页面、结束时再通知一次（失败也一样）', async () => {
+  for (const mode of ['ok', 'fail']) {
+    const seen = []
+    const flow = createPlayInteractionFlow({
+      rpc: async () => { if (mode === 'fail') throw new Error('provider down'); return { view: {} } },
+      coordinationView: v => v, coordination: { setView() {}, invalidate() {} }, applyBodyResult() {}, reportError() {},
+      notifyRegenerating: (sessionId, active) => seen.push([sessionId, active])
+    })
+    flow.regeneration.set({ sessionId: 'a', messageId: 'm', phase: 'input' })
+    if (mode === 'ok') await flow.regenerateBody(flow.regeneration.getSnapshot(), '')
+    else await flow.regenerateBody(flow.regeneration.getSnapshot(), '').catch(() => {})
+    assert.deepEqual(seen, [['a', true], ['a', false]], mode)
+  }
+})
+

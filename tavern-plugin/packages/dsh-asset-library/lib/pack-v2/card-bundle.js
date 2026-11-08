@@ -10,7 +10,7 @@ const ROOT = 'dsh-tavern-card-bundle.json'
 const copy = value => structuredClone(value)
 // Runs only within the storage publication gate; adapter callbacks take the card lock last.
 export function createCardBundleMethods(host) {
-  const {storage, run, load, metadata, all, verify, cas, keys, remapPack, remapValue, readZipFiles, readZipFile, exportArchive, archiveKey, limits, now, nextLocal, emit, cards, globalPackIds = () => []} = host
+  const {storage, run, readRun, privateExportFile, load, metadata, all, verify, cas, keys, remapPack, remapValue, readZipFiles, readZipFile, exportArchive, archiveKey, limits, now, nextLocal, emit, cards, globalPackIds = () => []} = host
   const previews = new Map()
   function adapter() { check(cards && ['snapshot','inspectRaw','remapRaw','bindRaw','withPrepared','recover'].every(k => typeof cards[k] === 'function'), '$.card', 'Card Preparation adapter unavailable', 'ASSET_UNAVAILABLE'); return cards }
   function sweep() { for (const [id, value] of previews) if (value.preview.expiresAt <= now()) previews.delete(id) }
@@ -96,6 +96,33 @@ export function createCardBundleMethods(host) {
   return {
     disposeCardBundles() { previews.clear() },
     cardBundleUsage() { sweep(); return {count:previews.size,bytes:used()} },
+    // Host-only callback (the DSH card export, core card-files.js); no file paths or executable payloads cross the remote
+    // method table.
+    withCardExport(input, consume) {
+      return (privateExportFile ? readRun : run)([], async () => {
+        const card = await adapter().snapshot({path:input.path})
+        if (input.expectedRevision !== undefined) check(card.revision === input.expectedRevision, '$.expectedRevision', 'Card changed', 'REVISION_CONFLICT')
+        const value = adapter().inspectRaw(card.raw)
+        const ids = input.packIds || value.boundPackIds
+        const allowed = new Set([...value.boundPackIds, ...globalPackIds()])
+        const packs = []
+        for (const id of [...new Set([...ids, ...(value.modConfigPackId && !(input.keepPackIds || []).includes(value.modConfigPackId) ? [value.modConfigPackId] : [])])]) {
+          check(allowed.has(id), '$.packIds', 'Only packs this card uses can be embedded', 'UNBOUND_PACK')
+          const pack = await load(id)
+          check(pack, '$.packIds', 'Pack to embed is missing', 'ASSET_UNAVAILABLE')
+          if (!privateExportFile) await assertPublicPackChain(pack, metadata)
+          packs.push(pack)
+        }
+        // A chosen list (input.packIds) leaves the other packs out of the exported card's bindings; keepPackIds are
+        // bound packs the host embeds from elsewhere.
+        const exported = packs.map(pack => pack.manifest.id)
+        const bound = exported.length ? adapter().bindRaw(card.raw, exported) : value.raw
+        const raw = input.packIds ? adapter().retainRaw(bound, [...exported, ...(input.keepPackIds || [])]) : bound
+        const result = await consume({...card, raw, packs})
+        check((await adapter().snapshot({path:input.path})).revision === card.revision, '$.revision', 'Card changed', 'REVISION_CONFLICT')
+        return result
+      }, !!privateExportFile)
+    },
     exportCardBundle(input) {
       return run([], async () => {
         const card = await adapter().snapshot({path:input.path})
@@ -112,7 +139,7 @@ export function createCardBundleMethods(host) {
         const added = packIds.filter(id => !original.boundPackIds.includes(id))
         const value = added.length ? adapter().inspectRaw(adapter().bindRaw(original.raw, added)) : original
         check(added.every(id => value.boundPackIds.includes(id)), '$.packIds', 'Card cannot carry these packs', 'UNBOUND_PACK')
-        const files = new Map([['card/card.json', jsonBytes(value.raw)]]), dependencies = []
+        const files = new Map([['card/card.json', jsonBytes(adapter().exportRaw(value.raw))]]), dependencies = []
         for (const packId of value.boundPackIds) {
           const embedded = packIds.includes(packId), pack = embedded ? await load(packId) : await metadata(packId)
           check(!embedded || pack, '$.packIds', 'Pack to embed is missing', 'ASSET_UNAVAILABLE')

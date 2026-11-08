@@ -6,7 +6,7 @@ const {createStageScene}=require('../tavern-plugin/packages/dsh-tavern-stage/src
 const math=require('../tavern-plugin/src/client/gal-scene-helpers.cjs')
 function fixture(phase){
  const calls=[];let serial=0
- const PIXI={Application:class{constructor(){this.view={};this.renderer={on(){},gl:{}};this.ticker={update(){}}}destroy(){calls.push('app')}},Container:class{constructor(){this.id=++serial;if(this.id===3)throw Error('node allocation')}destroy(){this.destroyed=true;calls.push('node:'+this.id)}}}
+ const PIXI={Application:class{constructor(){this.view={};this.renderer={on(){},gl:{},plugins:{interaction:{}}};this.ticker={update(){}}}destroy(){calls.push('app')}},Container:class{constructor(){this.id=++serial;if(this.id===3)throw Error('node allocation')}destroy(){this.destroyed=true;calls.push('node:'+this.id)}}}
  const sceneGraphics={textures(){
   if(phase==='textures')throw Error('texture allocation')
   return {a:{destroy(){calls.push('texture');if(phase==='cleanup')throw Error('texture cleanup')}}}
@@ -44,4 +44,17 @@ test('missing layered image retains the base and a later ready image retries',()
  scope.tick(entry,textures,PIXI,true);assert.equal(entry.sprite.texture,base);assert.equal(paints,0)
  textures.set('atlas',{ready:true,texture:{baseTexture:{resource:{source:{}}}}});scope.tick(entry,textures,PIXI,true)
  assert.equal(paints,1);assert.notEqual(entry.sprite.texture,base);scope.dispose()
+})
+
+test('renderer registration admits custom figures and is scoped to the scene owner',()=>{
+ const scope=createStageScene({window:{},document:{},math,modules:{}})
+ const remove=scope.figureRenderers.register('custom',()=>({}))
+ assert.throws(()=>scope.figureRenderers.register('custom',()=>({})),/already registered/)
+ assert.throws(()=>scope.figureRenderers.register('spine',()=>({})),/already registered/)
+ remove();remove();scope.figureRenderers.register('custom',()=>({}))
+ const {createStageCastLayout}=require('../tavern-plugin/packages/dsh-tavern-stage/src/client/cast-layout.cjs')
+ const layout=createStageCastLayout({}).create({drawn:kind=>kind==='custom'})
+ const figures=[{key:'x',kind:'custom'},{key:'y',kind:'static'},{key:'z',kind:'unknown'}]
+ assert.deepEqual(layout.project(figures),figures.slice(0,2))
+ scope.dispose();assert.throws(()=>scope.figureRenderers.register('new',()=>({})),/disposed/)
 })

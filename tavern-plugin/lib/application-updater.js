@@ -11,6 +11,7 @@ import { createUpdateState } from '../../bin/update-state.mjs'
 import { verifyInstallationProcessesStopped } from '../../bin/installation-process.mjs'
 import { readInstallationReceipt } from '../../bin/installation-receipt.mjs'
 import installationState from '../../bin/installation-state.cjs'
+import desktopRuntime from '../../bin/official-desktop-runtime.cjs'
 import { applySystemProxy, describeProxy, withoutAppliedSystemProxy } from '../../bin/system-proxy.mjs'
 
 const STATUS_FILE = 'update-status.json'
@@ -24,9 +25,9 @@ const COMPARE_URL = 'https://api.github.com/repos/flizzywine/dsh-tavern/compare'
 const execFileAsync = promisify(execFile)
 const UPDATE_CHECK_POLICY = 5
 const BUSY_PHASES = new Set(['running', 'cancelling', 'blocked'])
-const CDN_METADATA_URL = 'https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@main/dsh-tavern-runtime.json'
+const CDN_METADATA_URL = 'https://cdn.jsdelivr.net/gh/flizzywine/dsh-tavern@runtime-archive-main/dsh-tavern-runtime.json'
 // 检查更新先问 GitHub：commits API 判不了时，再读 GitHub 自己发布的运行清单，
-// 最后才用 jsDelivr（它的 @main 可能滞后十几小时）。
+// 最后才用 jsDelivr（分发分支的缓存可能滞后）。
 const GITHUB_MANIFEST_URL = 'https://raw.githubusercontent.com/flizzywine/dsh-tavern/main/dsh-tavern-runtime.json'
 const RUNTIME_FILES = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml', 'install.ps1', 'install.sh'])
 const RUNTIME_DIRECTORIES = ['android/', 'bin/', 'config/', 'presets/', 'tavern-plugin/', 'patches/']
@@ -120,7 +121,7 @@ function runtimeCommitIdentityOf(value) {
 
 function installHostOf(manifest) {
   const host = manifest?.dshTavern?.host
-  return host === 'desktop' || host === 'android' ? host : 'cli'
+  return ['desktop', 'next', 'android'].includes(host) ? host : 'cli'
 }
 
 function processIsAlive(pid) {
@@ -191,6 +192,9 @@ async function readRecordedCommit(sourceRoot, dshHome) {
 }
 
 export function createApplicationUpdater(options) {
+  // A browser remount is not a Desktop restart. Keep the prompt until the host
+  // process itself was started after the verified installation completed.
+  const runtimeStartedAt = options.runtimeStartedAt ?? Date.now() - process.uptime() * 1000
   // 检查更新/下载都走 fetch：先把系统代理（WinINET / Android settings / GNOME）
   // 翻译成 HTTP(S)_PROXY 并切换全局 dispatcher，否则科学上网在进程里等于没开。
   const proxy = applySystemProxy()
@@ -201,6 +205,7 @@ export function createApplicationUpdater(options) {
   const hostDependencyAnchor = options.hostDependencyAnchor || ''
   const platform = options.platform || process.platform
   const runtimeHost = options.runtimeHost || process.env.DSH_TAVERN_RUNTIME_HOST
+    || (process.versions.electron && desktopRuntime.layout(process.execPath).name === 'dsh-desktop-next' ? 'next' : undefined)
   const profileManifest = path.join(dshHome, 'profiles', (runtimeHost || (process.versions.electron ? 'desktop' : 'cli')) === 'desktop' ? 'desktop' : 'tavern', 'package.json')
   const spawnProcess = options.spawnProcess || spawn
   const now = typeof options.now === 'function' ? options.now : Date.now
@@ -297,6 +302,9 @@ export function createApplicationUpdater(options) {
       if (error?.code === 'ENOENT') return { currentVersion: 'unknown', currentCommit: '' }
       throw error
     }
+    if (local.dshTavern?.distribution === 'plugin') {
+      return { currentVersion: local.version, currentCommit: '', pluginManaged: true }
+    }
     const runtimeMetadata = await readRuntimeMetadata(sourceRoot)
     const verified = runtimeMetadata?.matches ? runtimeMetadata : null
     return {
@@ -354,7 +362,7 @@ export function createApplicationUpdater(options) {
     const settle = promise => promise.then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }))
     // Start the CDN request in parallel, but only wait for it when GitHub cannot decide.
     const cdn = settle(stage('cdn.fetch', fetchCdnMetadata))
-    // GitHub 自己的清单优先于 jsDelivr：CDN 的 @main 会滞后，GitHub 的 raw 不会。
+    // GitHub 自己的清单优先于 jsDelivr：CDN 分发分支会滞后，GitHub 的 raw 不会。
     // 只有 GitHub 的 commits API 判不了时才取 GitHub 清单：正常检查不多发一次请求。
     let githubManifestPromise = null
     const githubManifest = () => (githubManifestPromise ||= settle(stage('github.manifest', fetchGithubManifest)))
@@ -366,7 +374,7 @@ export function createApplicationUpdater(options) {
       return result.status === 'fulfilled' && String(result.value?.revision || '').toLowerCase() === revision.toLowerCase()
         && Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null
     }
-    // jsDelivr 的 @main 能滞后十几小时，滞后时清单提交号对不上 GitHub 的最新提交。
+    // jsDelivr 分发分支的缓存可能滞后，滞后时清单提交号对不上 GitHub 的最新提交。
     // 但清单里的发布序号仍然有效：拿它当「最新版本序号」的下界，旧安装靠序号也能
     // 判断要不要更新，不必等 CDN 与 GitHub 对齐。
     const latestSequenceOf = async revision => (await cdnSequenceFor(revision)) || (async () => {
@@ -417,7 +425,7 @@ export function createApplicationUpdater(options) {
   }
 
   async function host() {
-    if (runtimeHost === 'cli' || runtimeHost === 'desktop' || runtimeHost === 'android') return runtimeHost
+    if (runtimeHost === 'cli' || runtimeHost === 'desktop' || runtimeHost === 'next' || runtimeHost === 'android') return runtimeHost
     try {
       return installHostOf(JSON.parse(await readFile(profileManifest, 'utf8')))
     } catch (error) {
@@ -427,6 +435,9 @@ export function createApplicationUpdater(options) {
   }
 
   async function statusWithIdentity(identity) {
+    if (identity.pluginManaged) {
+      return { ...identity, host: 'next', phase: 'package-managed' }
+    }
     const saved = await statusState.read()
     const current = saved === undefined ? undefined : { ...saved, host: await host() }
     let owner = installationState.readInstallation(dshHome)
@@ -480,7 +491,7 @@ export function createApplicationUpdater(options) {
       async function reconcile(after) {
         const receipt = await readInstallationReceipt({ sourceRoot, dshHome, host: await host(), after })
         if (!receipt) return null
-        const completed = { phase: 'completed', host: await host(), attemptId: receipt.attemptId, completedAt: receipt.verifiedAt, requiresRestart: await host() === 'desktop', reconciled: true }
+        const completed = { phase: 'completed', host: await host(), attemptId: receipt.attemptId, completedAt: receipt.verifiedAt, requiresRestart: await host() === 'desktop' && receipt.verifiedAt >= runtimeStartedAt, reconciled: true }
         return { ...await writeStatus(completed, { expectedAttemptId: current.attemptId }), ...identity }
       }
       if (current.repairRequired) {
@@ -529,6 +540,9 @@ export function createApplicationUpdater(options) {
           return { ...readable, ...identity }
         }
       }
+      if (current.phase === 'completed' && ['desktop', 'next'].includes(current.host) && current.requiresRestart && Number(current.completedAt) < runtimeStartedAt) {
+        return { ...current, ...identity, requiresRestart: false }
+      }
       return { ...current, ...identity }
     }
     return { phase: 'idle', host: await host(), ...identity }
@@ -546,6 +560,7 @@ export function createApplicationUpdater(options) {
     const identity = await localIdentity(true)
     record('identity', identity)
     const current = await statusWithIdentity(identity)
+    if (identity.pluginManaged) return current
     if (BUSY_PHASES.has(current.phase)) {
       throw new Error('更新正在进行，暂时无法重新检查')
     }
@@ -596,10 +611,16 @@ export function createApplicationUpdater(options) {
   async function start() {
     const managed = await packageManagedStatus()
     if (managed) throw new Error(`此酒馆由 DSH 插件管理器安装。请关闭酒馆后在终端运行：${managed.updateCommand}，然后重新启动 tavern Profile。`)
+    const currentIdentity = await localIdentity()
+    if (currentIdentity.pluginManaged) {
+      throw new Error('请返回日常 Profile，通过酒馆启动器更新。')
+    }
+    const installHost = await host()
+    if (installHost === 'next') throw new Error('请打开当前酒馆的「设置 → 酒馆启动器」进行更新。')
     // A Git checkout is the developer's: the updater would install a separate copy (or replace this one
     // and drop its .git), never update what is running. Checking for updates still works.
     // Android is the exception: android/setup.sh installs a Git checkout and android/update.sh fast-forwards it.
-    if (await host() !== 'android' && await stat(path.join(sourceRoot, '.git')).then(() => true, () => false)) {
+    if (installHost !== 'android' && await stat(path.join(sourceRoot, '.git')).then(() => true, () => false)) {
       throw new Error(`此酒馆从 Git 仓库运行（${sourceRoot}），应用内更新不会更新它。请在仓库里用 git pull 更新，然后重新启动酒馆。`)
     }
     const identity = await localIdentity(true)
@@ -608,7 +629,6 @@ export function createApplicationUpdater(options) {
     if (BUSY_PHASES.has(current.phase)) {
       throw new Error('更新正在进行，请勿重复启动')
     }
-    const installHost = await host()
     let version
     try {
       version = await versions(identity)
@@ -739,6 +759,7 @@ export function createApplicationUpdater(options) {
   }
 
   async function cancel() {
+    if ((await localIdentity()).pluginManaged) throw new Error('请通过 DSH NEXT 插件管理取消更新。')
     const current = await status()
     if (!current.cancellable || !['running', 'cancelling'].includes(current.phase)) throw new Error('当前安装无法安全自动中止，请查看更新状态')
     installationState.requestCancellation(dshHome, current.attemptId)

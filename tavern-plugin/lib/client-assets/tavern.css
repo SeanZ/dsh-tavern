@@ -98,6 +98,23 @@ body.dsh-tavern-shell-active,
 /* the raw text under the sentence, 调试视图 only. */
 .dsh-tavern-error-raw { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; opacity: .8; }
 .dsh-tavern-assistant { display: flex; flex-direction: column; gap: 16px; color: var(--dsw-alias-label-primary); font-size: var(--dsh-content-font-size, 14px); line-height: calc(24px + var(--dsh-content-font-delta, 0px)); }
+.dsh-tavern-story-transcript-row { min-width: 0; }
+.dsh-tavern-story-body { min-width: 0; overflow-wrap: anywhere; }
+.dsh-tavern-story-floor-head { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 18px; }
+.dsh-tavern-story-floor-no { color: var(--dsw-alias-label-secondary); font-weight: 600; }
+.dsh-tavern-story-floor-tag { padding: 0 6px; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-tavern-story-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; min-height: 24px; color: var(--dsw-alias-label-tertiary); font-size: 12px; opacity: 0; transition: opacity .15s ease; }
+.dsh-tavern-story-transcript-row:hover .dsh-tavern-story-row-actions, .dsh-tavern-story-row-actions:focus-within, .dsh-tavern-story-row-actions:has(.dsh-tavern-message-select) { opacity: 1; }
+.dsh-tavern-story-row-action { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.dsh-tavern-story-row-action:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dsh-tavern-story-row-action:disabled { opacity: .5; cursor: wait; }
+.dsh-tavern-story-row-action svg { width: 15px; height: 15px; }
+.dsh-tavern-story-row-actions .dsh-tavern-message-select.assistant { position: static; }
+@media (hover: none) { .dsh-tavern-story-row-actions { opacity: 1; } }
+.dsh-tavern-story-older { display: flex; justify-content: center; }
+.dsh-tavern-story-loading, .dsh-tavern-story-empty { padding: 20px 0; color: var(--dsw-alias-label-secondary); text-align: center; }
+.dsh-tavern-story-error { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--dsh-tavern-accent-error); }
+.dsh-tavern-story-input .dsh-tavern-user-bubble { box-sizing: border-box; max-width: min(525px, 82%); }
 .dsh-tavern-illustration { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 .dsh-tavern-illustration > a { display: block; max-width: 100%; }
 /* Earlier turns without a picture: a quiet entry that appears when the turn is hovered. */
@@ -210,6 +227,28 @@ body.dsh-tavern-shell-active,
 .dsh-tavern-user-copy:hover, .dsh-tavern-user-edit:hover, .dsh-tavern-user-fork:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
 .dsh-tavern-user-edit:disabled, .dsh-tavern-user-fork:disabled { cursor: wait; opacity: .55; }
 .dsh-tavern-user-edit svg, .dsh-tavern-user-fork svg { width: 15px; height: 15px; }
+.dsh-tavern-message-select { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 24px; height: 24px; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+.dsh-tavern-message-select input { width: 16px; height: 16px; margin: 0; accent-color: var(--dsh-tavern-accent); cursor: inherit; }
+.dsh-tavern-message-select:has(input:disabled) { cursor: wait; opacity: .55; }
+.dsh-tavern-assistant:has(> .dsh-tavern-message-select.assistant) { position: relative; box-sizing: border-box; padding-right: 30px; }
+.dsh-tavern-user-row:has(.dsh-tavern-message-select.user),
+.dsh-tavern-assistant:has(.dsh-tavern-message-select.assistant) { cursor: pointer; }
+.dsh-tavern-user-row:has(.dsh-tavern-message-select.user input:disabled),
+.dsh-tavern-assistant:has(.dsh-tavern-message-select.assistant input:disabled) { cursor: wait; }
+.dsh-tavern-message-select.assistant { position: absolute; z-index: 1; top: 0; right: 0; }
+/* 勾选不仅改变小框：整条楼层用主题色底和双层描边，跨轮检查时已选目标一眼可辨。 */
+.dsh-tavern-user-row:has(.dsh-tavern-message-select.user input:checked),
+.dsh-tavern-assistant:has(.dsh-tavern-message-select.assistant input:checked) {
+  border-radius: 12px;
+  background: var(--dsh-tavern-accent-soft);
+  box-shadow: 0 0 0 2px var(--dsh-tavern-accent), 0 0 0 6px var(--dsh-tavern-accent-soft);
+}
+.dsh-tavern-user-row:has(.dsh-tavern-message-select.user input:checked) .dsh-tavern-user-bubble { box-shadow: 0 0 0 1px var(--dsh-tavern-accent); }
+.dsh-tavern-message-deletion-dock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; box-sizing: border-box; width: 100%; padding: 9px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-specific-input-major); color: var(--dsw-alias-label-primary); }
+.dsh-tavern-message-deletion-count { flex: 1; min-width: 80px; color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.dsh-tavern-message-deletion-actions { display: flex; align-items: center; gap: 7px; }
+.dsh-tavern-message-deletion-actions .dsh-tavern-btn { min-height: 30px; padding: 4px 12px; }
+.dsh-tavern-message-deletion-error { flex: 0 0 100%; color: var(--dsh-tavern-accent-error, #c45f5f); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .dsh-tavern-sidebar { height: 100%; box-sizing: border-box; display: flex; flex-direction: column; padding: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-specific-sidebar-fill); }
 .dsh-tavern-sidebar.collapsed { padding: 12px 10px; align-items: center; }
 body.dsh-tavern-shell-active button[aria-label="新建会话"], body.dsh-tavern-shell-active button[aria-label="New session"] { display: none !important; }
@@ -229,10 +268,13 @@ body.dsh-tavern-shell-active [data-turn-tail] > div:has([data-slot="conversation
    视口里全是“跳过”的行，浏览器找不到滚动锚点，上方各行从估算变回实际高度时目标轮被推走几千到几万像素（小圆往回 10 / 30 轮）。小行常驻布局后
    成为锚点，楼层估算误差由浏览器抵消。最新一层（data-fork-latest-floor，assistant-renderer 标记）打开时就在视口里，不按 800px 估算，否则延迟
    楼层会把上一层当作“临近”提前挂载；它的段落仍由下一条规则跳过。 */
-body.dsh-tavern-shell-active [data-slot="conversation.view"] [class*="_column"] > [class*="_flowItem"][data-chat-flow-kind="assistant-step"]:not([data-fork-latest-floor]) { content-visibility: auto; contain-intrinsic-size: auto 800px; }
+body.dsh-tavern-shell-active [data-slot="conversation.view"] [class*="_column"] > [class*="_flowItem"][data-chat-flow-kind="assistant-step"]:not([data-fork-latest-floor]):not([data-fork-recent-floor]) { content-visibility: auto; contain-intrinsic-size: auto 800px; }
 /* 最新一轮本身常有六七千像素、几十段；打开对话那一帧里宿主还要再读两次布局。段落（.fork-bubbles 的弹性子项，本就是独立格式化上下文，
    不跨界折叠外边距，后代不溢出段落盒）在视口外同样跳过，每次只排视口附近几段。 */
 body.dsh-tavern-shell-active [data-slot="conversation.view"] .dsh-tavern-assistant .fork-bubbles > * { content-visibility: auto; contain-intrinsic-size: auto 120px; }
+/* 刚离开最新位置的几层（data-fork-recent-floor，assistant-renderer 标记，4 轮内）整层与段落都不跳过。发送后上一层仍在视口里，
+   iOS WebKit 只在滚动时不会重算已跳过内容的相关性，正文会留成一块空白，直到下一次布局才回来；最新一层的段落仍按上一条跳过。 */
+body.dsh-tavern-shell-active [data-slot="conversation.view"] [data-fork-recent-floor] .dsh-tavern-assistant .fork-bubbles > * { content-visibility: visible; }
 body.dsh-tavern-shell-active .dsh-tavern-hero-preset-row { display: none !important; }
 /* 会话列表首次加载前不画首页，避免刷新时先闪首页再跳回上次的对话。 */
 body.dsh-tavern-sessions-pending [data-phase="hero"] > *, body.dsh-tavern-sessions-pending [data-phase="hero"]::before { visibility: hidden !important; }
@@ -416,7 +458,8 @@ body.dsh-tavern-shell-active span:has(.dsh-tavern-hero-lockup) + span { display:
 /* 选卡/开局准备页展开时收起卡片自带的悬浮应用（如外置小手机），避免盖住开场白预览和 letter 列表；
    进入对局后宿主会把手机停靠进右侧「人物卡应用」面板。 */
 body.dsh-tavern-picker-open [id^="improved-phone-shadow-host-"],
-body.dsh-tavern-picker-open [id^="improved-phone-floating-button-"] { visibility: hidden !important; }
+body.dsh-tavern-picker-open [id^="improved-phone-floating-button-"],
+body.dsh-tavern-picker-open #auto-message-notification-container { visibility: hidden !important; }
 .dsh-tavern-greeting-nav { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; }
 .dsh-tavern-greeting-count { color: var(--dsw-alias-label-secondary); text-align: center; font-size: 12px; }
 .dsh-tavern-player-name { display: grid; grid-template-columns: auto minmax(180px, 320px); gap: 10px; align-items: center; margin: 10px 0 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
@@ -433,11 +476,48 @@ body.dsh-tavern-picker-open [id^="improved-phone-floating-button-"] { visibility
 }
 .dsh-tavern-picker-group { margin-top: 10px; color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 700; }
 .dsh-tavern-picker-foot { position: sticky; bottom: -10px; display: flex; justify-content: flex-end; margin: 10px -10px -10px; padding: 10px; border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-specific-sidebar-fill); }
+.dsh-tavern-card-update { align-self: center; flex: none; height: fit-content; min-height: 0; display: flex; flex-direction: column; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); box-sizing: border-box; overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 18px; background: var(--dsw-specific-sidebar-fill); box-shadow: 0 24px 80px #0003; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 1.6; }
+.dsh-tavern-card-update-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 26px 0; }
+.dsh-tavern-card-update-label { display: block; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-tavern-card-update h2 { margin: 3px 0 0; font-size: 22px; font-weight: 650; letter-spacing: -.5px; }
+.dsh-tavern-card-update-body { padding: 18px 26px 24px; overflow-y: auto; min-height: 0; }
+.dsh-tavern-card-update-description { margin: 0 0 18px; color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.dsh-tavern-card-update-versions { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); gap: 12px; align-items: center; margin-bottom: 20px; }
+.dsh-tavern-card-update-version { min-width: 0; padding: 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: color-mix(in srgb, var(--dsw-alias-border-l2) 14%, transparent); }
+.dsh-tavern-card-update-version:last-child { border-color: var(--dsh-tavern-accent-border); background: var(--dsh-tavern-accent-soft); }
+.dsh-tavern-card-update-version strong { display: block; margin: 5px 0; font-size: 25px; line-height: 1.3; font-weight: 650; overflow-wrap: anywhere; }
+.dsh-tavern-card-update-name { display: block; overflow-wrap: anywhere; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dsh-tavern-card-update-arrow { text-align: center; color: var(--dsw-alias-label-secondary); font-size: 22px; }
+.dsh-tavern-card-update-file { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 12px; }
+.dsh-tavern-card-update-file > div { min-width: 0; }
+.dsh-tavern-card-update-file strong { display: block; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.dsh-tavern-card-update-file span { display: block; margin-top: 4px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-tavern-card-update-file button { flex-shrink: 0; }
+.dsh-tavern-card-update-foot { justify-content: flex-end; display: flex; align-items: center; gap: 10px; padding: 16px 26px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dsh-tavern-card-update-foot > span { flex: 1; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dsh-tavern-card-update-foot button { white-space: nowrap; }
+.dsh-tavern-card-update-success { padding: 15px 17px; border-radius: 12px; background: color-mix(in srgb, #44846b 12%, transparent); }
+.dsh-tavern-card-update-success strong { color: light-dark(#286247, #9bd5b1); }
+.dsh-tavern-card-update-success p { margin: 5px 0 0; font-size: 13px; }
+.dsh-tavern-card-update-backup { margin-top: 16px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-tavern-card-update-backup summary { cursor: pointer; }
+.dsh-tavern-card-update-backup code { display: block; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .dsh-tavern-card-update-head { padding: 20px 18px 0; }
+  .dsh-tavern-card-update-body { padding: 16px 18px 20px; }
+  .dsh-tavern-card-update-versions { gap: 6px; grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr); }
+  .dsh-tavern-card-update-version { padding: 12px; }
+  .dsh-tavern-card-update-version strong { font-size: 21px; }
+  .dsh-tavern-card-update-foot { padding: 14px 18px; flex-wrap: wrap; }
+  .dsh-tavern-card-update-foot > span { flex-basis: 100%; }
+}
 .dsh-tavern-script-file { align-self: center; white-space: nowrap; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); padding: 6px 8px; cursor: pointer; font-size: 11px; }
 .dsh-tavern-script-file:hover { border-color: var(--dsh-tavern-accent); color: var(--dsh-tavern-accent); }
 .dsh-tavern-choice-trigger { border: 1px solid color-mix(in srgb, var(--dsh-tavern-accent) 40%, transparent); background: color-mix(in srgb, var(--dsh-tavern-accent) 10%, transparent); color: var(--dsh-tavern-accent); cursor: pointer; padding: 3px 9px; border-radius: 7px; font-size: 12px; font-weight: 650; }
 .dsh-tavern-choice-trigger:hover { background: color-mix(in srgb, var(--dsh-tavern-accent) 20%, transparent); color: var(--dsw-alias-brand-primary); }
 .dsh-tavern-dock-actions { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; max-width: var(--dsh-composer-card-max-width, 780px); box-sizing: border-box; margin: 0 auto; padding: 8px 12px 0; flex-wrap: wrap; }
+.dsh-tavern-dock-actions-primary { display: contents; }
+.dsh-tavern-mobile-stats-toggle { display: none; }
 .dsh-tavern-notice-dismiss { margin-left: 6px; padding: 0 4px; border: 0; background: none; color: inherit; font: inherit; line-height: 1; cursor: pointer; opacity: .7; }
 .dsh-tavern-notice-dismiss:hover { opacity: 1; }
 .dsh-tavern-more-actions { position: relative; }
@@ -788,9 +868,11 @@ body.dsh-tavern-picker-open [id^="improved-phone-floating-button-"] { visibility
 .dsh-tavern-card-reload-notice { min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
 .dsh-tavern-card-app-section[hidden] { display: none; }
 .dsh-tavern-card-app-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.dsh-tavern-card-app-actions { display: flex; align-items: center; gap: 6px; }
 .dsh-tavern-card-app-head .dsh-tavern-status-label { margin-bottom: 0; }
 .dsh-tavern-card-app-recovering { margin-bottom: 7px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
 .dsh-tavern-card-app-slot { width: 100%; min-height: 120px; overflow: hidden; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: rgba(0,0,0,.14); }
+.dsh-tavern-card-app-slot[data-collapsed="true"] { min-height: 0; height: 0; border: 0; background: transparent; }
 .dsh-tavern-script-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
 .dsh-tavern-status-label { margin-bottom: 7px; color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
 .dsh-tavern-status-now { padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--dsh-tavern-accent) 30%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--dsh-tavern-accent) 8%, transparent); font-size: 12px; line-height: 1.55; }
@@ -1084,10 +1166,6 @@ body.dsh-tavern-shell-active [data-dsh-panel-host] { overflow: clip; }
 /* Showing, hiding and restoring the notice are quiet text actions, not buttons. */
 .dsh-tavern-error-controls button.dsh-tavern-error-quiet { border-color: transparent; padding: 3px 4px; color: var(--dsw-alias-label-tertiary, #8a8f98); }
 .dsh-tavern-error-controls button.dsh-tavern-error-quiet:hover { background: transparent; color: var(--dsw-alias-label-primary, #16181b); text-decoration: underline; text-underline-offset: 3px; }
-.dsh-tavern-error-controls button.dsh-tavern-error-replay { border-color: rgba(166,107,53,.55); color: #a66b35; font-weight: 650; }
-.dsh-tavern-error-controls button.dsh-tavern-error-replay:hover { background: rgba(166,107,53,.18); }
-.dsh-tavern-error-controls button.dsh-tavern-error-replay:disabled { opacity: .55; cursor: default; }
-.dsh-tavern-error-controls button.dsh-tavern-error-replay.is-secondary { border-color: currentColor; color: inherit; font-weight: normal; opacity: .75; }
 .dsh-tavern-error-controls button.is-primary { border-color: rgba(166,107,53,.55); color: #a66b35; font-weight: 650; }
 .dsh-tavern-error-controls button.is-primary:hover { background: rgba(166,107,53,.18); }
 .dsh-tavern-error-controls button:disabled { opacity: .55; cursor: default; }
@@ -1498,10 +1576,10 @@ ins.dsh-polish-mark.is-lit { background: rgba(76, 175, 125, .34); }
 @media (max-width: 760px) { .dsh-polish-cols { grid-template-columns: 1fr; } }
 .dsh-tavern-gallery-turn h4 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: 14px; font-weight: 600; }
 .dsh-tavern-gallery-turn h4 span { font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-tertiary); }
-.dsh-tavern-gallery-row { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-.dsh-tavern-gallery-shot { position: relative; flex: none; margin: 0; }
+.dsh-tavern-gallery-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; padding-bottom: 4px; }
+.dsh-tavern-gallery-shot { position: relative; margin: 0; min-width: 0; }
 .dsh-tavern-gallery-shot a { display: block; border-radius: 10px; overflow: hidden; outline-offset: 2px; }
-.dsh-tavern-gallery-shot img { display: block; height: 160px; width: auto; max-width: 300px; object-fit: cover; background: var(--dsw-alias-interactive-bg-hover); cursor: zoom-in; }
+.dsh-tavern-gallery-shot img { display: block; width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; background: var(--dsw-alias-interactive-bg-hover); cursor: zoom-in; }
 .dsh-tavern-gallery.is-picking .dsh-tavern-gallery-shot img { cursor: pointer; }
 .dsh-tavern-gallery-shot.is-picked a { box-shadow: inset 0 0 0 3px var(--dsw-alias-state-business-primary); }
 .dsh-tavern-gallery-shot.is-picked img { opacity: .85; }
@@ -1512,7 +1590,7 @@ ins.dsh-polish-mark.is-lit { background: rgba(76, 175, 125, .34); }
 @media (hover: hover) {
   .dsh-tavern-gallery-shot:not(:hover, :focus-within) .dsh-tavern-gallery-delete { opacity: 0; }
 }
-@media (max-width: 600px) { .dsh-tavern-gallery-shot img { height: 120px; max-width: 220px; } }
+@media (max-width: 600px) { .dsh-tavern-gallery-row { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); } }
 
 .dsh-tavern-full-context { box-sizing: border-box; width: 100%; min-width: 0; padding: 24px clamp(16px, 3vw, 40px) 32px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .dsh-context-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
@@ -1598,6 +1676,7 @@ header.dsh-tavern-immersive-header button.dsh-tavern-play-fullscreen {
 .dsh-tavern-worldbook-entry-actions > label { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .dsh-tavern-worldbook-entry-actions input { margin: 0; }
 .dsh-tavern-worldbook-kind.is-background { cursor: default; color: var(--dsw-alias-label-secondary); border-color: var(--dsw-alias-border-l2); background: transparent; }
+.dsh-tavern-worldbook-kind.is-active { border-color: var(--dsh-tavern-accent); background: var(--dsh-tavern-accent); color: var(--dsw-alias-label-primary-foreground, #fff); }
 .dsh-tavern-worldbook-content > label { font-size: 12px; color: var(--dsw-alias-label-primary); margin-bottom: 7px; }
 .dsh-tavern-worldbook-content textarea.large { min-height: 280px; max-height: 70vh; padding: 12px; font-size: 13px; line-height: 1.75; background: var(--dsw-specific-input-major); }
 .dsh-tavern-worldbook-entry-settings { border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 10px; }
@@ -2218,7 +2297,6 @@ html.dsh-tavern-hide-process [data-dsh-fork-session="play"] [data-chat-flow-kind
 .dsh-tavern-update-row > .dsh-tavern-update-identity { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); }
 .dsh-tavern-update-row > .dsh-tavern-update-actions { flex: none; margin-top: 0; }
 .dsh-tavern-update-row .dsh-tavern-update-button { width: auto; height: 26px; padding: 0 9px; }
-.dsh-tavern-update-row > details.dsh-tavern-update-actions { flex: 1 1 100%; }
 
 /* Status panel: no nested frame around the card's own status bar. */
 .dsh-tavern-status-dashboard .dsh-tavern-status-runtime { border: 0; border-radius: 0; background: transparent; }
@@ -2670,6 +2748,10 @@ button.dsh-tavern-play-fullscreen {
    宿主把 utilities 设为 flex:none，这里让它在窄窗口里可以收缩，容器才能量出可用宽度。 */
 body.dsh-tavern-shell-active [data-slot="conversation.session.header.utilities"]:has(> .dsh-tavern-header-items) { display: contents; }
 body.dsh-tavern-shell-active [class*="_headerUtilities"]:has(.dsh-tavern-header-items) { flex: 0 1 auto; min-width: 0; justify-content: flex-end; }
+/* DSH 0.2.2 的「更多会话视图」（⋯）跟在视图标签后；宿主行是 align-items:flex-start，
+   皮肤加高了标签内边距后它会浮到标签文字上方，这里让它与标签垂直居中。 */
+body.dsh-tavern-shell-active [class*="_tabs"] [class*="_viewsMoreAnchor"] { align-self: center; }
+body.dsh-tavern-shell-active [class*="_tabs"] [class*="_viewsMoreAnchor"] [class*="_viewsMore"] { margin-top: 0; }
 .dsh-tavern-header-items {
   /* 尺寸走变量：手机和图标模式只改变量，不用和宿主规则比特异性。 */
   --dsh-tavern-header-button: 32px; --dsh-tavern-header-gap: 2px;
@@ -2736,8 +2818,11 @@ body.dsh-tavern-shell-active [class*="_headerUtilities"]:has(.dsh-tavern-header-
   }
   /* 展开候选时操作集中在候选卡底部；收起即恢复生成与历史入口，减少重复工具条占位。 */
   html.dsh-tavern-viewport-pinned [data-composer-seat]:has(.dsh-tavern-candidate-question:not(.collapsed)) .dsh-tavern-dock-actions { display: none; }
+  /* 候选面板已经占据输入区上方，已展开的运行状态也先让位。 */
+  html.dsh-tavern-viewport-pinned [data-composer-seat]:has(.dsh-tavern-candidate-question:not(.collapsed)) [data-composer-dock] { display: none !important; }
   .dsh-tavern-choice-trigger { min-height: 36px; padding: 5px 10px; font-size: 13px; }
-  .dsh-tavern-question.dsh-tavern-candidate-question { box-sizing: border-box; width: calc(100% - 16px); margin: 0 auto; padding: 6px 10px; border-radius: 12px; }
+  /* 候选卡与桌面同一个组件、同一套外观：宽度、圆角、内边距都不再单独覆盖；手机上只在展开时改为底部抽屉。 */
+  .dsh-tavern-question.dsh-tavern-candidate-question { box-sizing: border-box; margin: 0 auto; }
   html.dsh-tavern-viewport-pinned .dsh-tavern-candidate-question:not(.collapsed) {
     position: fixed; z-index: var(--dsh-play-z-sheet, 7);
     left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px));
@@ -2943,10 +3028,86 @@ body.dsh-tavern-shell-active [class*="_headerUtilities"]:has(.dsh-tavern-header-
     line-height: 1.5; min-height: 36px;
     max-height: var(--dsh-composer-text-max-height); overflow-y: auto;
   }
+  /* 方案 B：输入卡一行到底 —— 工具（＋ / 权限）· 输入 · 模型 / 发送。宿主原本是「草稿一行 + 控制行一行」
+     （实测 421×102：草稿 36 + 控制行 48 + 内边距），拆成三列网格后卡片只剩一行。 */
+  html.dsh-tavern-coarse-play [data-composer-card][data-composer-card] {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: end;
+    gap: 0 2px !important; padding: 6px 6px 6px 4px !important; border-radius: 14px !important;
+  }
+  /* 附件与顶部提示仍占满第一行；跳转最新的锚点是绝对定位，不参与网格。 */
+  html.dsh-tavern-coarse-play [data-composer-card] > :is([class*="_accessory"], [data-slot="conversation.input.attachments"] > *) {
+    grid-column: 1 / -1; grid-row: 1;
+  }
+  html.dsh-tavern-coarse-play [data-composer-card] > :is([data-input-scroll], [class*="_scroll"]) {
+    grid-column: 2; grid-row: 2; box-sizing: border-box; min-height: 40px; margin: 0; align-self: center;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  /* 宿主的控制行只做分组：拆开（display: contents）后工具落左列、模型与发送落右列，输入框留在中间。 */
+  html.dsh-tavern-coarse-play [data-composer-card] > [class*="_row"] { display: contents; }
+  html.dsh-tavern-coarse-play [data-composer-card] > [class*="_row"] > [class*="_tools"] { grid-column: 1; grid-row: 2; gap: 0; }
+  html.dsh-tavern-coarse-play [data-composer-card] > [class*="_row"] > [class*="_trailing"] { grid-column: 3; grid-row: 2; gap: 2px; }
+  /* 只让可收缩的入口（模型、上下文）让位；发送键保持 40px 热区。 */
+  html.dsh-tavern-coarse-play [data-composer-card] > [class*="_row"] > [class*="_trailing"] > :not([class*="_primary"], [class*="_activity"]) { min-width: 0; }
+  html.dsh-tavern-coarse-play [data-composer-card] :is([class*="_primary"], [class*="_add"]) { transform: none; }
+  /* 权限入口整块移除（手机上不展示）：槽位连同宿主那层包装一起收起，宽度全给输入框。 */
+  /* 单行卡里「回到最新」原本落在卡片右上角，正好压住发送键：挪到输入框右端、模型图标左侧。 */
+  html.dsh-tavern-coarse-play [data-composer-card] .fork-chat-jump-latest { top: 8px; right: 100px; }
+
+  html.dsh-tavern-coarse-play [data-composer-card] [class*="_modes"] { display: none !important; }
+  /* 模型只留图标（上游 conversation 的 compact 契约，_7KE1Ra 消费这两个变量），名字让给输入框。 */
+  html.dsh-tavern-coarse-play [data-composer-card] {
+    --dsh-composer-model-text-display: none;
+    --dsh-composer-model-icon-display: block;
+  }
+  html.dsh-tavern-coarse-play [data-composer-card] [data-composer-input] { padding: 8px 6px 8px 4px; }
   .dsh-tavern-assistant { font-size: var(--dsh-content-font-size, 14px); line-height: 1.7; gap: 12px; min-width: 0; overflow-wrap: anywhere; }
   .dsh-tavern-user-bubble { font-size: var(--dsh-content-font-size, 14px); line-height: 1.6; padding: 8px 12px; border-radius: 16px; }
   .dsh-tavern-user-stack { max-width: 90%; }
-  .dsh-tavern-dock-actions { padding: 4px 8px; gap: 6px; flex-wrap: wrap; }
+  /* 方案 B 的上半层：高频动作留在操作行，窄了横滑、绝不折行；完整运行状态折进右侧箭头。 */
+  .dsh-tavern-dock-actions { order: 2; justify-content: flex-start; padding: 0 6px; gap: 2px; flex-wrap: wrap; }
+  .dsh-tavern-dock-actions > * { flex-shrink: 0; }
+  .dsh-tavern-dock-actions-primary {
+    display: flex; align-items: center; flex: 1 1 0; min-width: 0; gap: 5px;
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+  }
+  .dsh-tavern-dock-actions-primary::-webkit-scrollbar { display: none; }
+  .dsh-tavern-dock-actions-primary > * { flex: none; }
+  .dsh-tavern-dock-actions :is(button, [role="button"]) { min-height: 44px; }
+  .dsh-tavern-dock-actions .dsh-tavern-choice-trigger {
+    border: 0; box-shadow: none; border-radius: 8px; background: transparent;
+    padding: 5px 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap;
+  }
+  .dsh-tavern-dock-actions .dsh-tavern-choice-trigger:is([data-fork-action="choices"], [data-fork-action="choices-again"]) {
+    background: color-mix(in srgb, var(--dsh-tavern-accent) 10%, transparent); color: var(--dsh-tavern-accent);
+  }
+  .dsh-tavern-mobile-stats-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: 0 0 44px; box-sizing: border-box; width: 44px; min-height: 44px; margin-left: 0; padding: 0;
+    border: 0; background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; touch-action: manipulation;
+  }
+  .dsh-tavern-mobile-stats-glyph {
+    display: grid; place-items: center; width: 30px; height: 30px; box-sizing: border-box;
+    border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px;
+    background: var(--dsw-specific-sidebar-fill); font: 17px/1 var(--dsw-font-family, sans-serif);
+    transition: transform 160ms ease;
+  }
+  .dsh-tavern-mobile-stats-toggle:hover { background: transparent; color: var(--dsh-tavern-accent); }
+  .dsh-tavern-mobile-stats-toggle[aria-expanded="true"] .dsh-tavern-mobile-stats-glyph { transform: rotate(180deg); }
+  /* 展开时让宿主 InputBar 的卡片与状态栏参与同一纵向布局，状态卡排在操作行上方。 */
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle) [class*="_composerStack"] { display: flex; flex-direction: column; }
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle) [data-slot="conversation.composer.bar"] > :has(> [data-composer-card]) { display: contents; }
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle) [data-composer-card] { order: 3; }
+  /* 折叠整条宿主状态栏；只藏插槽会留下原生上下文计量，等于没省高度。 */
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle) [data-composer-dock] { display: none !important; }
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle[aria-expanded="true"]) [data-composer-dock] {
+    order: 1; display: flex !important; flex-wrap: wrap; align-items: center; gap: 8px 14px; box-sizing: border-box;
+    width: calc(100% - 16px); max-width: var(--dsh-composer-card-max-width, 780px); max-height: min(30dvh, 180px);
+    margin: 0 auto 6px; padding: 11px 12px; overflow-y: auto; overscroll-behavior: contain;
+    border: 1px solid var(--dsw-alias-border-l2); border-radius: 13px; background: var(--dsw-specific-sidebar-fill);
+  }
+  [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle[aria-expanded="true"]) [data-slot="conversation.composer.dock"] {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1 1 180px; gap: 8px 14px;
+  }
   /* 面板窄于屏幕时也允许内容收缩，长名称、代码和下拉选项不能撑开整个页面。 */
   .dsh-tavern-library, .dsh-tavern-status, .dsh-local-settings, .dsh-template-panel,
   .dsh-tavern-settings-section, .dsh-tavern-worldbook-editor { min-width: 0; min-height: 0; }
@@ -3121,12 +3282,20 @@ body.dsh-tavern-shell-active [class*="_headerUtilities"]:has(.dsh-tavern-header-
   body.dsh-tavern-shell-active [data-slot="root"] > [class*="_frame"]:not([data-mobile-nav]):not([data-sidebar-drawer]) [role="dialog"]:has(> nav[class*="_nav"]) [class*="_rowText"] { flex: 1 1 160px; padding-right: 0; }
 }
 
+/* dsh-web-mobile 也会标记桌面 frame，但只有窄触屏才使用 minmax(0, 1fr) 0 0。
+   宿主在竖屏时仍将中心列放在零宽的第二轨，需要移回第一轨。 */
+@media (max-width: 1023px) and (orientation: portrait) and (pointer: coarse) {
+  body.dsh-tavern-shell-active [data-slot="root"] > [class*="_frame"][data-mobile-nav="frame"] > [class*="_centerCol"] { grid-area: 1 / 1 !important; min-width: 0 !important; }
+}
+
 /* 极短窗口下列表覆盖内容区，关闭入口始终可见；不让 0px 的候选层遮住顶栏。 */
 @media (max-width: 1023px), (pointer: coarse) {
   html.dsh-tavern-short-viewport body.dsh-tavern-shell-active [data-composer-seat] {
     --dsh-composer-text-max-height: 48px;
   }
   html.dsh-tavern-short-viewport [data-composer-seat]:has([data-composer-card] :is(textarea, [contenteditable="true"]):focus) :is(.dsh-tavern-dock-actions, .dsh-tavern-candidate-question.collapsed) { display: none; }
+  /* 键盘弹出时折叠状态的开关也随之隐藏，展开的面板不能继续占用正文高度。 */
+  html.dsh-tavern-short-viewport [data-composer-seat]:has(.dsh-tavern-mobile-stats-toggle):has([data-composer-card] :is(textarea, [contenteditable="true"]):focus) [data-composer-dock] { display: none !important; }
   html.dsh-tavern-short-viewport body.dsh-tavern-shell-active [data-composer-card] :is(textarea, [contenteditable="true"]) { min-height: 24px; }
   html.dsh-tavern-short-viewport body.dsh-tavern-shell-active [data-composer-card] [class*="_row"] { position: sticky; bottom: 0; background: var(--dsw-specific-input-major); }
   html.dsh-tavern-short-viewport body.dsh-tavern-shell-active :is(.dsh-tavern-candidate-question:not(.collapsed), [data-composer-card] [class*="_menu"][role="menu"]) {
@@ -3163,15 +3332,15 @@ details.dsh-tavern-recall-guide > summary .dsh-tavern-recall-guide-heading > spa
    above-dialogue layers share the text box band (theme.css "Mod UI bands") and are re-appended after it on every
    start, so they cover the box but stay under choices, the top bar, backlog and menus. Neither takes pointer input. */
 .fork-performance-keyframes { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
-.fork-gal-stage > .fork-performance-keyframes.is-above { z-index: 6; }
-.fork-gal-stage[data-look-ui] :is(.fork-performance-under, .fork-performance-over) { filter: url(#fork-gal-look-ui); }
-.fork-gal-stage :is(.fork-gal-scene, .fork-performance-under, .fork-performance-over, .fork-performance-keyframes.is-below) { translate: var(--performance-shake-x, 0px) var(--performance-shake-y, 0px); }
 /* 侧边卡片是 better-sidebar 的开发者设置，玩家无需看到。 */
 [data-dsh-better-sidebar-settings-nav] { display: none !important; }
 .dsh-tavern-plugin-overlay {
   box-sizing: border-box; position: fixed; inset: 0; z-index: 2000; overflow: auto;
+  top: env(titlebar-area-height, 0px);
   background: var(--dsw-specific-sidebar-fill); color: var(--dsw-alias-label-primary);
 }
+/* Full-screen plugins live below the host caption row, including its native window controls. */
+[data-windows-titlebar] .dsh-tavern-plugin-overlay { top: var(--dsh-windows-titlebar-height, 40px); }
 .dsh-tavern-plugin-overlay-error { display: flex; gap: 12px; align-items: center; justify-content: center; min-height: 100%; }
 
 /* the way back from a full-screen right panel on a phone (registerTavernPhonePanel). */
@@ -3514,14 +3683,15 @@ body .dsh-tavern-picker-error { background: linear-gradient(color-mix(in srgb, v
 .dsh-tavern-rx-bulk .dsh-tavern-btn { min-height: 26px; padding: 2px 8px; font-size: 10px; }
 .dsh-tavern-rx-bulk .dsh-tavern-rx-spacer { flex: 1 1 auto; }
 
-/* ---------- 轮次导航：按页面上真正的正文块画刻度 ---------- */
-/* modules/turn-rail.js：收起宿主那列（它按整档目录画，重试的尝试轮也在里面），
-   给每一轮正文单独画一根刻度，点了滚到那一块的开头。 */
+/* ---------- 楼层跳转：照页面上的楼层画刻度 ---------- */
+/* modules/turn-rail.js：收起宿主那列（它按 turn 画，重试、被取代的尝试轮也在里面），
+   一层正文一根刻度，点了滚到那一层的开头。 */
 /* 只做视觉隐藏：display:none 会让宿主的虚拟列表量到 0 高度，连它自己的刻度都不再渲染。 */
 [data-dsh-tavern-rail-hidden] { visibility: hidden !important; pointer-events: none !important; }
-/* 宿主那列藏了，但它的悬浮预览（role=tooltip）要留着：我们的刻度替它收指针事件。 */
-nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !important; }
-.dsh-tavern-turn-rail { position: fixed; z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; margin: 0; padding: 0; max-height: min(60vh, 420px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; transform: translateY(-50%); }
+/* right / top 是脚本还没定位时的落脚点：贴右边居中，绝不停在页面末尾（手机上就是左下角）。 */
+.dsh-tavern-turn-rail { position: fixed; z-index: 6; right: 12px; top: 50%; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; margin: 0; padding: 0; max-height: min(60vh, 420px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; transform: translateY(-50%); }
+/* 收起时只设了 hidden：上面那条 display:flex 压掉了 UA 的 [hidden] 规则，这里补回来。 */
+.dsh-tavern-turn-rail[hidden] { display: none; }
 .dsh-tavern-turn-rail::-webkit-scrollbar { display: none; }
 .dsh-tavern-turn-rail-tick { position: relative; flex: none; box-sizing: border-box; width: 20px; height: 10px; margin: 0; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
 .dsh-tavern-turn-rail-tick::before { content: ""; position: absolute; top: 50%; right: 0; width: 20px; height: 2px; border-radius: 2px; background: var(--dsw-alias-border-l4); transform: translateY(-50%) scaleX(.6); transform-origin: 100%; transition: transform .14s, background-color .14s; }
@@ -3530,6 +3700,19 @@ nav[data-dsh-tavern-rail-hidden] [role="tooltip"] { visibility: visible !importa
 .dsh-tavern-turn-rail-tick:focus-visible { outline: none; }
 .dsh-tavern-turn-rail-tick:focus-visible::before { background: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); transform: translateY(-50%) scaleX(1); }
 @media (prefers-reduced-motion: reduce) { .dsh-tavern-turn-rail-tick::before { transition: none; } }
+/* 窄屏紧凑版（place() 在 900px 以下加 data-compact）：贴右边，线更短，层与层之间留 6px 缝，
+   热区 24×12 —— 缝隙和列外的 pointer-events 都是 none，手指落在上面直接滑正文，不会被刻度
+   接走。最多 14 根（turn-rail.js 隔层取样），整列永远不滚，右边缘的上下滑也就不会被吃掉。 */
+.dsh-tavern-turn-rail[data-compact] { gap: 6px; max-height: none; overflow: visible; pointer-events: none; }
+.dsh-tavern-turn-rail[data-compact] .dsh-tavern-turn-rail-tick { width: 24px; height: 12px; pointer-events: auto; }
+.dsh-tavern-turn-rail[data-compact] .dsh-tavern-turn-rail-tick::before { width: 15px; background: color-mix(in srgb, var(--dsw-alias-border-l4) 82%, transparent); }
+.dsh-tavern-turn-rail[data-compact] .dsh-tavern-turn-rail-tick[data-active]::before { width: 19px; }
+/* 跳到的楼层闪一下浅底（turn-rail.js 的 flash）：点歪了也一眼看出跳到了哪。 */
+[data-story-row][data-floor-flash] { border-radius: 10px; background-color: color-mix(in srgb, var(--dsh-tavern-accent) 9%, transparent); }
+/* 「回到刚才」：挂在刻度列下面 1.8 秒，误触一键回原处。 */
+.dsh-tavern-turn-rail-undo { position: fixed; z-index: 7; display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border: 0; border-radius: 16px; background: var(--dsw-specific-input-major, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); box-shadow: 0 2px 10px color-mix(in srgb, var(--dsw-alias-label-primary) 16%, transparent); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; animation: dsh-tavern-menu-in 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+.dsh-tavern-turn-rail-undo:hover { background: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-layer-1)); }
+.dsh-tavern-turn-rail-undo:focus-visible { outline: 2px solid var(--dsh-tavern-accent); outline-offset: 2px; }
 
 /* ── 导出与导入（.dshtransfer） ───────────────────────────────────────── */
 .dsh-tavern-transfer {
@@ -3884,3 +4067,12 @@ button.dsh-tavern-transfer-check:disabled { cursor: default; }
 .dsh-tavern-background-run-error { flex-basis: 100%; overflow-wrap: anywhere; }
 
 .dsh-tavern-auto-polished { font-size: 12px; color: var(--dsh-tavern-accent-muted); margin-top: 2px; }
+
+/* 长按发送键 2 秒：按住时描一圈进度，触发后短暂高亮。 */
+/* ready 在手指落下前由脚本标记：禁止浏览器把发送键上的按住抢成滚动、选中或系统长按菜单。 */
+.dsh-tavern-send-hold-ready { touch-action: none !important; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.dsh-tavern-send-hold { position: relative; }
+.dsh-tavern-send-hold::after { content: ""; position: absolute; inset: -5px; border-radius: inherit; border: 2px solid var(--dsh-tavern-accent); opacity: .12; pointer-events: none; animation: dsh-tavern-send-hold 2s linear forwards; }
+.dsh-tavern-send-hold-fired { animation: dsh-tavern-send-hold-fired 900ms ease-out; }
+@keyframes dsh-tavern-send-hold { 0% { opacity: .12; transform: scale(.96); } 100% { opacity: .8; transform: scale(1.04); } }
+@keyframes dsh-tavern-send-hold-fired { 0% { filter: brightness(1.25); } 100% { filter: none; } }

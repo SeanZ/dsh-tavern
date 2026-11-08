@@ -141,24 +141,27 @@
 				},
 				onEvent: function (data) {
                     const eventId = String(data.eventId || "");
-                    const known = hostEvents.get(eventId);
+                    const tracked = eventId !== "";
+                    const known = tracked ? hostEvents.get(eventId) : null;
                     if (data.type === "dsh-tavern-helper-event-ack") {
                         if (known && known.receipt) { known.receipt = null; known.phase = "acknowledged"; }
                         return;
                     }
-                    function status() { postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: hostEvents.get(eventId).phase }, "*"); }
+                    function status() { if (tracked) postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: hostEvents.get(eventId).phase }, "*"); }
                     if (known) {
                         status();
                         if (known.receipt) postToHost(known.receipt, "*");
                         return;
                     }
                     if (data.type === "dsh-tavern-helper-event-query") {
-                        postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: "unknown" }, "*");
+                        if (tracked) postToHost({ type: "dsh-tavern-helper-event-state", token: token, eventId: eventId, phase: "unknown" }, "*");
                         return;
                     }
                     const entry = { phase: "queued", receipt: null };
-                    hostEvents.set(eventId, entry);
-                    status();
+                    if (tracked) {
+                        hostEvents.set(eventId, entry);
+                        status();
+                    }
                     function complete(receipt) {
                         entry.phase = "completed";
                         entry.receipt = Object.assign({ type: "dsh-tavern-helper-event-complete", token: token, eventId: eventId }, receipt);
@@ -282,7 +285,7 @@
 			};
 			window.uninjectPrompts = function (ids) { writePrompts({ kind: "remove", ids: copy(ids) }); };
 
-			const events = modules.createEvents({ currentScript: currentScript, withScript: withScript,
+			const events = modules.createEvents({ currentScript: currentScript, withScript: withScript, context: function () { return state; },
 				reportSubscriptions: reportSubscriptions, post: transport.post, document: window.document, initializationTiming: initializationTiming });
 			function copy(value) {
 				try { return structuredClone(value); }
@@ -371,7 +374,10 @@
 				const resolved = optionOf(option);
 				if (resolved.type === "global") state.globalVariables = copy(variables);
 				else if (resolved.type === "character") state.characterVariables = copy(variables);
-				else if (resolved.type === "chat") state.chatVariables = copy(variables);
+				else if (resolved.type === "chat") {
+					state.chatVariables = copy(variables);
+					if (variables && typeof variables.playerName === "string" && variables.playerName.trim()) state.playerName = variables.playerName.trim();
+				}
 				else if (resolved.type === "script") {
 					if (!state.scriptVariables || typeof state.scriptVariables !== "object") state.scriptVariables = {};
 					state.scriptVariables[resolved.script_id] = copy(variables);
@@ -470,6 +476,7 @@
 			};
 			window.replaceVariables = function (variables, option) {
                 const resolved = optionOf(option), plain = copy(variables || {}), before = getVariables(resolved);
+                const beforePlayerName = state.playerName;
                 const revision = [state.chatId, state.lifecycleRevision, state.stateRevision];
                 localReplace(plain, resolved);
                 return call("updateTavernHelperVariables", { option: resolved, variables: plain }).then(function (result) {
@@ -479,7 +486,10 @@
                     // Preserve a newer context or overlapping edit; roll back only
                     // our own unacknowledged optimistic value on the same revision.
                     if (JSON.stringify(revision) === JSON.stringify([state.chatId, state.lifecycleRevision, state.stateRevision])
-                        && JSON.stringify(getVariables(resolved)) === JSON.stringify(plain)) localReplace(before, resolved);
+                        && JSON.stringify(getVariables(resolved)) === JSON.stringify(plain)) {
+                        localReplace(before, resolved);
+                        if (resolved.type === "chat") state.playerName = beforePlayerName;
+                    }
                     console.error(error);
                     throw error;
                 });
@@ -511,11 +521,11 @@
 			window.updateVariablesWith = async function (updater, option) {
 				const resolved = optionOf(option);
 				const current = getVariables(resolved);
-				let next = typeof updater === "function" ? await updater(copy(current)) : current;
+				let next = typeof updater === "function" ? updater(copy(current)) : current;
+				if (next && typeof next.then === "function") next = await next;
 				if (next === undefined) next = current;
 				next = copy(next);
-				localReplace(next, resolved);
-				await call("updateTavernHelperVariables", { option: resolved, variables: next });
+				await window.replaceVariables(next, resolved);
 				return copy(next);
 			};
 			window.deleteVariable = async function (path, option) {
@@ -572,7 +582,8 @@
 					group: extra.group || "", exclude_recursion: entry.recursion.prevent_incoming, prevent_recursion: entry.recursion.prevent_outgoing,
 					delay_until_recursion: entry.recursion.delay_until === null ? false : entry.recursion.delay_until,
 					sticky: entry.effect.sticky, cooldown: entry.effect.cooldown, delay: entry.effect.delay,
-					use_group_scoring: "same_as_global", automation_id: null, group_prioritized: false, group_weight: 100
+					use_group_scoring: extra.use_group_scoring ?? "same_as_global", automation_id: extra.automation_id ?? null,
+                    group_prioritized: extra.group_prioritized ?? false, group_weight: extra.group_weight ?? 100
 				};
 			}
 			function legacyWorldbookPatch(patch, original) {
@@ -592,8 +603,10 @@
 					if (match) set("position.role", match[1]);
 				}
 				if (patch.delay_until_recursion !== undefined) set("recursion.delay_until", patch.delay_until_recursion === false ? null : patch.delay_until_recursion === true ? 1 : patch.delay_until_recursion);
-				const unsupported = { use_group_scoring: "same_as_global", automation_id: null, group_prioritized: false, group_weight: 100 };
-				for (const key of Object.keys(unsupported)) if (patch[key] !== undefined && patch[key] !== unsupported[key]) throw new Error("当前兼容层尚未支持世界书字段: " + key);
+                // Retain unsupported activation hints as round-trippable metadata.
+                for (const key of ["use_group_scoring", "automation_id", "group_prioritized", "group_weight"]) {
+                    if (patch[key] !== undefined) set("extra." + key, patch[key]);
+                }
 				return next;
 			}
 			function worldbookPayload(entries) {
@@ -729,6 +742,8 @@
 				MESSAGE_SENT: "MESSAGE_SENT", MESSAGE_RECEIVED: "MESSAGE_RECEIVED", MESSAGE_UPDATED: "MESSAGE_UPDATED",
 				MESSAGE_SWIPED: "MESSAGE_SWIPED", MESSAGE_DELETED: "MESSAGE_DELETED", MESSAGE_EDITED: "MESSAGE_EDITED",
 				CHAT_CHANGED: "CHAT_CHANGED", CHAT_CREATED: "CHAT_CREATED", CHARACTER_PAGE_LOADED: "CHARACTER_PAGE_LOADED",
+				GENERATION_STARTED: "GENERATION_STARTED", GENERATION_STOPPED: "GENERATION_STOPPED", GENERATION_ENDED: "GENERATION_ENDED",
+				GENERATION_AFTER_COMMANDS: "GENERATION_AFTER_COMMANDS",
 				GENERATE_BEFORE_COMBINE_PROMPTS: "GENERATE_BEFORE_COMBINE_PROMPTS"
 			};
 			window.iframe_events = Object.freeze({
@@ -847,6 +862,7 @@
 			}
 			window.toastr.warning = console.warn;
 			window.toastr.error = console.error;
+			modules.installCompatibilityApi({window, context: () => state, request: call, installPromptApi: modules.installPromptApi});
 			const ready = Promise.all([
 				import(new URL("/api/dsh-tavern/vendor/runtime-assets/zod/index.mjs",document.baseURI).href),
 				import(new URL("/api/dsh-tavern/vendor/runtime-assets/yaml/index.mjs",document.baseURI).href)

@@ -4,61 +4,67 @@
 // by default, the opening (skin, 主角, greetings) and the prompts of every stage. Every control saves at once through one serial queue (card CAS and pack
 // CAS chained on the newest revision); there is no save bar.
 // no 基础 / 高级 switch — one page; the old stored mode is ignored.
-// which first-level sections are folded, in the
-// panel's localStorage UI preferences: {[section title]: true (folded) | false (open)}; a missing entry is the default.
-const STAGE_FOLD_KEY='dsh-tavern:stage-panel-folded';
-function stageFoldRead() { try { const value=JSON.parse(localStorage.getItem(STAGE_FOLD_KEY)||'{}'); return value&&typeof value==='object'&&!Array.isArray(value)?value:{}; } catch(_) { return {}; } }
-function useStageFold(key,fallback=false) {
-  const [folded,setState]=React.useState(()=>{const stored=stageFoldRead()[key];return typeof stored==='boolean'?stored:fallback;});
-  const set=value=>{setState(value);try{localStorage.setItem(STAGE_FOLD_KEY,JSON.stringify({...stageFoldRead(),[key]:!!value}));}catch(_){}};
-  return [folded,set];
-}
-const STAGE_RETURN_KEY='dsh:settings-return', STAGE_TAB='dsh-tavern:bubbles', VOICE_TAB='dsh-tts:voice';
+const STAGE_RETURN_KEY='dsh:settings-return', STAGE_TAB='dsh-tavern:bubbles';
 // no 「双语配音」 switch — a figure whose voice language differs from the text gets its
 // second line automatically (cardBubbleConfig / bubbleInstructionPreview).
 const STAGE_CORE=['dialogue','voice','stage'];
-const STAGE_REQUIRES={dialogue:[],voice:['dialogue'],stage:['dialogue']};
-const STAGE_NAMES={dialogue:'舞台',voice:'配音',stage:'舞台'};
 const STAGE_ICONS={dialogue:'bubble',voice:'voice',stage:'stage'};
 const VOICE_LANGUAGES=[['ja','日语'],['zh','中文'],['en','英语']];
 // the director command toggles live only on 舞台模式 › 可用演出
 // (asset-pack-engine-ui.js); a card has no command chips and its stored stage.dimensions is never read or written.
 
-// ---------- Pure helpers (tests/card-centric-stage-ui.test.mjs) ----------
-// A card declares stage.enabled; legacy dialogue/stage fields are read only for compatibility.
-// Other switches remain global and share backend defaults.
-const CARD_SWITCHES=['enabled','dialogue','stage'];
+// ---------- Pure helpers (tests/card-stage-switch-ui.test.mjs) ----------
+// 基础设置's switches are four-state like a mod's (全局开启 / 全局关闭 / 本卡开启 / 本卡关闭, ModSwitchTag): the global layer
+// is the engine's stageToggles, the card layer this card's stage.switches ('on' / 'off'; a missing key follows the global
+// switch). 对话气泡 / 舞台模式 are two rows whose card layer is the card's own declaration (stage.enabled, or the
+// dialogue / stage pair for bubbles only; read through cardStageMode). Each resolves with the mods' own rule (modSwitchOn;
+// the host: card-stage-settings.js effectiveCardStage).
+const STAGE_SWITCH_DEFAULTS={dialogue:false,voice:true,stage:false,music:true,sfx:true,ambience:true,items:true,performance:true,entrance:true};
+const STAGE_DECLARED=['dialogue','stage'];
+// The card layer of 对话气泡 / 舞台模式 (the host: cardStageChoice); a card that declares nothing follows the global switch.
+function stageDeclared(stored,key) {
+  if(stored?.enabled===undefined&&stored?.dialogue===undefined&&stored?.stage===undefined)return undefined;
+  return cardStageMode(stored)[key]?'on':'off';
+}
+function stageSwitchLayers(ext,engine) {
+  const stored=ext?.stage||{},card={...(stored.switches||{})};
+  for(const key of STAGE_DECLARED)card[key]=stageDeclared(stored,key);
+  return {global:{...STAGE_SWITCH_DEFAULTS,...engine?.values?.stageToggles},card};
+}
 function stagePrefs(ext,engine) {
-  const {dialogue:_dialogue,stage:_stage,...global}=engine?.values?.stageToggles||{};
-  return {widgets:false,...(ext?.stage||{}),
-    voice:true,music:true,sfx:true,ambience:true,items:true,performance:true,entrance:true,...global,
-    ...cardStageMode(ext?.stage)};
+  const {global,card}=stageSwitchLayers(ext,engine);
+  return {widgets:false,...(ext?.stage||{}),...Object.fromEntries(Object.keys(global).map(key=>[key,modSwitchOn(global[key],card[key])]))};
 }
-// The single stage choice is card-owned; other switches go to global settings.
-function stageWrite(writer,changes) {
-  const card={},global={};
-  for(const [key,value] of Object.entries(changes))(CARD_SWITCHES.includes(key)?card:global)[key]=value;
-  const jobs=[];
-  if(Object.keys(card).length)jobs.push(writer.write(ext=>stagePatch(ext,card)));
-  if(Object.keys(global).length)jobs.push(writer.global(global));
-  return Promise.all(jobs);
-}
-// What actually runs: every switch needs its upstream switches on.
+// What actually runs: every switch needs its upstream switches in effect.
 function stageActive(prefs) { const dialogue=prefs.dialogue!==false; return {dialogue,voice:dialogue&&!!prefs.voice,stage:dialogue&&!!prefs.stage}; }
+// The declaration is one choice for both rows: 本卡开启 / 本卡关闭 on either row writes stage.enabled (舞台模式 本卡开启 also
+// needs 对话气泡), a 全局 choice on either clears it. Only 对话气泡 on with 舞台模式 off writes the dialogue / stage pair
+// (bubbles without the stage).
+function stageDeclarePatch(stored,changes) {
+  const clear={enabled:undefined,dialogue:undefined,stage:undefined};
+  if(Object.values(changes).includes(undefined))return clear;
+  let dialogue=changes.stage==='on'?'on':changes.dialogue??stageDeclared(stored,'dialogue'),stage=changes.stage??stageDeclared(stored,'stage');
+  dialogue??=stage;stage??=dialogue;
+  return dialogue==='on'&&stage==='off'?{...clear,dialogue:true,stage:false}:{...clear,enabled:dialogue==='on'};
+}
+// A card-layer change, `undefined` clearing the key (the switch follows the global one again). 对话气泡 / 舞台模式 write the
+// card's declaration (stageDeclarePatch), never stage.switches.
+function stageSwitchPatch(ext,changes) {
+  const stored=ext?.stage||{},next={...(stored.switches||{})},declared={};
+  for(const [key,value] of Object.entries(changes))(STAGE_DECLARED.includes(key)?declared:next)[key]=value;
+  for(const key of Object.keys(next))if(next[key]===undefined||STAGE_DECLARED.includes(key))delete next[key];
+  return stagePatch(ext,{switches:Object.keys(next).length?next:undefined,...(Object.keys(declared).length?stageDeclarePatch(stored,declared):{})});
+}
 // A stage patch replaces only card preferences; `undefined` removes an override.
 function stagePatch(ext,changes) {
   const next={...(ext?.stage||{})};
-  if (Object.hasOwn(changes,'enabled') || Object.hasOwn(changes,'stage') || Object.hasOwn(changes,'dialogue')) {
-    next.enabled = changes.enabled ?? changes.stage ?? changes.dialogue;
-    delete next.dialogue; delete next.stage;
-    changes = Object.fromEntries(Object.entries(changes).filter(([key])=>!['enabled','dialogue','stage'].includes(key)));
-  }
   Object.assign(next,changes);
   for(const key of Object.keys(next))if(next[key]===undefined)delete next[key];
   return {stage:next};
 }
-function stageEnable(key) { return Object.fromEntries([...STAGE_REQUIRES[key],key].map(k=>[k,true])); }
-function stageMissing(key,active) { return [...new Set([...STAGE_REQUIRES[key],key].filter(k=>!active[k]).map(k=>k==='dialogue'?'stage':k))]; }
+// 「需要… · 去开启」: like a mod's dependency 「开启」, the missing switches become 本卡开启 (a switch that is on and only waits for
+// 对话气泡 keeps its layer; the declared pair is always written).
+function stageEnable(key,active,prefs) { return Object.fromEntries(stageMissing(key,active).filter(k=>STAGE_DECLARED.includes(k)||prefs[k]!==true).map(k=>[k,'on'])); }
 // cards select packs; figure policy is authored in the library.
 function emptyExtension() { return {schemaVersion:1,assetBindings:{boundPackIds:[]}}; }
 // the packs whose entries 舞台设置 reads in full — lit for this card (全局 / 本卡:
@@ -76,8 +82,6 @@ function unbindPatch(ext,packId) { return {assetBindings:{...ext.assetBindings,b
 function writeStageReturn(storage,{label,payload},now=Date.now()) {
   try { storage?.setItem(STAGE_RETURN_KEY,JSON.stringify({toTab:STAGE_TAB,label,payload,createdAt:now})); return true; } catch(_) { return false; }
 }
-// Session storage can be absent or denied (opaque origins); the return intent is then simply unavailable.
-function stageSession() { try { return typeof sessionStorage==='undefined'?null:sessionStorage; } catch(_) { return null; } }
 // ---------- Panel ----------
 function StagePanel({binding,sessionId,cardPath,cardName,loading,nav,prompts}) {
   const [available,setAvailable]=React.useState(true),[view,setView]=React.useState('page');
@@ -110,7 +114,7 @@ function useStageWriter(binding,path,state,sessionId) {
   const store=React.useRef(null),queue=React.useRef(Promise.resolve()),[,bump]=React.useState(0),[status,setStatus]=React.useState('idle');
   // `rows` are the list summaries (every installed pack); `packs` the full documents
   // of the packs this page reads entries of (lit for this card, or holding 模组: stageDetailRows), read per pack by revision.
-  if(state.value&&store.current?.loadedFrom!==state.value)store.current={loadedFrom:state.value,server:state.value.card,engine:state.value.engine,pending:[],rows:state.value.packs.filter(p=>!p.error),
+  if(state.value&&store.current?.loadedFrom!==state.value)store.current={loadedFrom:state.value,server:state.value.card,engine:state.value.engine,reading:state.value.reading,pending:[],rows:state.value.packs.filter(p=>!p.error),
     packs:new Map((state.value.details||[]).map(p=>[p.manifest.id,p])),asked:new Map((state.value.details||[]).map(p=>[p.manifest.id,p.revision]))};
   const s=store.current,render=()=>bump(n=>n+1);
   const conflict=e=>e?.code==='REVISION_CONFLICT'||/REVISION_CONFLICT|Card changed/i.test(String(e?.message||''));
@@ -138,6 +142,14 @@ function useStageWriter(binding,path,state,sessionId) {
         const save=engine=>binding.rpc('saveAssetEngineSettings',{expectedRevision:engine.revision,patch:{[key]:patch}});
         try{s.engine=await save(s.engine);}catch(e){if(!conflict(e))throw e;s.engine=await save(await binding.rpc('getAssetEngineSettings'));}
         render();return s.engine;
+      });
+    },
+    // 旁白配音's global layer lives in the tts plugin (tts.reading.narrator), written through its control call.
+    get reading(){return s?.reading;},
+    setReading(patch){
+      return enqueue(async()=>{
+        if(!binding.tts)throw new Error('配音插件未启用');
+        s.reading=await binding.tts.call('setReading',patch);render();return s.reading;
       });
     },
     get extension(){if(!s)return null;const base=s.server.extension;return s.pending.length?s.pending.reduce(apply,base||emptyExtension()):base||null;},
@@ -177,26 +189,28 @@ function useStageWriter(binding,path,state,sessionId) {
 function StagePage({binding,ready,sessionId,path,cardName,nav,prompts,onEngine,takeEngineFocus,onJudge,onCommands}) {
   const state=useLoad(binding,async()=>{
     const card=await binding.rpc('getCardAssetBindings',{path});
-    if(!ready)return {card,packs:[],details:[],engine:null};
+    if(!ready)return {card,packs:[],details:[],engine:null,reading:null};
     await binding.loadSettings?.();
-    const [packs,engine]=await Promise.all([loadPackRows(binding),binding.rpc('getAssetEngineSettings').catch(()=>null)]);
+    // reading: the tts plugin's tts.reading (旁白配音's global layer); null while the plugin is off.
+    const [packs,engine,reading]=await Promise.all([loadPackRows(binding),binding.rpc('getAssetEngineSettings').catch(()=>null),binding.tts?binding.tts.call('reading').catch(()=>null):null]);
     const details=await stageReadDetails(binding,stageDetailRows(packs,binding.globalEnabledPackIds||[],card.extension?.assetBindings?.boundPackIds||[]));
-    return {card,packs,details,engine};
+    return {card,packs,details,engine,reading};
   },[path,ready]);
   // portable figure voices do not require any preset in the machine voice catalogue.
-  const services=useLoad(binding,async()=>binding.tts?(await binding.rpc('getAssetVoiceServices')).services:null,[binding.tts]);
+  // the TTS voice services catalog: the services set up in 配音后端 (浏览器朗读 aside).
+  const services=useLoad(binding,async()=>binding.tts?(await binding.tts.call('voiceServices')).services.filter(s=>s.kind!=='browser'):null,[binding.tts]);
   React.useEffect(()=>binding.tts?.subscribe?.(()=>services.reload()),[binding.tts]);
   const writer=useStageWriter(binding,path,state,sessionId);
   // A pack lit after the load (or a changed revision) is read in full once; the page renders again when it arrives.
   React.useEffect(()=>{void writer.ensureDetails().catch(()=>{});});
-  const [confirm,setConfirm]=React.useState(null),[layer,setLayer]=React.useState(null),[packModal,setPackModal]=React.useState(null),[modPage,setModPage]=React.useState(null),[itemsPage,setItemsPage]=React.useState(false),[performancePage,setPerformancePage]=React.useState(false),[entrancePage,setEntrancePage]=React.useState(false),[narratorPage,setNarratorPage]=React.useState(false);
+  const [confirm,setConfirm]=React.useState(null),[layer,setLayer]=React.useState(null),[packModal,setPackModal]=React.useState(null),[modPage,setModPage]=React.useState(null),[itemsPage,setItemsPage]=React.useState(false),[performancePage,setPerformancePage]=React.useState(false),[entrancePage,setEntrancePage]=React.useState(false),[voicePage,setVoicePage]=React.useState(false);
   // 设置向导 is a sub-page of this page (‹ / Esc back).
-  const [wizard,setWizard]=React.useState(false),wizardReturn=React.useRef(null),[setupComplete,setSetupComplete]=React.useState(0),basicRef=React.useRef(null);
+  const [wizard,setWizard]=React.useState(false),wizardReturn=React.useRef(null),[setupComplete,setSetupComplete]=React.useState(0),pageRef=React.useRef(null);
   // 人物's ＋ opens the 新人物 page as a sub-page (‹ / Esc back to the ＋).
   const [newFigure,setNewFigure]=React.useState(false),newFigureReturn=React.useRef(null);
-  React.useEffect(()=>{if(!wizard && setupComplete){const section=basicRef.current;section?.scrollIntoView?.({block:'start'});section?.querySelector('.ap-section-toggle')?.focus?.({preventScroll:true});}},[wizard,setupComplete]);
+  React.useEffect(()=>{if(!wizard && setupComplete){const section=pageRef.current?.querySelector(':scope > .ap-stage-basic');section?.scrollIntoView?.({block:'start'});section?.querySelector('.ap-section-toggle')?.focus?.({preventScroll:true});}},[wizard,setupComplete]);
   // the mod whose page was just left, so its row's 「›」 takes the focus back.
-  const modReturn=React.useRef(null),narratorReturn=React.useRef(false),itemsReturn=React.useRef(false),performanceReturn=React.useRef(false),entranceReturn=React.useRef(false);
+  const modReturn=React.useRef(null),voiceReturn=React.useRef(false),itemsReturn=React.useRef(false),performanceReturn=React.useRef(false),entranceReturn=React.useRef(false);
   // the 演出规则 editor and its in-place engine writes are gone.
   const ext=writer.extension;
   useStageSetupAutoOpen({binding,path,ready,stageOn:!!state.value&&!!ext?.assetBindings&&stageActive(stagePrefs(ext,writer.engine)).stage,open:()=>setWizard(true)});
@@ -204,13 +218,11 @@ function StagePage({binding,ready,sessionId,path,cardName,nav,prompts,onEngine,t
   if(!ext?.assetBindings)return h(StageFirstRun,{writer,cardName});
   const engine=writer.engine,prefs=stagePrefs(ext,engine),active=stageActive(prefs),packs=writer.packs;
   const ttsState=!binding.tts?'off':services.value&&!services.value.length?'empty':'ok';
-  // machine service settings return to the page, never to a retired card voice editor.
-  const openVoice=()=>{writeStageReturn(stageSession(),{label:'返回舞台设置',payload:{cardPath:path}});return nav?.openTab?.(VOICE_TAB);};
-  const enable=key=>stageWrite(writer,stageEnable(key));
+  const enable=key=>writer.write(current=>stageSwitchPatch(current,stageEnable(key,active,prefs)));
   const status=writer.status;
   const saveState=h('span',{className:'ap-save-state',role:'status','data-state':typeof status==='object'?'error':status},status==='saving'?'正在保存…':status==='saved'?'已保存':'');
   const wizardButton=stageSetupReady(binding)&&h('button',{type:'button',className:'ap-manage ap-wizard-open',ref:wizardReturn,onClick:()=>setWizard(true)},'设置向导');
-  const ctx={binding,path,sessionId,cardName,setupComplete,basicRef,cardId:state.value.card.cardId,onEngine,takeEngineFocus,onJudge,onCommands,headTools:h('span',{className:'ap-stage-head-tools'},saveState,wizardButton),writer,ext,prefs,active,packs,engine,ttsState,nav,openVoice,enable,setConfirm,openLayer:render=>setLayer(()=>render),
+  const ctx={binding,path,sessionId,cardName,setupComplete,cardId:state.value.card.cardId,onEngine,takeEngineFocus,onJudge,onCommands,headTools:h('span',{className:'ap-stage-head-tools'},saveState,wizardButton),writer,ext,prefs,active,packs,engine,ttsState,nav,enable,setConfirm,openLayer:render=>setLayer(()=>render),
     // tab (optional): 'gen' opens the figure on 生图, 'voice' on its 声音 page (设置向导 › 配角色).
     openPack:(packId,kind,figureId,tab)=>setPackModal({packId,kind,figureId,tab,at:Date.now()}),
     openNewFigure:stageSetupReady(binding)?()=>{newFigureReturn.current=typeof document==='undefined'?null:document.activeElement;setNewFigure(true);}:undefined,
@@ -219,7 +231,7 @@ function StagePage({binding,ready,sessionId,path,cardName,nav,prompts,onEngine,t
     // 物品 is a built-in capability now — a request for the retired items mod opens its page.
     openMod:state.value.card.cardId&&binding.engineRpc?modId=>modId==='core.items'?setItemsPage(true):setModPage(modId):undefined,
     onPerformances:()=>setPerformancePage(true),takePerformanceFocus:()=>{const value=performanceReturn.current;performanceReturn.current=false;return value;},
-    onNarrator:()=>setNarratorPage(true),takeNarratorFocus:()=>{const value=narratorReturn.current;narratorReturn.current=false;return value;},
+    onVoice:()=>setVoicePage(true),takeVoiceFocus:()=>{const value=voiceReturn.current;voiceReturn.current=false;return value;},
     onEntrances:()=>setEntrancePage(true),takeEntranceFocus:()=>{const value=entranceReturn.current;entranceReturn.current=false;return value;},
     onItems:()=>setItemsPage(true),takeItemsFocus:()=>{const value=itemsReturn.current;itemsReturn.current=false;return value;},
     takeModFocus:modId=>{if(modReturn.current!==modId)return false;modReturn.current=null;return true;}};
@@ -231,15 +243,15 @@ function StagePage({binding,ready,sessionId,path,cardName,nav,prompts,onEngine,t
     h(StageSetupWizard,{ctx,onComplete:()=>{setWizard(false);setSetupComplete(value=>value+1);},onClose:()=>{setWizard(false);setTimeout(()=>wizardReturn.current?.focus?.(),0);}})):
     performancePage?h('div',{className:'ap-card ap-stage-page'},
     h(StagePerformancePage,{ctx,onBack:()=>{performanceReturn.current=true;setPerformancePage(false);}})):
-    narratorPage?h('div',{className:'ap-card ap-stage-page'},
-    h(StageNarratorPage,{ctx,onBack:()=>{narratorReturn.current=true;setNarratorPage(false);}})):
+    voicePage?h('div',{className:'ap-card ap-stage-page'},
+    h(StageVoicePage,{ctx,onBack:()=>{voiceReturn.current=true;setVoicePage(false);}})):
     entrancePage?h('div',{className:'ap-card ap-stage-page'},
     h(StageEntrancePage,{ctx,onBack:()=>{entranceReturn.current=true;setEntrancePage(false);}})):
     itemsPage?h('div',{className:'ap-card ap-stage-page'},
     h(StageItemsPage,{ctx,onBack:()=>{itemsReturn.current=true;setItemsPage(false);}})):
     modPage?h('div',{className:'ap-card ap-stage-page'},
     h(StageModPage,{ctx,cardId:state.value.card.cardId,modId:modPage,onBack:()=>{modReturn.current=modPage;setModPage(null);}})):
-    h('div',{className:'ap-card ap-stage-page'},
+    h('div',{className:'ap-card ap-stage-page',ref:pageRef},
     typeof status==='object'&&h(ErrorBox,{error:status.error,reload:()=>writer.reload()}),
     !ready&&h('p',{className:'ap-alert',role:'status'},'素材插件不可用'),
     // 基础设置 (the card's switches) → 模组 → 素材包 (pack section merge: with 导入导出) →
@@ -266,8 +278,8 @@ function StagePage({binding,ready,sessionId,path,cardName,nav,prompts,onEngine,t
 // 默认舞台皮肤 is the CONFIG skin select in the panel's paint — the trigger shows the
 // chosen skin's mini stage and name, the menu every skin with its own mini stage and a ✓; a search box once the list is
 // long. The thumbnails are the CONFIG's (.fork-gal-config-theme-art): a built-in paints its theme scope, a pack skin the
-// palette of its own document (default level), else its initial. Saves stage.defaultSkin at once.
-const STAGE_BUILTIN_SKINS=[['classic','经典'],['gothic','哥特'],['magical','魔法少女'],['crt','显像管'],['aero','千禧晴空']];
+// palette of its own document (default level), else its initial. Saves the engine's dialogueTheme at once.
+const STAGE_BUILTIN_SKINS=[['classic','经典'],['crt','显像管'],['aero','千禧晴空']];
 const SKIN_SEARCH_MIN=8;
 // pack skin refs compare by identity; this module owns its key (the widget page's refKey is function-local).
 const stageSkinKey=value=>typeof value==='string'?value:JSON.stringify([value?.packId,value?.kind,value?.assetId]);
@@ -280,10 +292,10 @@ function stageSkinPalette(document) {
   const fg=paint.fg||paint.bg,radius=look.ui?.radius??look.textbox?.shape?.radius;
   return {bg:paint.bg,fg,accent:paint.accent||look.textStyle?.emphasis||fg,border:paint.border||paint.fgMuted||fg,radius:typeof radius==='number'?radius:10};
 }
-// packIds: the packs whose skins are offered (the global default offers the globally enabled packs').
-function stageSkinChoices(ctx,packIds=ctx.ext.assetBindings.boundPackIds) {
+// packs: the full documents of the packs whose skins are offered (the global default offers the globally enabled packs').
+function stageSkinChoices(packs) {
   const choices=STAGE_BUILTIN_SKINS.map(([value,label])=>({value,label}));
-  for(const row of ctx.packs) { const pack=packIds.includes(row.manifest.id)&&ctx.writer.pack(row.manifest.id); if(!pack)continue;
+  for(const pack of packs) {
     for(const asset of pack.manifest.assets.filter(a=>a.kind==='skins')) {
       const document=pack.skins?.[asset.id];if(!document)continue;
       choices.push({value:{packId:pack.manifest.id,kind:'skins',assetId:asset.id},label:document.label,note:document.directorNote,palette:stageSkinPalette(document)});
@@ -313,19 +325,6 @@ function StageSkinPicker({label,choices,value,onChange}) {
           onClick:()=>{close();if(!on)onChange(choice.value);back();}},h(StageSkinArt,{choice}),h('span',{className:'ap-skin-name'},choice.label),on&&h('span',{className:'ap-state-check'},h(Glyph,{name:'check'})));}),
       !shown.length&&h(EmptyState,{compact:true,noun:'皮肤',query,onClear:()=>setQuery('')}))});
 }
-// 「默认皮肤」 in 基础设置 is the global default (engine
-// dialogueTheme) - long-term, every card; a card's own skin and the player's 本卡皮肤 (stage CONFIG › 画面) come first. It works
-// without 舞台模式 (the text box shows whenever bubbles are on).
-const STAGE_SKIN_HELP='所有卡默认用这套皮肤；卡自带皮肤或在舞台 CONFIG › 画面 选了「本卡皮肤」的卡除外。';
-function StageGlobalSkin({ctx}) {
-  // The engine's custom dialogue themes (dsh-dialogue-theme presets) are global choices too.
-  const engine=ctx.writer.engine,selected=engine?.values?.dialogueTheme;
-  const choices=[...stageSkinChoices(ctx,ctx.binding?.globalEnabledPackIds||[]),...(engine?.values?.dialogueThemes||[]).map(theme=>({value:theme.id,label:theme.name}))];
-  if(!engine?.values||engine.writable===false)return null;
-  return h(InlineRow,{label:'默认皮肤',className:'ap-stage-skin-row',help:h(Help,{text:STAGE_SKIN_HELP,label:'默认皮肤 说明'})},
-    h(StageSkinPicker,{label:'默认皮肤',choices,value:selected,onChange:value=>ctx.writer.global(value,'dialogueTheme')}),
-    !choices.some(choice=>stageSkinKey(choice.value)===stageSkinKey(selected))&&h(HintLine,{compact:true,text:'所选皮肤不可用，请重新选择'}));
-}
 
 // 5.2: the only solid button on the page.
 function StageFirstRun({writer,cardName}) {
@@ -339,61 +338,8 @@ function StageFirstRun({writer,cardName}) {
     error&&h('p',{className:'ap-alert',role:'alert'},error));
 }
 
-// Section with the 「需要… · 去开启」 shortcut; a blocked body stays visible but inert. `help` is a 「?」 beside the title.
-// `aside` (optional) is a node between the title and the action, for a section that lays its head out as a table (提示词).
-// the title (with its count and a quiet chevron) is a button that folds the
-// section; the 「?」 and the head's actions stay outside it and never fold. Expanded by default; `reveal` (e.g. 素材包 while
-// managing or exporting) unfolds it. The folded state is remembered per section (useStageFold).
-// `onFold(folded)` (optional) hears the heading's toggle; `focusToggle` focuses it on mount (a section that swaps its body
-// in when opened, 提示词, keeps the focus on its heading).
-function StageSection({title,meta,help,need,active,onEnable,children,className,action,aside,foldKey,reveal,level=1,defaultFolded=false,lead,onFold,focusToggle=false}) {
-  const missing=need?stageMissing(need,active):[],blocked=missing.length>0;
-  const [folded,setFolded]=useStageFold(foldKey||title,defaultFolded),bodyId=React.useId(),toggleRef=React.useRef(null);
-  React.useEffect(()=>{if(reveal&&folded)setFolded(false);},[reveal]);
-  React.useEffect(()=>{if(focusToggle)toggleRef.current?.focus?.({preventScroll:true});},[]);
-  return h('section',{className:'ap-section'+(className?' '+className:''),'data-blocked':blocked||undefined,'data-folded':folded||undefined,'data-level':level},
-    // title → count → 「?」, the 「?」 always last.
-    h('header',{className:'ap-section-head'},lead,h(level===2?'h4':'h3',null,
-        h('button',{type:'button',className:'ap-section-toggle','aria-expanded':!folded,'aria-controls':bodyId,ref:toggleRef,onClick:()=>{setFolded(!folded);onFold?.(!folded);}},
-          h('span',{className:'ap-section-title'},title),meta!==undefined&&!blocked&&h('span',{className:'ap-section-meta'},meta),
-          h('span',{className:'ap-section-chevron','aria-hidden':true},h(Glyph,{name:'chevDown'}))),
-        help&&h(Help,{text:help,label:title+' 说明'})),
-      !blocked&&aside||null,
-      blocked?h('span',{className:'ap-need'},'需要'+STAGE_NAMES[need],' · ',h(Button,{className:'ap-inline-link',onClick:()=>onEnable(need)},'去开启')):action||null),
-    // one section that fails to render shows its own ⚠ + 重试; the rest of the page keeps working.
-    h('div',{className:'ap-section-body',id:bodyId,hidden:folded||undefined,inert:blocked||undefined},h(PanelBoundary,{name:foldKey||(typeof title==='string'?title:'section')},children)));
-}
-// Icon + short name + switch. No subtitle: a dependent switch is disabled and greyed while its upstream switch is
-// off, and only then carries a 「?」 naming what it needs. `help` is an optional 「?」 for a truly unclear name.
-// `ariaLabel` (optional) is a longer accessible name that still contains the visible label (「配音」 → 「为这个角色配音」).
-// `status` is a compact HintLine shown on the row, between the name and the switch (no line under the row).
-// a row with a detail page (`onOpen(rowElement)`, its 「›」 in `status`) opens
-// it from anywhere but the switch — icon, name, empty space, ⚠; only the switch toggles (Space). The 「›」 is the keyboard
-// route (Enter) and its focus ring is drawn around the row. A row without a page keeps the whole-row <label> toggle.
-function SwitchRow({label,ariaLabel,icon,help,checked,disabled,onChange,status,onOpen}) {
-  // The switch comes first in the DOM (CSS order puts it on the right) so the label's control is the switch, not the 「?」.
-  const toggle=h(Switch,{bare:true,label:ariaLabel||label,checked,disabled,onChange}); // the one switch (inline-field.js)
-  const name=h('span',{className:'ap-switch-name'},icon&&h(Glyph,{name:icon}),h('span',null,label),help&&h(Help,{text:help,label:label+' 说明'}));
-  // no state tag beside the switch — the switch is the state; a row that needs an
-  // action adds the ⚠ chip only.
-  if(!onOpen)return h('div',{className:'ap-switch-row','data-disabled':disabled||undefined},h('label',{className:'ap-switch-main'},toggle,name,status||null));
-  return h('div',{className:'ap-switch-row is-openable','data-disabled':disabled||undefined,onClick:switchRowClick(onOpen)},
-    h('div',{className:'ap-switch-main'},h('label',{className:'ap-switch-hit'},toggle),name,status||null));
-}
-// A click on an openable row that is not on one of its own controls (switch, 「›」, 「?」, chips, menus — portalled ones
-// bubble through React, hence the contains check) opens the row's page.
-const switchRowClick=open=>e=>{const target=e.target;
-  if(!e.currentTarget.contains(target)||target.closest?.('button,a,input,label,[role=menu],[role=menuitem],[role=dialog]'))return;open(e.currentTarget);};
 // The row's 「›」 does the opening (one library pack opens it, several list them).
 const pressRowJump=row=>row.querySelector('.ap-kind-jump')?.click();
-// A state that needs an action (not an explanation, panel-ui-design.md §一.5): a warning mark + one link chip, never a
-// grey note. Compact (on a switch row): the state is only the mark's tooltip / accessible name and the chip's
-// accessible name; standalone: the short state stays beside the mark in normal ink.
-function HintLine({text,action,onAction,compact}) {
-  const chip=action&&h(Button,{className:'ap-hint-chip',...(compact?{'aria-label':action+'（'+text+'）',title:text}:{}),onClick:onAction},action);
-  if(compact)return h('span',{className:'ap-hint-line is-compact'},h('span',{className:'ap-hint-mark',role:'img','aria-label':text,title:text},h(Glyph,{name:'warning'})),chip);
-  return h('p',{className:'ap-hint-line'},h('span',{className:'ap-hint-mark','aria-hidden':true},h(Glyph,{name:'warning'})),h('span',null,text),chip);
-}
 // The bound figures' confirmed synthesis rejections (getFigureVoiceEditor: exact service/model/voice the figure uses now,
 // never a provider list). a synthesis result or a pack/engine change re-reads it
 // in place — the previous answer stays until the new one arrives, so the ⚠ never blinks between reads.
@@ -403,7 +349,9 @@ function useStageConfirmedVoiceWarnings(ctx) {
   const state=useVoiceLoad(async()=>Promise.all(rows.map(async row=>{
     try {
       const result=await ctx.binding.rpc('getFigureVoiceEditor',row.ref);
-      return (result.issues||[]).filter(issue=>['QWEN_MODEL_NOT_FOUND','QWEN_VOICE_UNSUPPORTED'].includes(issue.code)).map(issue=>row.figure.name+'：'+voiceIssueText(issue.code));
+      // SERVICE_REQUIRED: the source names a service not set up in 配音后端 — the figure stays silent and says so.
+      const spec=row.pack.manifest.voiceLibrary?.voices?.[row.figure.voice.voice],source=spec?.sources?.[row.figure.voice.source??spec.defaultSource];
+      return (result.issues||[]).filter(issue=>['SERVICE_REQUIRED','QWEN_MODEL_NOT_FOUND','QWEN_VOICE_UNSUPPORTED'].includes(issue.code)).map(issue=>row.figure.name+'：'+voiceIssueText(issue.code,source));
     } catch { return []; }
   })),[ctx.binding]);
   useVoiceRefresh(ctx.binding,state.reload,[key,ctx.engine?.revision]);
@@ -414,16 +362,15 @@ function stageVoiceWarning(ctx,confirmed) {
   if(ctx.ttsState==='empty')return '没有可用的语音服务';
   return confirmed.join('；');
 }
-// 「配音」 opens 声音设置 like BGM › — a quiet 「›」 right after the name (the
-// whole row opens it too, see SwitchRow onOpen); a current problem is a ⚠ beside them (text in its tooltip), no pill.
-function StageVoiceJump({ctx,warning}) {
-  const jump=ctx.nav?.openTab&&h('button',{type:'button',className:'ap-kind-jump','aria-label':'声音设置'+(warning?'（'+warning+'）':''),title:'声音设置',onClick:()=>ctx.openVoice()},h(Glyph,{name:'chevRight'}));
-  const mark=warning&&h('span',{className:'ap-hint-mark ap-switch-warn',role:'img','aria-label':warning,title:warning,onClick:e=>e.preventDefault()},h(Glyph,{name:'warning'}));
-  return mark||jump?h(React.Fragment,null,jump,mark):null;
-}
-function StageVoiceRow({ctx,row}) {
-  const warning=stageVoiceWarning(ctx,useStageConfirmedVoiceWarnings(ctx));
-  return row('voice',h(StageVoiceJump,{ctx,warning}),ctx.nav?.openTab?()=>ctx.openVoice():undefined);
+// The voice switch and its details use the same row contract as the stage's sound settings.
+function StageVoiceRow({ctx}) {
+  const jump=React.useRef(null),warning=stageVoiceWarning(ctx,useStageConfirmedVoiceWarnings(ctx));
+  React.useEffect(()=>{if(ctx.takeVoiceFocus?.())jump.current?.focus?.();},[]);
+  const blocked=!ctx.active.dialogue;
+  const mark=warning&&h('span',{className:'ap-hint-mark ap-switch-warn',role:'img','aria-label':warning,title:warning},h(Glyph,{name:'warning'}));
+  return h(SwitchRow,{label:'配音',icon:'voice',disabled:blocked,help:blocked?VOICE_HELP.needBubble:undefined,onOpen:pressRowJump,
+    tag:stageSwitchTag(ctx,'voice','配音',blocked),status:h(React.Fragment,null,mark||null,
+      h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'配音设置',title:'配音设置',disabled:blocked,onClick:()=>ctx.onVoice()},h(Glyph,{name:'chevRight'})))});
 }
 const stageNeedText=(key,active)=>'需要'+stageMissing(key,active).filter(k=>k!==key).map(k=>STAGE_NAMES[k]).join('和');
 
@@ -431,101 +378,121 @@ const stageNeedText=(key,active)=>'需要'+stageMissing(key,active).filter(k=>k!
 // 导演指令) right under 舞台模式. A sound on: this card plays that kind and the director may use it (stage.<key>
 // follows the default); off: neither (stage.<key> = false; cardEngineSettings / the audio projection). The engine
 // dimension of 环境音 is `soundscape`; a kind switched off for every card is the only warning.
-const STAGE_BASIC_HELP='“使用舞台”只对这张卡生效，开启时自动提供对话气泡和完整舞台；其余开关对所有卡生效。某张卡没有对应素材时，导演不会收到相关说明。';
+const STAGE_BASIC_HELP='每个开关和模组一样有四种状态：全局开启 / 关闭对没有单独设置的卡生效，并清除这张卡的设置；本卡开启 / 关闭只在这张卡生效，本卡关闭优先。“对话气泡”和“舞台模式”共用这张卡的一项设置，舞台模式需要对话气泡；带舞台的人物卡导入时已是本卡开启。某张卡没有对应素材时，导演不会收到相关说明。';
 const AUDIO_ROWS=[['music','BGM','music','music'],['sfx','音效','sfx','sfx'],['ambience','环境音','ambience','soundscape']];
-function StageSwitches({ctx}) {
-  const {prefs,active,writer}=ctx,set=(key,value)=>stageWrite(writer,{[key]:value});
-  const row=(key,status,onOpen)=>{const blocked=stageMissing(key,active).some(k=>k!==key);
-    return h(SwitchRow,{key,label:STAGE_NAMES[key],icon:STAGE_ICONS[key],checked:prefs[key],disabled:blocked,help:blocked?(key==='stage'?'先打开对话气泡':stageNeedText(key,active)):undefined,onChange:v=>set(key,v),status,onOpen});};
-  // Sounds play on the stage: greyed (stored value kept) while 舞台模式 is off, like a dependent switch.
-  const sound=([key,label,icon])=>{const missing=stageMissing('stage',active);
-    return h(SwitchRow,{key,label,icon,checked:prefs[key]!==false,disabled:missing.length>0,help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
-      onChange:v=>set(key,v),status:h(StageKindJump,{ctx,kind:key,label}),onOpen:ctx.nav?.openLibrary&&stageKindPacks(ctx,key).length?pressRowJump:undefined});};
-  return h('div',{ref:ctx.basicRef},h(StageSection,{title:'基础设置',help:STAGE_BASIC_HELP,action:ctx.headTools,reveal:ctx.setupComplete},
-    active.voice?h(StageVoiceRow,{key:'voice',ctx,row}):row('voice'),
-    h(StageNarratorRow,{key:'narrator',ctx}),
-    h(SwitchRow,{key:'stage',label:'使用舞台',icon:STAGE_ICONS.stage,checked:active.stage,onChange:value=>stageWrite(writer,{enabled:value}),status:h(StageModeJump,{ctx}),onOpen:ctx.onEngine?()=>ctx.onEngine():undefined}),
-    h(StageAutoChoicesRow,{key:'auto-choices'}),
-    h(StageGlobalSkin,{key:'skin',ctx}),
-    AUDIO_ROWS.map(sound),
-    h(StageItemsRow,{key:'items',ctx,set}),
-    h(StagePerformanceRow,{key:'performance',ctx,set}),
-    h(StageEntranceRow,{key:'entrance',ctx,set})));
+// One 基础设置 switch as the mods' text switch (ModSwitchTag, the one implementation). 本卡 writes this card's layer; a 全局
+// choice clears it (when set), then writes the global layer (when it differs), like a mod's two plans. `global` is the
+// global layer's boolean, `card` the card's 'on' / 'off' (undefined: not set).
+function StageSwitchTag({name,global,card,disabled,busy,writeCard,writeGlobal}) {
+  const change=(scope,value)=>{
+    if(scope==='card')return writeCard(value);
+    if(card!==undefined)writeCard(undefined);
+    if(global!==value)writeGlobal(value);
+  };
+  return h(ModSwitchTag,{name,switches:{global,card:card??null,effective:modSwitchOn(global,card)},cardScoped:true,busy,disabled,onChange:change});
 }
-// 旁白配音 — 舞台设置 › 基础设置 「旁白配音 ›」 and its page. Two layers like a mod's settings
-// (ui-design.md R8 / §三.25): the global layer (engine `narrator`, complete) and this card's (stage.narrator, only the keys it
-// overrides). The host reads the same layers (card-stage-settings.js effectiveNarrator); the stage speaks with config.narrator.
+// A stageToggles switch (对话气泡 … 入场演出): global = engine stageToggles.<key>, card = the declaration (对话气泡 / 舞台模式)
+// or stage.switches.<key>.
+function stageSwitchTag(ctx,key,name,disabled) {
+  const {global,card}=stageSwitchLayers(ctx.ext,ctx.engine);
+  return h(StageSwitchTag,{name,global:global[key]===true,card:card[key],disabled,
+    writeCard:value=>ctx.writer.write(ext=>stageSwitchPatch(ext,{[key]:value})),writeGlobal:value=>ctx.writer.global({[key]:value})});
+}
+function StageSwitches({ctx}) {
+  const {active}=ctx;
+  const row=(key,status,onOpen)=>{const blocked=stageMissing(key,active).some(k=>k!==key);
+    return h(SwitchRow,{key,label:STAGE_NAMES[key],icon:STAGE_ICONS[key],disabled:blocked,help:blocked?(key==='stage'?'先打开对话气泡':stageNeedText(key,active)):undefined,
+      tag:stageSwitchTag(ctx,key,STAGE_NAMES[key],blocked),status,onOpen});};
+  // Sounds play on the stage: greyed (stored choice kept) while 舞台模式 is not in effect, like a dependent switch.
+  const sound=([key,label,icon])=>{const missing=stageMissing('stage',active);
+    return h(SwitchRow,{key,label,icon,disabled:missing.length>0,help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
+      tag:stageSwitchTag(ctx,key,label,missing.length>0),status:h(StageKindJump,{ctx,kind:key,label}),onOpen:ctx.nav?.openLibrary&&stageKindPacks(ctx,key).length?pressRowJump:undefined});};
+  // a direct child of the page like every other section (no wrapper), so the page's first-section rule picks it, not 模组.
+  return h(StageSection,{title:'基础设置',help:STAGE_BASIC_HELP,className:'ap-stage-basic',action:ctx.headTools,reveal:ctx.setupComplete},
+    row('dialogue'),
+    h(StageVoiceRow,{key:'voice',ctx}),
+    row('stage',h(StageModeJump,{ctx}),ctx.onEngine?()=>ctx.onEngine():undefined),
+    h(StageAutoChoicesRow,{key:'auto-choices',ctx}),
+    AUDIO_ROWS.map(sound),
+    h(StageItemsRow,{key:'items',ctx}),
+    h(StagePerformanceRow,{key:'performance',ctx}),
+    h(StageEntranceRow,{key:'entrance',ctx}));
+}
+// 旁白配音 — a row of 舞台设置 › 配音 (StageVoicePage). Two layers like a mod's settings
+// (ui-design.md R8 / §三.25): the global layer (the tts plugin's tts.reading.narrator, complete) and this card's (stage.narrator,
+// only the keys it overrides). The host reads the same layers (card-stage-settings.js effectiveNarrator); the stage speaks with
+// config.narrator. A global voice is a browser voice or a service voice ({serviceId, voice}); a card's a browser voice or a figure.
 
 const NARRATOR_DEFAULT=Object.freeze({enabled:false,voice:null});
-function narratorLayers(ext,engine) {
-  const global={...NARRATOR_DEFAULT,...engine?.values?.narrator},card=ext?.stage?.narrator||{};
-  return {global,card,effective:{enabled:(card.enabled??global.enabled)===true,voice:card.voice!==undefined?card.voice:global.voice}};
+// its switch is four-state too: the card layer's enabled (true 本卡开启, false 本卡关闭) with the global one.
+const narratorCardSwitch=card=>card.enabled===undefined?undefined:card.enabled?'on':'off';
+function narratorLayers(ext,reading) {
+  const global={...NARRATOR_DEFAULT,...reading?.narrator},card=ext?.stage?.narrator||{};
+  return {global,card,effective:{enabled:modSwitchOn(global.enabled===true,narratorCardSwitch(card)),voice:card.voice!==undefined?card.voice:global.voice}};
 }
-const narratorVoiceKey=voice=>!voice?'':voice.browser?'browser:'+voice.browser:'figure:'+JSON.stringify([voice.packId,voice.figureId]);
-function narratorVoiceFromKey(key) {
-  if(!key)return null;
-  if(key.startsWith('browser:'))return {browser:key.slice(8)};
-  const [packId,figureId]=JSON.parse(key.slice(7));
-  return {packId,figureId};
-}
-// The basic row's switch writes the layer that decides it now: this card's when it overrides the switch, else the global one.
-const narratorSwitchScope=ext=>ext?.stage?.narrator?.enabled!==undefined?'card':'global';
 // A card layer patch: `undefined` removes a key; an empty layer removes stage.narrator.
 function narratorCardPatch(ext,changes) {
   const next={...(ext?.stage?.narrator||{}),...changes};
   for(const key of Object.keys(next))if(next[key]===undefined)delete next[key];
   return stagePatch(ext,{narrator:Object.keys(next).length?next:undefined});
 }
-// The voices a narrator can speak with: every figure voice of the packs this card uses, then the browser's system voices.
-function narratorVoiceOptions(rows,browserVoices) {
-  const figures=rows.filter(row=>row.figure&&row.figure.voice&&row.figure.voice.source!==null&&row.pack?.manifest.voiceLibrary?.voices[row.figure.voice.voice])
-    .map(row=>({value:narratorVoiceKey(row.ref),label:row.figure.name,group:'人物'}));
-  return [{value:'',label:'未选择'},...figures,...(browserVoices||[]).map(voice=>({value:narratorVoiceKey({browser:voice.id}),label:voice.label,group:'浏览器朗读'}))];
+// The voices a narrator can speak with: on the card layer every figure voice of the packs this card uses, then the browser's
+// system voices. The shown service voice (set on the 配音 page) is listed as it is.
+function narratorVoiceOptions(rows,browserVoices,{figures,shown}) {
+  const people=figures?rows.filter(row=>row.figure&&row.figure.voice&&row.figure.voice.source!==null&&row.pack?.manifest.voiceLibrary?.voices[row.figure.voice.voice])
+    .map(row=>({value:core.voiceKey(row.ref),label:row.figure.name,group:'人物'})):[];
+  const service=shown?.serviceId?[{value:core.voiceKey(shown),label:shown.voice,group:'语音服务'}]:[];
+  return [{value:'',label:'未选择'},...people,...service,...(browserVoices||[]).map(voice=>({value:core.voiceKey({browser:voice.id}),label:voice.label,group:'浏览器朗读'}))];
 }
 
 function narratorWrite(ctx,scope,changes) {
   if(scope==='card')return ctx.writer.write(ext=>narratorCardPatch(ext,changes));
   const reset=Object.fromEntries(Object.entries(changes).map(([key,value])=>[key,value===undefined?NARRATOR_DEFAULT[key]:value]));
-  return ctx.writer.global(reset,'narrator');
+  return ctx.writer.setReading({narrator:reset});
 }
-function StageNarratorRow({ctx}) {
-  const jump=React.useRef(null),{effective}=narratorLayers(ctx.ext,ctx.engine),blocked=!ctx.active.voice;
-  React.useEffect(()=>{if(ctx.takeNarratorFocus?.())jump.current?.focus?.();},[]);
-  return h(SwitchRow,{label:'旁白配音',icon:'voice',checked:effective.enabled,disabled:blocked,help:blocked?stageNeedText('voice',ctx.active):undefined,
-    onChange:v=>narratorWrite(ctx,narratorSwitchScope(ctx.ext),{enabled:v}),onOpen:ctx.onNarrator?pressRowJump:undefined,
-    status:ctx.onNarrator?h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'旁白配音设置',title:'旁白配音设置',onClick:()=>ctx.onNarrator()},h(Glyph,{name:'chevRight'})):null});
+const VOICE_HELP={
+  page:'配音开关分全局与本卡；通用声音所有卡通用。',
+  general:'没有单独指定声音的角色统一用这个声音',
+  narr:'读出气泡外的叙述；没有单独指定声音时用通用声音。',
+  needBubble:'角色配音和旁白配音在对话气泡里播放，要先打开对话气泡。'};
+// 通用声音 (tts.reading.dialogueVoice, global).
+function GeneralVoiceField({ctx}) {
+  const voice=ctx.writer.reading?.dialogueVoice;
+  return h(InlineRow,{label:'声音'},h(core.VoiceCataloguePicker,{binding:ctx.binding,value:voice?.silent?'silent':core.voiceKey(voice),
+    label:'通用声音',leading:[{value:'',label:'浏览器 · 系统默认'},{value:'silent',label:'不配音'}],
+    onPick:key=>ctx.writer.setReading({dialogueVoice:key==='silent'?{silent:true}:core.voiceFromKey(key)})}));
 }
-function StageNarratorPage({ctx,onBack}) {
-  const root=React.useRef(null),[scope,setScope]=React.useState(()=>ctx.ext?.stage?.narrator?'card':'global');
-  const browser=useVoiceLoad(()=>typeof window!=='undefined'&&window.speechSynthesis?browserSpeechVoiceList(window.speechSynthesis):[],[]);
+function NarratorVoiceField({ctx,disabled}) {
+  const {global,card,effective}=narratorLayers(ctx.ext,ctx.writer.reading),own=card.voice!==undefined;
+  const scope=own?'card':'global',shown=own?card.voice:global.voice;
+  return h(InlineGrid,{columns:1,label:'旁白声音'},
+    h(InlineRow,{label:'本卡单独指定'},h(Switch,{label:'本卡单独指定',checked:own,disabled,
+      onChange:checked=>narratorWrite(ctx,'card',{voice:checked?(effective.voice??null):undefined})})),
+    h(InlineRow,{label:'旁白声音'},h(core.VoiceCataloguePicker,{binding:ctx.binding,value:core.voiceKey(shown),label:'旁白声音',
+      leading:[{value:'',label:'同通用声音'}],onPick:key=>narratorWrite(ctx,scope,{voice:core.voiceFromKey(key)})})));
+}
+function StageVoicePage({ctx,onBack}) {
+  const root=React.useRef(null);
   React.useEffect(()=>{root.current?.querySelector('button')?.focus();},[]);
-  const {global,card,effective}=narratorLayers(ctx.ext,ctx.engine);
-  const shown=scope==='card'?effective:global,blocked=!ctx.active.voice;
-  const own=key=>scope==='card'?card[key]!==undefined:JSON.stringify(global[key])!==JSON.stringify(NARRATOR_DEFAULT[key]);
-  const dot=key=>own(key)?h(OverrideDot,{layer:scope}):null;
-  const reset=key=>own(key)?h(ResetButton,{key:'reset',label:scope==='card'?'恢复为全局':'恢复默认',onClick:()=>narratorWrite(ctx,scope,{[key]:undefined})}):null;
-  const options=narratorVoiceOptions(stageFigureRows(ctx),browser.value);
-  const value=narratorVoiceKey(shown.voice),missing=value&&!options.some(option=>option.value===value);
-  return h('article',{ref:root,className:'ap-mod-detail',onKeyDown:subpageKeys(onBack)},
-    h(SubpageHead,{parent:'舞台设置',title:'旁白配音',onBack}),
-    h(StageSection,{title:'设置',foldKey:'narrator/settings',need:'voice',active:ctx.active,onEnable:ctx.enable,
-      action:h(ScopeSwitch,{value:scope,onChange:setScope,cardName:ctx.cardName||'本卡',disabled:blocked})},
-      h(InlineGrid,{columns:1,label:'旁白配音设置'},
-        h(InlineRow,{label:'旁白配音',help:dot('enabled')},
-          h(Switch,{bare:true,label:'旁白配音',checked:shown.enabled===true,onChange:v=>narratorWrite(ctx,scope,{enabled:v})}),reset('enabled')),
-        h(InlineField,{kind:'menu',label:'声音',help:dot('voice'),value:missing?'':value,options,placeholder:'未选择',
-          onCommit:key=>narratorWrite(ctx,scope,{voice:narratorVoiceFromKey(key)}),
-          trail:[missing?h(HintLine,{key:'missing',compact:true,text:'所选声音不可用，请重新选择'}):null,reset('voice')]}))));
+  const narrator=narratorLayers(ctx.ext,ctx.writer.reading),bubble=ctx.active.dialogue;
+  const narratorTag=h(StageSwitchTag,{name:'旁白配音',global:narrator.global.enabled===true,card:narratorCardSwitch(narrator.card),disabled:!bubble,
+    writeCard:value=>narratorWrite(ctx,'card',{enabled:value===undefined?undefined:value==='on'}),writeGlobal:value=>narratorWrite(ctx,'global',{enabled:value})});
+  return h('article',{ref:root,className:'ap-mod-detail ap-voice-page',onKeyDown:subpageKeys(onBack)},
+    h(SubpageHead,{parent:'舞台设置',title:'配音',help:h(Help,{text:VOICE_HELP.page,label:'配音 说明'}),onBack}),
+    h(StageSection,{title:'通用声音',foldKey:'voice/general',help:VOICE_HELP.general},
+      h(InlineGrid,{columns:1,label:'通用声音'},h(GeneralVoiceField,{ctx}))),
+    h(SwitchRow,{label:'旁白配音',icon:'note',disabled:!bubble,help:bubble?VOICE_HELP.narr:VOICE_HELP.needBubble,tag:narratorTag}),
+    narrator.effective.enabled&&h(NarratorVoiceField,{ctx,disabled:!bubble}));
 }
-// 「入场演出 ›」 - the one global switch of the stage's opening
-// performance (engine stageToggles.entrance, default on), placed like 演出组合; a card differs only by its packs' 入场演出
+// 「入场演出 ›」 - the four-state switch of the stage's opening
+// performance (engine stageToggles.entrance, default on, with this card's stage.switches.entrance), placed like 演出组合; a card differs only by its packs' 入场演出
 // entries (蓝灯 / 关闭). Its page lists this card's entries.
-function StageEntranceRow({ctx,set}) {
+function StageEntranceRow({ctx}) {
   const jump=React.useRef(null),missing=stageMissing('stage',ctx.active);
   React.useEffect(()=>{if(ctx.takeEntranceFocus?.())jump.current?.focus?.();},[]);
-  return h(SwitchRow,{label:'入场演出',icon:'entrances',checked:ctx.prefs.entrance!==false,disabled:missing.length>0,
+  return h(SwitchRow,{label:'入场演出',icon:'entrances',disabled:missing.length>0,
     help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
-    onChange:v=>set('entrance',v),onOpen:ctx.onEntrances?pressRowJump:undefined,
+    tag:stageSwitchTag(ctx,'entrance','入场演出',missing.length>0),onOpen:ctx.onEntrances?pressRowJump:undefined,
     status:ctx.onEntrances?h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'入场演出素材',title:'入场演出素材',onClick:()=>ctx.onEntrances()},h(Glyph,{name:'chevRight'})):null});
 }
 function StageEntrancePage({ctx,onBack}) {
@@ -535,12 +502,12 @@ function StageEntrancePage({ctx,onBack}) {
     h(SubpageHead,{parent:'舞台设置',title:'入场演出',help:'进入舞台时代替「载入中」播放的开场演出；载入完成后单击可跳过。',onBack}),
     h(ModEntries,{ctx,modId:'core.entrance',kind:'entrances'}));
 }
-function StagePerformanceRow({ctx,set}) {
+function StagePerformanceRow({ctx}) {
   const jump=React.useRef(null),missing=stageMissing('stage',ctx.active);
   React.useEffect(()=>{if(ctx.takePerformanceFocus?.())jump.current?.focus?.();},[]);
-  return h(SwitchRow,{label:'演出组合',icon:'performances',checked:ctx.prefs.performance!==false,disabled:missing.length>0,
+  return h(SwitchRow,{label:'演出组合',icon:'performances',disabled:missing.length>0,
     help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
-    onChange:v=>set('performance',v),onOpen:ctx.onPerformances?pressRowJump:undefined,
+    tag:stageSwitchTag(ctx,'performance','演出组合',missing.length>0),onOpen:ctx.onPerformances?pressRowJump:undefined,
     status:ctx.onPerformances?h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'演出组合素材',title:'演出组合素材',onClick:()=>ctx.onPerformances()},h(Glyph,{name:'chevRight'})):null});
 }
 function StagePerformancePage({ctx,onBack}) {
@@ -550,13 +517,13 @@ function StagePerformancePage({ctx,onBack}) {
     h(SubpageHead,{parent:'舞台设置',title:'演出组合',onBack}),
     h(ModEntries,{ctx,modId:'core.performance',kind:'performances'}));
 }
-// 「物品 ›」 — the built-in item capability's one global switch, placed like the sounds
+// 「物品 ›」 — the built-in item capability's four-state switch, placed like the sounds
 // (it plays on the stage: greyed while 舞台模式 is off); the name and the quiet 「›」 open its page (StageItemsPage).
-function StageItemsRow({ctx,set}) {
+function StageItemsRow({ctx}) {
   const jump=React.useRef(null),missing=stageMissing('stage',ctx.active);
   React.useEffect(()=>{if(ctx.takeItemsFocus?.())jump.current?.focus?.();},[]);
-  return h(SwitchRow,{label:'物品',icon:'item',checked:ctx.prefs.items!==false,disabled:missing.length>0,help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
-    onChange:v=>set('items',v),onOpen:ctx.onItems?pressRowJump:undefined,
+  return h(SwitchRow,{label:'物品',icon:'item',disabled:missing.length>0,help:missing.length?'需要'+missing.map(k=>STAGE_NAMES[k]).join('和'):undefined,
+    tag:stageSwitchTag(ctx,'items','物品',missing.length>0),onOpen:ctx.onItems?pressRowJump:undefined,
     status:ctx.onItems?h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'物品设置',title:'物品设置',onClick:()=>ctx.onItems()},h(Glyph,{name:'chevRight'})):null});
 }
 // 「舞台模式 ›」 like 「配音 ›」 — the switch on the right, the name and the quiet
@@ -571,13 +538,17 @@ function StageModeJump({ctx}) {
 // 候选项 and the stage CONFIG): the global candidateAutoGenerate through the one hook (auto-choices-preference.js). Needs no stage
 // switch: it also serves the chat view. A save failure is the row's ⚠.
 const STAGE_AUTO_CHOICES_HELP='每轮正文完成后自动生成选项；不补生成旧回复，失败可手动重试。';
-function StageAutoChoicesRow() {
+// Four-state like the rest: the global layer is candidateAutoGenerate, the card layer stage.switches.autoChoices (the host
+// decides per chat with effectiveAutoChoices).
+function StageAutoChoicesRow({ctx}) {
   if(typeof autoChoices!=='function')return null;
-  return h(StageAutoChoicesSwitch);
+  return h(StageAutoChoicesSwitch,{ctx});
 }
-function StageAutoChoicesSwitch() {
+function StageAutoChoicesSwitch({ctx}) {
   const {enabled,loading,busy,error,save}=autoChoices('getTavernSettings');
-  return h(SwitchRow,{label:'自动生成选项',icon:'select',help:STAGE_AUTO_CHOICES_HELP,checked:enabled,disabled:loading||busy,onChange:v=>save(v),
+  const tag=h(StageSwitchTag,{name:'自动生成选项',global:enabled===true,card:ctx.ext?.stage?.switches?.autoChoices,busy,disabled:loading,
+    writeCard:value=>ctx.writer.write(ext=>stageSwitchPatch(ext,{autoChoices:value})),writeGlobal:value=>save(value)});
+  return h(SwitchRow,{label:'自动生成选项',icon:'select',help:STAGE_AUTO_CHOICES_HELP,tag,
     status:error?h(HintLine,{compact:true,text:error}):null});
 }
 // the quiet 「›」 on a 基础设置 row — the 素材库 at that kind's tab (nav.openLibrary, the same
@@ -604,91 +575,21 @@ function StageKindJump({ctx,kind,label,packIds}) {
     content:close=>packs.map(pack=>h(MenuItem,{key:pack.manifest.id,onClick:()=>{close();go(pack);}},pack.manifest.name))});
 }
 
-// Small anchored menu / popover; closes on outside pointer or Escape.
-// packs-v3: inside a dialog the menu stays anchored in place (the dialog already sits in the top layer). Elsewhere (a
-// panel row's state tag) it floats in the top layer, placed against the window: under the trigger, or above it when
-// the window has more room there, kept inside the window edges. A short or clipped panel (the bottom dock) never cuts it.
-// `fit` (a select-like trigger): the menu starts at the trigger's left edge and is at least as wide as the trigger;
-// `limit` is the tallest the menu grows before it scrolls.
-function popoverPlace(anchor,size,view,fit=false) {
-  const gap=4,edge=8,below=view.height-anchor.bottom-gap-edge,above=anchor.top-gap-edge,up=size.height>below&&above>below;
-  const maxHeight=Math.max(0,Math.floor(up?above:below)),height=Math.min(size.height,maxHeight),width=fit?Math.max(size.width,anchor.width):size.width;
-  const top=up?Math.max(edge,anchor.top-gap-height):Math.max(edge,Math.min(anchor.bottom+gap,view.height-edge-height));
-  const left=Math.max(edge,Math.min(fit?anchor.left:anchor.right-width,view.width-edge-width));
-  return {top:Math.round(top),left:Math.round(left),maxHeight,up,...(fit?{minWidth:Math.round(Math.min(anchor.width,view.width-2*edge))}:{})};
-}
-// `stopClicks`: clicks on the trigger or in the menu (portalled menus bubble through React) stay inside the anchor, so a
-// clickable row around it (PackRow) never also acts.
-// `float` lets a menu inside a dialog float too — a 差分 tile's menu is wider than its tile and
-// would be clipped by the scrolling figure column.
-function Popover({label,trigger,className,content,fit=false,limit=320,stopClicks=false,float=false}) {
-  const [open,setOpen]=React.useState(false),[floating,setFloating]=React.useState(false),[place,setPlace]=React.useState(null),root=React.useRef(null),menu=React.useRef(null);
-  const close=()=>{setOpen(false);setPlace(null);};
-  const toggle=()=>{if(open){close();return;}setFloating(canPortal()&&(float||!root.current?.closest?.('.ap-modal')));setOpen(true);};
-  // outside press / Esc through the shared popup stack — only the topmost popup closes.
-  useOverlay(open,()=>[root.current,menu.current],reason=>{close();if(reason==='escape')root.current?.querySelector?.('button')?.focus?.();});
-  // packs-v3: a menu opened near the bottom of a scrolling modal scrolls itself into view instead of being clipped.
-  React.useEffect(()=>{if(open&&!floating)root.current?.querySelector?.('.ap-popover')?.scrollIntoView?.({block:'nearest'});},[open,floating]);
-  React.useLayoutEffect(()=>{
-    if(!open||!floating||typeof window==='undefined')return;
-    const update=()=>{const anchor=root.current?.getBoundingClientRect?.(),node=menu.current;if(!anchor||!node)return;
-      const next=popoverPlace(anchor,{width:node.offsetWidth,height:Math.min(limit,Math.max(node.offsetHeight,node.scrollHeight))},{width:window.innerWidth,height:window.innerHeight},fit);
-      setPlace(p=>p&&p.top===next.top&&p.left===next.left&&p.maxHeight===next.maxHeight&&p.minWidth===next.minWidth?p:next);};
-    update();window.addEventListener('resize',update);window.addEventListener('scroll',update,true);
-    return()=>{window.removeEventListener('resize',update);window.removeEventListener('scroll',update,true);};
-  },[open,floating]);
-  // Keyboard users land on the menu (it is no longer next to the trigger in the document): its search box, else the
-  // checked item, else the first one. only once the menu is placed — until then it is
-  // visibility:hidden and cannot take focus.
-  const placed=!!place;
-  React.useEffect(()=>{
-    if(!open||!floating||!placed)return;
-    const first=['input[type=search]','[aria-checked="true"]','button:not(:disabled),input'].reduce((found,selector)=>found||menu.current?.querySelector?.(selector),null);first?.focus?.({preventScroll:true});
-  },[open,floating,placed]);
-  const items=open&&content(close);
-  const popover=open&&(floating?h(TopLayer,null,h('div',{className:'ap-popover-anchor is-floating'+(className?' '+className:'')},
-      h('div',{ref:menu,className:'ap-popover is-floating','data-placement':place?.up?'top':'bottom',role:'menu','aria-label':label,
-        style:place?{top:place.top+'px',left:place.left+'px',maxHeight:Math.min(limit,place.maxHeight)+'px',...(place.minWidth?{minWidth:place.minWidth+'px'}:{})}:{top:'0px',left:'0px',visibility:'hidden'}},items))):
-    h('div',{className:'ap-popover',role:'menu','aria-label':label},items));
-  return h('div',{className:'ap-popover-anchor'+(className?' '+className:''),ref:root,onClick:stopClicks?e=>e.stopPropagation():undefined,onKeyDown:e=>{if(e.key==='Escape'&&open){e.stopPropagation();close();root.current?.querySelector?.('button')?.focus?.();}}},
-    trigger({open,toggle}),popover);
-}
-// the trigger of a picture cell's own menu (R9: 立绘 / 头像 差分 tiles,
-// the 服装设定图 cell) — one implementation for every such grid. Touch (a coarse pointer): a tap opens the menu, as before.
-// Mouse / keyboard (a fine pointer): click or Enter does the cell's primary thing (`onPrimary`: select / view), and the
-// menu opens on right click, Shift+F10 or the context-menu key (aria-keyshortcuts); a cell without a primary thing opens
-// its menu on click. The input is told by the click's own pointerType, else by (pointer: coarse) — never by width.
-// `onMenu` runs whenever the menu is opened (the 差分 tile also selects itself then).
-function cellTouchInput(event) {
-  const type=event?.nativeEvent?.pointerType||event?.pointerType;
-  if(type)return type==='touch';
-  return typeof window!=='undefined'&&!!window.matchMedia?.('(pointer: coarse)')?.matches;
-}
-function cellMenuTrigger({open,toggle,onPrimary=null,onMenu=null}) {
-  const show=()=>{onMenu?.();if(!open)toggle();};
-  return {'aria-haspopup':'menu','aria-expanded':open,'aria-keyshortcuts':'Shift+F10 ContextMenu',
-    onClick:event=>{if(!onPrimary||cellTouchInput(event)){onMenu?.();toggle();return;}if(open)toggle();onPrimary();},
-    onContextMenu:event=>{event?.preventDefault?.();show();},
-    onKeyDown:event=>{if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey){event.preventDefault();show();}}};
-}
-function MenuItem({onClick,disabled,title,danger,children}) { return h('button',{type:'button',role:'menuitem',className:'ap-menu-item'+(danger?' is-danger':''),disabled,title,onClick},children); }
 
 // 「当前素材包」 lists the packs this card uses as
 // (global-first: 全局 rows first, then 本卡; each band keeps binding order, then global-only ones) the shared pack row with a read-only state tag. 「管理」 grows the same section in place into all
 // installed packs with the state tag (search, kind tabs, 当前使用 frozen on top); 「完成」 shrinks it back. A pack name
 // opens the shared pack modal. No undo; unbinding a pack that a character's figure comes from asks first.
 // 当前素材包 and 导入导出 are one section, 「素材包 N (?)」. Its head
-// holds 管理 · 导出 · 导入 (导入 = the 导入卡 ZIP flow). 导出 enters selection mode: a house-style check per row (本卡 on,
-// 全局 off — the old 「一起导出」 defaults) with the pack's size, the head becomes 取消 · 导出, and confirming exports the
-// card with exactly the checked packs (none checked → the card alone), then leaves the mode.
+// holds 管理 · 导出 · 导入 (导入 = the 导入卡 ZIP flow). 导出 opens the one DSH card export sheet (DshCardExportSheet,
+// below; the 人物卡库 「导出」 opens it too).
 // a row is name, faces and the 全局 / 本卡 tag only — no size, no per-row
 // 导出 icon (a single pack is exported from the 素材库). A pack that holds only 模组 is not listed: the 「模组」 section
-// shows it; the card export still takes it along while one of its widgets is on for this card.
-const STAGE_PACKS_HELP='这张卡用到的素材包，「导出」把人物卡连同勾选的素材包和开着的模组打成 ZIP，「导入」打开这样的 ZIP。';
+// shows it.
+const STAGE_PACKS_HELP='这张卡用到的素材包，「导出」把人物卡连同本卡素材包和模组打成 DSH 人物卡，「导入」打开卡片 ZIP。';
 function StagePackSection({ctx,ready,state}) {
   const {binding,ext}=ctx,scope=usePackScope({binding,ctx,packs:ctx.packs});
   const [manage,setManage]=React.useState(false),[query,setQuery]=React.useState(''),[kind,setKind]=React.useState(''),[sort,setSort]=usePackSort(),frozen=React.useRef(null);
-  const [picking,setPicking]=React.useState(null),work=useTask(binding);
   const packs=ctx.packs.filter(p=>!stageWidgetOnlyPack(p)),hidden=new Set(ctx.packs.filter(stageWidgetOnlyPack).map(p=>p.manifest.id));
   // the private config carrier is deliberately absent from the public catalogue, not missing.
   if(ext.modConfigPackId)hidden.add(ext.modConfigPackId);
@@ -699,33 +600,19 @@ function StagePackSection({ctx,ready,state}) {
   const picker=React.useRef(null),serial=React.useRef(0),pick=()=>picker.current?.click?.();
   const importFile=file=>{const key='card-import-'+(++serial.current);
     ctx.openLayer(close=>h(CardImportSheet,{key,binding,path:ctx.path,file,cardName:ctx.cardName,onPick:pick,onClose:close,onDone:()=>{close();ctx.writer.reload();state?.reload?.();}}));};
-  const startPicking=()=>setPicking(new Set(effective.filter(id=>byId.has(id)&&!global.includes(id))));
-  const flip=id=>setPicking(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
-  // The widget-only packs whose widgets are on for this card go along (the 模组 section is where they are chosen).
-  const widgetPacks=picking?[...new Set(stageWidgetRows(ctx).filter(row=>row.state!=='off'&&hidden.has(row.packId)).map(row=>row.packId))]:[];
-  const chosen=picking?[...effective.filter(id=>picking.has(id)),...widgetPacks]:[],missing=picking?stageExportMissing(chosen.map(id=>ctx.writer.pack(id)).filter(Boolean),new Set(chosen)):[];
-  const exportCard=()=>work.task(async()=>{await binding.download(await binding.service.exportCardBundle({path:ctx.path,expectedRevision:ctx.writer.revision,packIds:chosen}));setPicking(null);});
-  const name=id=>(byId.get(id)||ctx.packs.find(p=>p.manifest.id===id))?.manifest.name||'缺失的素材包',busy=work.busy;
-  // Selection mode: the check, then the pack's size beside it (it only helps while choosing what goes with the card).
-  const lead=id=>{if(!picking)return null;const pack=byId.get(id),size=pack?stageBytesText(stagePackBytes(pack)):'';
-    return h(React.Fragment,null,h('button',{type:'button',role:'checkbox',className:'ap-pack-check','aria-checked':picking.has(id),'aria-label':name(id),disabled:!byId.has(id)||busy,onClick:()=>flip(id)},
-      h('span',{className:'ap-check-mark','aria-hidden':true},picking.has(id)&&h(Glyph,{name:'check'}))),size&&h('span',{className:'ap-pack-size'},size));};
+  const exportCard=()=>ctx.openLayer(close=>h(DshCardExportSheet,{binding,path:ctx.path,cardName:ctx.cardName,onClose:close}));
   // every row previews the pack's content after its name.
-  const row=control=>id=>h(PackRow,{key:id,id,pack:byId.get(id),scope,kind:manage?kind:'',onOpen:(packId,k)=>ctx.openPack(packId,k),control,previews:true,
-    ...(control==='static'?{lead:lead(id)}:{})});
+  const row=control=>id=>h(PackRow,{key:id,id,pack:byId.get(id),scope,kind:manage?kind:'',onOpen:(packId,k)=>ctx.openPack(packId,k),control,previews:true});
   const pass=packFilter(byId,query,kind);
   const head=!ready?null:manage?h(Button,{className:'ap-manage is-done','aria-expanded':true,onClick:()=>{setManage(false);setQuery('');setKind('');}},'完成'):
-    picking?h('span',{className:'ap-pack-head-actions'},
-      h(Button,{className:'ap-manage',disabled:work.busy,onClick:()=>setPicking(null)},'取消'),
-      h(Button,{className:'ap-manage is-done',disabled:work.busy,onClick:exportCard},work.busy?'正在导出…':'导出')):
     h('span',{className:'ap-pack-head-actions'},
       h(Button,{className:'ap-manage','aria-expanded':false,onClick:()=>{setManage(true);setQuery('');setKind('');}},'管理'),
-      h(Button,{className:'ap-manage',disabled:busy,onClick:startPicking},'导出'),
+      h(Button,{className:'ap-manage','aria-haspopup':'dialog',onClick:exportCard},'导出'),
       // UI standard §三.20 (acceptance U10): at most two .ap-manage buttons — 导入 (the card ZIP) moves into the heading's ⋯.
       h(Popover,{label:'素材包操作',className:'ap-pack-more',
         trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'素材包操作','aria-haspopup':'menu','aria-expanded':open,onClick:toggle}),
         content:close=>[h(MenuItem,{key:'import',onClick:()=>{close();pick();}},'导入')]}));
-  return h(StageSection,{title:'素材包',meta:manage?ids.length:effective.length,help:STAGE_PACKS_HELP,className:'ap-pack-section'+(picking?' is-picking':''),action:head,reveal:manage||!!picking},
+  return h(StageSection,{title:'素材包',meta:manage?ids.length:effective.length,help:STAGE_PACKS_HELP,className:'ap-pack-section',action:head,reveal:manage},
     ready&&h('input',{ref:picker,type:'file',accept:'.zip',hidden:true,tabIndex:-1,'aria-label':'导入卡 ZIP',onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file)importFile(file);}}),
     !ready?h('p',{className:'ap-empty'},'素材插件不可用'):manage?h(React.Fragment,null,
       // the kind filter and sort sit on the search row, as in the library.
@@ -734,9 +621,81 @@ function StagePackSection({ctx,ready,state}) {
       h(PackList,{ids:orderPacks([...ids,...[...frozen.current.keys()].filter(id=>!byId.has(id)&&effective.includes(id))].filter(pass),{byId,sort,kind,rank:id=>frozen.current.get(id)??2}),render:row(),
         empty:h(EmptyState,{noun:'素材包',query,filter:kind&&kinds[kind],text:!query.trim()&&kind?'没有含「'+kinds[kind]+'」的素材包':undefined,onClear:()=>{setQuery('');setKind('');}})}),
       ctx.nav?.openLibrary&&h('p',{className:'ap-more-link'},h(Button,{className:'ap-inline-link',onClick:()=>ctx.nav.openLibrary({})},'去舞台素材安装或新建 ›'))):
-    effective.length?h('ul',{className:'ap-pack-list is-current','aria-label':'当前素材包'},effective.map(row('static'))):h(EmptyState,{compact:true,text:picking?'这张卡没有用到素材包，只导出人物卡':'未使用素材包'}),
-    missing.length>0&&h(HintLine,{text:'模组用到的图片包没有一起导出：'+missing.map(name).join('、')}),
-    h(ErrorBox,{error:scope.error||work.error}));
+    effective.length?h('ul',{className:'ap-pack-list is-current','aria-label':'当前素材包'},effective.map(row('static'))):h(EmptyState,{compact:true,text:'未使用素材包'}),
+    h(ErrorBox,{error:scope.error}));
+}
+// 导出 DSH 人物卡 — the one card export with its packs. The host streams GET /api/dsh-tavern/card-export (core
+// card-files.js exportCardFile): the card's bound packs are listed with sizes and the checked total; the card's own packs
+// (they hold its figures or carry its name) start checked, shared ones such as 通用背景 stay home unless checked, and an
+// unchecked pack also leaves the exported card's bindings (packIds). Figures of the checked packs can be left out (e.g. the one the player plays). The cover shows at the top.
+// Packing first (an indeterminate bar), then the download counts its bytes; closing
+// the sheet stops it. The file is saved through binding.download, like every other export.
+const DSHCARD_FAILURE={404:'找不到这张人物卡。',409:'人物卡刚刚改过，请再导出一次。'};
+function dshCardExportUrl(path,excludeFigures,packIds) {
+  return '/api/dsh-tavern/card-export?path='+encodeURIComponent(path)+(excludeFigures.length?'&excludeFigures='+encodeURIComponent(JSON.stringify(excludeFigures)):'')
+    +'&packIds='+encodeURIComponent(JSON.stringify(packIds));
+}
+async function dshCardDownload({path,excludeFigures,packIds,signal,onProgress}) {
+  const response=await fetch(dshCardExportUrl(path,excludeFigures,packIds),{credentials:'same-origin',signal});
+  // a 400 says why in plain words (a bad pack or figure list); other statuses get their sentence.
+  if(!response.ok){const detail=await response.text();throw Object.assign(new Error(response.status===400&&detail||DSHCARD_FAILURE[response.status]||'没能导出，请重试。'),{status:response.status});}
+  const total=Number(response.headers.get('content-length'))||0,reader=response.body.getReader(),chunks=[];let loaded=0;
+  onProgress({loaded,total});
+  for(let part=await reader.read();!part.done;part=await reader.read()){chunks.push(part.value);loaded+=part.value.byteLength;onProgress({loaded,total});}
+  const named=/filename\*=UTF-8''([^;]+)/i.exec(response.headers.get('content-disposition')||'');
+  return {bytes:new Blob(chunks,{type:response.headers.get('content-type')||'application/zip'}),filename:named?decodeURIComponent(named[1]):'人物卡.dshcard'};
+}
+function DshCardExportSheet({binding,path,cardName,onClose}) {
+  const state=useLoad(binding,async()=>{
+    const [card,rows]=await Promise.all([binding.rpc('getCardAssetBindings',{path,metadataOnly:true}),loadPackRows(binding)]);
+    const byId=new Map(rows.filter(p=>!p.error).map(p=>[p.manifest.id,p]));
+    const packs=(card.extension?.assetBindings?.boundPackIds||[]).map(id=>byId.get(id)).filter(Boolean);
+    // only packs that hold figures are read in full, for the figure names.
+    const details=await Promise.all(packs.map(p=>p.summary&&!(p.counts?.figures>0)?null:loadPackDetail(binding,p)));
+    const figures=details.flatMap((d,index)=>d?(d.manifest.figures||[]).map(id=>({id,packId:packs[index].manifest.id,name:d.figures?.[id]?.name||''})).filter(f=>f.name):[]);
+    // a widget-only pack is chosen in the 模组 section: it goes along, checked, without a switch here.
+    const own=packs.filter((p,index)=>stageWidgetOnlyPack(p)||(details[index]?.manifest.figures||[]).length>0||!!cardName&&String(p.manifest.name||'').includes(cardName)).map(p=>p.manifest.id);
+    return {packs,figures,own};
+  },[path]);
+  const [chosen,setChosen]=React.useState(null),[left,setLeft]=React.useState(()=>new Set()),[work,setWork]=React.useState(null),[problem,setProblem]=React.useState('');
+  const abort=React.useRef(null),mounted=React.useRef(true);
+  React.useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;abort.current?.abort();};},[]);
+  const value=state.value,packs=value?.packs||[];
+  const picked=chosen||new Set(value?.own||[]),packIds=packs.map(p=>p.manifest.id).filter(id=>picked.has(id));
+  const figures=(value?.figures||[]).filter(f=>picked.has(f.packId));
+  const sizes=packs.map(stagePackBytes),total=sizes.reduce((sum,n,index)=>sum+(picked.has(packs[index].manifest.id)&&n||0),0);
+  const toggle=(current,id)=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;};
+  const flip=id=>setLeft(current=>toggle(current,id)),flipPack=id=>setChosen(toggle(picked,id));
+  async function run(){
+    if(work||!value)return;
+    const controller=new AbortController();abort.current=controller;setProblem('');setWork({loaded:0,total:0});
+    try{
+      const file=await dshCardDownload({path,excludeFigures:figures.filter(f=>left.has(f.id)).map(f=>f.id),packIds,signal:controller.signal,onProgress:next=>{if(mounted.current)setWork(next);}});
+      await binding.download(file);
+      if(mounted.current)onClose();
+    }catch(error){if(mounted.current&&!controller.signal.aborted)setProblem(error.status?error.message:'没能导出，请重试。');}
+    finally{abort.current=null;if(mounted.current)setWork(null);}
+  }
+  const head=(title,meta,extra,help)=>h('header',{className:'ap-section-head'},h('h3',null,title,meta!==undefined&&h('span',{className:'ap-section-meta'},meta),help&&h(Help,{label:title+' 说明',text:help})),extra);
+  const check=(on,label,onClick)=>h('button',{type:'button',role:'checkbox',className:'ap-pack-check','aria-checked':on,'aria-label':label,disabled:!onClick||!!work,onClick},
+    h('span',{className:'ap-check-mark','aria-hidden':true},on&&h(Glyph,{name:'check'})));
+  const packing=work&&!work.total,pct=work?.total?Math.min(100,work.loaded/work.total*100):0;
+  const body=state.error?h(ErrorBox,{error:state.error,reload:state.reload}):!value?h(Loading,{shape:'rows',count:3,label:'正在读取素材包…'}):h(React.Fragment,null,
+    h('section',{className:'ap-section ap-cat-section ap-dshcard-packs'},head('素材包',packs.length,total>0&&h('span',{className:'ap-dshcard-total'},'共 '+stageBytesText(total)),'勾选的素材包随卡导出；没勾的留在本机，导出的卡也不再使用它。本卡自己的包默认勾选，通用包默认不勾。'),
+      packs.length?h('ul',{className:'ap-dshcard-list','aria-label':'随卡素材包'},packs.map((pack,index)=>h('li',{key:pack.manifest.id,className:'ap-pack-row ap-dshcard-row'},
+        check(picked.has(pack.manifest.id),pack.manifest.name,stageWidgetOnlyPack(pack)?null:()=>flipPack(pack.manifest.id)),h('span',{className:'ap-dshcard-name',title:pack.manifest.name},pack.manifest.name),sizes[index]&&h('span',{className:'ap-pack-size'},stageBytesText(sizes[index]))))):
+        h(EmptyState,{compact:true,text:'这张卡没有素材包'})),
+    figures.length>0&&h('section',{className:'ap-section ap-cat-section ap-dshcard-figures'},head('人物',figures.length,null,'取消勾选的人物不会随卡导出，例如你自己扮演的角色。'),
+      h('ul',{className:'ap-dshcard-list','aria-label':'随卡人物'},figures.map(figure=>h('li',{key:figure.id,className:'ap-pack-row ap-dshcard-row'},
+        check(!left.has(figure.id),figure.name,()=>flip(figure.id)),h('span',{className:'ap-dshcard-name',title:figure.name},figure.name))))),
+    work&&h('div',{className:'ap-dshcard-progress'},
+      h('div',{className:'ap-cat-progress','data-indeterminate':packing||undefined,role:'progressbar','aria-label':'导出进度','aria-valuemin':0,'aria-valuemax':100,'aria-valuenow':packing?undefined:Math.round(pct)},h('span',{style:packing?undefined:{width:pct+'%'}})),
+      h('p',{className:'ap-cat-job-meta',role:'status'},packing?'正在打包…':stageBytesText(work.loaded)+' / '+stageBytesText(work.total))),
+    problem&&h(CatBand,{role:'alert'},problem));
+  return h(CatSheet,{title:'导出 DSH 人物卡',className:'ap-dshcard-sheet',onClose,initialFocus:'dialog',
+      foot:h(React.Fragment,null,h(Button,{onClick:onClose},'取消'),h(Button,{primary:true,disabled:!!work||!value,onClick:run},catBusyLabel(!!work,work?'正在导出…':'导出')))},
+    h('div',{className:'ap-cat-hero'},h(CardCover,{name:cardName||'',path}),h('div',{className:'ap-cat-hero-text'},h('h3',{className:'ap-cat-hero-name'},cardName||'人物卡'),h(CatSub,null,'.dshcard 文件'))),
+    body);
 }
 // Legacy widget entries remain asset/export data, not registry mod switches.
 function stageWidgetOnlyPack(pack) {
@@ -832,6 +791,9 @@ function StageStyleEdit({ctx,onError}) {
 // box, the 写法 → 读音 rows and a dashed ＋ (InlineAdd). The list is windowed (fixed 36px rows, only the visible ones
 // mount), a row edits in its own InlineField and saves alone (editReading: one row under the preset's revision), so a
 // keystroke never re-renders or re-sends the list. Each entry's language shows as a small tag that is also its menu.
+// One entry may hold several 写法 for one 读音, separated by , ， or 、 (dsh-tavern-tts splits them once, on entry). A new entry
+// is scrolled into view and highlighted; the add line has its own 添加 button for touch screens; 合并同读音 (⋯) folds
+// entries with the same reading into one after showing the count.
 const READING_WARNINGS={LATIN_ASSUMED_EN:'已按英语处理；拼音或日语罗马字可修改语言',AMBIGUOUS_READING:'自动识别可能不准确，可修改语言'};
 const READING_ERRORS={REVISION_CONFLICT:'内容已在别处修改，已重新载入',DUPLICATE_READING_FORM:'这个写法已经有读音了',INVALID_READINGS:'写法或读音无效',
   DUPLICATE_PRESET_NAME:'已有同名预设',INVALID_PRESET_NAME:'预设名称无效',LAST_PRESET:'至少保留一个预设',PRESET_LIMIT:'预设数量已达上限',PRESET_NOT_FOUND:'预设不存在，已重新载入',UNKNOWN_FIELD:'不是有效的读音预设文件',
@@ -857,29 +819,49 @@ function ReadingLanguage({entry,label,onPick}) {
         h('span',null,name),value===id&&h('span',{className:'ap-state-check'},h(Glyph,{name:'check'}))))});
 }
 // One line: 写法 → 读音 · language tag · ✕. Memoized on the entry object, so an edit elsewhere re-renders nothing here.
-function ReadingRowView({entry,position,onSave,onRemove}) {
+// A field commits on Enter or blur; while one is being edited the ✕ gives way to a ✓ that commits it (a phone has no
+// Enter key to rely on). The ✓ keeps the focus on press, then blurs the field, which commits through the same path.
+// `flash` marks the entry just added (a short highlight once it has been scrolled into view).
+const readingConfirm=e=>{const field=e.currentTarget.closest('.ap-readings-row')?.querySelector('input:focus');field?.blur?.();};
+const keepFocus=e=>e.preventDefault();
+function ReadingRowView({entry,position,flash,onSave,onRemove}) {
   const forms=readingForms(entry);
   const cell=(label,value,field,cls)=>h(InlineField,{kind:'text',label,hideLabel:true,value,title:value,className:'ap-reading-field'+cls,
     validate:v=>v?'':field==='forms'?'请填写写法':'请填写读音',onCommit:text=>onSave(entry,{...readingInput(entry),[field]:text})});
-  return h('div',{className:'ap-readings-row',role:'row','aria-rowindex':position+1,style:{transform:'translateY('+position*READING_ROW+'px)'}},
+  return h('div',{className:'ap-readings-row'+(flash?' is-flash':''),role:'row','aria-rowindex':position+1,style:{transform:'translateY('+position*READING_ROW+'px)'}},
     cell('写法 '+forms,forms,'forms',' is-form'),
     h('span',{className:'ap-reading-arrow','aria-hidden':true},'→'),
     cell('读音 '+forms,entry.reading,'reading',''),
     h(ReadingLanguage,{entry,label:forms,onPick:id=>{const next=readingInput(entry);if(id)next.languageOverride=id;else delete next.languageOverride;onSave(entry,next);}}),
+    h(Button,{className:'ap-icon-button ap-reading-confirm','aria-label':'确认修改 '+forms,title:'确认',onPointerDown:keepFocus,onMouseDown:keepFocus,onClick:readingConfirm},h(Glyph,{name:'check'})),
     h(Button,{className:'ap-icon-button ap-reading-remove','aria-label':'删除读音 '+forms,title:'删除',onClick:()=>onRemove(entry)},'✕'));
 }
 const ReadingRow=typeof React.memo==='function'?React.memo(ReadingRowView):ReadingRowView;
 // The window: a fixed-height scroller (12 rows) once the list is longer; only the rows in view (+ overscan) mount.
-function ReadingList({entries,rows,onSave,onRemove,resetKey}) {
-  const [top,setTop]=React.useState(0),box=React.useRef(null),frame=React.useRef(0);
+// `reveal` (an entry just added) scrolls the window to its row once it is among the rows (a search that hid it is
+// cleared first), then brings the row itself into the page's view.
+function ReadingList({entries,rows,onSave,onRemove,resetKey,reveal}) {
+  const [top,setTop]=React.useState(0),box=React.useRef(null),frame=React.useRef(0),revealed=React.useRef(null),inView=React.useRef(null);
   React.useEffect(()=>{setTop(0);if(box.current)box.current.scrollTop=0;},[resetKey]);
+  React.useEffect(()=>{
+    const node=box.current;if(!reveal||revealed.current===reveal||!node)return;
+    const n=rows.indexOf(entries.indexOf(reveal));if(n<0)return;
+    revealed.current=reveal;
+    if(rows.length>READING_VIEW){const at=n*READING_ROW,view=READING_VIEW*READING_ROW;
+      const next=at<node.scrollTop?at:at+READING_ROW>node.scrollTop+view?at+READING_ROW-view:node.scrollTop;node.scrollTop=next;setTop(next);}
+  },[reveal,rows,entries]);
+  React.useEffect(()=>{
+    if(!reveal||revealed.current!==reveal||inView.current===reveal)return;
+    const row=box.current?.querySelector?.('.ap-readings-row.is-flash');if(!row)return;
+    inView.current=reveal;row.scrollIntoView?.({block:'nearest'});
+  },[reveal,top]);
   const raf=typeof requestAnimationFrame==='function'?requestAnimationFrame:fn=>setTimeout(fn,16),caf=typeof cancelAnimationFrame==='function'?cancelAnimationFrame:clearTimeout;
   React.useEffect(()=>()=>caf(frame.current),[]);
   const windowed=rows.length>READING_VIEW;
   const first=windowed?Math.max(0,Math.floor(top/READING_ROW)-READING_OVERSCAN):0;
   const last=windowed?Math.min(rows.length,Math.ceil(top/READING_ROW)+READING_VIEW+READING_OVERSCAN):rows.length;
   const onScroll=e=>{const value=e.currentTarget.scrollTop;caf(frame.current);frame.current=raf(()=>setTop(value));};
-  const shown=[];for(let n=first;n<last;n++){const entry=entries[rows[n]];shown.push(h(ReadingRow,{key:readingKey(entry),entry,position:n,onSave,onRemove}));}
+  const shown=[];for(let n=first;n<last;n++){const entry=entries[rows[n]];shown.push(h(ReadingRow,{key:readingKey(entry),entry,position:n,flash:entry===reveal,onSave,onRemove}));}
   return h('div',{ref:box,className:'ap-readings'+(windowed?' is-windowed':''),role:'table','aria-label':'读音','aria-rowcount':rows.length,onScroll:windowed?onScroll:undefined,
     style:{height:(windowed?READING_VIEW:rows.length)*READING_ROW+'px'}},
     h('div',{className:'ap-readings-track',role:'rowgroup',style:{height:rows.length*READING_ROW+'px'}},shown));
@@ -897,6 +879,10 @@ function ReadingPresetsEditor({call}) {
   const [error,setError]=React.useState(''),[saving,setSaving]=React.useState(''),[query,setQuery]=React.useState('');
   const [naming,setNaming]=React.useState(null),[confirm,setConfirm]=React.useState(false),[busy,setBusy]=React.useState(false);
   const [adding,setAdding]=React.useState(false),[draft,setDraft]=React.useState({forms:'',reading:''});
+  // reveal: the entry just added (scrolled to, highlighted for a moment); note: a short line under the list (已删除 … 撤销,
+  // nothing to merge); merging: the 合并同读音 count waiting for its confirm.
+  const [reveal,setReveal]=React.useState(null),[note,setNote]=React.useState(null),[merging,setMerging]=React.useState(null);
+  React.useEffect(()=>{if(!reveal)return;const timer=setTimeout(()=>{if(live.current)setReveal(null);},2400);return()=>clearTimeout(timer);},[reveal]);
   const current=React.useRef(null),queue=React.useRef(Promise.resolve()),formsRef=React.useRef(null),readingRef=React.useRef(null),picker=React.useRef(null),live=React.useRef(true);
   React.useEffect(()=>()=>{live.current=false;},[]);
   const show=next=>{current.current=next;if(live.current)setPreset(next);};
@@ -922,18 +908,21 @@ function ReadingPresetsEditor({call}) {
       const entries=p.entries.slice();
       if(op==='add')entries.push(r.entry);else if(op==='set')entries[index]=r.entry;else entries.splice(index,1);
       show({...p,revision:r.revision,entries});
-      if(live.current){setList(l=>l&&{...l,presets:l.presets.map(x=>x.id===p.id?{...x,count:entries.length,revision:r.revision}:x)});setSaving('saved');setError('');}
-      return true;
+      if(live.current){setList(l=>l&&{...l,presets:l.presets.map(x=>x.id===p.id?{...x,count:entries.length,revision:r.revision}:x)});setSaving('saved');setError('');setNote(null);}
+      return op==='add'?r.entry:true;
     }catch(e){await fail(e);return false;}
   });
+  // A deleted entry can be put back from the line under the list (added again at the end).
+  const restore=async entry=>{const added=await edit('add',null,readingInput(entry));if(added&&live.current)setReveal(added);};
   // Stable row callbacks (the rows are memoized on their entry): created once, they only read refs.
   const rowActions=React.useRef(null);
-  if(!rowActions.current)rowActions.current={onSave:(entry,input)=>{edit('set',entry,input);},onRemove:entry=>{edit('remove',entry);}};
+  if(!rowActions.current)rowActions.current={onSave:(entry,input)=>{edit('set',entry,input);},
+    onRemove:async entry=>{if(await edit('remove',entry)&&live.current)setNote({text:'已删除「'+readingForms(entry)+'」',action:'撤销',onAction:()=>restore(entry)});}};
   const {onSave,onRemove}=rowActions.current;
   // Preset operations answer with the new summary; the editor then shows the (possibly new) active preset.
   const presetOp=(method,args)=>run(async()=>{
     setBusy(true);setError('');
-    try{const summary=await call(method,args),value=await call('readingPreset',{id:summary.active});if(live.current){setList(summary);show(value);setQuery('');}return true;}
+    try{const summary=await call(method,args),value=await call('readingPreset',{id:summary.active});if(live.current){setList(summary);show(value);setQuery('');setNote(null);}return true;}
     catch(e){await fail(e);return false;}finally{if(live.current)setBusy(false);}
   });
   async function exportPreset(){
@@ -950,9 +939,27 @@ function ReadingPresetsEditor({call}) {
     const forms=draft.forms.trim(),reading=draft.reading.trim();
     if(!forms){formsRef.current?.focus?.();return false;}
     if(!reading){readingRef.current?.focus?.();return false;}
-    if(await edit('add',null,{forms,reading})){setDraft({forms:'',reading:''});formsRef.current?.focus?.();}
+    const added=await edit('add',null,{forms,reading});
+    if(added&&live.current){
+      setDraft({forms:'',reading:''});formsRef.current?.focus?.();setReveal(added);
+      // a search that would hide the new entry is cleared, so the list can show it.
+      const term=query.trim().toLowerCase();if(term&&!(added.forms.join('\n')+'\n'+added.reading).toLowerCase().includes(term))setQuery('');
+    }
     return false;
   }
+  // 合并同读音: entries with the same reading and language become one entry with all their 写法. The count comes first
+  // (dryRun); the merge itself runs only after the confirm, under the revision that was counted.
+  async function countMerge(){
+    const p=current.current;
+    try{const r=await call('mergeReadings',{id:p.id,expectedRevision:p.revision,dryRun:true});if(!live.current)return;
+      if(r.removed)setMerging({...r,before:p.entries.length});else setNote({text:'没有读音相同的条目'});setError('');}
+    catch(e){await fail(e);}
+  }
+  const runMerge=()=>run(async()=>{
+    const p=current.current,r=await call('mergeReadings',{id:p.id,expectedRevision:merging.revision,dryRun:false}),value=await call('readingPreset',{id:p.id});
+    if(!live.current)return;show(value);setList(l=>l&&{...l,presets:l.presets.map(x=>x.id===p.id?{...x,count:r.count,revision:r.revision}:x)});
+    setNote({text:'已合并为 '+r.count+' 条'});setError('');
+  });
   const entries=preset?.entries;
   // Search: one lower-cased line per entry, rebuilt only when the entries array changes; the filtered row list only when
   // the entries or the (deferred) term change.
@@ -974,6 +981,7 @@ function ReadingPresetsEditor({call}) {
         h(MenuItem,{key:'copy',onClick:()=>{close();presetOp('createReadingPreset',{name:preset.name+' 副本',from:preset.id});}},'复制'),
         h(MenuItem,{key:'export',onClick:()=>{close();exportPreset();}},'导出'),
         h(MenuItem,{key:'import',onClick:()=>{close();picker.current?.click?.();}},'导入'),
+        h(MenuItem,{key:'merge',disabled:entries.length<2,onClick:()=>{close();countMerge();}},'合并同读音…'),
         h(MenuItem,{key:'delete',danger:true,disabled:only,title:only?'至少保留一个预设':undefined,onClick:()=>{close();setConfirm(true);}},'删除…')]});
     const head=naming?h(InlineAdd,{open:true,className:'fork-readings-name',label:naming.mode==='create'?'新预设名称':'预设名称',placeholder:'预设名称',maxLength:40,busy,
         value:naming.value,onChange:value=>setNaming(n=>n&&{...n,value}),onCancel:()=>setNaming(null),
@@ -984,20 +992,27 @@ function ReadingPresetsEditor({call}) {
       h('div',{className:'fork-readings-bar'},head,!naming&&menu,
         h('input',{ref:picker,type:'file',accept:'.json,application/json',hidden:true,tabIndex:-1,'aria-label':'导入读音预设',onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file)importFile(file);}})),
       (entries.length>8||query)&&h(PackSearchBox,{label:'搜索读音',placeholder:'搜索写法或读音',value:query,onChange:setQuery,className:'fork-readings-search'}),
-      entries.length?rows.length?h(ReadingList,{entries,rows,onSave,onRemove,resetKey:preset.id+'\n'+term}):h(EmptyState,{noun:'读音',query,onClear:()=>setQuery('')})
+      entries.length?rows.length?h(ReadingList,{entries,rows,onSave,onRemove,reveal,resetKey:preset.id+'\n'+term}):h(EmptyState,{noun:'读音',query,onClear:()=>setQuery('')})
         :h(EmptyState,{noun:'读音'}),
       h(InlineAdd,{open:adding,onOpen:()=>setAdding(true),onCancel:()=>{setAdding(false);setDraft({forms:'',reading:''});},
           className:'ap-readings-row is-new',tileClassName:'fork-readings-add',inputClassName:'fork-inline-add-input fork-readings-input',inputRef:formsRef,
-          label:'新写法',addLabel:'添加读音',placeholder:'写法',value:draft.forms,onChange:forms=>setDraft(d=>({...d,forms})),
+          label:'新写法',addLabel:'添加读音',placeholder:'写法，多个用逗号分开',value:draft.forms,onChange:forms=>setDraft(d=>({...d,forms})),
           onConfirm:()=>{if(draft.reading.trim())return addDraft();readingRef.current?.focus?.();return false;}},
         h('span',{className:'ap-reading-arrow','aria-hidden':true},'→'),
         h(InlineAdd,{open:true,bare:true,inputRef:readingRef,inputClassName:'fork-inline-add-input fork-readings-input',label:'新读音',placeholder:'读音',value:draft.reading,
-          onChange:reading=>setDraft(d=>({...d,reading})),onConfirm:addDraft,onCancel:()=>{setAdding(false);setDraft({forms:'',reading:''});}})),
+          onChange:reading=>setDraft(d=>({...d,reading})),onConfirm:addDraft,onCancel:()=>{setAdding(false);setDraft({forms:'',reading:''});}}),
+        // Enter adds from either box; the buttons are the same for a touch screen.
+        h(Button,{primary:true,className:'ap-reading-add-confirm',disabled:saving==='saving'||undefined,onClick:addDraft},'添加'),
+        h(IconButton,{icon:'close',label:'取消添加',className:'ap-reading-add-cancel',onClick:()=>{setAdding(false);setDraft({forms:'',reading:''});}})),
+      note&&h('p',{className:'ap-reading-note',role:'status'},h('span',null,note.text),note.action&&h(Button,{className:'ap-hint-chip',onClick:()=>{setNote(null);note.onAction();}},note.action)),
       error&&h('p',{className:'ap-field-error',role:'alert'},error));
   }
   return h('div',{className:'ap-ui fork-readings'},
     h(StageSection,{title:'发音字典',meta:entries?entries.length:undefined,foldKey:'tts-readings',action:save,
       help:'配音前把写法换成读音，所有人物卡通用；同一时间一个预设生效。写法可写几种，用逗号或顿号分开。'},body),
+    merging&&preset&&h(ConfirmDialog,{title:'合并同读音',confirmLabel:'合并',
+      body:merging.groups+' 组读音相同的条目各合并为一条，写法用逗号分开（'+merging.before+' → '+(merging.before-merging.removed)+' 条）。',
+      onConfirm:async()=>{try{await runMerge();}catch(e){await fail(e);throw e;}},onClose:()=>setMerging(null)}),
     confirm&&preset&&h(ConfirmDialog,{title:'删除预设',body:'删除「'+preset.name+'」及其 '+preset.entries.length+' 条读音？',confirmLabel:'删除',danger:true,
       onConfirm:async()=>{if(!await presetOp('deleteReadingPreset',{id:preset.id}))throw new Error('删除失败');},onClose:()=>setConfirm(false)}));
 }
@@ -1015,25 +1030,6 @@ function stageBytesText(n) {
   if(n<1024*1024)return Math.max(1,Math.round(n/1024))+' KB';
   const mb=n/1024/1024;return mb<1024?mb.toFixed(1)+' MB':(mb/1024).toFixed(1)+' GB';
 }
-// Image packs that the chosen packs' 模组 defaults point at but that are not exported with them.
-function stageExportMissing(packs,chosen) {
-  const needed=new Set();
-  for(const pack of packs)if(chosen.has(pack.manifest.id))for(const asset of pack.manifest.assets)if(asset.kind==='widgets')
-    for(const value of Object.values(asset.settingsDefaults||{}))if(value?.kind==='backgrounds'&&value.packId)needed.add(value.packId);
-  return [...needed].filter(id=>!chosen.has(id));
-}
-function ConfirmDialog({title,body,extra,confirmLabel,danger,onConfirm,onClose,children}) {
-  const [busy,setBusy]=React.useState(false),[error,setError]=React.useState(''),[uncertain,setUncertain]=React.useState(false);
-  async function run(){setBusy(true);setError('');let timer;
-    // A pack write can outlive its response. Stop waiting, not the transaction; never offer a blind retry.
-    try{await Promise.race([Promise.resolve().then(onConfirm),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error('操作超时：素材包服务未及时返回，结果尚未确认；请关闭此提示并重新打开素材包检查，勿重复删除。'),{code:'CONFIRM_TIMEOUT'})),8000);})]);onClose();}
-    catch(e){setError(errorText(e));setUncertain(e?.code==='CONFIRM_TIMEOUT');setBusy(false);}finally{clearTimeout(timer);}}
-  return h(Modal,{title,onClose,busy,closable:false,className:'ap-confirm'},
-    h('p',null,body),extra&&h('p',{className:'ap-confirm-extra'},extra),children,
-    error&&h('p',{className:'ap-alert',role:'alert'},error),
-    h(Actions,null,busy&&h('span',{className:'ap-busy'},h(Spinner),'正在处理…'),h(Button,{disabled:busy,onClick:onClose},uncertain?'关闭并检查':'取消'),h(Button,{className:danger?'ap-danger-text':'',disabled:busy||uncertain,onClick:run},confirmLabel)));
-}
-
 // 「提示词」 — the one advanced place for prompts. It lists each stage in order and
 // exactly what this plugin adds there, verbatim, with where it comes from (全局 / 本卡 / the pack by name / 本轮) and a local token estimate:
 // 1. 正文模型 — the dialogue-format worldbook entries the host syncs (getDialogueBubbles `injection`): 对白格式 (global,

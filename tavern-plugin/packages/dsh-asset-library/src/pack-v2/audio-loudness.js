@@ -52,7 +52,7 @@ export async function authorAudioLoudness(manifest, files, {previous, read, meas
       const name = audioContentFile(previous.manifest, asset, content)
       if (!name) continue
       const key = identity(previous.manifest, name)
-      old.set(asset.kind + '/' + asset.id + '/' + name, key)
+      old.set(asset.kind + '/' + asset.id + '/' + name, {key, loudness:content.loudness})
       if (content.loudness) known.set(key, content.loudness)
     }
   }
@@ -64,7 +64,12 @@ export async function authorAudioLoudness(manifest, files, {previous, read, meas
       const replacedVideo = previous && asset.kind === 'videos' && files.get(name) instanceof Uint8Array
       const key = replacedVideo ? name : identity(manifest, name)
       if (content.loudness) { known.set(key, content.loudness); continue }
-      if (!replacedVideo && old.get(asset.kind + '/' + asset.id + '/' + name) === key) continue
+      // Retain this entry's measurement, without migrating unchanged legacy entries sharing its media.
+      const prior = old.get(asset.kind + '/' + asset.id + '/' + name)
+      if (!replacedVideo && prior?.key === key) {
+        if (prior.loudness) { content.loudness = {...prior.loudness}; changed = true }
+        continue
+      }
       if (!known.has(key)) {
         const extension = path.extname(name)
         if (!/^\.(wav|mp3|ogg|flac|m4a|aac|opus|webm|mp4)$/.test(extension)) throw new Error('Unsupported audio extension')
@@ -75,7 +80,7 @@ export async function authorAudioLoudness(manifest, files, {previous, read, meas
         await writeFile(file, bytes)
         let value
         try { value = await measure(file) } finally { await unlink(file) }
-        if (!value) throw new Error('无法测量音频响度，请检查音频文件和 ffmpeg：' + asset.name)
+        if (!value) throw new Error('素材包音频缺少响度信息且无法补测，请安装 ffmpeg 后重新导入，或请作者重新导出带响度信息的素材包：' + asset.name)
         known.set(key, value)
       }
       content.loudness = {...known.get(key)}; changed = true

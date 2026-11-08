@@ -17,7 +17,7 @@ function createLiveTavernViewModule(options) {
 	function recordFor(sessionId) {
 		const id = String(sessionId || "");
 		if (!records.has(id)) {
-			const record = { id: id, state: initialState(), listeners: new Set(), paths: dependencyNode(), watchdog: null, optimisticBusy: false, eviction: null, refresh: null };
+			const record = { id: id, state: initialState(), listeners: new Set(), passiveListeners: 0, paths: dependencyNode(), watchdog: null, optimisticBusy: false, eviction: null, refresh: null, seededView: undefined };
 			record.refresh = createRefresh(record);
 			records.set(id, record);
 		}
@@ -126,7 +126,16 @@ function createLiveTavernViewModule(options) {
 			onStart: function () {
 				if (record.state.view === null) publish(record, Object.assign({}, record.state, { phase: "loading", error: "" }));
 			},
-			load: function (scope) { return options.load(record.id, { signal: scope.signal }); },
+			load: function (scope) {
+				// startChat already projected this exact new chat. Consume that view through
+				// the normal publish path instead of immediately repeating getSession.
+				if (record.seededView !== undefined) {
+					const result = record.seededView;
+					record.seededView = undefined;
+					return result;
+				}
+				return options.load(record.id, { signal: scope.signal });
+			},
 			onResult: async function (result, scope) {
 				let view = result && result.view ? result.view : null;
 				if (pollWhileBusy && record.optimisticBusy && !shouldPoll(view)) return { delay: 200 };
@@ -161,7 +170,12 @@ function createLiveTavernViewModule(options) {
 	}
 	function invalidate(sessionId) {
 		const targets = sessionId === undefined || sessionId === null || sessionId === "" ? Array.from(records.values()) : [recordFor(sessionId)];
-		targets.forEach(function (record) { record.refresh.request(); });
+		targets.forEach(function (record) {
+			// Passive plugin observers share the visible panel's record but never own a
+			// network read. The first real reader loads and later invalidations resume.
+			if (record.listeners.size === record.passiveListeners) return;
+			record.refresh.request();
+		});
 	}
 	function evict(sessionId) {
 		const record = records.get(String(sessionId || ""));
@@ -216,8 +230,14 @@ function createLiveTavernViewModule(options) {
 		},
 		evict: evict,
 		getSnapshot: function (sessionId) { return recordFor(sessionId).state; },
+		seed: function (sessionId, view) {
+			const record = recordFor(sessionId);
+			record.seededView = { view: view };
+			if (record.listeners.size) record.refresh.request();
+		},
 		setView: function (sessionId, view) {
 			const record = recordFor(sessionId);
+			record.seededView = undefined;
 			record.refresh.replace();
 			const owner = {};
 			record.optimisticOwner = owner;
@@ -233,22 +253,27 @@ function createLiveTavernViewModule(options) {
 				if (records.get(record.id) === record) invalidate(sessionId);
 			};
 		},
-		subscribe: function (sessionId, listener, paths) {
+		subscribe: function (sessionId, listener, paths, options) {
 			const record = recordFor(sessionId);
 			if (record.eviction !== null) { cancelTimer(record.eviction); record.eviction = null; }
+			const deferred = options && options.deferLoad === true;
 			const firstSubscriber = record.listeners.size === 0;
+			const firstEagerSubscriber = !deferred && record.listeners.size === record.passiveListeners;
 			const unregister = register(record.paths, paths || [[]], listener);
 			record.listeners.add(listener);
+			if (deferred) record.passiveListeners++;
 			listener(record.state);
-			if (firstSubscriber) { record.refresh.start(); record.refresh.request(); }
+			if (firstSubscriber) record.refresh.start();
+			if (firstEagerSubscriber) record.refresh.request();
 			if (record.watchdog === null && (pollWhileBusy || idlePollIntervalMs > 0)) {
 				record.watchdog = startWatchdog(function () {
-					if (record.listeners.size > 0 && ((pollWhileBusy && shouldPoll(record.state.view)) || idlePollIntervalMs > 0)) void record.refresh.refresh();
+					if (record.listeners.size > record.passiveListeners && ((pollWhileBusy && shouldPoll(record.state.view)) || idlePollIntervalMs > 0)) void record.refresh.refresh();
 				}, watchdogIntervalMs);
 			}
 			return function () {
 				unregister();
 				record.listeners.delete(listener);
+				if (deferred) record.passiveListeners = Math.max(0, record.passiveListeners - 1);
 				if (record.listeners.size === 0) {
 					record.optimisticBusy = false;
 					record.optimisticOwner = null;

@@ -73,10 +73,10 @@
     const personName=person=>contactName(person.id) || (person.id===PLAYER ? source?.playerName || '你' : person.name) || '';
     const ownerLabel=row=>row.id===PLAYER ? '我的手机' : (contactName(row.id) || row.name || '未知联系人')+'的手机';
     const personAvatar=person=>contactAvatar(person.id) || (person.avatar ? source?.avatars?.[person.avatar] || null : null);
-    // A bubble without its own mood thumbnail shows the sender's face from the conversation's participants.
+    // A bubble, banner or typing row shows its sender's one contact face, the same face as the header and the call.
     const personOf=id=>{for(const thread of threadList() || [])for(const person of thread.participants || [])if(person.id===id)return person;return null;};
     const senderAvatar=message=>{const id=message.sender || message.contact,person=id ? personOf(id) : null;
-        return contactAvatar(id) || source?.avatars?.[message.avatar] || (person ? personAvatar(person) : null);};
+        return person ? personAvatar(person) : contactAvatar(id);};
     const senderName=message=>contactName(message.sender || message.alias) || message.name || '';
     const others=thread=>(thread?.participants || []).filter(person=>person.id!==owner());
     // The contact card a person in a conversation opens: the player's own phone's contact row, if any.
@@ -261,8 +261,7 @@
         if(groupInfo && (list || !group || thread.id!==groupInfo))groupInfo=null;
         // No conversation at all yet (its directory still loading): the app's own name, not a made-up contact.
         const name=(thread ? threadTitle(thread) : contactName(contact)) || (lines.length ? source?.contactName || '未知联系人' : '信息');
-        const peer=lines.findLast(row=>row.side==='in' && row.contact===contact && source?.avatars?.[row.avatar]);
-        const avatar=group ? null : (thread ? others(thread).map(personAvatar).find(Boolean) : contactAvatar(contact)) || (peer ? source.avatars[peer.avatar] : null);
+        const avatar=group ? null : thread ? others(thread).map(personAvatar).find(Boolean) || null : contactAvatar(contact);
         if($('contact').textContent!==name)$('contact').textContent=name;
         setImage($('head-avatar'),avatar);
         $('head-group').hidden=!group;if(group)stack($('head-group'),thread,Math.round(60*point));
@@ -687,10 +686,11 @@
     homeBar.addEventListener('pointerup',()=>{if(swipe && !swipe.done)release();});
     homeBar.addEventListener('pointercancel',()=>{swipe=null;release();});
     homeBar.onclick=event=>{const swiped=swipe?.done;swipe=null;release();event.stopPropagation();if(!swiped)homeAction();};
-    // Once per phone (this view's life): the first time it is opened, the bar lifts twice so the reader sees it can move.
+    // Once per phone (this view's life), as iOS does: the first time it is opened, the indicator alone rises a little
+    // twice so the reader sees it can be swiped. Only the bar's own pixels move; its band, halo and the input bar hold still.
     let hinted=false;
     function endHint() {homeBar.classList.remove('hint');}
-    homeBar.addEventListener('animationend',event=>{if(event.target===homeBar)homeBar.classList.remove('hint');});
+    homeBar.addEventListener('animationend',event=>{if(event.target===homeBar.firstElementChild)endHint();});
     homeBar.addEventListener('pointerenter',()=>endHint());homeBar.addEventListener('focus',()=>endHint());
     function maybeHint() {
         if(hinted || presentation.state!=='open' || presentation.suspended)return;

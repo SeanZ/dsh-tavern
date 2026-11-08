@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 
-test('实际标准 tgz 的三个服务端入口可冷导入，兼容声明无需豁免', { timeout: 60000 }, async t => {
+test('实际标准 tgz 的四个服务端入口可冷导入，兼容声明无需豁免', { timeout: 60000 }, async t => {
   assert.ok(process.env.DSH_BOOT_MODULE, '需要实际宿主加载器')
   const bootFile = await realpath(process.env.DSH_BOOT_MODULE)
   const hostModules = path.resolve(path.dirname(bootFile), '../../..')
@@ -30,7 +30,7 @@ test('实际标准 tgz 的三个服务端入口可冷导入，兼容声明无需
     await symlink(path.join(root, 'node_modules', name), target)
   }
   await symlink(path.join(hostModules, '@deepseek-ai'), path.join(modules, '@deepseek-ai'))
-  for (const relative of ['tavern-plugin', 'tavern-plugin/packages/dsh-asset-library', 'tavern-plugin/packages/dsh-tavern-stage']) {
+  for (const relative of ['tavern-plugin', 'tavern-plugin/packages/dsh-asset-library', 'tavern-plugin/packages/dsh-tavern-stage', 'tavern-plugin/packages/dsh-tavern-tts']) {
     const manifest = JSON.parse(await readFile(path.join(packageDir, relative, 'package.json'), 'utf8'))
     assert.equal(boot.evaluatePluginCompatibility(manifest), undefined, manifest.name)
     const entry = path.join(packageDir, relative, 'lib/index.js')

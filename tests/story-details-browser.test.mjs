@@ -58,7 +58,7 @@ window.__ModuleLoader__={load(d){window.client=d.factory(name=>name==='react'?Re
         const render=client.createTavernStoryRender({})
         client.liveTavernView.setView('opening',{mode:'story',replyProjections:projectedOpening,tavernRuntimePolicy:{trustedCardMode:true}})
         window.openingRoots=[createRoot(document.querySelector('#story')),createRoot(document.querySelector('#chat'))]
-        openingRoots[0].render(h(render.FloorBody,{sessionId:'opening',storyTurn:1,fallbackText:opening.text}))
+        openingRoots[0].render(h(render.FloorBody,{sessionId:'opening',floor:{messageUid:'opening',legacyTurn:1,projection:projectedOpening[0]},fallbackText:opening.text}))
         openingRoots[1].render(h(MarkdownText,{text:opening.text}))
       },{opening,projectedOpening})
       await page.locator('#story .dsh-tavern-colored-markdown').waitFor()
@@ -74,7 +74,7 @@ window.__ModuleLoader__={load(d){window.client=d.factory(name=>name==='react'?Re
         createRoot(document.querySelector('#outer')).render(h(MarkdownText,{text:prose}))
         window.show=(key,snapshot)=>{
           client.liveTavernView.setView('test',{mode:'story',replyProjections:[{turn:2,version:2,parts:projections[key].displayParts}],tavernRuntimePolicy:{trustedCardMode:true}})
-          roots.story.render(h(render.FloorBody,{sessionId:'test',storyTurn:2,...(snapshot?{snapshotHtml:snapshot}:{})}))
+          roots.story.render(h(render.FloorBody,{sessionId:'test',floor:{messageUid:'test-body',legacyTurn:2,projection:{turn:2,version:2,parts:projections[key].displayParts}},...(snapshot?{snapshotHtml:snapshot}:{})}))
           roots.chat.render(h(React.Fragment,null,client.renderTavernProjection({parts:projections[key].displayParts},{sessionId:'chat',turn:2,trustedCardMode:true})))
         }
         window.projectedBefore=JSON.stringify(projections)

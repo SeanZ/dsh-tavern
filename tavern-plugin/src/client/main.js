@@ -90,29 +90,32 @@ window.__ModuleLoader__.load({
 		// @include text-resource-file.js
 		// @include download.js
 
+		// @include modules/card-password.js
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
-		async function importTavernCardFile(file, call) {
+		async function importTavernCardFile(file, call, onProgress = () => {}, replacePath) {
+			if (/\.(dshcard|charx)\.png$/i.test(String(file.name || ''))) throw new Error('卡包请使用 .dshcard 文件');
+			const progress = beginTavernCardImportProgress(file.name);
+			const report = value => { progress.update(value); onProgress(value); };
+			try {
 			const archive = !/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""));
-			// A PNG ending like a ZIP may be a card archive with its cover in front (大肥鱼.dshcard.png): it goes up
-			// as a file too, and the host decides (a plain card PNG that only looked like one still imports).
-			if (archive || /\.png$/i.test(String(file.name || "")) && await tavernPngEndsLikeZip(file)) {
+			if (archive) {
+				report('正在上传卡包…');
 				const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
 				let reply = null;
 				try { reply = await response.json(); } catch (_error) {}
 				if (!reply || !reply.ok) throw new Error(reply && reply.error || "上传失败（HTTP " + response.status + "）");
-				return call("importCardUpload", { uploadId: reply.uploadId, name: file.name });
+				return await importTavernPasswordCard(password => {
+					report(password === undefined ? '正在读取卡包并导入素材…' : '正在校验密码并导入素材…');
+					return call("importCardUpload", { uploadId: reply.uploadId, name: file.name, ...(replacePath ? { replacePath } : {}), ...(password === undefined ? {} : { password }) });
+				}, file.name, () => call("discardCardUpload", { uploadId: reply.uploadId }), options => {
+					report('等待输入密码…');
+					return askTavernCardPassword(options);
+				});
 			}
-			return call("importCard", { payload: await parseCardFile(file) });
-		}
-
-		/** Whether a file's last 64 KB hold a ZIP end record. */
-		async function tavernPngEndsLikeZip(file) {
-			const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 65557)).arrayBuffer());
-			for (let index = tail.length - 22; index >= 0; index--) {
-				if (tail[index] === 0x50 && tail[index + 1] === 0x4b && tail[index + 2] === 0x05 && tail[index + 3] === 0x06) return true;
-			}
-			return false;
+			report('正在读取人物卡…');
+			return await call("importCard", { payload: await parseCardFile(file), ...(replacePath ? { replacePath } : {}) });
+			} finally { progress.close(); }
 		}
 
 		/** What a card file brought into its character material, for the import notice. */
@@ -287,8 +290,8 @@ window.__ModuleLoader__.load({
 				let last = null;
 				for (let index = 0; index < queue.length; index += 1) {
 					setProgress({ done: index + 1, total: queue.length });
-					try { const result = await rpc("importMobileCard", { id: queue[index].id }); last = result.card; }
-					catch (err) { failures.push(mobileImportNameOf(queue[index]) + "：" + String(err && err.message || err)); }
+					try { const result = await importTavernPasswordCard(password => rpc("importMobileCard", { id: queue[index].id, ...(password === undefined ? {} : { password }) }), mobileImportNameOf(queue[index])); last = result.card; }
+					catch (err) { if (err?.code !== 'TAVERN_CARD_IMPORT_CANCELLED') failures.push(mobileImportNameOf(queue[index]) + "：" + String(err && err.message || err)); }
 				}
 				setBusy(false); setProgress(null);
 				if (last) { if (!failures.length) close(); await props.onImported(last); }
@@ -347,7 +350,7 @@ window.__ModuleLoader__.load({
 				open ? h("div", { className: "dsh-tavern-mobile-import", role: "dialog", "aria-modal": "true", "aria-label": "从手机下载目录导入人物卡" }, h("div", { className: "dsh-tavern-mobile-import-shell" }, h("div", { className: "dsh-tavern-mobile-import-panel" },
 					h("div", { className: "dsh-tavern-mobile-import-title" }, "从手机下载目录导入"),
 					h("div", { className: "dsh-tavern-question-sub" }, "把 PNG 或 JSON 人物卡放进手机 Download，回到这里点选。"),
-					h("div", { className: "dsh-tavern-mobile-import-count" }, countText),
+					h("div", { className: "dsh-tavern-mobile-import-count", role: 'status', 'aria-busy': !!progress }, progress ? h(Spinner) : null, countText),
 					error ? h("div", { className: "dsh-tavern-dock-error", role: "alert" }, error) : null,
 					h("div", { className: "dsh-tavern-mobile-import-tools" },
 						h("input", { className: "dsh-tavern-mobile-import-search", type: "search", value: filter, placeholder: "筛选文件名", disabled: busy, onChange: function (event) { setFilter(event.target.value); } }),
@@ -447,7 +450,8 @@ window.__ModuleLoader__.load({
 
         // @include rpc-transport.cjs
         const presentationRequest = createPresentationQueue();
-
+        // The isolated clip export page answers every request from its frozen export snapshot (clipReplayCore below).
+        let clipExportTransport = null;
 		// A save whose session log cannot be upgraded may not open at all, so this works from the
 		// conversation menu too: the structure goes to the developer, the story text stays home.
 		async function downloadSessionDiagnostics(args, sessionId) {
@@ -456,6 +460,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function rpc(method, args, sessionId, requestOptions) {
+            if (clipExportTransport) return clipExportTransport(method, {...args,sessionId:sessionId || args?.sessionId});
 			// While DSH restarts (after an update) it accepts requests a moment before Tavern's
 			// routes and auth are mounted: they answer 404/401/5xx without running the handler.
 			// Wait that window out instead of reporting it; a lasting failure still surfaces.
@@ -469,8 +474,9 @@ window.__ModuleLoader__.load({
 				}
 			}
 			const runtimeControl = ["claimTavernScriptWork", "startTavernScriptWork", "getTavernScriptWorkState", "heartbeatTavernScriptRuntime", "completeTavernHelperEvent", "releaseTavernHelperRuntime"].includes(method);
-            // Keep stage reads on authenticated HTTP; the upstream mux only declares script controls.
-			const controlChannel = runtimeControl && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
+            // 页面卸载的租约释放须走 HTTP keepalive；Remote 连接会随旧页面关闭。
+            // 舞台读取仍使用带源身份的 HTTP，Remote 只声明脚本控制请求。
+			const controlChannel = runtimeControl && requestOptions?.keepalive !== true && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
 			const started = Date.now();
             const clockStart = performance.now();
             const roundKey = method + ':' + (sessionId || args?.sessionId || '');
@@ -553,15 +559,11 @@ window.__ModuleLoader__.load({
 					if (typeof result?.errorCode === "string" && result.errorCode) error.code = result.errorCode;
 					// the cycle ids / conflicting mods the player message names (UI-CONTRACT.md 错误).
 					if (result?.errorDetails) error.details = result.errorDetails;
+					if (result?.failure) error.failure = result.failure;
 					throw error;
 				}
-                ;
-                ;
+                if (method === 'regenBody') tavernPlayEvents.emit('regenerate', payload.sessionId);
 				const accepted = viewRead ? viewRead.accept(result) : result;
-                if (method === 'getSession' && accepted.view && payload.sessionId) {
-                    ;
-                    ;
-                }
 				if (viewRead) rememberHistoryWindow(payload.sessionId, accepted.view);
 				if (payload.sessionId && accepted.view && typeof accepted.view.mode === "string") publishSessionMode(payload.sessionId, accepted.view.mode);
                 if (accepted.contextWindow) return {...accepted,context:expandTavernOpeningWindow(accepted.contextWindow).tavernHelper};
@@ -871,6 +873,8 @@ window.__ModuleLoader__.load({
 
 // @include runtime/conversation-lifecycle.js
 
+// @include features/play-events.js
+
 // @include ui/error-center.js
 
 // @include ui/lazy-details.js
@@ -881,6 +885,9 @@ window.__ModuleLoader__.load({
 // @include runtime/host-artifacts.js
 
 // @include runtime/helper-public-api.js
+// @include runtime/helper-prompt-api.js
+// @include runtime/helper-message-generation.js
+// @include runtime/helper-compat-api.js
 // @include runtime/helper-macro-api.js
 // @include runtime/helper-display-api.js
 // @include runtime/helper-generation-api.js
@@ -923,6 +930,7 @@ window.__ModuleLoader__.load({
 // @include features/reply-observer.js
 
 // @include features/speech.js
+// @include features/read-aloud.js
 
 // @include features/music.js
 
@@ -931,11 +939,17 @@ window.__ModuleLoader__.load({
 // @include modules/story-view-mode.js
 // @include ui/message-frame.js
 
+// @include features/message-deletion.js
 // @include features/assistant-renderer.js
+
+// @include features/story-transcript-data.js
+// @include modules/story-external-history.js
+// @include features/story-transcript-list.js
 
 // @include features/card-list.js
 
 // @include-domain update-status-controller.js
+// @include modules/card-update-dialog.js
 // @include features/sidebar.js
 
 // @include features/scene-images.js
@@ -989,15 +1003,27 @@ window.__ModuleLoader__.load({
 // @include features/polish-compare.js
 
 // @include stage-session-binding.js
+// @include stage-client-loader.cjs
+
+// Clip export: the stage client replays a round on the isolated export page (dsh-tavern-stage clip-render.cjs) over
+// these core names; the setters replace the core bindings the export page swaps out.
+function clipReplayCore() {
+    return {React, ReactDOM, avatarCache, bgManual, bgmPlayer, bindStageNavigation, bindStageViews, bubbleCharacter, bubbleMediaDescriptor, bubbleMoodList, bubbleStore,
+        forkStageAudio, galEnter, galStageLifetime, segmentSpeechInput, spineRuntimeState, STAGE_HISTORY_SETTLE_MS, stageBlockPages, stagePageCards, stageReading, voicePlayer,
+        get stageViews() {return stageViews;},
+        set tavernSessionSignals(value) {tavernSessionSignals = value;}, set forkTtsScope(value) {forkTtsScope = value;},
+        set clipExportTransport(value) {clipExportTransport = value;}, set packTransport(value) {packTransport = value;}};
+}
 
 
 
-		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "betterSidebar", "remote", "remote.commands", "remote.session", "tavernSessionSignals", "theme", "modelDirectories", "remote.settings"]; // host theme, shared model directory, settings writes (「能看图」)
+		const storyTranscriptFeature = createTavernStoryTranscriptFeature();
+		const inject = ["slots", "sessions", "workspaces", "layout", "connection", "conversation", "commandUi", "betterSidebar", "remote", "remote.commands", "remote.session", "tavernSessionSignals", "theme", "modelDirectories", "remote.settings"]; // host theme, shared model directory, settings writes (「能看图」)
 
 		// @include tavern-presentation.js
 
 		function apply(ctx) {
-			// The profile switch page (dsh-profile-bridge) names itself by side from this flag.
+			// The Tavern profile switch page names itself by side from this flag.
 			window.__dshTavernLoaded = true;
             installTavernPresentation(ctx);
             // Stage registration is deferred until its optional client plugin mounts.
@@ -1007,13 +1033,33 @@ window.__ModuleLoader__.load({
             stageEffect(({createViews}) => bindStageViews(createViews));
             // Local debug capture delegates to the same session and stage routes as the UI.
             // No endpoint, cursor writer or replay protocol: live never installs this adapter.
-            stageEffect(() => {
+            // Registered in the core (not with the stage client): opening the session is what makes the
+            // on-demand loader start the stage, so the route must exist before the stage does.
+            ctx.effect(() => {
                 // Debug launch fills this marker only in its isolated code copy; normal builds stay null.
                 const captureSlot = /* dsh-debug-capture-slot */ null;
                 if (!captureSlot) return;
-                const navigate = async ({ sessionId, turn, para = 1 }) => {
+                const until = async (ready, tries) => { for (let wait = 0; wait < tries && !ready(); wait++) await new Promise(resolve => setTimeout(resolve, 50)); return ready(); };
+                // plain: only open the session (the transcript as a player sees it), never entering its stage — also for a
+                // card whose stage would first offer its setup wizard.
+                const navigate = async ({ sessionId, turn, para = 1, plain = false }) => {
                     if (!sessionId || !Number.isSafeInteger(turn) || turn < 1 || !Number.isSafeInteger(para) || para < 1) throw new Error('Debug capture target refused');
                     await createSessionCompat(ctx.sessions, ctx.get("uiWorkspace")).open(sessionId);
+                    // A card without a stage is not entered: the transcript hides under its session's stage
+                    // (bubbles.js), so entering one that never mounts would leave the chat blank. The host decides
+                    // this per card (view.stage); the stage client then loads for the open session.
+                    if (!await until(() => liveTavernView.getSnapshot(sessionId)?.view, 200)) return { loaded: false, available: false };
+                    if (plain) {
+                        // A stage still entered (an earlier capture, or the player) is left as F12 「回聊天」 does.
+                        if (galActive.get()) { galLeave(); await until(() => !galActive.get(), 200); }
+                        return { loaded: true, available: false, plain: true };
+                    }
+                    if (!stageWantedOf(liveTavernView.getSnapshot(sessionId))) return { loaded: true, available: false };
+                    if (!await until(() => stageNavigation && stageSessions.owner, 600)) throw new Error('Stage client did not start for the capture session');
+                    bubbleStore.load(sessionId);
+                    await until(() => bubbleStore.get(sessionId), 200);
+                    const card = bubbleStore.get(sessionId);
+                    if (!card?.cardPath || !card.config?.enabled) return { loaded: Boolean(card), available: false };
                     galEnter(sessionId, { turn, para });
                     // A round before the conversation's loaded window is not indexed, so the stage's navigation skipped it and the
                     // stage stayed on the previous round. Pull earlier pages through the backlog's 「加载更早」 route, then enter it.
@@ -1087,28 +1133,32 @@ window.__ModuleLoader__.load({
             // Host shortcuts and exit registration; the plugin starts its own session runtime.
             stageEffect(() => galStageShortcut(ctx), "dsh-tavern: stage keyboard shortcut");
             stageEffect(() => galStageLifetime(), "dsh-tavern: stage visibility lifetime");
-            const stageClientEntry = createStageClientEntry({
-                startLifetime: startStageClientLifetime,
-                install: stageRegistrations,
+            // The stage client is downloaded and started only for a session whose card has the stage on
+            // (view.stage, host-decided); availability = server stage ready and such a session is open.
+            const stageClientLoader = createStageClientLoader({
+                sessions: ctx.sessions, views: liveTavernView,
+                runtime: {read: () => rpc('getStageRuntimeStatus', {}), subscribe: (changed, wake) => signals.subscribe('plugin:dsh-tavern-stage', 'plugin-lifecycle', changed, wake, wake)},
+                load: () => import('/api/dsh-tavern/client-assets/stage-client.mjs'),
+                install: plugin => ctx.plugin(plugin),
                 report: error => tavernErrorHub.report("舞台", error)
             });
-            ctx.effect(() => () => stageClientEntry.dispose(), "dsh-tavern: stage client bridge lifetime");
-            ctx.provide("tavernStageFrontend", Object.freeze({availability:{read:()=>rpc('getStageRuntimeStatus',{}),subscribe:listener=>signals.subscribe('plugin:dsh-tavern-stage','plugin-lifecycle',listener,listener,listener)},mount: stageClientEntry.mount,sessionInputs:()=>stageSessionInputs(ctx)}));
+            // registrations: what the stage client runs, as one owned lifetime, each time it mounts (dsh-tavern-stage entry.js).
+            // stageLeases: a gameMode view with presentation 'stage' borrowing the stage (attach/get/subscribe).
+            ctx.provide("tavernStageFrontend", Object.freeze({availability: stageClientLoader.availability, registrations: stageRegistrations, report: error => tavernErrorHub.report("舞台", error), sessionInputs: () => stageSessionInputs(ctx), stageLeases: tavernStageLeases}));
+            ctx.effect(() => { stageClientHold = stageClientLoader.hold; return () => { if (stageClientHold === stageClientLoader.hold) stageClientHold = null; }; }, "dsh-tavern: stage client hold");
+            ctx.effect(() => stageClientLoader.start(), "dsh-tavern: stage client loader");
 			function reconcileLibraryTabTitles() {
 				if (!ctx.betterSidebar || typeof ctx.betterSidebar.getSnapshot !== "function" || typeof ctx.betterSidebar.updateTab !== "function") return;
 				const snapshot = ctx.betterSidebar.getSnapshot();
 				const state = snapshot.state;
 				if (!state) return;
 				const retiredTabs = [];
-				const expectedTitles = {
-					"dsh-tavern:conversation-settings": "本局设置",
-					"dsh-tavern:user-profile": "长期偏好",
-					"dsh-tavern:cards": "人物卡库",
-					"dsh-tavern:presets": "预设",
-					"dsh-tavern:worldbooks": "世界书库",
-					"dsh-tavern:resources": "剧本与素材库",
-					"dsh-tavern:transfer": "导出与导入"
-				};
+				// A single page's title is its registered type's (the panel registry), so a renamed panel's open tab follows it.
+				function expectedTitle(type) {
+					const descriptor = typeof ctx.betterSidebar.getTab === "function" ? ctx.betterSidebar.getTab(type) : undefined;
+					if (!descriptor || descriptor.single !== true) return undefined;
+					return typeof descriptor.title === "function" ? descriptor.title() : descriptor.title;
+				}
 				function visit(node) {
 					if (!node) return;
 					if (node.kind === "split") {
@@ -1118,7 +1168,7 @@ window.__ModuleLoader__.load({
 					(node.tabs || []).forEach(function (tab) {
 						// 系统提示词与长期偏好已并入“预设”标签页。
 						if (tab.type === "dsh-tavern:boundary-prompts" || tab.type === "dsh-tavern:bypass-plans" || tab.type === "dsh-tavern:system-prompts" || tab.type === "dsh-tavern:user-profile") { retiredTabs.push(tab.id); return; }
-						const title = expectedTitles[tab.type];
+						const title = expectedTitle(tab.type);
 						if (title && tab.title !== title) ctx.betterSidebar.updateTab(tab.id, { title: title });
 					});
 				}
@@ -1216,7 +1266,9 @@ window.__ModuleLoader__.load({
 			registerTavernStartPage(ctx, slots);
 			registerTavernPhonePanel(ctx);
 			playControlsFeature.register({ ctx: ctx, slots: slots });
+			messageDeletionFeature.register({ ctx: ctx, slots: slots });
 			assistantRendererFeature.register({ ctx: ctx, slots: slots });
+			storyTranscriptFeature.register({ ctx: ctx, slots: slots });
 			tavernReplyObserverFeature.register({ ctx: ctx, slots: slots });
 			ctx.effect(function () {
 				return slots.inject("conversation.input.right", function () { return slots.register({
@@ -1234,10 +1286,9 @@ window.__ModuleLoader__.load({
                     children: { "settings.tavern.appearance": { kind: "list", scope: "root" } }
 				}, TavernSettingsSection); });
 			}, "dsh-tavern: settings section");
-            ctx.effect(function () {
-                return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-speech", order:112, label:() => "配音" },
-                    () => React.createElement("div", {className:"dsh-tavern-global-settings"}, React.createElement(TavernSpeechSettings))); });
-            }, "dsh-tavern: speech settings");
+			// The voice plugin's 配音 page lists browser speech as a 语音服务 row; the 🔊 line button speaks through the voice
+			// service, so the Tavern has no speech settings of its own.
+			ctx.provide("ttsBrowserSpeech", browserSpeechService);
             ctx.effect(function () {
                 return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-plugins", order:113, label:() => "酒馆插件" }, TavernPluginsSettingsSection); });
             }, "dsh-tavern: plugins settings section");
@@ -1289,6 +1340,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		exports.findTavernQuoteRanges = findTavernQuoteRanges;
         exports.installTavernTextColors = installTavernTextColors;
         exports.TavernColoredMarkdown = TavernColoredMarkdown;
+        exports.clipReplayCore = clipReplayCore;
         exports.apply = apply;
 		exports.createTurnHistoryProjection = createTurnHistoryProjection;
 		exports.createTurnErrorControls = createTurnErrorControls;
@@ -1314,6 +1366,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		exports.createTavernPanelRegistry = createTavernPanelRegistry;
 		exports.createTavernCardAppPresence = createTavernCardAppPresence;
 		exports.createTavernCardAppDock = createTavernCardAppDock;
+		exports.installFrameStorageBridge = installFrameStorageBridge;
 		exports.createTavernHelperScriptRuntime = createTavernHelperScriptRuntime;
 		exports.ensureTavernHostJQuery = ensureTavernHostJQuery;
 		exports.ensureTavernHostJQueryUi = ensureTavernHostJQueryUi;
@@ -1335,6 +1388,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		exports.tavernMvuReceiptForTurn = tavernMvuReceiptForTurn;
 		exports.tavernUserTextForTurn = tavernUserTextForTurn;
 		exports.createTavernFrameSlashExecutor = createTavernFrameSlashExecutor;
+		exports.installTavernPlayerInputPersistence = installTavernPlayerInputPersistence;
 		exports.createWorldBookLibraryRefreshModule = createWorldBookLibraryRefreshModule;
 		exports.groupWorldBookEditorEntries = groupWorldBookEditorEntries;
 		exports.orderWorldBookCatalogItems = orderWorldBookCatalogItems;
@@ -1387,15 +1441,18 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		exports.createCardLibraryFeatureModule = createCardLibraryFeatureModule;
 		exports.createPlayControlsFeatureModule = createPlayControlsFeatureModule;
 		exports.createTavernAssistantRendererFeatureModule = createTavernAssistantRendererFeatureModule;
+		exports.createTavernStoryTranscriptDataModule = createTavernStoryTranscriptDataModule;
+		exports.createTavernStoryTranscriptFeature = createTavernStoryTranscriptFeature;
+		exports.installTavernStoryExternalHistory = installTavernStoryExternalHistory;
 		exports.createTavernShellFeatureModule = createTavernShellFeatureModule;
 		exports.createTavernRuntimeGenerationMonitor = createTavernRuntimeGenerationMonitor;
 		// @include modules/reply-reveal.js
 		// @include modules/assistant-visibility.js
 		installTavernAssistantVisibilityPatch(require);
 		// @include modules/host-session-patch.js
-		// The page's session history only: the server's headless card runtime has none, and
+		// The page's session history only: the server's headless card runtime and the clip-export page have none, and
 		// would report the missing patch for the whole profile.
-		if (!window.__dshTavernHeadless) installTavernSessionHistoryPatch(require, rpc);
+		if (!window.__dshTavernHeadless && window.location?.hostname !== 'clip-export.invalid') installTavernSessionHistoryPatch(require, rpc);
 		return module.exports;
 	})
 });

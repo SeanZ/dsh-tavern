@@ -2,8 +2,11 @@
   "name": "dsh-profile-tavern",
   "version": "3.2.0",
   "scripts": {
-    "build:client": "node bin/build-tavern-client.mjs",
-    "check:client": "node bin/build-tavern-client.mjs --check",
+    "build:website": "node bin/build-website.mjs",
+    "wiki:references": "node bin/sync-wiki-references.mjs",
+    "sync:desktop": "node bin/dev-sync-desktop.mjs",
+    "build:client": "node bin/build-image-client.mjs && node bin/build-tavern-client.mjs",
+    "check:client": "node bin/build-image-client.mjs --check && node bin/build-tavern-client.mjs --check",
     "install:tavern": "node ./bin/dsh-tavern.mjs install",
     "start:tavern": "node ./bin/dsh-tavern.mjs start",
     "stop:tavern": "node ./bin/dsh-tavern.mjs stop",
@@ -41,8 +44,8 @@
     "dsh-mnemon": "0.5.31",
     "dsh-mnemon-source-runtime": "0.5.14",
     "dsh-mnemon-source-documents": "0.5.10",
-    "undici": "6.29.1",
-    "sharp": "0.34.5"
+    "sharp": "0.34.5",
+    "undici": "6.29.1"
   },
   "dsh": {
     "profile": {
@@ -55,7 +58,8 @@
         "dsh-tavern-plugin",
         "dsh-tavern-remote",
         "dsh-asset-library",
-        "dsh-tavern-stage"
+        "dsh-tavern-stage",
+        "dsh-tavern-tts"
       ]
     },
     "bundle": {
@@ -96,7 +100,8 @@
     "@deepseek-ai/dsh-shell": "0.2.2-alpha.3",
     "@deepseek-ai/dsh-spill": "0.2.2-alpha.3",
     "@deepseek-ai/dsh-util-workspace-path": "0.2.2-alpha.3",
-    "@deepseek-ai/dsh-workflow": "0.2.2-alpha.3"
+    "@deepseek-ai/dsh-workflow": "0.2.2-alpha.3",
+    "dsh-tavern-tts": "link:./tavern-plugin/packages/dsh-tavern-tts"
   },
   "description": "DSH Tavern: standalone tavern Profile bundle",
   "files": [

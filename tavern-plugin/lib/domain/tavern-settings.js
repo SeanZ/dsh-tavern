@@ -281,6 +281,15 @@ export function applyTavernSettingsPatch(current, patch) {
     if (!['after-fill', 'after-send'].includes(input.candidateDismissMode)) throw new Error('无效的候选项收起方式')
     next.candidateDismissMode = input.candidateDismissMode
   }
+  if (Object.hasOwn(input, 'storyGenerationMode')) {
+    if (!['host', 'plugin-direct', 'plugin-tool-call'].includes(input.storyGenerationMode)) throw new Error('正文生成方式无效')
+    next.storyGenerationMode = input.storyGenerationMode
+  }
+  if (Object.hasOwn(input, 'storyGenerationProvider')) {
+    if (typeof input.storyGenerationProvider !== 'string' || input.storyGenerationProvider.length > 240) throw new Error('正文生成插件标识无效')
+    next.storyGenerationProvider = input.storyGenerationProvider
+  }
+  if (next.storyGenerationMode?.startsWith('plugin-') && !next.storyGenerationProvider?.trim()) throw new Error('请先选择正文生成插件')
   // Two independent directions: input replays the history that is sent to the
   // model, output turns this turn's body into a submission call. Legacy switches
   // are folded into the pair and then dropped, so a later patch to one side can
@@ -311,6 +320,15 @@ export function applyTavernSettingsPatch(current, patch) {
     next.storyOutputToolCall = outputToolCall
     delete next.storyToolCall
     delete next.storyHistoryToolCall
+  }
+  if (Object.hasOwn(input, 'retryOnFailure')) {
+    if (typeof input.retryOnFailure !== 'boolean') throw new Error('自动重试设置必须是布尔值')
+    next.retryOnFailure = input.retryOnFailure
+  }
+  // 长按发送键 2 秒直接重新生成本轮正文；默认关闭，避免误触改写正文。
+  if (Object.hasOwn(input, 'longPressSendRegenerate')) {
+    if (typeof input.longPressSendRegenerate !== 'boolean') throw new Error('长按发送键重新生成设置必须是布尔值')
+    next.longPressSendRegenerate = input.longPressSendRegenerate
   }
   if (Object.hasOwn(input, 'autoOpenStatusPanel')) {
     if (typeof input.autoOpenStatusPanel !== 'boolean') throw new Error('自动打开酒馆状态面板设置必须是布尔值')
@@ -409,7 +427,7 @@ export function presentTavernSettings(document, defaults) {
     contextCompaction: compactionPolicy(object(document).contextCompaction),
     showSystemNavigation: object(document).showSystemNavigation === true,
     showPlayProcess: object(document).showPlayProcess === true,
-    hideContextAndReasoning: object(document).hideContextAndReasoning !== false,
+    hideContextAndReasoning: object(document).hideContextAndReasoning === true,
     headerItems: readHeaderItems(object(document).headerItems),
     viewTabs: readViewTabs(object(document).viewTabs),
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
@@ -418,10 +436,17 @@ export function presentTavernSettings(document, defaults) {
     candidateAutoGenerate: object(document).candidateAutoGenerate === true,
     // 自动精修: off by default, since it reviews and rewords every reply.
     polishPrereview: object(document).polishPrereview === true,
+    storyGenerationMode: ['plugin-direct', 'plugin-tool-call'].includes(document?.storyGenerationMode) ? document.storyGenerationMode : 'host',
+    storyGenerationProvider: typeof document?.storyGenerationProvider === 'string' ? document.storyGenerationProvider : '',
     storyInputToolCall: storyToolCalls.input,
     storyOutputToolCall: storyToolCalls.output,
     // 独立故事视图的接管开关，不影响舞台按人物卡启用。
     storyViewMode: object(document).storyViewMode === true,
+    // A failed model request is resent once by default (tavern-retry-limiter); off means
+    // the turn ends right there and the reply is only remade when the player asks.
+    retryOnFailure: object(document).retryOnFailure !== false,
+    // 长按 2 秒发送键直接重新生成正文；默认关闭。
+    longPressSendRegenerate: object(document).longPressSendRegenerate === true,
     // Only the latest floors run a card's HTML interface; 0 renders every floor.
     autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     // Library edits reach a running game on its next turn; only an explicit

@@ -4,9 +4,9 @@ import { Session } from './fixtures/dsh-session-host.mjs'
 import { appendSessionEvent, sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import { replaceSessionSurface } from '../tavern-plugin/lib/domain/session-surface-mutations.js'
 import { roundAnchor } from '../tavern-plugin/lib/domain/round-anchor.js'
-import { locateRollbackSurface } from '../tavern-plugin/lib/domain/rollback-surface.js'
+import { locateRollbackSurface, projectedReplyTurns } from '../tavern-plugin/lib/domain/rollback-surface.js'
 import { nativeOpeningMessageId } from '../tavern-plugin/lib/domain/native-opening.js'
-import { planNativeSurfaceRepair, repairNativeSurface } from '../tavern-plugin/lib/domain/native-surface-repair.js'
+import { planNativeSurfaceRepair, recordNativeSurfaceRepair, repairNativeSurface } from '../tavern-plugin/lib/domain/native-surface-repair.js'
 
 const model = { kind: 'model', provider: 'test', model: 'test' }
 const textOf = event => (event.data.message?.content || event.data.content || []).map(block => block.text).join('')
@@ -34,7 +34,7 @@ const nodeTexts = session => { const bySeq = new Map(sessionEvents(session).map(
 const plan = ({ session, chat }) => planNativeSurfaceRepair({ chat, events: sessionEvents(session), nodes: session.surface.nodes })
 function repair(h, repairId = 'r1') {
   const result = repairNativeSurface(h.session, h.chat, { repairId })
-  for (const { messageIndex, anchor } of result.anchors) if (anchor) h.chat.messages[messageIndex].nativeAnchor = anchor
+  recordNativeSurfaceRepair(h.chat, h.chat, result.anchors)
   return result
 }
 
@@ -69,6 +69,47 @@ test('回退后 Chat 少了一轮、原生却留着：去掉原生多出的那�
   repair(h)
   assert.deepEqual(h.session.surface.nodes.slice(0, kept.length), kept)
   assert.deepEqual(nodeTexts(h.session).slice(kept.length), [''], 'only an empty placeholder stands for the removed round')
+  assert.equal(plan(h).status, 'intact')
+})
+
+test('删除末尾回复后：独立 user 保留在 Surface，旧回复被遮掉', () => {
+  const h = game(1)
+  h.chat.messages.pop()
+  const result = repair(h)
+  assert.equal(result.applied, true)
+  assert.deepEqual(nodeTexts(h.session).filter(Boolean), ['前缀', '开场', '本轮上下文', '行动2'])
+  assert.equal(nodeTexts(h.session).includes('正文2'), false)
+  assert.equal(plan(h).status, 'intact')
+})
+
+test('删除输入后：独立 assistant 写回，不带旧 user', () => {
+  const h = game(1)
+  h.chat.messages.splice(-2, 1)
+  const result = repair(h)
+  assert.equal(result.plan.rounds.length, 1)
+  assert.equal(result.plan.rounds[0].userText, null)
+  assert.deepEqual(nodeTexts(h.session), ['前缀', '开场', '正文2'])
+  assert.equal(plan(h).status, 'intact')
+})
+
+test('独立 assistant 修复后清除旧成对锚点，不再误定位到其它正文', () => {
+  const h = game(2)
+  h.chat.messages.splice(1, 1)
+  const standalone = h.chat.messages[1]
+  assert.ok(standalone.nativeAnchor)
+  repair(h)
+  assert.equal(standalone.nativeAnchor, undefined)
+  assert.equal(plan(h).status, 'intact')
+})
+
+test('删除中间回复后：连续 user 分别保留，不并入下一条 assistant', () => {
+  const h = game(2)
+  h.chat.messages.splice(2, 1)
+  const result = repair(h)
+  assert.equal(result.plan.rounds.length, 1)
+  assert.equal(result.plan.rounds[0].userText, '行动3')
+  assert.deepEqual(nodeTexts(h.session), ['前缀', '开场', '本轮上下文', '行动2', '行动3', '正文3'])
+  assert.equal(nodeTexts(h.session).includes('行动2\n\n行动3'), false)
   assert.equal(plan(h).status, 'intact')
 })
 
@@ -186,6 +227,30 @@ test('修复写回存档：只给读时未变的楼层换锚点，清掉待修�
   assert.equal(recordNativeSurfaceRepair(structuredClone(current), read, []), false)
 })
 
+test('修复移动正文后，锚点和映射指向实际编辑轮，修复替换不冒充重新生成投影', () => {
+  const h = game(2)
+  const last = h.chat.messages.at(-1)
+  last.text = '修复后的正文'
+  h.chat.regeneratedDshTurns = { 3: 8 } // 旧生成期映射；修复会再移动一次
+  const repaired = repairNativeSurface(h.session, h.chat, { repairId: 'move' })
+  recordNativeSurfaceRepair(h.chat, h.chat, repaired.anchors)
+  const reply = sessionEvents(h.session).find(event => event.seq === last.nativeAnchor.reply)
+  assert.equal(last.turn, 3, '修复不改稳定的存档回合号')
+  assert.ok(Number(reply.data.turn) > 3)
+  assert.equal(last.nativeAnchor.turn, Number(reply.data.turn), '锚点轮号与 reply 事件的原生轮一致')
+  assert.equal(h.chat.regeneratedDshTurns[3], Number(reply.data.turn), '映射同步到正文实际所在行')
+  assert.equal(projectedReplyTurns({ events: sessionEvents(h.session), nodes: h.session.surface.nodes }).has(3), false,
+    'native-repair 替换不能再用范围尾部覆盖这个映射')
+
+  last.text = '再次修复的正文'
+  const second = repairNativeSurface(h.session, h.chat, { repairId: 'move-again' })
+  recordNativeSurfaceRepair(h.chat, h.chat, second.anchors)
+  const secondReply = sessionEvents(h.session).find(event => event.seq === last.nativeAnchor.reply)
+  assert.equal(secondReply.data.message.source.tavernStoryTurn, 3, '再次修复仍使用稳定故事号，不把上次原生位置当故事号')
+  assert.equal(last.nativeAnchor.turn, Number(secondReply.data.turn))
+  assert.equal(h.chat.regeneratedDshTurns[3], Number(secondReply.data.turn))
+})
+
 test('原生里是模型原文（未去空白、未经正则），存档里是投影后的文字：仍算一致', () => {
   const h = game(2)
   for (const message of h.chat.messages.filter(row => row.role === 'assistant' && !row.greeting)) {
@@ -210,4 +275,20 @@ test('失败、中断或仍在进行的回合留在末尾：交给失败回合�
     if (reason) appendSessionEvent(h.session, 'turn/end', { turn: 9, reason: { kind: reason } })
     assert.equal(plan(h).status, 'intact', String(reason))
   }
+})
+
+test('缺 turn 的旧档行修复后写回新锚点，编辑竞争仍保留旧锚点', () => {
+  const stale = { turn: 8, input: 80, reply: 81 }
+  const current = { nativeSync: { status: 'stale' }, messages: [
+    { role: 'assistant', text: '未变正文', nativeAnchor: stale },
+    { role: 'assistant', text: '并发新正文', nativeAnchor: stale }
+  ] }
+  const repaired = { messages: [{ role: 'assistant', text: '未变正文' }, { role: 'assistant', text: '修复时正文' }] }
+  const anchor = { turn: 2, input: 10, reply: 11 }
+  assert.equal(recordNativeSurfaceRepair(current, repaired, [
+    { messageIndex: 0, anchor, replyTurn: 2 }, { messageIndex: 1, anchor, replyTurn: 2 }
+  ]), true)
+  assert.equal(current.messages[0].nativeAnchor, anchor)
+  assert.equal(current.messages[1].nativeAnchor, stale)
+  assert.equal(current.nativeSync, undefined)
 })

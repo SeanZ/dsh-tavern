@@ -8,6 +8,7 @@
 // @include-protocol asset-tags.cjs
 // @include-protocol audio-categories.cjs
 // @include widget-contracts.cjs
+// @include audio-loudness.js
 // one kind order — built-in kinds as listed, then mod-brought kinds grouped by mod id
 // (stable: mods sorted by id, a mod's kinds in the order it lists them). modKinds rows are [kind, modId, label].
 function kindOrder(builtin, modKinds) {
@@ -21,12 +22,12 @@ function kindOrder(builtin, modKinds) {
 // The raw text goes to the console (and the 调试视图's 最新错误) only.
 const PLAYER_ERRORS={REVISION_CONFLICT:'内容已被修改，请重新载入',
   LIMIT_EXCEEDED:'素材数据超过大小或数量限制，未能保存；请减少本次提交的内容后重试',
-  TRIGGER_LINT:'触发词不符合要求，请填写能在正文中出现的简短词语，去掉重复或过于笼统的词后再保存',
+  TRIGGER_LINT:'触发词不符合要求：蓝灯、绿灯至少 3 个、最多 6 个正文里会出现的简短词语，去掉重复或过于笼统的词后再保存',
   MISSING_DEPENDENCY:'素材引用不完整，请补齐所引用的图片、差分或资源后重试；无需安装额外程序',
   PACK_UNAVAILABLE:'这张卡用到的一个素材包找不到了，请在 舞台设置 › 素材包 里移除或重新安装它',
   AbortError:'保存超时，结果尚未确认；请重新载入后检查',TimeoutError:'保存超时，结果尚未确认；请重新载入后检查'};
 // Names a player reads as words, not code: product names and short capitals (MP3、FLAC、CG、BGM — not HTTP or a CODE_NAME).
-const PLAYER_TERMS=/Live2D|Spine|ComfyUI|Fish Audio|WebP|\b(?!HTTP\b)[A-Z][A-Z0-9]{1,4}\b(?!_)/g;
+const PLAYER_TERMS=/ffmpeg|Live2D|Spine|ComfyUI|Fish Audio|WebP|\b(?!HTTP\b)[A-Z][A-Z0-9]{1,4}\b(?!_)/g;
 const playerErrorSeen=new Set();
 function playerPlain(text){
   const t=String(text||'').replace(/（HTTP\s*\d+）[\s\S]*$/,'').replace(/[：:]\s*[A-Za-z][\s\S]*$/,'').trim();
@@ -34,6 +35,13 @@ function playerPlain(text){
 }
 function playerErrorText(error,{codes,fallback='出错了，请稍后再试'}={}){
   if(!error)return '';
+  if (error.failure && typeof error.failure.message === 'string') {
+    const failure = error.failure;
+    const hints = {'content-filter':'正文生成被服务商审核拦截，请调整内容后再试','context-overflow':'正文生成超过模型上下文容量，请减少上下文','output-limit':'正文生成达到输出长度限制，请调整输出额度','reasoning-only':'模型只返回了思考，没有生成正文','empty-response':'模型没有返回正文','timeout':'插件正文生成超时，请检查服务连接和超时设置','network':'正文生成网络请求失败，请检查服务连接','preset':'正文生成预设处理失败，请检查预设配置'};
+    const message = hints[failure.category] || failure.message || fallback;
+    const details = [failure.stage, failure.code, failure.details?.httpStatus && 'HTTP ' + failure.details.httpStatus, failure.details?.providerCode, failure.details?.finishReason, failure.details?.blockReason].filter(Boolean).join(' · ');
+    return message + (details ? '（' + details + '）' : '');
+  }
   const message=typeof error==='string'?error:String(error.message||''),name=typeof error==='string'?'':String(error.name||'');
   const code=typeof error==='string'?'':String(error.code||'')||(['AbortError','TimeoutError'].includes(name)?name:'');
   const key=code||(/^[A-Z][A-Z0-9_]+$/.test(message)?message:'');
@@ -43,8 +51,11 @@ function playerErrorText(error,{codes,fallback='出错了，请稍后再试'}={}
   if(raw&&said!==raw&&!playerErrorSeen.has(raw)&&typeof console!=='undefined'){if(playerErrorSeen.size>200)playerErrorSeen.clear();playerErrorSeen.add(raw);console.warn('dsh-tavern:',raw);}
   return said;
 }
-function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, prepareImage: prepareImageOverride, spine: spineKit, timeGrade, autoChoices} = {}) {
+function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, prepareImage: prepareImageOverride, live2d: live2dOption, spine: spineKit, timeGrade, autoChoices} = {}) {
   const h = React.createElement;
+  // The Live2D preview kit: the stage's Live2D module, bound with the stage pages (stageScope.bind, views.live2dKit), else
+  // the one given here. The pages that read it draw only once the stage is bound.
+  let live2dKit = live2dOption;
   // autoChoices is the client's useAutoChoicesPreference hook (auto-choices-preference.js) —
   // the one reader/writer of tavern-settings candidateAutoGenerate — for the 基础设置 row 「自动生成选项」.
   // timeGrade(projection) is the stage's compensating background colour matrix for a time without its
@@ -56,11 +67,11 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
   // 演出风格 (`directions`) — text entries the director always receives
   // while their pack is lit (蓝灯 全局 / 绿灯 本卡) and the entry is 启用.
   // built-in kinds come first in their canonical order; kinds a mod brings (MOD_KINDS:
-  // kind → owning mod id, e.g. the danmaku mod's 观众群) follow them — mod id order, then the order listed. KIND_ORDER is
+  // kind → owning mod id, e.g. the timer mod's 计时器) follow them — mod id order, then the order listed. KIND_ORDER is
   // the one order every kind list uses (library tabs + 更多, pack-row chips, pack window tabs, setup, add/copy menus).
   // 入场演出 (`entrances`, dsh.entrance/1) - what the stage plays as it opens; 蓝灯 or 关闭.
   const BUILTIN_KINDS = {figures:'人物', backgrounds:'背景', cg:'CG', props:'物品', performances:'演出组合', music:'音乐', sfx:'音效', ambience:'环境音', looks:'滤镜', skins:'舞台皮肤', entrances:'入场演出', videos:'视频', widgets:'模组', directions:'演出风格'};
-  const MOD_KINDS = [['audience','dsh.danmaku','观众群'], ['timers','dsh.timer','计时器']];
+  const MOD_KINDS = [['timers','dsh.timer','计时器']];
   const KIND_ORDER = kindOrder(Object.keys(BUILTIN_KINDS), MOD_KINDS);
   const kinds = Object.fromEntries(KIND_ORDER.map(key => [key, BUILTIN_KINDS[key] ?? MOD_KINDS.find(row => row[0] === key)[2]]));
   // shorter labels for the library's one-row kind filter (full name stays the tab's name).
@@ -755,7 +766,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
   // with a chat open the library reads that card's bindings (card scope: 本卡 / 全局 / 关闭,
   // the same writer as 舞台设置). no group heads; 全局 → 本卡 → 关闭 bands,
   // each ordered by the chosen sort, in every kind tab.
-  function Home({binding,open,onOpen,sessionId,cardPath,cardStamp,filter}) {
+  function Home({binding,open,onOpen,sessionId,cardPath,cardStamp,filter,nav}) {
     const state=useLoad(binding,async()=>{await binding.loadSettings?.();return loadPackRows(binding);},[]),[query,setQuery]=React.useState(''),[kind,setKind]=React.useState(''),[draft,setDraft]=React.useState(false),[sort,setSort]=usePackSort(),[getting,setGetting]=React.useState(false),[picking,setPicking]=React.useState(null);
     React.useEffect(()=>{if(filter)setKind(filter.kind||'');},[filter]);
     const list=state.value||[],packs=list.filter(p=>!p.error),broken=list.filter(p=>p.error);
@@ -815,7 +826,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
       getting&&h(PackGetSheet,{binding,packs,catalogueReady:catalogue.ready,onClose:()=>setGetting(false),onSources:catalogue.openSources,onInstalled:catalogue.installed,
         onPreview:preview=>{setGetting(false);actions.setPreview(preview);}}),
       catalogue.layer,
-      open&&h(PackModal,{key:open.packId+':'+(open.at||''),binding,packId:open.packId,initial:open,scope,packs,ctx:null,onPacksChanged:()=>state.reload(),onOpenPack:(id,k,item)=>onOpen({packId:id,kind:k,figureId:item}),onClose:changed=>{onOpen(null);if(changed)state.reload();}}));
+      open&&h(PackModal,{key:open.packId+':'+(open.at||''),binding,packId:open.packId,initial:open,scope,packs,ctx:null,nav,onPacksChanged:()=>state.reload(),onOpenPack:(id,k,item)=>onOpen({packId:id,kind:k,figureId:item}),onClose:changed=>{onOpen(null);if(changed)state.reload();}}));
   }
   // ---------- The shared pack modal (素材库 and 舞台设置; editable everywhere) ----------
   function useNarrow() {
@@ -866,10 +877,12 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     const bytes=new Uint8Array(await file.arrayBuffer()),ext=audioExt(bytes);
     if(!ext)throw new Error('请选择 MP3、OGG、WAV、M4A 或 FLAC 音频');
     if(bytes.length>60*1024*1024)throw new Error('音频过大（上限 60 MB）');
-    return {bytes,descriptor:{ext,mime:AUDIO_MIME[ext],size:bytes.length}};
+    return {bytes,descriptor:{ext,mime:AUDIO_MIME[ext],size:bytes.length},loudness:await measureBrowserAudio(bytes)};
   }
   const fileStem=name=>[...String(name||'').replace(/\.[^.]+$/,'').trim()].slice(0,120).join('')||'未命名';
   let entrySerial=0;
+  // An added file starts 关闭 with no words: 蓝灯 / 绿灯 need 3–6 of them, which the player writes in the opened entry.
+  const newFileEntry=(kind,id,name,content)=>({kind,id,name,enabled:false,recall:{mode:'keyword',keywords:[]},directorNote:'',...content});
   const newEntryId=(pack,kind)=>{let id;do{id='u'+Date.now().toString(36)+(entrySerial++).toString(36)+Math.random().toString(36).slice(2,5);}while(pack.manifest.assets.some(a=>a.kind===kind&&a.id===id));return id;};
   // One figure picture (立绘 / 头像) into a pack through its serialized writer `enqueue(job(snapshot) → {snapshot})`: the pack
   // modal's uploads and every generation 采用 (useAssetGen), also the 新人物 page's (asset-pack-setup-ui.js).
@@ -888,7 +901,8 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
   // initial: {kind?, figureId?, tab?: 'gen' | 'voice' (stage setup wizard: the figure opens on 生图 or its 声音 page)}. scope: the surface's usePackScope (its errors show in the foot; figure-editor r4:
   // no state tag in the header — the pack's 全局 / 本卡 / 关闭 is set in the library list, not inside the pack). ctx: card context or null.
   // onClose(changed): `changed` tells the caller its cached pack snapshots are stale.
-  function PackModal({binding,packId,initial,scope,packs,ctx,onPacksChanged,onOpenPack,onClose}) {
+  // nav: the host's tab navigation (openTab) — the library's own, or the card context's (舞台设置).
+  function PackModal({binding,packId,initial,scope,packs,ctx,nav=ctx?.nav,onPacksChanged,onOpenPack,onClose}) {
     const state=useLoad(binding,()=>binding.service.getPackSnapshot({packId}),[packId]),pack=state.value,audio=useAudioPreview(binding,packId),narrow=useNarrow(),work=useTask(binding);
     // a list lamp choice is a quiet write of its own — no 正在处理…, only an error in the foot.
     const lampWork=useTask(binding);
@@ -898,6 +912,8 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     const [figureTab,setFigureTab]=React.useState(initial?.tab==='gen'?'gen':'edit');
     // a new 演出风格 is a local draft until its text is written (a style needs text).
     const [styleDraft,setStyleDraft]=React.useState(false);
+    // the entry just added by addFiles — its detail opens on the 触发词 field with the hint (cleared by the next pick).
+    const [fresh,setFresh]=React.useState(null);
     React.useEffect(()=>{if(!notice)return;const t=setTimeout(()=>setNotice(null),8000);return()=>clearTimeout(t);},[notice]);
     const latest=React.useRef(null),queue=React.useRef(Promise.resolve());
     const seen=React.useRef(null);if(pack!==seen.current){seen.current=pack;latest.current=pack;}
@@ -1015,7 +1031,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
       const closure=await imageClosure(media);
       return enqueue(snapshot=>binding.service.patchPack({packId,expectedRevision:snapshot.revision,fileUpdates:closure.files,patch:{blobs:{...snapshot.manifest.blobs,...closure.blobs},assets:snapshot.manifest.assets.map(asset=>{
         if(asset.kind!==kind||asset.id!==assetId)return asset;
-        const change=content=>{const next={...content,media:closure.hash};delete next.pendingMedia;if(AUDIO_KINDS.includes(kind)){delete next.durationMs;delete next.loudness;}if(kind==='sfx')delete next.gainDb;return next;};
+        const change=content=>{const next={...content,media:closure.hash};delete next.pendingMedia;if(AUDIO_KINDS.includes(kind)){delete next.durationMs;next.loudness=media.loudness;}if(kind==='sfx')delete next.gainDb;return next;};
         return asset.variants?{...asset,variants:{...asset.variants,entries:asset.variants.entries.map(row=>row.id===variantId?{...row,content:change(row.content)}:row)}}:change(asset);
       })}}));
     };
@@ -1041,6 +1057,9 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     const importModelHere=async result=>{const made=await importModel(result);
       setKind('figures');setQuery('');setFilter('all');setSel(made.figureId);setFigureTab('edit');if(narrow)setDetail(true);setNotice({text:'已导入模型'});onPacksChanged?.();};
     const close=()=>{audio.stop();onClose(changed.current);};
+    // A page in the window that opens a sidebar tab (the voice page's 「配音后端 ›」) closes the window first, so the tab it
+    // opens is in front and takes the focus instead of opening behind the window.
+    const tabNav=nav?.openTab?{...nav,openTab:type=>{close();return nav.openTab(type);}}:nav;
     // 演出风格 is the one kind added in place (no file), so its tab also shows while it is empty and asked for.
     const name=pack?.manifest.name||'素材包',present=pack?KIND_ORDER.filter(k=>kindCount(pack.manifest,k)>0||(k==='directions'&&kind==='directions')):[];
     const current=kind&&present.includes(kind)?kind:present[0]||null;
@@ -1075,7 +1094,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     const rightRef=React.useRef(null);React.useEffect(()=>{if(rightRef.current)rightRef.current.scrollTop=0;},[current,selected?.id]);
     const toggle=id=>setPicked(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
     const stopSelect=()=>{setSelecting(false);setPicked(new Set());};
-    const switchKind=k=>{audio.stop();setKind(k);setSel(null);setQuery('');setCategory('');setDetail(false);setPicked(new Set());setStyleDraft(false);};
+    const switchKind=k=>{audio.stop();setFresh(null);setKind(k);setSel(null);setQuery('');setCategory('');setDetail(false);setPicked(new Set());setStyleDraft(false);};
     // 新建 (the dashed ＋, or 「演出风格」 in the add menu) opens a draft; the first write adds
     // the entry (启用, 蓝灯 recall as the contract requires). 删除 removes it in one CAS write.
     const addStyle=()=>{audio.stop();stopSelect();setKind('directions');setQuery('');setFilter('all');setCategory('');setStyleDraft(true);setDetail(true);};
@@ -1105,15 +1124,15 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
       const svc=binding.service,added=[],figures=[];
       if(k==='cg') {
         const revision=latest.current.revision,prepared=await prepareCgFiles(files);
-        const asset={kind:'cg',id:newEntryId(latest.current,'cg'),name:fileStem(files[0].name),enabled:true,directorNote:'',recall:{mode:'keyword',keywords:[]},variants:{default:prepared.variants[0].id,entries:prepared.variants}};
+        const asset=newFileEntry('cg',newEntryId(latest.current,'cg'),fileStem(files[0].name),{variants:{default:prepared.variants[0].id,entries:prepared.variants}});
         await enqueue(c=>svc.patchPack({packId,expectedRevision:revision,fileUpdates:prepared.updates,patch:{assets:[...c.manifest.assets,asset],blobs:{...c.manifest.blobs,...prepared.blobs}}}));
-        stopSelect();setKind(k);setQuery('');setFilter('all');setSel(asset.id);onPacksChanged?.();return;
+        stopSelect();setKind(k);setQuery('');setFilter('all');setSel(asset.id);setFresh(asset.id);if(narrow)setDetail(true);onPacksChanged?.();return;
       }
       for(const file of files){
         const stem=fileStem(file.name),media=AUDIO_KINDS.includes(k)?await prepareAudio(file):await prepareImage(file,k==='figures'?'sprite':'background');
         if(AUDIO_KINDS.includes(k)){
           const blob=await enqueue(c=>svc.putBlob({packId,expectedRevision:c.revision,bytes:media.bytes,descriptor:media.descriptor}));
-          added.push({kind:k,id:newEntryId(latest.current,k)+added.length,name:stem,enabled:true,recall:{mode:'keyword',keywords:[]},directorNote:'',media:blob.hash});continue;
+          added.push(newFileEntry(k,newEntryId(latest.current,k)+added.length,stem,{media:blob.hash,loudness:media.loudness}));continue;
         }
         const closure=await imageClosure(media);
         if(k==='figures'){
@@ -1122,12 +1141,12 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
           closure.files.set(spriteFile,jsonBytes(made.manifest));closure.files.set('figures/'+figureId+'.json',jsonBytes(figure));
           await enqueue(c=>svc.patchPack({packId,expectedRevision:c.revision,patch:{figures:[...c.manifest.figures,figureId],sprites:{...c.manifest.sprites,[spriteKey]:spriteFile},blobs:{...c.manifest.blobs,...closure.blobs}},fileUpdates:closure.files}));figures.push(figureId);
         }else{
-          const asset={kind:k,id:newEntryId(latest.current,k)+added.length,name:stem,enabled:true,recall:{mode:'keyword',keywords:[]},directorNote:'',media:closure.hash};
+          const asset=newFileEntry(k,newEntryId(latest.current,k)+added.length,stem,{media:closure.hash});
           await enqueue(c=>svc.patchPack({packId,expectedRevision:c.revision,patch:{assets:[...c.manifest.assets,asset],blobs:{...c.manifest.blobs,...closure.blobs}},fileUpdates:closure.files}));added.push(asset);
         }
       }
       if(added.length&&AUDIO_KINDS.includes(k))await enqueue(c=>svc.patchPack({packId,expectedRevision:c.revision,patch:{assets:[...c.manifest.assets,...added]}}));
-      stopSelect();setKind(k);setQuery('');setFilter('all');setSel(added[0]?.id||figures[0]||null);
+      stopSelect();setKind(k);setQuery('');setFilter('all');setSel(added[0]?.id||figures[0]||null);if(added.length){setFresh(added[0].id);if(narrow)setDetail(true);}
       setNotice({text:'已添加 '+files.length+' 项'});onPacksChanged?.();
     });
     // 复制到…: copyItems (one publication with the same-pack closure); 新建素材包 creates the target in the same write.
@@ -1187,8 +1206,8 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
         if(e?.shiftKey&&from!==id&&a>=0&&b>=0){const range=ids.slice(Math.min(a,b),Math.max(a,b)+1),on=picked.has(from);
           setPicked(p=>{const n=new Set(p);for(const r of range)on?n.add(r):n.delete(r);return n;});}
         else toggle(id);
-        pickAnchor.current=id;setSel(id);return;}
-      setSel(id);if(narrow)setDetail(true);};
+        pickAnchor.current=id;setSel(id);setFresh(null);return;}
+      setSel(id);setFresh(null);if(narrow)setDetail(true);};
     // The lamp items read like LampMenu's own (dot + the same word: ENTRY_LAMPS).
     const filterMenu=filterModes.length>0&&h(Popover,{label:'筛选条目',className:'ap-filter-anchor',trigger:({toggle:t,open})=>h(Button,{className:'ap-icon-button','data-on':lampFilter!=='all'||undefined,'aria-label':'筛选条目','aria-expanded':open,title:'筛选',onClick:t},h(Glyph,{name:'filter'})),
       content:closeMenu=>['all',...filterModes].map(v=>h('button',{key:v,type:'button',role:'menuitemradio','aria-checked':lampFilter===v,className:'ap-menu-item ap-lamp-opt','data-mode':v,onClick:()=>{setFilter(v);closeMenu();}},
@@ -1236,10 +1255,10 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
       // in the name row of an entry / style / CG (its name is the page title; cg-editor redesign: a CG has a name row now).
       h(PanelBoundary,{name:'entry-detail',lead:narrowBack&&h('div',{className:'ap-detail-title ap-subhead'},h(SubpageBack,narrowBack)),resetKey:current+'/'+(drafting?'@new':selected?.id||'')+'@'+pack.revision},
       current==='directions'&&(drafting||selected)?h(StyleDetail,{key:drafting?'@new':'directions/'+selected.id,pack,asset:drafting?null:selected,commit,create:createStyle,remove:removeStyle,busy:work.busy,back:narrowBack}):
-      !selected?null:current==='figures'?h(FigureDetail,{key:selected.id,binding,pack,figure:selected,commitFigure,assignFigureVoice,commitVoice,importFigureImage,importModel,importFigureSpine,figureActions:figureActions(selected.id),ctx,narrow,onBack:()=>setDetail(false),onClose:close,backLabel:kinds[current],
+      !selected?null:current==='figures'?h(FigureDetail,{key:selected.id,binding,pack,figure:selected,commitFigure,assignFigureVoice,commitVoice,importFigureImage,importModel,importFigureSpine,figureActions:figureActions(selected.id),nav:tabNav,narrow,onBack:()=>setDetail(false),onClose:close,backLabel:kinds[current],
           gen,importSettei,removeFigureImage,identityBoard:{upload:importIdentitySettei,remove:removeIdentitySettei},tab:figureTab,setTab:setFigureTab,voiceOpen:initial?.tab==='voice'&&selected.id===initial.figureId}):
-        current==='cg'?h(CgEntryEditor,{key:current+'/'+selected.id,binding,pack,packs:packs||[],asset:selected,save:saveCg,card:ctx||scope?.ctx||null,back:narrowBack}):
-        h(EntryDetail,{key:current+'/'+selected.id,binding,pack,packs,asset:selected,commit,audio,gen,uploadBackground,uploadVariant,card:ctx||scope?.ctx||null,remove:removeEntry,busy:work.busy,back:narrowBack,
+        current==='cg'?h(CgEntryEditor,{key:current+'/'+selected.id,binding,pack,packs:packs||[],asset:selected,save:saveCg,card:ctx||scope?.ctx||null,back:narrowBack,fresh:fresh===selected.id}):
+        h(EntryDetail,{key:current+'/'+selected.id,binding,pack,packs,asset:selected,commit,audio,gen,uploadBackground,uploadVariant,card:ctx||scope?.ctx||null,remove:removeEntry,busy:work.busy,back:narrowBack,fresh:fresh===selected.id,
           onCategory:path=>{setCategory(path);setSel(selected.id);if(narrow)setDetail(false);},
           onOpenPack:onOpenPack&&((id,k,item)=>{audio.stop();onPacksChanged?.();onOpenPack(id,k,item);})})));
     const empty=pack&&!present.length&&h(EmptyState,{text:'还没有内容',action:h(AddFilesMenu,{onFiles:addFiles,onGenerate:generateBackground,onStyle:addStyle,onModel:openModelImport,label:'添加文件',disabled:work.busy})});
@@ -1335,7 +1354,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
       h('span',null,kinds[k]))));
   }
   // Category glyphs for the pack navigation (the old 素材库 rail had one per kind).
-  const kindGlyphs={timers:'M8 14a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM6.5 1.5h3M8 4V2M8 9V6.5M12 4.5l1-1',audience:'M2.5 3h11v8h-7l-3 2v-2h-1zM5 6h6M5 8h4',backgrounds:'M2.5 3.5h11v9h-11zM2.5 10.5l3-3 3 3 2-2 3 3',music:'M6 12.5V4l7-1.5V11M6 12.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM13 11a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z',sfx:'M3 8h1.5M6 5v6M8.5 3v10M11 5.5v5M13.5 7v2',ambience:'M2 6.5c2-1.5 4-1.5 6 0s4 1.5 6 0M2 10c2-1.5 4-1.5 6 0s4 1.5 6 0',looks:'M8 2.5l1.4 3.6 3.6 1.4-3.6 1.4L8 12.5l-1.4-3.6L3 7.5l3.6-1.4z',widgets:'M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z',figures:'M8 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM3.5 13.5c.6-2.6 2.3-4 4.5-4s3.9 1.4 4.5 4',
+  const kindGlyphs={timers:'M8 14a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM6.5 1.5h3M8 4V2M8 9V6.5M12 4.5l1-1',backgrounds:'M2.5 3.5h11v9h-11zM2.5 10.5l3-3 3 3 2-2 3 3',music:'M6 12.5V4l7-1.5V11M6 12.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM13 11a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z',sfx:'M3 8h1.5M6 5v6M8.5 3v10M11 5.5v5M13.5 7v2',ambience:'M2 6.5c2-1.5 4-1.5 6 0s4 1.5 6 0M2 10c2-1.5 4-1.5 6 0s4 1.5 6 0',looks:'M8 2.5l1.4 3.6 3.6 1.4-3.6 1.4L8 12.5l-1.4-3.6L3 7.5l3.6-1.4z',widgets:'M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z',figures:'M8 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM3.5 13.5c.6-2.6 2.3-4 4.5-4s3.9 1.4 4.5 4',
     // packs-v3: 舞台皮肤 (a screen with a dialogue box) and 演出 (a clapperboard) were missing.
     skins:'M3 2.5h10a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5zM4.5 9h7v3h-7zM4.5 5h3',performances:'M2.5 7h11v6.5h-11zM2.5 7 3.6 3.4l9.6 1.2L12.8 7M6.3 3.8 5.4 7M9.8 4.2 9 7',
     // 演出风格 — the director's megaphone.
@@ -1345,22 +1364,42 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     // 视频: a film frame with a play triangle.
     videos:'M2 3.5h12v9H2zM2 5.5h12M2 10.5h12M6.8 6.6v2.8L9.2 8z'};
   function KindIcon({kind}) { return h('svg',{className:'ap-kind-icon',width:16,height:16,viewBox:'0 0 16 16',fill:'none','aria-hidden':true},h('path',{d:kindGlyphs[['cg','props'].includes(kind)?'backgrounds':kind],stroke:'currentColor',strokeWidth:1.2,strokeLinecap:'round',strokeLinejoin:'round'})); }
+  // @include asset-pack-widgets.js
+  // @include voice-catalogue-picker.js
   // @include widget-settings-ui.js
   // @include asset-pack-entry-ui.js
-  // @include-stage-source asset-pack-gen-ui.js
   // @include asset-pack-cg-ui.js
   // @include asset-pack-figure-ui.js
+  // @include asset-pack-image-character.js
   // @include asset-pack-spine-ui.js
   // @include asset-pack-import-ui.js
   // @include asset-pack-voice-ui.js
-  // @include-stage-source asset-pack-card-ui.js
   // @include asset-pack-opening-ui.js
   // @include asset-pack-catalogue-ui.js
   // @include asset-pack-setup-ui.js
   // @include asset-pack-character-ui.js
   const prepareImage = prepareImageOverride || browserPrepareImage;
-  // @include-stage-source asset-pack-engine-ui.js
   // @include mod-library.js
+  // The stage package's pages (asset-pack-{gen,card,engine}-ui.js and mod-manager.js of dsh-tavern-stage) are not in this
+  // bundle. When the stage client mounts (gal-stage.js bindStageViews -> entry.js createStageAssetPackViews) it builds them
+  // over this closure's names (stageScope.names) and binds its own here (stageScope.bind): the core pages below reach them
+  // by name once bound. The asset library, the stage tab and the Settings rows hold the stage client first (galStageHold)
+  // and wait on stageScope.use(); a card without the stage never loads them.
+  let CandidateArt, CandidateImageView, FigureGenTab, GEN_ART_ROLE, GEN_CELL_WORDS, GEN_PROBLEMS, GEN_REASONS, GEN_REF_LIMIT, GEN_SHEET_FACES, GenCellStatus, GenDialog, GenFaceCandidate, GenFaceMarks, GenGateNote, GenRefChip, GenSheet, GenStageCandidate, GenStageWait, ManagedModSection, PackPreviews, StageAvatar, StageKindJump, genBasis, genCell, genFailText, genKey, genMenuKeys, genOwnSprite, genPromptFor, genReadUpload, stageBytesText, stageFigure, stageFigureRows, stageKindPacks, stagePackBytes, stageSwitchTag, unbindPatch, useAssetGen, useElapsed, useGenNote, useManagedModControls, useStageWriter;
+  const stageScope=(()=>{
+    const listeners=new Set();let views=null;
+    const notify=()=>{for(const fn of [...listeners])fn();};
+    const take=next=>{({CandidateArt, CandidateImageView, FigureGenTab, GEN_ART_ROLE, GEN_CELL_WORDS, GEN_PROBLEMS, GEN_REASONS, GEN_REF_LIMIT, GEN_SHEET_FACES, GenCellStatus, GenDialog, GenFaceCandidate, GenFaceMarks, GenGateNote, GenRefChip, GenSheet, GenStageCandidate, GenStageWait, ManagedModSection, PackPreviews, StageAvatar, StageKindJump, genBasis, genCell, genFailText, genKey, genMenuKeys, genOwnSprite, genPromptFor, genReadUpload, stageBytesText, stageFigure, stageFigureRows, stageKindPacks, stagePackBytes, stageSwitchTag, unbindPatch, useAssetGen, useElapsed, useGenNote, useManagedModControls, useStageWriter}=next);};
+    // The exact names the stage pages reference from this factory (its declarations and parameters) and from the core client.
+    const names={VoiceCataloguePicker, voiceKey, voiceFromKey, generalVoiceOptions, React, autoChoices, Actions, BustArt, Button, CAST_FACE, CardCover, CardImportSheet, CatAddTile, CatBand, CatSheet, CatSub, ConfirmDialog, ErrorBox, FigureCastFace, Glyph, Help, HintLine, IconButton, ImageFramer, KIND_ORDER, KindSortTools, LampMenu, Loading, MOD_BUILTIN_PACKS, MOD_GLYPHS, MenuItem, ModEntries, Modal, NewFigurePage, PackImageView, PackList, PackModal, PackRow, PackSearchBox, Popover, RevealImg, STAGE_NAMES, Silhouette, StageItemsPage, StageModPage, StageModSection, StageOpenings, StageSection, StageSetupWizard, SubpageHead, SwitchRow, Thumb, UploadButton, VOICE_PROVIDERS, catBusyLabel, cellMenuTrigger, clone, downloadPackMedia, emotionMapped, emotionState, errorText, figureAvatar, figureEditorEmotions, figureOutfitView, globalFirst, glyphs, h, holdMedia, keywordProblem, kindGlyphs, kinds, loadPackDetail, loadPackRows, newResourceKey, openingMenuFocus, openingMenuKeys, orderPacks, outfitEmotionRows, outfitHead, outfitImageId, packCount, packFilter, packRowClick, splitKeywords, spriteSlotTakesStill, stageMissing, stageSetupCardPack, stageSetupReady, standInValue, stateBust, subpageKeys, switchRowClick, useLoad, usePackScope, usePackSort, useStageFold, useStageSetupAutoOpen, useVoiceLoad, useVoiceRefresh, validDraft, voiceIssueText, voiceNeedle, voiceMatches,
+      EmptyState, InlineAdd, InlineField, InlineGrid, InlineRow, OverrideDot, ResetButton, ScopeSwitch, Segmented, Spinner, Switch, TextArea, browserSpeechVoiceList, directorCommands, playerErrorText, selectFigureAvatar, selectPackAvatar};
+    return {names, get views(){return views;}, bound:()=>views!==null,
+      bind(next){views=next;take(next);live2dKit=next.live2dKit||live2dOption;notify();return()=>{if(views!==next)return;views=null;take({});live2dKit=live2dOption;notify();};},
+      // whether the stage pages are bound (a React external store; re-renders the caller on bind / unbind).
+      use(){return React.useSyncExternalStore(fn=>{listeners.add(fn);return()=>listeners.delete(fn);},()=>views!==null);}};
+  })();
+  // The stage pages' names on the returned API read live from the bound views (undefined until the stage client mounts).
+  const stageExposed=(target,list)=>{for(const name of list)Object.defineProperty(target,name,{enumerable:true,get:()=>stageScope.views?.[name]});return target;};
   // 素材库 manages packs only; the per-card page lives in the Tavern 舞台 tab (StagePanel).
   // packs-v3: the tab is only the pack list; a pack opens the shared modal. A deep link from 舞台设置 or the character
   // window (props.nav.take()) opens the modal at that pack / kind / figure. No basic/advanced split.
@@ -1373,16 +1412,19 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     if(!available||!binding?.service||binding.service.apiVersion!==2)return h('section',{className:'ap-ui',role:'status'},h('p',{className:'ap-empty'},'素材插件不可用'));
     return h('div',{className:'ap-ui ap-library'},
       h('header',{className:'ap-head'},h('h2',null,'舞台素材')),
-      h(Home,{binding,open,onOpen:setOpen,sessionId:props.sessionId,cardPath:props.cardPath,cardStamp:props.cardStamp,filter}));
+      h(Home,{binding,open,onOpen:setOpen,sessionId:props.sessionId,cardPath:props.cardPath,cardStamp:props.cardStamp,filter,nav:props.nav}));
   }
-  return {App,Home,StageSection,KIND_ORDER,kinds,ModDetail,StageModSection,StageModPage,ModManagerEntry,PackModal,PackRow,PackStateTag,EntryDetail,FigureDetail,applyEntryFields,splitKeywords,StagePanel,StagePage,EnginePage,ReadingsEditor,ConflictDialog,CardImportSheet,CardUrlSheet,
-    // 设置 → 舞台 → 素材生图 (asset-launcher.js registers the section).
-    GenPromptSettings,
+  return stageExposed({VoiceCataloguePicker,voiceKey,voiceFromKey,App,Home,StageSection,KIND_ORDER,kinds,ModDetail,StageModSection,StageModPage,PackModal,PackRow,PackStateTag,EntryDetail,FigureDetail,applyEntryFields,splitKeywords,ConflictDialog,CardImportSheet,CardUrlSheet,
+    // the stage pages' seam: names in (stageScope.names), bind / use (gal-stage.js, asset-launcher.js, settings.js).
+    stageScope,
     // the manager and the card's mod section, for tests and the offline screenshot harness.
-    mods:{ModManager,ManagedModSection,modSwitchWord},
+    mods:stageExposed({},['ModManager','ManagedModSection','modSwitchWord']),
     // the sheets, for tests and the offline screenshot harness.
     catalogue:{PackGetSheet,CatalogueSourcesSheet,CatalogueUpdateSheet,CatalogueJobSheet,startCatalogueDownload},
     // entering 舞台模式 opens 设置向导 once per card (stageSetupGate).
     stageSetup,
-    stage:{openingPatch,openingPreview,directorPromptRows,directorWire,directorPieceName,directorPromptRow,promptToolDefs,PromptOps,PromptPieces,PromptCatalogue,catalogueEntries,commandInfo,PromptTools,PromptAt,promptHeadClick,promptJson,promptJsonText,judgePromptRows,judgeWithProvider,judgeDraftProblem,promptTokenEstimate,storyPromptRows,promptSources,promptPackScope,stagePrefs,stageActive,stagePatch,stageEnable,stageMissing,unbindPatch,writeStageReturn,simpleSpriteImages,replaceOutfitSprite,emotionSlot,RETURN_KEY:STAGE_RETURN_KEY}};
+    stage:stageExposed({openingPatch,openingPreview,stageMissing,simpleSpriteImages,replaceOutfitSprite,emotionSlot,get RETURN_KEY(){return stageScope.views?.STAGE_RETURN_KEY;}},
+      ['directorPromptRows','directorWire','directorPieceName','directorPromptRow','promptToolDefs','PromptOps','PromptPieces','PromptCatalogue','catalogueEntries','commandInfo','PromptTools','PromptAt','promptHeadClick','promptJson','promptJsonText','judgePromptRows','judgeWithProvider','judgeDraftProblem','promptTokenEstimate','storyPromptRows','promptSources','promptPackScope','stagePrefs','stageActive','stagePatch','stageEnable','unbindPatch','writeStageReturn'])},
+    // 设置 → 舞台 → 素材生图 (GenPromptSettings), the 舞台 tab (StagePanel / StagePage / EnginePage), 读音词典 and the DSH card export sheet.
+    ['ModManagerEntry','StagePanel','StagePage','EnginePage','ReadingsEditor','DshCardExportSheet','GenPromptSettings']);
 }

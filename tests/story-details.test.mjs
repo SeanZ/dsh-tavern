@@ -23,7 +23,7 @@ function setup(t){
   async function show(html,extra={}){
     const projection=projectReplyLayers(html),before=JSON.stringify(projection)
     client.liveTavernView.setView('s',{mode:'story',replyProjections:[{turn:2,version:2,parts:projection.displayParts}],tavernRuntimePolicy:{trustedCardMode:true}})
-    await act(async()=>root.render(React.createElement(render.FloorBody,{sessionId:'s',storyTurn:2,...extra})))
+    await act(async()=>root.render(React.createElement(render.FloorBody,{sessionId:'s',floor:{messageUid:'m2',legacyTurn:2,projection:{turn:2,version:2,parts:projection.displayParts}},...extra})))
     assert.equal(JSON.stringify(projection),before,'显示不得改写投影对象')
   }
   return {win,render,root,calls,show}

@@ -226,8 +226,10 @@ export function createBackgroundTaskCoordinator(options = {}) {
         }
         // Preparation may await resource/context reads. Validate against the same
         // snapshot before creating an operation, including after a failed patch CAS.
+        // 同分支上后台写入可以推进 revision（结算、候选、世界书），那不代表这一轮
+        // 换了剧情；换分支或 revision 倒退（回退/重置）才让候选项失效。
         if (input.expectedTimeline && (str(source.timeline?.branchId) !== input.expectedTimeline.branchId
-          || (Number(source.timeline?.revision) || 0) !== input.expectedTimeline.revision)) {
+          || (Number(source.timeline?.revision) || 0) < Number(input.expectedTimeline.revision))) {
           throw new Error('剧情已变化，请重新生成候选项')
         }
         // Only a task on the same member's slot holds this one back.
@@ -263,7 +265,9 @@ export function createBackgroundTaskCoordinator(options = {}) {
           const state = ++refreshes <= HEADER_RETRIES && store.readRecoveryState ? await store.readRecoveryState(chatId) : undefined
           if (state?.timeline?.schemaVersion === 1 && Number.isSafeInteger(state._storageRevision)
             && !Object.values(state.timeline.operations || {}).some(op => op?.kind === 'body' && op.status === 'foreground-completed')) {
-            source = { ...source, ...state, timeline: { ...state.timeline, checkpoints: source.timeline.checkpoints } }
+            // Header fields only: its empty message slice must not replace the snapshot's floors.
+            const { messages: _messages, ...header } = state
+            source = { ...source, ...header, timeline: { ...state.timeline, checkpoints: source.timeline.checkpoints } }
             continue
           }
           fast = false

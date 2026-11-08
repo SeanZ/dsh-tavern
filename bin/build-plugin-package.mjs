@@ -27,6 +27,7 @@ const content = [
   // the preset's own plugin lines included, into this package instead.
   read('tavern-plugin/cordis.patch.yml')
     .replace('name: dsh-tavern-plugin/cordis-inspect', 'name: ./tavern-plugin/lib/cordis-inspect.js')
+    .replaceAll('name: dsh-tavern-plugin/host-tools', `name: ${packageName}/tavern-plugin/lib/host/tools.js`)
     .replaceAll('name: dsh-tavern-plugin/user-tools-bridge', `name: ${packageName}/tavern-plugin/lib/user-tools-bridge.js`)
     .replaceAll('name: dsh-tavern-plugin/compaction', `name: ${packageName}/tavern-plugin/lib/agent-compaction.js`)
     .replace('name: dsh-tavern-plugin\n', 'name: ./tavern-plugin/lib/index.js\n'),
@@ -35,6 +36,8 @@ const content = [
   // 标准包内嵌组件不单独安装，入口锚定本包，依赖由顶层清单完整声明。
   read('tavern-plugin/packages/dsh-asset-library/cordis.patch.yml')
     .replace('name: ./lib/index.js', 'name: ./tavern-plugin/packages/dsh-asset-library/lib/index.js'),
+  read('tavern-plugin/packages/dsh-tavern-tts/cordis.patch.yml')
+    .replace('name: dsh-tavern-tts', 'name: ./tavern-plugin/packages/dsh-tavern-tts/lib/index.js'),
   read('tavern-plugin/packages/dsh-tavern-stage/cordis.patch.yml')
     .replace('name: dsh-tavern-stage', 'name: ./tavern-plugin/packages/dsh-tavern-stage/lib/index.js'),
 ].join('\n').trimEnd() + '\n'

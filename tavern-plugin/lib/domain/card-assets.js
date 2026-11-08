@@ -1,6 +1,14 @@
 import * as zlib from 'node:zlib'
 import { CAST_EMOTIONS } from './cast-annotation.js'
 import { readZipEntries, writeZipEntries } from './zip-entries.js'
+import figureResolution from '../../packages/dsh-presentation-protocol/src/figure-resolution.cjs'
+
+// The card's main character among its cast characters, by the shared figure resolver (its exact name, else an alias only
+// one character has); null when none or several.
+function mainCharacter(characters, mainName) {
+  const found = figureResolution.resolveFigureName(characters.map((character, index) => ({ name: character.name, aliases: character.aliases || [], index })), String(mainName || ''))
+  return found.status === 'resolved' ? characters[found.row.index] : null
+}
 
 // Character material carried by a card file (Wiki「设计：tavern-to-galgame」): Character Card V3
 // `data.assets` in CHARX (`embeded://`), RisuAI PNG chunks (`chara-ext-asset_:N` → `__asset:N`),
@@ -229,6 +237,36 @@ export function collectCardAssets(card, resolve) {
   return result
 }
 
+// resting first: a library figure's first emotion is its default.
+const EMOTION_ORDER = ['neutral', ...Object.keys(CAST_EMOTIONS).filter(slot => slot !== 'neutral')]
+const emotionRows = (sprites, labels = {}) => EMOTION_ORDER.filter(slot => sprites[slot]).map(slot => ({ emotion: slot, label: labels[slot] || CAST_EMOTIONS[slot], bytes: sprites[slot] }))
+
+/**
+ * What of a card's collected material goes to the asset library (a card without packs of its own): the cast, the main
+ * character's expressions (the closest name per emotion, as cast-assets.js picks them, labelled with the card's own name
+ * for it) and the backgrounds. The rest (a non-PNG cover, kept extras, expressions no emotion name matches) stays with the
+ * card. Null material when none.
+ */
+export function cardLibraryMaterial(collected, mainName) {
+  const characters = collected.cast.map(character => ({ ...character, sprites: { ...character.sprites } }))
+  let main = mainCharacter(characters, mainName)
+  const emotions = [], labels = {}
+  const ordered = collected.emotions.map((emotion, index) => ({ emotion, index })).sort((left, right) => emotionRank(left.emotion.name) - emotionRank(right.emotion.name) || left.index - right.index).map(item => item.emotion)
+  for (const emotion of ordered) {
+    const slot = emotionSlot(emotion.name)
+    if (!slot) { emotions.push(emotion); continue }
+    if (!main) characters.unshift(main = { name: mainName, aliases: [], avatar: null, sprites: {}, voices: {} })
+    if (!main.sprites[slot]) main.sprites[slot] = emotion.bytes
+    else if (!main.sprites[slot].equals(emotion.bytes)) { emotions.push(emotion); continue }
+    labels[slot] ??= emotion.name
+  }
+  const used = characters.filter(character => Object.keys(character.sprites).length || character.avatar || character.voiceReferences?.length || character.voiceSource?.provider)
+  // kept as they came, so a CHARX export writes them back as they were
+  const rest = { emotions: [], backgrounds: [], cover: collected.cover, extras: [...collected.extras, ...emotions.map(({ name, ext, bytes }) => ({ type: 'emotion', name, ext, bytes }))], cast: [], skipped: collected.skipped }
+  if (!used.length && !collected.backgrounds.length) return { material: null, rest: collected }
+  return { rest, material: { characters: used.map(character => ({ ...character, sprites: emotionRows(character.sprites, character === main ? labels : {}) })), backgrounds: collected.backgrounds.map(({ name, bytes }) => ({ name, bytes })) } }
+}
+
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'])
 
 /**
@@ -236,7 +274,14 @@ const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'])
  * Standard places for what CCv3 has (cover, the main character's expressions, backgrounds,
  * kept extras); the rest of the cast in `extensions.dsh_tavern.cast`.
  */
-export function buildCharx({ document, cover, manifest, characterName, readFile }) {
+export function buildCharx(options) {
+  const { card, files } = buildCharxContents(options)
+  return writeZipEntries([{ path: 'card.json', content: JSON.stringify(card, null, 2) }, ...files], { readable: true, label: 'CHARX' })
+}
+
+/** buildCharx's card and files, for an archive writer of its own (the DSH card export); `resolveFileUri` points a file
+ * another part of that archive already holds at its embeded:// URI instead of copying it. */
+export function buildCharxContents({ document, cover, manifest, characterName, readFile, resolveFileUri = () => null }) {
   const card = structuredClone(document)
   const data = card.data = card.data && typeof card.data === 'object' ? card.data : {}
   card.spec = 'chara_card_v3'
@@ -245,6 +290,8 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
   const files = [], paths = new Map(), used = new Set()
   function place(type, file, name) {
     if (!file) return null
+    const existing = resolveFileUri(file)
+    if (existing) return existing
     const key = type + '\u0000' + file
     if (paths.has(key)) return paths.get(key)
     const bytes = readFile(file)
@@ -262,7 +309,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
   }
   const assets = (Array.isArray(data.assets) ? data.assets : []).filter(asset => asset && /^https?:/i.test(String(asset.uri)))
   const characters = manifest.characters || []
-  const main = characters.find(item => item.name === characterName || (item.aliases || []).includes(characterName)) || null
+  const main = mainCharacter(characters, characterName)
   if (cover) {
     used.add('assets/icon/image/main.png')
     files.push({ path: 'assets/icon/image/main.png', content: Buffer.from(cover) })
@@ -272,7 +319,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
   } else assets.push({ type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' })
   for (const [slot, file] of Object.entries(main ? main.sprites || {} : {})) {
     const uri = place('emotion', file, slot)
-    if (uri) assets.push({ type: 'emotion', uri, name: slot, ext: extOf(file.split('.').pop()) })
+    if (uri) assets.push({ type: 'emotion', uri, name: main.emotionNames?.[slot] || slot, ext: extOf(file.split('.').pop()) })
   }
   ;(manifest.backgrounds || []).forEach((background, index) => {
     const uri = place('background', background.file, index === 0 ? 'main' : background.name)
@@ -299,7 +346,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
   else delete data.extensions.dsh_tavern.cast
   if (!Object.keys(data.extensions.dsh_tavern).length) delete data.extensions.dsh_tavern
   if (files.length > MAX_ASSETS) throw new Error('人物卡素材超过 ' + MAX_ASSETS + ' 个，无法生成可完整导入的 CHARX')
-  return writeZipEntries([{ path: 'card.json', content: JSON.stringify(card, null, 2) }, ...files], { readable: true, label: 'CHARX' })
+  return { card, files }
 }
 
 /**
@@ -309,7 +356,7 @@ export function buildCharx({ document, cover, manifest, characterName, readFile 
 export function cardImportFromCard({ card, resolve, name }) {
   const collected = collectCardAssets(card, resolve)
   const text = JSON.stringify(card)
-  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)(\.png)?$/i, '') || '人物卡'
+  const base = String(name || '人物卡').replace(/\.(charx|dshcard|zip)$/i, '') || '人物卡'
   if (collected.cover && isPng(collected.cover.bytes)) {
     const png = pngWithCard(collected.cover.bytes, text)
     return { payload: { kind: 'png', name: base + '.png', b64: Buffer.from(text, 'utf8').toString('base64'), fileB64: png.toString('base64') }, collected: { ...collected, cover: null } }

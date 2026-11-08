@@ -19,7 +19,6 @@ import { pluginManifestProblem } from './plugin-manifest.js'
 
 const MARKER = '.dsh-card.json'
 const FOLDER = /^[a-z0-9][a-z0-9._-]{0,63}$/
-const MAX_PLUGIN_BYTES = 64 * 1024 * 1024
 
 function invalid(message) { return Object.assign(new Error(message), { code: 'TAVERN_CARD_PLUGIN_INVALID' }) }
 
@@ -53,7 +52,6 @@ export function createCardPlugins({ dataRoot, pluginsDir, keyOf = null }) {
       const entries = [...zip.entries.values()].filter(entry => entry.path.startsWith(prefix)).sort((a, b) => a.path.localeCompare(b.path))
       for (const entry of entries) {
         bytes += entry.size
-        if (bytes > MAX_PLUGIN_BYTES) throw invalid('插件 ' + folder + ' 超过 64 MB')
         const relative = entry.path.slice(prefix.length)
         const file = path.join(target, ...relative.split('/'))
         await mkdir(path.dirname(file), { recursive: true })
@@ -173,9 +171,29 @@ export function createCardPlugins({ dataRoot, pluginsDir, keyOf = null }) {
     })
   }
 
-  let managedOwner
+  // A card's plugin folders for its DSH card export: the archive entries (read from disk as the archive is written) and
+  // the dsh.json plugin descriptors.
+  async function exportEntries({ cardKey, plugins }) {
+    const entries = [], descriptors = []
+    for (const plugin of plugins) {
+      if (!FOLDER.test(plugin.folder)) throw invalid('插件文件夹无效')
+      const root = path.join(stagingRoot, cardKey, plugin.folder), prefix = 'plugins/' + plugin.folder + '/'
+      const pkg = await readPluginManifest(root, plugin.folder)
+      descriptors.push({ name: pkg.name, version: pkg.version, path: prefix, purpose: plugin.purpose || '' })
+      async function walk(relative = '') {
+        for (const entry of (await readdir(path.join(root, relative), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+          if (entry.isSymbolicLink()) throw invalid('插件中包含符号链接，无法导出')
+          const name = relative + entry.name
+          if (entry.isDirectory()) await walk(name + '/')
+          else if (entry.isFile()) entries.push({ path: prefix + name, file: path.join(root, name) })
+        }
+      }
+      await walk()
+    }
+    return { entries, plugins: descriptors }
+  }  let managedOwner
   function managed({distributions,cardRoots,retiredIds}) {
     return managedOwner ||= createCardPluginManagedOwner({stagingRoot,pluginsDir,serial,distributions,cardRoots,retiredIds,invalidate:()=>{scopes=null}})
   }
-  return Object.freeze({ stage, enable, disable, remove, movePath, scope, managed })
+  return Object.freeze({ stage, enable, disable, remove, movePath, scope, managed, exportEntries })
 }

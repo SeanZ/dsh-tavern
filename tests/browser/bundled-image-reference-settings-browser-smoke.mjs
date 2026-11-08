@@ -14,7 +14,10 @@ const clientSource = await readFile(new URL('../../tavern-plugin/packages/dsh-ta
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jdbsAAAAASUVORK5CYII=', 'base64')
 const clone = value => JSON.parse(JSON.stringify(value))
 const calls = [], errors = []
-let uploads = 0
+let uploads = 0, libraryRevision = 1, cardEnabled = true
+let cardBook = { version: 3, revision: 'card-1', buckets: ['rules', 'examples'].map(id => ({ id, label: id, entries: [{ id: 'shared-entry', title: id + ' title', content: id + ' original', enabled: true, mode: 'always' }] })) }
+let cardRevision = 1
+let failCardWrites = 0
 const savedApiKeys = new Map()
 const workflowDetail = { file: 'workflow-a.json', prompt: {
   '2': { class_type: 'LoadImage', inputs: { image: 'pose.png' }, _meta: { title: 'Pose input (not a character ref)' } },
@@ -26,8 +29,8 @@ const worldbooks = Object.fromEntries(['tags', 'natural', 'mixed', 'structured']
 const state = {
   referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
     designPromptMode: 'auto', characterDesignRequirements: '', outfitDesignRequirements: '',
-    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [], promptPresets: [{ id: 'legacy-entry', name: '旧提示词条目', positive: 'legacy positive', negative: 'legacy negative', enabled: true }] },
-  definitions: { characters: [{ id: 'person-a', name: '林月', match: 'Lin Yue', cards: [], traits: { face: 'keep original traits' }, outfits: [{ id: 'outfit-a', name: '白衬衫', upper: 'white shirt', enabled: true }] }], scenes: [], props: [] },
+    imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [{ id: 'preset-fold', name: '折叠测试套', artist: 'artist:fold_test', negative: 'lowres', position: 'prefix', enabled: true }], promptPresets: [{ id: 'legacy-entry', name: '旧提示词条目', positive: 'legacy positive', negative: 'legacy negative', enabled: true }] },
+  definitions: { revision: String(libraryRevision), characters: [{ id: 'person-a', name: '林月', match: 'Lin Yue', cards: [], traits: { face: 'keep original traits' }, outfits: [{ id: 'outfit-a', name: '白衬衫', upper: 'white shirt', enabled: true }] }], scenes: [], props: [] },
   outfits: [{ id: 'shared-a', name: '通用外套', upper: 'coat', enabled: true }],
   worldbookFormat: 'tags', worldbookBooks: clone(worldbooks.tags), tasks: [], workflows: [{ id: 'workflow-a', label: 'Reference workflow', file: 'workflow-a.json', enabled: true, current: true, summary: { nodeCount: 5 } }], imageProviders: [{ id: 'openai', label: 'OpenAI 兼容' }, { id: 'custom', label: '自定义 API' }],
 }
@@ -52,10 +55,38 @@ try {
     const url = new URL(route.request().url()), path = url.pathname.replace('/plugins/dsh-tavern-image', ''), method = route.request().method()
     if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><div id="root"></div>' })
     if (path === '/reference-image' && method === 'GET') return route.fulfill({ contentType: 'image/png', body: png })
+    if (path === '/jobs' && url.searchParams.has('image') || url.pathname.startsWith('/dsh-tavern-gen/img/')) return route.fulfill({ contentType: 'image/png', body: png })
     const body = method === 'POST' ? route.request().postDataJSON() : null
     calls.push({ path, method, query: Object.fromEntries(url.searchParams), body })
     let response = { ok: true }
-    if (path === '/state') response = publicState()
+    if (url.pathname === '/dsh-tavern-gen/api/tools-enabled') {
+      if (method === 'POST') cardEnabled = body.enabled
+      response = { ok: true, enabled: cardEnabled }
+    }
+    else if (url.pathname === '/dsh-tavern-gen/api/state' || url.pathname === '/dsh-tavern-gen/api/worldbook') response = { worldbook: clone(cardBook), config: { enabled: cardEnabled } }
+    else if (url.pathname === '/dsh-tavern-gen/api/gallery') response = { items: [{ id: 'card-only', file: 'card-only.png', url: '/dsh-tavern-gen/img/card-only.png', prompt: '卡片专用图片', session: 'card-session', at: 1 }, { id: 'card-next', file: 'card-next.png', url: '/dsh-tavern-gen/img/card-next.png', prompt: '下一张卡片图', session: 'card-session', at: 2 }] }
+    else if (url.pathname === '/dsh-tavern-gen/api/save') {
+      if (body.content.revision !== cardBook.revision) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ ok: false, code: 'REVISION_CONFLICT', error: '卡片世界书已在别处修改' }) })
+      cardBook = { ...clone(body.content), revision: 'card-' + (++cardRevision) }
+      response = { ok: true, worldbook: clone(cardBook) }
+    }
+    else if (url.pathname === '/dsh-tavern-gen/api/worldbook-entry') {
+      if (failCardWrites > 0) { failCardWrites--; return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'fixture rejected card write' }) }) }
+      const bucket = cardBook.buckets.find(item => item.id === body.bucket)
+      const entry = bucket.entries.find(item => item.id === body.id)
+      if (body.remove === true) bucket.entries.splice(bucket.entries.indexOf(entry), 1)
+      else Object.assign(entry, body.patch)
+      cardBook = { ...clone(cardBook), revision: 'card-' + (++cardRevision) }
+      response = { ok: true, book: clone(cardBook), entry: clone(entry) }
+    }
+    else if (url.pathname === '/dsh-tavern-gen/api/worldbook-add') {
+      const bucket = cardBook.buckets.find(item => item.id === body.bucket)
+      const entry = { id: 'added-entry', title: body.entry.title, content: body.entry.content, mode: body.entry.mode, enabled: body.entry.enabled }
+      bucket.entries.push(entry)
+      cardBook = { ...clone(cardBook), revision: 'card-' + (++cardRevision) }
+      response = { ok: true, book: clone(cardBook), entry: clone(entry) }
+    }
+    else if (path === '/state') response = publicState()
     else if (path === '/config') {
       if (Array.isArray(body.config.imageChannels)) {
         for (const channel of body.config.imageChannels) {
@@ -73,7 +104,11 @@ try {
     else if (path === '/image-channel-test') response = { ok: true, status: 'reachable', message: 'mock connection' }
     else if (path === '/comfy-test') response = { ok: true, version: 'mock' }
     else if (path === '/reference-image') { uploads++; response.referenceImage = { id: uploads.toString(16).repeat(64), name: body.name, mediaType: body.mediaType, byteLength: png.length } }
-    else if (path === '/definitions') { state.definitions = clone(body.definitions); state.outfits = clone(body.definitions.outfits || []); response = { ok: true, state: clone(state) } }
+    else if (path === '/definitions') {
+      if (body.definitions.revision !== state.definitions.revision) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ ok: false, code: 'REVISION_CONFLICT', error: '人物库已在别处修改，请重新载入；当前草稿仍保留' }) })
+      state.definitions = { ...clone(body.definitions), revision: String(++libraryRevision) }
+      state.outfits = clone(body.definitions.outfits || []); response = { ok: true, state: clone(state) }
+    }
     else if (path === '/worldbook') { const format = url.searchParams.get('format'); assert.ok(worldbooks[format]); response = { ok: true, worldbookFormat: format, worldbook: { name: format, entries: clone(worldbooks[format].flatMap(book => book.entries)) }, worldbookBooks: clone(worldbooks[format]) } }
     else if (path === '/worldbook-entry') { const book = worldbooks[body.format]?.find(book => book.key === body.book); assert.ok(book); Object.assign(book.entries[body.index], body.patch) }
     else if (path === '/workflow-bindings') {
@@ -82,7 +117,11 @@ try {
     }
     else if (path === '/workflow-values') response = { ok: true, values: { positive: '', negative: '' } }
     else if (path === '/loras-available') response = { ok: true, loras: [] }
-    else if (path === '/history') response = { ok: true, jobs: [] }
+    else if (path === '/history') response = { ok: true, jobs: [
+      { id: 'play-only', source: 'play', label: '剧情配图', hasImage: true, state: 'done', gameId: 'play-session', createdAt: 2 },
+      { id: 'card-only', source: 'card', label: '卡片工作台', hasImage: true, state: 'done', gameId: 'card-session', createdAt: 1 },
+    ] }
+    else if (path === '/jobs') response = { ok: true, job: {} }
     else if (path === '/tasks') response = { tasks: [] }
     else if (path === '/cards') response = { ok: true, cards: [] }
     else if (path === '/providers' || path === '/llm-models') response = { ok: true, providers: [], models: [] }
@@ -95,14 +134,45 @@ try {
   await page.addScriptTag({ content: 'window.__ModuleLoader__={load(spec){window.__plugin=spec.factory(name=>modules[name])}};' })
   await page.addScriptTag({ content: clientSource })
   await page.evaluate(() => {
-    let Settings
-    window.__plugin.apply({ slots: { inject(_name, install) { return install() }, register(spec, component) { if (spec.name === 'settings.section') Settings = component; return () => {} } }, inject() {} })
+    let Settings, Overlay
+    window.__plugin.apply({ slots: { inject(_name, install) { return install() }, register(spec, component) { if (spec.name === 'settings.section') Settings = component; if (spec.id === 'dsh-tavern-image-overlay') Overlay = component; return () => {} } }, inject() {} })
     if (!Settings) throw new Error('SettingsPanel not registered')
     const root = modules['react-dom/client'].createRoot(document.querySelector('#root'))
-    root.render(modules.react.createElement(Settings))
+    const h = modules.react.createElement
+    root.render(h(modules.react.Fragment, null, h(Settings), h(Overlay)))
   })
+  // 设置页里的断言先做完：默认生图模式来回切
+  await page.getByLabel('默认生图模式').selectOption('auto')
+  await page.waitForFunction(() => document.querySelector('[aria-label="默认生图模式"]')?.value === 'auto')
+  assert.equal(state.config.generationMode, 'auto')
   await page.getByLabel('默认生图模式').selectOption('reference')
   await page.waitForFunction(() => document.querySelector('[aria-label="默认生图模式"]')?.value === 'reference')
+  // 画风预设单开了一页。后面这些断言都落在「画风」页，一路做到底，不再来回切
+  await page.getByRole('button', { name: '画风', exact: true }).click()
+  // 画风预设每套默认收起，正文不进页面；选择栏的按钮负责整体展开与收起
+  const presetArtist = page.getByPlaceholder('(@artist_a:1.1), (@artist_b:1.0), masterpiece, best quality')
+  assert.equal(await presetArtist.count(), 0, '每套画风预设默认收起，正文不渲染')
+  await page.getByRole('button', { name: '▸ 展开全部', exact: true }).click()
+  await presetArtist.first().waitFor()
+  assert.equal(await presetArtist.count(), 1, '展开后正文出现')
+  await page.getByRole('button', { name: '▾ 收起全部', exact: true }).click()
+  await presetArtist.first().waitFor({ state: 'detached' })
+  assert.equal(await presetArtist.count(), 0, '收起后正文重新消失')
+  // Preset reorder persists the move and leaves the other presets in order.
+  await page.getByRole('button', { name: '➕ 新增一套', exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('[data-preset-card]').length === 2)
+  await page.getByRole('button', { name: '➕ 新增一套', exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('[data-preset-card]').length === 3)
+  await page.getByRole('button', { name: '▾ 收起全部', exact: true }).click()
+  await presetArtist.first().waitFor({ state: 'detached' })
+  const originalPresetIds = state.config.stylePresets.map(item => item.id)
+  await page.getByLabel('拖动排序 折叠测试套', { exact: true }).dragTo(page.locator('[data-preset-card]').last())
+  await page.waitForFunction(id => document.querySelectorAll('[data-preset-card]')[2]?.dataset.presetCard === id, originalPresetIds[0])
+  assert.deepEqual(state.config.stylePresets.map(item => item.id), [originalPresetIds[1], originalPresetIds[2], originalPresetIds[0]])
+  await page.getByRole('button', { name: '上移 折叠测试套', exact: true }).click()
+  await page.waitForFunction(id => document.querySelectorAll('[data-preset-card]')[1]?.dataset.presetCard === id, originalPresetIds[0])
+  assert.deepEqual(state.config.stylePresets.map(item => item.id), [originalPresetIds[1], originalPresetIds[0], originalPresetIds[2]])
+  // 提示词格式属于专业提示词预设卡，跟画风一起在「画风」页
   await page.getByLabel('提示词格式', { exact: true }).selectOption('structured')
   await page.waitForFunction(() => document.querySelector('[aria-label="提示词格式"]')?.value === 'structured')
   assert.equal(state.config.generationMode, 'reference')
@@ -139,7 +209,7 @@ try {
   await page.getByLabel('服装生成要求', { exact: true }).fill(chineseOutfitRequirements)
   await saveDesignRequirements(chineseCharacterRequirements, chineseOutfitRequirements)
   await page.getByRole('button', { name: '人物库', exact: true }).click()
-  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('button', { name: '画风', exact: true }).click()
   assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'chinese', 'the saved language mode survives leaving and reopening settings')
   assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), chineseCharacterRequirements)
   assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), chineseOutfitRequirements)
@@ -151,7 +221,7 @@ try {
   await page.getByLabel('服装生成要求', { exact: true }).fill(englishOutfitRequirements)
   await saveDesignRequirements(englishCharacterRequirements, englishOutfitRequirements)
   await page.getByRole('button', { name: '人物库', exact: true }).click()
-  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('button', { name: '画风', exact: true }).click()
   assert.equal(await page.getByLabel('角色与服装生成写法', { exact: true }).inputValue(), 'tags', 'the English Tag mode survives leaving and reopening settings')
   assert.equal(await page.getByLabel('角色生成要求', { exact: true }).inputValue(), englishCharacterRequirements)
   assert.equal(await page.getByLabel('服装生成要求', { exact: true }).inputValue(), englishOutfitRequirements)
@@ -192,11 +262,27 @@ try {
   assert.equal(state.definitions.characters[0].consistencyText, '保持脸型，动作由正文决定')
   assert.equal(calls.some(call => call.method === 'DELETE'), false)
 
+  // A stale draft survives a rejected save; explicit reload obtains the other editor's revision.
+  await page.getByLabel('角色「林月」一致性补充', { exact: true }).fill('未保存的草稿')
+  state.definitions.characters[0].consistencyText = '另一处已保存的文字'
+  state.definitions.revision = String(++libraryRevision)
+  await Promise.all([page.waitForResponse(response => response.url().endsWith('/definitions') && response.status() === 409), page.getByRole('button', { name: '保存人物库', exact: true }).click()])
+  await page.getByRole('button', { name: '重新载入最新人物库', exact: true }).waitFor()
+  assert.equal(await page.getByLabel('角色「林月」一致性补充', { exact: true }).inputValue(), '未保存的草稿')
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: '重新载入最新人物库', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('[aria-label="角色「林月」一致性补充"]')?.value === '另一处已保存的文字')
+  await saveLibrary('保存人物库')
+  assert.equal(state.definitions.characters[0].consistencyText, '另一处已保存的文字')
+
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByLabel('生图提供商').selectOption('custom')
   await page.getByLabel('API 协议', { exact: true }).selectOption('novelai')
   await page.waitForFunction(() => document.querySelector('[aria-label="API 协议"]')?.value === 'novelai' && document.querySelector('[aria-label="默认生图模式"] option[value="reference"]')?.disabled === true)
   assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), true, 'NovelAI protocol cannot select reference mode')
+  await page.getByLabel('默认生图模式').selectOption('auto')
+  await page.getByText('当前渠道不支持参考图输入；自动模式下每张都按文生图提交。', { exact: true }).waitFor()
+  assert.equal(state.config.generationMode, 'auto')
   await page.getByLabel('API 协议', { exact: true }).selectOption('openai')
   assert.equal(await page.locator('[aria-label="默认生图模式"] option[value="reference"]').evaluate(option => option.disabled), false, 'OpenAI protocol exposes reference mode')
   await page.getByLabel('API 协议', { exact: true }).selectOption('atlascloud')
@@ -251,7 +337,105 @@ try {
   assert.equal(worldbooks.structured[0].entries[0].content, '中文结构化规则')
   assert.equal(worldbooks.natural[0].entries[0].content, 'natural content')
   assert.equal(state.config.promptMode, 'structured', 'browsing worldbooks does not switch the active prompt format')
+  // Card workbench entries save one at a time, so switching buckets first flushes the pending write.
+  const fillCardEntry = text => Promise.all([
+    page.waitForResponse(response => response.url().includes('/dsh-tavern-gen/api/worldbook-entry') && response.request().method() === 'POST'),
+    page.getByLabel('卡片条目内容 shared-entry', { exact: true }).fill(text),
+  ])
+  await page.getByRole('button', { name: '卡片模式世界书', exact: true }).click()
+  await page.getByText('1. rules title', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '编辑', exact: true }).first().click()
+  await fillCardEntry('rules draft')
+  assert.equal(cardBook.buckets[0].entries[0].content, 'rules draft')
+  assert.equal(cardBook.buckets[1].entries[0].content, 'examples original', '保存当前分册不动另一册')
+  await page.getByRole('button', { name: '📖 examples（1 条）', exact: true }).click()
+  await page.getByText('1. examples title', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '编辑', exact: true }).first().click()
+  assert.equal(await page.getByLabel('卡片条目内容 shared-entry', { exact: true }).inputValue(), 'examples original', '同名条目 ID 不串册')
+  await fillCardEntry('examples draft')
+  assert.equal(cardBook.buckets[1].entries[0].content, 'examples draft')
+  assert.equal(cardBook.buckets[0].entries[0].content, 'rules draft', '写另一册不动当前册')
+  await page.getByRole('button', { name: '📖 rules（1 条）', exact: true }).click()
+  await page.getByText('1. rules title', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '编辑', exact: true }).first().click()
+  assert.equal(await page.getByLabel('卡片条目内容 shared-entry', { exact: true }).inputValue(), 'rules draft')
+  failCardWrites = 1
+  await fillCardEntry('conflicting draft')
+  await page.getByText('保存失败：fixture rejected card write', { exact: true }).waitFor()
+  assert.equal(await page.getByLabel('卡片条目内容 shared-entry', { exact: true }).inputValue(), 'conflicting draft')
+  assert.equal(cardBook.buckets[0].entries[0].content, 'rules draft', '失败不入库')
+  await fillCardEntry('rules retry')
+  assert.equal(cardBook.buckets[0].entries[0].content, 'rules retry')
+  await page.getByRole('button', { name: '➕ 新条目', exact: true }).click()
+  await page.getByLabel('卡片条目内容 added-entry', { exact: true }).waitFor()
+  await page.getByLabel('卡片条目标题 added-entry', { exact: true }).fill('新增规则')
+  await page.getByLabel('卡片条目内容 added-entry', { exact: true }).fill('新增规则正文')
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/worldbook-entry') && response.request().postDataJSON()?.patch?.mode === 'lookup'),
+    page.getByLabel('卡片条目档位 added-entry', { exact: true }).selectOption('lookup'),
+  ])
+  assert.equal(cardBook.buckets[0].entries[1].title, '新增规则')
+  assert.equal(cardBook.buckets[0].entries[1].content, '新增规则正文')
+  assert.equal(cardBook.buckets[0].entries[1].mode, 'lookup')
+  await page.screenshot({ path: join(tmpdir(), 'dsh-card-worldbook-review.png'), fullPage: true })
+
+  // Two quick edits form one autosave batch. A failed first write must retain both edits.
+  failCardWrites = 1
+  await page.getByLabel('卡片条目内容 added-entry', { exact: true }).fill('新增规则第二版')
+  await page.getByRole('button', { name: '编辑', exact: true }).first().click()
+  await page.getByLabel('卡片条目内容 shared-entry', { exact: true }).fill('原规则第二版')
+  await page.getByText('保存失败：fixture rejected card write', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '📖 examples（1 条）', exact: true }).click()
+  await page.getByText('1. examples title', { exact: true }).waitFor()
+  assert.equal(cardBook.buckets[0].entries[0].content, '原规则第二版')
+  assert.equal(cardBook.buckets[0].entries[1].content, '新增规则第二版')
+  await page.getByRole('button', { name: '📖 rules（2 条）', exact: true }).click()
+  await page.getByText('2. 新增规则', { exact: true }).waitFor()
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: '删', exact: true }).nth(1).click()
+  await page.getByRole('button', { name: '📖 rules（1 条）', exact: true }).waitFor()
+  assert.equal(cardBook.buckets[0].entries.length, 1)
+  await Promise.all([page.waitForResponse(response => response.url().endsWith('/dsh-tavern-gen/api/tools-enabled') && response.request().method() === 'POST'), page.getByLabel('启用工作台生图', { exact: true }).click()])
+  await page.waitForFunction(() => !document.querySelector('[aria-label="启用工作台生图"]').disabled)
+  assert.equal(cardEnabled, false)
+  assert.equal(calls.some(call => call.path === '/dsh-tavern-gen/api/worldbook' && call.method === 'GET'), true)
+  await page.getByRole('button', { name: '画廊', exact: true }).click()
+  await page.getByRole('button', { name: '游玩画廊', exact: true }).click()
+  await page.getByRole('img', { name: '剧情配图', exact: true }).waitFor()
+  assert.equal(await page.getByRole('img', { name: '卡片工作台', exact: true }).count(), 0)
+  assert.ok(calls.some(call => call.path === '/history' && call.query.source === 'play'))
+  await page.getByRole('img', { name: '剧情配图', exact: true }).click()
+  const viewer = page.locator('dialog:modal')
+  await viewer.waitFor()
+  await page.keyboard.press('Escape')
+  await viewer.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: '卡片画廊', exact: true }).click()
+  await page.getByRole('img', { name: '卡片专用图片', exact: true }).waitFor()
+  assert.equal(await page.getByRole('img', { name: '剧情配图', exact: true }).count(), 0)
+  await page.setViewportSize({ width: 375, height: 700 })
+  const firstThumb = page.getByRole('img', { name: '卡片专用图片', exact: true })
+  const nextThumb = page.getByRole('img', { name: '下一张卡片图', exact: true })
+  const firstBox = await firstThumb.boundingBox()
+  const nextBox = await nextThumb.boundingBox()
+  assert.equal(firstBox.y, nextBox.y, 'card thumbnails share a row on a narrow screen')
+  await firstThumb.click()
+  await viewer.getByRole('img', { name: '卡片专用图片' }).waitFor()
+  await viewer.getByTitle('放大', { exact: true }).click()
+  assert.match(await viewer.getByRole('img').getAttribute('style'), /scale\(1\.25\)/)
+  await viewer.getByTitle('重置缩放', { exact: true }).click()
+  assert.equal(await viewer.getByTitle('重置缩放', { exact: true }).textContent(), '100%')
+  const closeBox = await viewer.getByRole('button', { name: '关闭', exact: true }).boundingBox()
+  assert.ok(closeBox.x + closeBox.width <= 375, 'preview controls fit the narrow viewport')
+  await page.keyboard.press('ArrowRight')
+  await viewer.getByRole('img', { name: '下一张卡片图' }).waitFor()
+  await viewer.getByTitle('上一张（←）').click()
+  await viewer.getByRole('img', { name: '卡片专用图片' }).waitFor()
+  await viewer.getByRole('button', { name: '关闭', exact: true }).click()
+  await viewer.waitFor({ state: 'hidden' })
   assert.deepEqual(errors, [])
   console.log('PASS Chromium full settings: custom URL/model/key save and masking, protocol reference capability, character/nested/shared reference drafts and saving, ordered Comfy LoadImage mapping, recoverable simple-mode migration, local-only unlink, worldbook format isolation')
   console.log('SCREENSHOT ' + screenshotPath)
 } finally { await browser.close() }
+
+// Keep the CLI image URL regression in the existing image-only browser check.
+await import('./bundled-image-card-render-browser-smoke.mjs')

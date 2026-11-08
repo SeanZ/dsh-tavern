@@ -1,3 +1,4 @@
+import { MAX_PLUGIN_DATA } from '../domain/plugin-data-store.js'
 import { listLegacyPlugins } from '../domain/legacy-plugins.js'
 import { userPluginPaths } from '../domain/user-plugins.js'
 import { spawn } from 'node:child_process'
@@ -8,8 +9,17 @@ import { mkdir, readFile } from 'node:fs/promises'
 export function createPluginHandlers(deps) {
   const { dataRoot, pluginApi, pluginDataStore, startPluginTask, str, uploads, userPluginInstaller } = deps
   return {
+    async gameMode(args) {
+      const id = str(args?.sessionId)
+      if (args?.op === 'list') return { modes: await pluginApi.gameModes.list(id) }
+      if (args?.op === 'stop') { pluginApi.gameModes.stop(id); return { stopped: true } }
+      if (!args?.op || args.op === 'view') return { mode: await pluginApi.gameModes.view(id) }
+      if ((await pluginApi.turnState(id)).busy) throw new Error('请先停止或等待正文与后台任务结束')
+      return { mode: await pluginApi.gameModes.execute(id, args) }
+    },
     // The page side of a plugin reads and writes the same data as its host side (tavernUi.savePluginData).
     async pluginData(args) {
+      if (args?.op === 'limits') return { maxBytes: MAX_PLUGIN_DATA }
       const plugin = str(args && args.plugin)
       if (args && args.op === 'save') { await pluginDataStore.save(plugin, args.data); return { ok: true } }
       return { data: await pluginDataStore.read(plugin) }
@@ -48,6 +58,9 @@ export function createPluginHandlers(deps) {
       const opener = process.platform === 'darwin' ? ['open', [userPluginInstaller.pluginsDir]] : process.platform === 'win32' ? ['explorer.exe', [userPluginInstaller.pluginsDir]] : ['xdg-open', [userPluginInstaller.pluginsDir]]
       spawn(opener[0], opener[1], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref()
       return { dir: userPluginInstaller.pluginsDir }
+    },
+    async bodyGenerationProviders(args) {
+      return { providers: await pluginApi.bodyGenerators.list(args?.sessionId) }
     },
     async listGamePlugins(args) {
       return { plugins: await pluginApi.gamePlugins(str(args && args.sessionId)) }

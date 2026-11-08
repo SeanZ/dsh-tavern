@@ -2,6 +2,7 @@
 function createStoryServiceAdapter(dependencies) {
 	const {
 		window,
+		storyTranscript,
 		rpc,
 		liveTavernView,
 		notifyTavernDataChanged,
@@ -150,7 +151,7 @@ function createStoryServiceAdapter(dependencies) {
 	function tavernStoryReceipts(view, floors) {
 		const receipts = {};
 		if (view) for (const floor of floors) {
-			const receipt = tavernStoryReceipt(tavernMvuReceiptForTurn(view, floor.story));
+			const receipt = tavernStoryReceipt(tavernMvuReceiptForTurn(view, floor.legacyTurn));
 			if (receipt) receipts[floor.story] = receipt;
 		}
 		return Object.freeze(receipts);
@@ -170,15 +171,21 @@ function createStoryServiceAdapter(dependencies) {
 		const sessions = options.sessions;
 		const actions = options.actions;
 		const flow = actions.interactions;
+		const refreshes = new Map();
 		function eventSourceOf(sessionId) {
 			const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
 			if (!binding || !binding.eventSource) throw new Error("这一局没有在当前页面打开");
 			return binding.eventSource;
 		}
-		function foldNow(sessionId) {
-			const rounds = filterStoryRounds(foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries)), liveTavernView.getSnapshot(sessionId)?.view?.storySuppressedTurns);
-			return Object.freeze(Object.assign({}, rounds, { interrupted: tavernStoryInterruptedInput(rounds) }));
+		function nativeNow(sessionId) {
+			return filterStoryRounds(foldStoryRounds(tavernStoryEvents(eventSourceOf(sessionId).getSnapshot().entries)), liveTavernView.getSnapshot(sessionId)?.view?.storySuppressedTurns);
 		}
+		function foldNow(sessionId) {
+			const runtime = nativeNow(sessionId), logical = storyTranscript.floors(sessionId, runtime);
+			return Object.freeze({ ...runtime, ...logical, interrupted: tavernStoryInterruptedInput(runtime) });
+		}
+		function targetOf(sessionId, target) { return storyTranscript.resolve(sessionId, target, nativeNow(sessionId)); }
+
 		// The Tavern view of the game (the dock reads the same one), loaded once if nothing holds it yet.
 		function viewOf(sessionId) {
 			const state = liveTavernView.getSnapshot(sessionId);
@@ -198,6 +205,7 @@ function createStoryServiceAdapter(dependencies) {
 		function afterChange(sessionId) {
 			notifyTavernDataChanged(["sessions"], "story-service");
 			liveTavernView.invalidate(sessionId);
+			void storyTranscript.read(sessionId, true);
 			tavernCoordination.invalidate(sessionId);
 		}
 		function clearPanels() {
@@ -205,10 +213,12 @@ function createStoryServiceAdapter(dependencies) {
 		}
 		// regenBody always rewrites the latest floor: check it is the one asked for, on the live
 		// event window (current) and on the Tavern view (whether this floor may be regenerated).
-		async function latestFloor(sessionId, storyTurn, label) {
+		async function latestFloor(sessionId, target, label) {
+			await storyTranscript.read(sessionId);
+			const wanted = targetOf(sessionId, target);
 			const rounds = foldNow(sessionId), latest = rounds.floors[rounds.floors.length - 1];
 			if (rounds.open) throw new Error("正在生成，请完成或停止后再" + label);
-			if (!latest || latest.story !== storyTurn) throw new Error(label + "只能用于最新楼层（当前第 " + (latest ? latest.story : 0) + " 轮）");
+			if (!latest || latest.messageUid !== wanted.messageUid) throw new Error(label + "只能用于最新楼层（当前第 " + (latest ? latest.story : 0) + " 轮）");
 			const view = await viewOf(sessionId);
 			if (tavernStorySettling(view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
 			if (!isPlayMode(view.mode) || view.canRegenerate !== true) throw new Error("这一层不能" + label);
@@ -229,10 +239,15 @@ function createStoryServiceAdapter(dependencies) {
 		}
 
 		const service = {
-			apiVersion: 1,
+			apiVersion: 2,
+			loadOlder: storyTranscript.older,
             // 单会话完整重算显示；不生成正文、不重算变量，不改变楼层身份。
             refreshDisplay: function (sessionId) {
-                return actions.refreshDisplay(tavernStorySessionArgument(sessionId, "refreshDisplay"));
+                tavernStorySessionArgument(sessionId, "refreshDisplay");
+                if (refreshes.has(sessionId)) return refreshes.get(sessionId);
+                const pending = actions.refreshDisplay(sessionId).then(async function (result) { await storyTranscript.read(sessionId, true); return result; }).finally(function () { refreshes.delete(sessionId); });
+                refreshes.set(sessionId, pending);
+                return pending;
             },
 			// 模式与接管规则是同一来源；UI 不通过楼层或存档推测会话身份。
 			sessionMode: function (sessionId) { return tavernStorySessionState(tavernStorySessionArgument(sessionId, "sessionMode")); },
@@ -257,7 +272,7 @@ function createStoryServiceAdapter(dependencies) {
 				return tavernStoryViewMode.subscribe(function () { listener(tavernStoryViewMode.enabled()); });
 			},
 			/**
-			 * Floors folded from this page's event window (C1), now and after every change.
+			 * 逻辑历史驱动楼层列表；原生事件仅提供生成状态与流式预览。
 			 * listener({ floors, abandoned, open, attempt, interrupted, settling, staleVariables, receipts, settlement, hasMore, from }); returns unsubscribe.
 			 * `open.liveText` is the running round's streamed reply text so far (plain text, throttled);
 			 * `settling` is true while the latest floor's background settlement is pending or running;
@@ -271,18 +286,29 @@ function createStoryServiceAdapter(dependencies) {
 				tavernStorySessionArgument(sessionId, "subscribeRounds");
 				if (typeof listener !== "function") throw new TypeError("subscribeRounds 需要 listener 函数");
 				const source = eventSourceOf(sessionId);
+				let readTimer = null;
+				function scheduleRead() {
+					if (readTimer !== null || stopped) return;
+					readTimer = window.setTimeout(function () { readTimer = null; if (!stopped) void storyTranscript.read(sessionId, true); }, 100);
+				}
+
 				let fold = null, live = null, revision = -1, published = null, publishedLive = "", hasMore = null, stopped = false, timer = null, settling = false, staleVariables = null;
 				let view = null, settlement = null;
 				function liveTextOf(rounds) { return rounds.open && live && live.turn === rounds.open.turn ? live.text : ""; }
 				function emit() {
 					if (timer !== null) { window.clearTimeout(timer); timer = null; }
 					if (stopped) return;
-					const snapshot = source.getSnapshot(), raw = fold.result(), rounds = filterStoryRounds(raw, view?.storySuppressedTurns);
+					const snapshot = source.getSnapshot(), raw = fold.result(), runtime = filterStoryRounds(raw, view?.storySuppressedTurns);
+					const logical = storyTranscript.floors(sessionId, runtime), rounds = { ...runtime, ...logical };
 					published = raw; hasMore = snapshot.hasMore; publishedLive = liveTextOf(rounds);
+					const latest = rounds.floors.at(-1);
+					const stale = staleVariables && latest && latest.legacyTurn === staleVariables.turn ? { ...staleVariables, turn: latest.story, target: latest.target } : null;
+					const settledFloor = rounds.floors.findLast(item => item.legacyTurn === settlement?.turn);
+					const mappedSettlement = settlement ? { ...settlement, turn: settledFloor?.story ?? null } : null;
 					const open = rounds.open ? Object.freeze(Object.assign({}, rounds.open, { liveText: publishedLive })) : null;
-					const first = snapshot.entries.find(function (entry) { return entry && entry.type === "event"; });
-					listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(rounds), settling: settling, staleVariables: staleVariables,
-						historyWarning: view?.storyHistoryWarning || "", displayRevision: view?.displayRevision || 0, receipts: tavernStoryReceipts(view, rounds.floors), settlement: settlement, hasMore: snapshot.hasMore, from: first ? first.event.seq : null })));
+
+					listener(Object.freeze(Object.assign({}, rounds, { open: open, interrupted: tavernStoryInterruptedInput(runtime), settling: settling, staleVariables: stale,
+						historyWarning: view?.storyHistoryWarning || "", displayRevision: view?.displayRevision || 0, receipts: tavernStoryReceipts(view, rounds.floors), settlement: mappedSettlement, hasMore: logical.hasMore, from: logical.from, error: logical.error })));
 				}
 				function publish() {
 					if (stopped) return;
@@ -297,6 +323,7 @@ function createStoryServiceAdapter(dependencies) {
 						live = tavernStoryLiveOf(snapshot.entries);
 					}
 					revision = snapshot.revision;
+					if (snapshot.change?.kind !== "append" || tavernStoryEvents(snapshot.change.entries).length) scheduleRead();
 					if (fold.result() !== published || snapshot.hasMore !== hasMore) return emit();
 					// Streaming chunks change no floor: only the preview text, at most every 100 ms.
 					if (liveTextOf(published) !== publishedLive && timer === null) timer = window.setTimeout(emit, TAVERN_STORY_LIVE_TEXT_MS);
@@ -304,6 +331,7 @@ function createStoryServiceAdapter(dependencies) {
 				// Settlement state, receipts and the stale-variables mark live in the Tavern view, not in the event window.
 				function readView(state) {
 					const next = state && state.view || null;
+					if (next !== view) scheduleRead();
 					const nextSettling = tavernStorySettling(next);
 					const stale = next && next.staleVariables ? Object.freeze({ turn: next.staleVariables.turn, replySeq: next.staleVariables.replySeq }) : null;
 					const nextSettlement = tavernStorySettlement(next);
@@ -321,13 +349,14 @@ function createStoryServiceAdapter(dependencies) {
 					if (readView(state) && fold) emit();
 				}, [["storySuppressedTurns"], ["storyHistoryWarning"], ["displayRevision"], ["activity"], ["staleVariables"], ["mvuReceipts"], ["settleStatus"], ["settlementTurn"], ["settleError"]]);
 				const unsubscribe = source.subscribe(publish);
+				const stopTranscript = storyTranscript.subscribe(sessionId, function () { if (fold) emit(); });
 				publish();
-				return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); unsubscribe(); stopView(); };
+				void storyTranscript.read(sessionId, true);
+				return function () { stopped = true; if (timer !== null) window.clearTimeout(timer); window.clearTimeout(readTimer); unsubscribe(); stopView(); stopTranscript(); };
 			},
 			/** Every reply the floor has had, oldest first; `current` marks the one shown. */
 			listResults: function (sessionId, storyTurn) {
-				const turn = tavernStoryTurnArgument(storyTurn, "listResults");
-				const floor = foldNow(tavernStorySessionArgument(sessionId, "listResults")).floors.find(function (item) { return item.story === turn; });
+				const floor = targetOf(tavernStorySessionArgument(sessionId, "listResults"), storyTurn);
 				return floor ? floor.history : null;
 			},
 			/**
@@ -337,12 +366,12 @@ function createStoryServiceAdapter(dependencies) {
 			 */
 			switchResult: async function (sessionId, storyTurn, replySeq) {
 				tavernStorySessionArgument(sessionId, "switchResult");
-				const turn = tavernStoryTurnArgument(storyTurn, "switchResult");
-				const seq = Number(replySeq);
-				if (!Number.isSafeInteger(seq) || seq < 0) throw new TypeError("switchResult 需要 listResults 给出的 replySeq");
-				const before = await latestFloor(sessionId, turn, "切换历史结果");
+				const floor = targetOf(sessionId, storyTurn), turn = floor.legacyTurn;
+				const seq = replySeq;
+				if (!(typeof seq === "string" && seq) && !(Number.isSafeInteger(seq) && seq >= 0)) throw new TypeError("switchResult 需要 listResults 给出的 replySeq");
+				const before = await latestFloor(sessionId, storyTurn, "切换历史结果");
 				try {
-					const result = await rpc("switchFloorResult", { turn: turn, replySeq: seq }, sessionId);
+					const result = await rpc("switchFloorResult", { ...floor.target, turn: turn, replySeq: seq }, sessionId);
 					clearPanels();
 					const mvu = result && result.mvu;
 					// Only an MVU card's variables can be settled again for the shown reply (resettle).
@@ -358,13 +387,13 @@ function createStoryServiceAdapter(dependencies) {
 			 */
 			forkAt: async function (sessionId, storyTurn) {
 				tavernStorySessionArgument(sessionId, "forkAt");
-				const turn = tavernStoryTurnArgument(storyTurn, "forkAt");
+				const floor = targetOf(sessionId, storyTurn), turn = floor.legacyTurn;
 				const rounds = foldNow(sessionId);
 				const attempting = rounds.attempt && (rounds.attempt.phase === "preparing" || rounds.attempt.phase === "generating");
 				if (rounds.open || attempting) throw new Error("正在生成，请完成或停止后再创建分支");
 				if (tavernStorySettling(liveTavernView.getSnapshot(sessionId).view)) throw new Error(TAVERN_STORY_SETTLING_ERROR);
-				if (!rounds.floors.some(function (floor) { return floor.story === turn; })) throw new Error("第 " + turn + " 轮不是当前已加载的楼层");
-				return tavernConversationForkRequests.request({ sessionId: sessionId, turn: turn, floor: true });
+				if (!rounds.floors.some(function (floor) { return floor.messageUid === storyTurn.messageUid; })) throw new Error("第 " + turn + " 轮不是当前已加载的楼层");
+				return tavernConversationForkRequests.request({ sessionId: sessionId, ...floor.target });
 			},
 			/** 打断指定原生回合，并重新投递队尾那条排队输入，让它接着成为下一轮。 */
 			interruptQueued: function (sessionId, turn) {
@@ -377,16 +406,13 @@ function createStoryServiceAdapter(dependencies) {
 			 */
 			rollbackTo: async function (sessionId, storyTurn) {
 				tavernStorySessionArgument(sessionId, "rollbackTo");
-				const turn = tavernStoryTurnArgument(storyTurn, "rollbackTo");
+				const floor = targetOf(sessionId, storyTurn);
 				let view = await viewOf(sessionId);
-				if (turn > (Number(view.rollbackTargetTurn) || 0)) throw new Error("第 " + turn + " 轮不是现有楼层");
-				const binding = sessions && typeof sessions.binding === "function" ? sessions.binding(sessionId) : undefined;
-				const floor = binding && binding.eventSource ? foldNow(sessionId).floors.find(function (item) { return item.story === turn; }) : null;
-				const input = floor && floor.inputs.length ? { text: floor.inputs.map(function (item) { return item.text; }).join("\n") } : null;
-				if (turn <= 1) throw new Error("不能撤回开场");
+				const input = floor.inputs.length ? { text: floor.inputs.map(item => item.text).join("\n") } : null;
+				if (floor.greeting || floor.story <= 1) throw new Error("不能撤回开场");
 				try {
 					// 服务端在同一操作锁内检查完整目标，再执行回退与合并撤销点。
-					const result = await rpc("rollbackToTurn", { turn: turn - 1 }, sessionId) || {};
+					const result = await rpc("rollbackStoryFloor", floor.target, sessionId) || {};
 					view = result.view || {};
 					actions.historyProjection.rolledBack(sessionId, view);
 					clearPanels();
@@ -397,15 +423,15 @@ function createStoryServiceAdapter(dependencies) {
 			/** Resample the latest floor without guidance (the dock's 重新生成正文 with an empty box). */
 			regenerate: async function (sessionId, storyTurn) {
 				tavernStorySessionArgument(sessionId, "regenerate");
-				await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerate"), "重新生成");
-				return regenerateBody(sessionId, "");
+				await latestFloor(sessionId, storyTurn, "重新生成");
+				return regenerateBody(sessionId, "", { target: storyTurn });
 			},
 			/** Rewrite the latest floor with guidance; it becomes the game's remembered guidance. */
 			regenerateWithGuidance: async function (sessionId, storyTurn, guidance, extra) {
 				tavernStorySessionArgument(sessionId, "regenerateWithGuidance");
 				if (typeof guidance !== "string" || guidance.trim() === "") throw new TypeError("regenerateWithGuidance 需要非空 guidance");
-				await latestFloor(sessionId, tavernStoryTurnArgument(storyTurn, "regenerateWithGuidance"), "按要求改写");
-				return regenerateBody(sessionId, guidance, extra && extra.restyle === true ? { restyle: true, styleGuidance: String(extra.styleGuidance || "") } : {});
+				await latestFloor(sessionId, storyTurn, "按要求改写");
+				return regenerateBody(sessionId, guidance, { target: storyTurn, ...(extra && extra.restyle === true ? { restyle: true, styleGuidance: String(extra.styleGuidance || "") } : {}) });
 			},
 			/**
 			 * Edit the latest floor's prose (the dock's 编辑正文 panel: getBodyEdit / saveBodyEdit).
@@ -416,20 +442,20 @@ function createStoryServiceAdapter(dependencies) {
 			editReply: {
 				get: async function (sessionId, storyTurn) {
 					tavernStorySessionArgument(sessionId, "editReply.get");
-					const turn = tavernStoryTurnArgument(storyTurn, "editReply.get");
-					await latestFloor(sessionId, turn, "编辑正文");
-					const result = await rpc("getBodyEdit", {}, sessionId);
+					const floor = targetOf(sessionId, storyTurn), turn = floor.legacyTurn;
+					await latestFloor(sessionId, storyTurn, "编辑正文");
+					const result = await rpc("getBodyEdit", floor.target, sessionId);
 					const edit = result && result.edit;
-					if (!edit || Number(edit.turn) !== turn) throw new Error("最新正文已变化，请刷新后再编辑");
-					return { token: edit.token, turn: turn, parts: edit.parts };
+					if (!edit || edit.messageUid !== floor.messageUid) throw new Error("最新正文已变化，请刷新后再编辑");
+					return { ...edit, turn: turn };
 				},
 				save: async function (sessionId, storyTurn, edit) {
 					tavernStorySessionArgument(sessionId, "editReply.save");
-					const turn = tavernStoryTurnArgument(storyTurn, "editReply.save");
+					const floor = targetOf(sessionId, storyTurn), turn = floor.legacyTurn;
 					if (!edit || typeof edit.token !== "string" || !Array.isArray(edit.texts) || edit.texts.some(function (text) { return typeof text !== "string"; })) throw new TypeError("editReply.save 需要 get 给出的 token 与 texts 字符串数组");
-					await latestFloor(sessionId, turn, "编辑正文");
+					await latestFloor(sessionId, storyTurn, "编辑正文");
 					try {
-						const result = await rpc("saveBodyEdit", { token: edit.token, turn: turn, texts: edit.texts }, sessionId);
+						const result = await rpc("saveBodyEdit", { ...floor.target, token: edit.token, texts: edit.texts }, sessionId);
 						clearPanels();
 						return { view: result && result.view };
 					} finally { afterChange(sessionId); }
@@ -442,17 +468,16 @@ function createStoryServiceAdapter(dependencies) {
 			 */
 			editInput: async function (sessionId, storyTurn, text) {
 				tavernStorySessionArgument(sessionId, "editInput");
-				const turn = tavernStoryTurnArgument(storyTurn, "editInput");
+				const floor = targetOf(sessionId, storyTurn);
 				if (typeof text !== "string" || text.trim() === "") throw new TypeError("editInput 需要非空输入文字");
-				await latestFloor(sessionId, turn, "修改输入");
-				const floor = foldNow(sessionId).floors.find(function (item) { return item.story === turn; });
+				await latestFloor(sessionId, storyTurn, "修改输入");
 				const input = floor && floor.inputs[floor.inputs.length - 1];
 				if (!input) throw new Error("这一层没有玩家输入");
 				try {
-					const read = await rpc("getBodyEdit", { role: "user", turn: input.turn, seq: input.seq }, sessionId);
+					const read = await rpc("getBodyEdit", { role: "user", ...input.target }, sessionId);
 					const edit = read && read.edit;
 					if (!edit || edit.role !== "user") throw new Error("读取这条输入失败");
-					const result = await rpc("saveBodyEdit", { token: edit.token, role: "user", index: edit.index, turn: edit.turn, seq: edit.seq, texts: [text] }, sessionId);
+					const result = await rpc("saveBodyEdit", { ...input.target, token: edit.token, role: "user", texts: [text] }, sessionId);
 					clearPanels();
 					return { view: result && result.view };
 				} finally { afterChange(sessionId); }
@@ -466,13 +491,13 @@ function createStoryServiceAdapter(dependencies) {
 			 */
 			resettle: async function (sessionId, storyTurn, options) {
 				tavernStorySessionArgument(sessionId, "resettle");
-				const turn = tavernStoryTurnArgument(storyTurn, "resettle");
+				const turn = targetOf(sessionId, storyTurn).legacyTurn;
 				const guidance = options === undefined || options === null ? undefined : options.guidance;
 				if (options !== undefined && options !== null && typeof options !== "object") throw new TypeError("resettle 的第三个参数需要 { guidance? }");
 				if (guidance !== undefined && (typeof guidance !== "string" || guidance.length > TAVERN_STORY_GUIDANCE_MAX)) throw new TypeError("resettle 的 guidance 需要不超过 " + TAVERN_STORY_GUIDANCE_MAX + " 字的字符串");
-				await latestFloor(sessionId, turn, "重新结算");
+				await latestFloor(sessionId, storyTurn, "重新结算");
 				try {
-					const result = await rpc("retrySettlement", guidance === undefined ? { turn: turn } : { turn: turn, guidance: guidance }, sessionId);
+					const result = await rpc("retrySettlement", { ...storyTurn, turn: turn, ...(guidance === undefined ? {} : { guidance }) }, sessionId);
 					if (result && result.view) liveTavernView.setView(sessionId, result.view);
 					return { view: result && result.view };
 				} finally { afterChange(sessionId); }
@@ -482,7 +507,7 @@ function createStoryServiceAdapter(dependencies) {
 			/** Replay a failed or stopped latest round with its original input. */
 			retryFailed: async function (sessionId) {
 				tavernStorySessionArgument(sessionId, "retryFailed");
-				const result = await actions.replayFailedTurn(sessionId);
+				const result = await regenerateBody(sessionId, "", {});
 				return { view: result && result.view };
 			},
 			/** The input a failed or stopped round dropped, while the player has not moved on; or null. */
@@ -493,7 +518,7 @@ function createStoryServiceAdapter(dependencies) {
 			writeFloorSnapshot: async function (sessionId, floor, snapshot) {
 				tavernStorySessionArgument(sessionId, "writeFloorSnapshot");
 				const turn = tavernStoryTurnArgument(floor && floor.story, "writeFloorSnapshot");
-				if (!floor.reply || !Number.isSafeInteger(Number(floor.reply.seq))) throw new TypeError("writeFloorSnapshot 需要带 reply.seq 的楼层");
+				if (!floor.reply || typeof floor.reply.seq !== "string") throw new TypeError("writeFloorSnapshot 需要带 reply.seq 的楼层");
 				if (!snapshot || typeof snapshot.html !== "string") throw new TypeError("writeFloorSnapshot 需要 html 字符串");
 				return rpc("saveFloorSnapshot", { turn: turn, reply: String(floor.reply.seq), html: snapshot.html, truncated: snapshot.truncated === true }, sessionId);
 			},

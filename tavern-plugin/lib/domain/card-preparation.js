@@ -3,12 +3,16 @@ import { withTavernCredit } from './card-credit.js'
 import { inspectCardExtensions } from './card-extension-reading.js'
 import { validateCardAssetExtension } from './card-asset-bindings.js'
 import { validateModSystem } from './mod-system-contract.js'
+import { validateCardPages } from './card-status-panel.js'
 
 function validateOptInAssets(raw, previousRaw) {
   const extension = rawData(raw).extensions?.dsh_tavern
   const previous = previousRaw && rawData(previousRaw).extensions?.dsh_tavern
   if (extension !== undefined && (Object.hasOwn(extension || {}, 'assetBindings') || Object.hasOwn(previous || {}, 'assetBindings'))) validateCardAssetExtension(extension)
   if (extension?.modSystem !== undefined) validateModSystem('card', extension.modSystem)
+  // checked only when this write changes it: an unchanged panel is never re-validated.
+  const panel = extension?.pages
+  if (panel !== undefined && JSON.stringify(panel) !== JSON.stringify(previous?.pages)) validateCardPages(panel)
 }
 
 const TEXT_FIELDS = Object.freeze([
@@ -562,7 +566,7 @@ export function createCardPreparation(options = {}) {
     if (request.as === 'editable') return editable
     if (request.as === 'view') return Object.assign({ id: card.id }, editable)
     if (request.as === 'detail') {
-      return Object.assign({ id: card.id }, editable, { extensions: inspectCardExtensions(request.card) })
+      return Object.assign({ id: card.id }, editable, { character_version: str(rawData(rawOf(request.card)).character_version), extensions: inspectCardExtensions(request.card) })
     }
     if (request.as === 'raw') return clone(rawOf(request.card))
     if (request.as === 'sillytavern-v3') {

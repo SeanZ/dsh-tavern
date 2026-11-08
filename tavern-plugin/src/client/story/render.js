@@ -1,7 +1,8 @@
 // 故事适配器只使用显式传入的上游能力；接线集中于 bindings.js。
 function createStoryRenderAdapter(dependencies) {
 	const {
-		window,
+			window,
+		storyTranscript,
 		React,
 		liveTavernView,
 		tavernProjectionForTurn,
@@ -212,8 +213,9 @@ function createStoryRenderAdapter(dependencies) {
 				if (settled) stop();
 			});
 		}
-		function floorOf(view, storyTurn) {
-			const projection = tavernProjectionForTurn(view, storyTurn);
+		function floorOf(view, floor) {
+			const storyTurn = floor.legacyTurn;
+			const projection = floor.projection;
 			const parts = projectionPartsOf(projection);
 			const policy = view && view.tavernRuntimePolicy || {};
 			const latestTurn = tavernLatestProjectionTurn(view);
@@ -223,17 +225,17 @@ function createStoryRenderAdapter(dependencies) {
 				helperContext: view && view.tavernHelper || null, frameSizing: policy.frameSizing, trustedCardMode: policy.trustedCardMode === true,
 				latestTurn: latestTurn,
 				// Older floors outside Tavern's history window have no projection until it grows.
-				waitingForHistory: !projection && Boolean(view && view.historyWindow) && storyTurn < latestTurn
+				waitingForHistory: false
 			};
 		}
 
 		/**
-		 * One floor's body. props: { sessionId, storyTurn, live?, snapshotHtml?, eager?, owner?,
+		 * One floor's body. props: { sessionId, floor, live?, snapshotHtml?, eager?, owner?,
 		 * revision?, containerRef?, fallbackText? }. Live runs the card HTML in message frames; otherwise
 		 * snapshotHtml, or the projection with script-free static HTML.
 		 */
 		function FloorBody(props) {
-			const sessionId = props.sessionId, storyTurn = Number(props.storyTurn) || 0, live = props.live === true;
+			const sessionId = props.sessionId, storyTurn = Number(props.floor?.legacyTurn) || 0, live = props.live === true;
 			const paths = [["mode"], ["tavernRuntimePolicy"], ["historyWindow"], ["$projectionTurn", String(storyTurn)], ["$projectionLatestTurn", String(storyTurn)]].concat(live ? [["tavernHelper"]] : []);
 			// Subscribed to this floor's paths only; the projection is read from the whole view.
 			const state = useLiveTavernView(sessionId, String(props.revision || ""), paths);
@@ -259,7 +261,7 @@ function createStoryRenderAdapter(dependencies) {
 			let body;
 			if (!live && typeof props.snapshotHtml === "string") body = h(TavernStoryStaticHtml, { html: props.snapshotHtml });
 			else {
-				const floor = floorOf(state.view, storyTurn);
+				const floor = floorOf(state.view, props.floor);
 				if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
 					: typeof props.fallbackText === "string" ? renderMarkdown(props.fallbackText) : null;
 				else if (live) body = renderTavernProjection(floor.projection, { sessionId: sessionId, turn: storyTurn, codeLabels: codeLabels,
@@ -292,24 +294,13 @@ function createStoryRenderAdapter(dependencies) {
 		return Object.freeze({
 			/** The floor's projection, Helper context and run policy from the Tavern view. */
 			projectFloor: async function (sessionId, storyTurn) {
-				const turn = tavernStoryTurnArgument(storyTurn, "projectFloor");
-				return floorOf(await viewOf(tavernStorySessionArgument(sessionId, "projectFloor")), turn);
+				const floor = storyTranscript.resolve(sessionId, storyTurn);
+				return floorOf(await viewOf(tavernStorySessionArgument(sessionId, "projectFloor")), floor);
 			},
 			/** Extend Tavern's history window one page back, for floors still waiting for it. */
-			loadOlderProjections: async function (sessionId) {
-				const view = await viewOf(tavernStorySessionArgument(sessionId, "loadOlderProjections"));
-				if (!view.historyWindow) return false;
-				await requestOlderHistory(sessionId, view.historyWindow.from);
-				return true;
-			},
-			/** A player input's display template (by its native turn), unless the input was edited. */
-			readInputTemplate: async function (sessionId, inputTurn) {
-				const view = await viewOf(tavernStorySessionArgument(sessionId, "readInputTemplate"));
-				const key = String(Number(inputTurn) || 0);
-				if (typeof view.userInputEdits?.[key] === "string") return null;
-				const html = view.inputTemplateDisplays?.[key];
-				return typeof html === "string" && html !== "" ? html : null;
-			},
+			loadOlderProjections: storyTranscript.older,
+
+
 			FloorBody: FloorBody,
 			IllustrateAction: IllustrateAction,
 			StaticHtml: TavernFloorStaticHtml,

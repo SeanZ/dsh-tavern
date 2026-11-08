@@ -12,12 +12,16 @@ function canProjectDirty(previous, chat, indices, changedHeaderFields) {
   // A deferred resource must never retain a capability for an outdated snapshot.
   if (previous?.cardResourceAccess && (!Array.isArray(changedHeaderFields)
     || changedHeaderFields.some(key => ['cardDefinitionSnapshot', 'openingWorldbookSnapshot'].includes(key)))) return false
-  const before = previous?.tavernHelper?.messages, after = chat.messages
-  if (!indices || !Array.isArray(before) || !Array.isArray(after) || before.length > after.length
-    || !helperMessagesComplete(before)) return false
+  const helper = previous?.tavernHelper, before = helper?.messages, after = chat.messages
+  if (!indices || !Array.isArray(after)) return false
+  // Ordinary cards have no Helper at all. They can still reuse their story and
+  // status projections; only a newly enabled MVU runtime needs a complete view.
+  if (helper == null) {
+    if (chat.mvu?.enabled === true) return false
+  } else if (!Array.isArray(before) || before.length > after.length || !helperMessagesComplete(before)) return false
   for (const index of indices) {
     if (!Number.isSafeInteger(index) || index < 0 || index >= after.length) return false
-    if (index >= before.length) continue
+    if (helper == null || index >= before.length) continue
     const role = before[index]?.role, source = after[index]
     const nextRole = source?.role === 'user' ? 'user' : 'assistant'
     if (role && !['assistant', 'user', 'system'].includes(role)) continue
@@ -29,7 +33,7 @@ function canProjectDirty(previous, chat, indices, changedHeaderFields) {
 /** Own snapshot selection, projection cache and transport revision pairing.
  * Projections consume detached inputs; callers never receive a partial Chat.
  */
-export function createSessionViewReader({ readState, readChat, readChanges, readViewDelta, readOpeningWindow, project, activity,
+export function createSessionViewReader({ readState, readChat, readChanges, readViewDelta, readOpeningWindow, readStoryWindow, project, activity,
   trace, foregroundRunning, synchronize, resourceVersion = async () => '', readRefreshChat = readChat, readRefreshState = readState }) {
   const cache = new Map()
   const helperWindows = new Map()
@@ -96,7 +100,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     } else {
       const dirty = selected.dirty ?? (matches(cached, next) && cached.revision < next.revision ? await changes(chat, cached.revision) : null)
       if (matches(cached, next) && canProjectDirty(cached?.view, chat, dirty, selected.changedHeaderFields)) {
-        view = await trace.stage('projectViewDirty', () => project.dirty(chat, cached.view, dirty, currentActivity, {layoutChanged:selected.layoutChanged,layoutFrom:selected.layoutFrom,changedHeaderFields:selected.changedHeaderFields,runtimeInputChanges:selected.runtimeInputChanges}))
+        view = await trace.stage('projectViewDirty', () => project.dirty(chat, cached.view, dirty, currentActivity, {baseRevision:cached.revision,layoutChanged:selected.layoutChanged,layoutFrom:selected.layoutFrom,changedHeaderFields:selected.changedHeaderFields,runtimeInputChanges:selected.runtimeInputChanges}))
         rebuild = 'dirty'
       } else {
         view = await project.full(chat, {...options,inputChanges:matches(cached,next) && dirty ? {baseRevision:cached.revision,indices:dirty,changedHeaderFields:selected.changedHeaderFields,runtimeInputChanges:selected.runtimeInputChanges} : undefined})
@@ -162,6 +166,16 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       if (args.helperWorldbookSync !== 1 || !view?.tavernHelper || !Object.hasOwn(view.tavernHelper, 'worldbook')) return view
       const { tavernHelperWorldbook: _alias, ...result } = view
       return result
+    }
+    // Story history has no native-session or complete-view dependency. It is a
+    // read-only transport and never participates in native view cursors.
+    if (args.storyTranscript === 1 && readStoryWindow && project.story) {
+      const window = await trace.stage('readStoryWindow', () => readStoryWindow(sessionId, args.historyFrom))
+      if (!window) return { view: null, storyTranscript: null, revision: 0 }
+      const view = await trace.stage('projectStoryWindow', () => project.story(window, {deferResources:args.resourceSync === 1}))
+      trace.state({viewRebuild:'story',helperMessageCount:window.chat.messages.length})
+      const {storyTranscript:_embedded,...storyView}=view
+      return {view:transportView(storyView),storyTranscript:window.storyTranscript,revision:window.revision}
     }
     // Bounded views have their own contract and never enter the complete view
     // cache. Explicit full reads retain the existing compatibility path.

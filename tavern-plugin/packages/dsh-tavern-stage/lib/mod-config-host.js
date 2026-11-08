@@ -6,12 +6,11 @@ import {builtinConfigSchemas,stageConfigExports} from '../../../lib/domain/mods/
 import {rawData} from '../../../lib/domain/card-preparation.js'
 import {managedConfigSchemas} from './mod-system-execution.js'
 import {assetContent} from '../../dsh-presentation-protocol/src/asset-variant-content.js'
-import {cardStageSkin,cardStageSkinPackIds} from '../../../lib/domain/card-stage-settings.js'
+import {activeStageSkin,cardStageSkinPackIds} from '../../../lib/domain/card-stage-settings.js'
 import {cardAssetWorkspaceRevision} from '../../../lib/card-asset-bindings.js'
 import {readCardVariableSources} from '../../../lib/domain/card-variable-bindings.js'
 import skinContract from '../../dsh-presentation-protocol/src/stage-skin.cjs'
-import {figureCatalogue,effectiveFigurePackIds,resolution} from '../../../lib/domain/figure-catalogue.js'
-import {selectFigureAvatar} from '../../../lib/domain/pack-avatar.cjs'
+import {figureCatalogue,effectiveFigurePackIds} from '../../../lib/domain/figure-catalogue.js'
 import {stateSourceSchema,ledgerSource,ledgerConfigExports,resolveStateSource,ledgerInventoryBinding} from '../../../lib/domain/mods/state-source.js'
 import {ASSET_PACK_RECORD_FIELD,readAssetPackRecord} from './domain/stage-asset-pack-director.js'
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code})}
@@ -63,7 +62,7 @@ export function createModConfigHost({workbenchAuthority,root,store:managedStore,
   for(const id of ['mvu','helper-chat'])sources.register({id,label:id==='mvu'?'MVU':'聊天变量',exports:[],read:ctx=>ctx.sources?.[id] || {available:false}})
   sources.register({id:'ledger',label:'游玩台账',exports:ledgerConfigExports,read:ctx=>ctx.sources?.ledger || {available:false}})
   sources.register({id:'stage',label:'舞台',exports:stageConfigExports,read:ctx=>ctx.sources?.stage || {available:false}})
-  for(const [id,schema] of Object.entries(schemas).filter(([id])=>id!=='dsh.state'))sources.register({id:'mod:'+id,label:manifests.find(row=>row.id===id).name,exports:schema.fields.map(field=>({path:'/'+field.key,name:field.label || field.key,type:field.valueType,description:field.label || field.key,settingKey:field.key})),read:({settings})=>settings})
+  for(const [id,schema] of Object.entries(schemas).filter(([id])=>id!=='dsh.state'))sources.register({id:'mod:'+id,label:(managedManifests || manifests).find(row=>row.id===id).name,exports:schema.fields.map(field=>({path:'/'+field.key,name:field.label || field.key,type:field.valueType,description:field.label || field.key,settingKey:field.key})),read:({settings})=>settings})
   const service=createModConfigService({schemas,store,sources})
   async function context(args,pinned) {
     const indexed=pinned?.chat || (args.sessionId?await readSession(args.sessionId):null)
@@ -109,7 +108,7 @@ export function createModConfigHost({workbenchAuthority,root,store:managedStore,
       stage.contacts=figureCatalogue({snapshots,bindings:ext.assetBindings,globalEnabledPackIds:global,roster:state?.actors || {}}).filter(row=>row.enabled)
         .map(row=>({id:row.actorKey,name:row.name,figure:row.ref,...(row.figure.imageColor || row.figure.autoColor?{color:row.figure.imageColor || row.figure.autoColor}:{})}))
     }
-    const skinRef=state?.skin?.ref || cardStageSkin(ext,engine.values,(await Promise.all(cardStageSkinPackIds(ext,engine.values,getGlobalEnabledPackIds()).map(packId=>snapshot(packId).catch(()=>null)))).map(pack=>pack?.manifest)).skin
+    const skinRef=activeStageSkin({extension:ext,engine:engine.values,state,manifests:(await Promise.all(cardStageSkinPackIds(ext,engine.values,getGlobalEnabledPackIds()).map(packId=>snapshot(packId).catch(()=>null)))).map(pack=>pack?.manifest)})
     const skin=typeof skinRef==='string'?skinContract.BUILTIN_STAGE_SKINS[skinRef]:skinRef?(await snapshot(skinRef.packId))?.skins?.[skinRef.assetId]:null
     const appearance=skin && skinContract.stageSkinAppearance(skin,state?.skin?.level)
     if(appearance?.ui){stage.skin=Object.fromEntries(Object.entries({surface:appearance.ui.bg,line:appearance.ui.border,accent:appearance.ui.accent}).filter(([,value])=>value!==undefined));labels['/skin/surface']='舞台皮肤';labels['/skin/line']='舞台皮肤'}
@@ -139,46 +138,6 @@ export function createModConfigHost({workbenchAuthority,root,store:managedStore,
     if(['setModConfig','clearModConfig','uploadModConfigFile'].includes(method)){cache.clear();invalidate()}
     return value?.resolved?projectOptions(value,args,authority):value
   },async values(modId,card,chat) {return (await this.resolved(modId,card,chat)).values},
-  async readDanmakuSettings(cardId) {
-    const {card,global}=await store.read({modId:'dsh.danmaku',cardId}),values={}
-    for(const key of ['commentsPerRequest','minIntervalSeconds','maxCallsPerMinute']) {
-      const entry=card[key] ?? global[key]
-      if(entry)values[key]=entry.fixed ?? schemas['dsh.danmaku'].fields.find(field=>field.key===key).default
-    }
-    return values
-  },
-  // the host's face set in the room's settings — an uploaded 主播头像图片,
-  // else the card's 主播头像 figure. Without either, the stage gives the bar the face of the figure the host's name
-  // (主播名称, or the player's name) resolves to, with the same card-figure lookup as the phone's contacts
-  // (useCardFaces, every figure of the card's and global packs); otherwise the neutral face.
-  async readStreamer(cardId) {
-    const {card}=await store.read({modId:'dsh.danmaku',cardId})
-    const identity={name:card.streamerName?.fixed ?? '',avatarRef:card.streamerAvatarRef?.fixed ?? null}
-    let transient=false
-    try {
-      const image=card.streamerAvatarImage?.fixed
-      if(image?.file) {
-        const media=await store.readFile({modId:'dsh.danmaku',cardId,layer:'card',path:image.file})
-        if(['image/png','image/jpeg','image/webp'].includes(media.file.mime))identity.avatar={src:'data:'+media.file.mime+';base64,'+media.data}
-      } else if(identity.avatarRef) {
-        const {workspace}=await cardPacks.lookup(cardId),bindings=rawData(workspace.raw).extensions?.dsh_tavern?.assetBindings || {}
-        const global=getGlobalEnabledPackIds(),packs=await getPacks()
-        const read=await Promise.all(effectiveFigurePackIds(bindings,global).map(packId=>packs.getPackSnapshot({packId}).catch(()=>null))),snapshots=read.filter(Boolean)
-        // A pack that could not be read now (library still starting, a write in flight) is not an answer: read again later.
-        if(snapshots.length<read.length)transient=true
-        const rows=figureCatalogue({snapshots,bindings,globalEnabledPackIds:global}),resolved=resolution.resolveFigureName(rows,identity.avatarRef)
-        if(resolved.status==='resolved') {
-          const pack=snapshots.find(pack=>pack.manifest.id===resolved.ref.packId),avatar=selectFigureAvatar(resolved.row.figure,pack.sprites)
-          if(avatar) {
-            await packs.readMedia({packId:resolved.ref.packId,hash:avatar.hash,expectedRevision:pack.revision})
-            identity.avatar={src:'/api/dsh-asset-library/v2/thumbnail?v=1&packId='+encodeURIComponent(resolved.ref.packId)+'&hash='+encodeURIComponent(avatar.hash),crop:avatar.crop}
-          }
-        }
-      }
-    } catch { transient=true /* Unavailable card media stays neutral for now; keep the stored reference intact. */ }
-    // `transient`: the caller (fork-mod-events) re-reads instead of keeping a neutral face for the whole session.
-    return transient?Object.defineProperty(identity,'transient',{value:true}):identity
-  },
   // a reference or formula that cannot be read shows the declared default on stage (the
   // editor alone shows the ⚠); layers say which layer's files/ an uploaded image is read from.
   async resolved(modId,card,chat) {

@@ -67,6 +67,117 @@ test('ComfyUI binding 仅自动接受唯一 LoadImage，多节点必须明确配
   assert.throws(() => applyComfyReferenceImages(workflow({ loaders: ['8'] }), ['a.png', 'b.png']), /只有 1 个.*有 2 张/)
 })
 
+test('ComfyUI 自动模式按实际工作流接图，纯文生图工作流不上传参考图', async t => {
+  for (const reference of [false, true]) await t.test(reference ? 'reference graph' : 'text graph', async t => {
+    const { runtime } = await setup(t, workflow({ loaders: reference ? ['8'] : [] }), { extraConfig: { generationMode: 'auto' } })
+    const calls = []
+    globalThis.fetch = async (url, init = {}) => {
+      const path = new URL(url).pathname
+      calls.push({ path, init })
+      return imageJson(path === '/upload/image' ? { name: 'auto-reference.png', type: 'input' }
+        : path === '/prompt' ? { prompt_id: 'auto-' + reference } : { queue_running: [], queue_pending: [] })
+    }
+    const result = await runtime.request('jobs', { tag: '林月在窗边。', subjects: [{ characterId: 'lin', outfitId: '' }] })
+    assert.equal(result.status, 200, JSON.stringify(result.body))
+    const job = (await runtime.request('jobs?id=' + result.body.id)).body.job
+    assert.deepEqual([job.generationMode, job.requestedGenerationMode], [reference ? 'reference' : 'text', 'auto'])
+    const submitted = JSON.parse(calls.find(call => call.path === '/prompt').init.body).prompt
+    assert.equal(calls.filter(call => call.path === '/upload/image').length, reference ? 1 : 0)
+    if (reference) assert.equal(submitted['8'].inputs.image, 'auto-reference.png')
+    else {
+      assert.equal(job.generationModeReason, 'unsupported-input')
+      assert.match(submitted['1'].inputs.text, /red hair/)
+    }
+  })
+})
+
+test('ComfyUI 自动模式不会把旧 LoadImage 或无效绑定当成安全的文生图回退', async t => {
+  for (const [name, graph, error] of [
+    ['no references', workflow(), /本张没有可用参考图.*LoadImage/],
+    ['ambiguous bindings', workflow({ loaders: ['8', '9'] }), /无法判断.*明确配置 referenceImages/],
+    ['invalid bindings', workflow({ bindings: [{ node: 'missing', input: 'image' }] }), /只能指向不同 LoadImage/],
+  ]) await t.test(name, async t => {
+    const { runtime } = await setup(t, graph, { extraConfig: { generationMode: 'auto' } })
+    const calls = []
+    globalThis.fetch = async url => { calls.push(String(url)); return imageJson({}) }
+    const result = await runtime.request('jobs', { tag: '没有人物的森林', subjects: [] })
+    assert.equal(result.status, 400, JSON.stringify(result.body))
+    assert.match(result.body.error, error)
+    assert.equal(calls.length, 0, 'no uploads or paid submission')
+  })
+})
+
+test('角色×服装图走现有上传流程，使用一个 LoadImage 槽并保留两种用途', async t => {
+  const { runtime, definitions, image } = await setup(t, workflow())
+  definitions.characters[0].outfits = [{ id: 'robe', name: '礼服', upper: 'red dress', characterOutfitImage: image }]
+  definitions.outfits = []
+  assert.equal((await runtime.request('definitions', { definitions })).status, 200)
+  let uploads = 0
+  let submitted
+  globalThis.fetch = async (input, init = {}) => {
+    switch (new URL(input).pathname) {
+      case '/upload/image':
+        uploads++
+        return imageJson({ name: 'sheet.png', type: 'input' })
+      case '/prompt':
+        submitted = JSON.parse(init.body)
+        return imageJson({ prompt_id: submitted.prompt_id })
+      default:
+        return imageJson({})
+    }
+  }
+  const result = await jobInput(runtime, { outfit: true, key: 'paired-reference' })
+  assert.equal(result.status, 200)
+  assert.equal(uploads, 1)
+  assert.equal(submitted.prompt['8'].inputs.image, 'sheet.png')
+  assert.match(submitted.prompt['1'].inputs.text, /角色×服装参考/)
+})
+
+test('对话 ComfyUI 作业使用同一 WebSocket client ID，进度只属于匹配的作业', async t => {
+  const sockets = []
+  const OriginalSocket = globalThis.WebSocket
+  t.after(() => { globalThis.WebSocket = OriginalSocket })
+  globalThis.WebSocket = class extends EventTarget {
+    constructor(url, options) {
+      super()
+      sockets.push({ socket: this, url, options })
+    }
+    close() { this.dispatchEvent(new Event('close')) }
+  }
+  const { runtime } = await setup(t, workflow(), { extraConfig: { generationMode: 'text' } })
+  const submitted = []
+  globalThis.fetch = async (input, init = {}) => {
+    const path = new URL(input).pathname
+    if (path === '/prompt') {
+      const request = JSON.parse(init.body)
+      const assignedId = 'server-' + request.prompt_id
+      submitted.push({ ...request, prompt_id: assignedId })
+      return imageJson({ prompt_id: assignedId })
+    }
+    if (path === '/queue') return imageJson({ queue_running: submitted.map(item => [0, item.prompt_id]), queue_pending: [] })
+    return imageJson({})
+  }
+  const start = (key, extra = {}) => runtime.request('jobs', { key, tag: '雨中的窗户', ...extra })
+  const plain = await start('no-media')
+  assert.equal(plain.status, 200)
+  assert.equal(sockets.length, 0)
+  const turn = { sessionId: 'g', turn: 1, textVersion: 'v1' }
+  const first = await start('with-media-a', turn)
+  const second = await start('with-media-b', turn)
+  assert.equal(first.status, 200)
+  assert.equal(second.status, 200)
+  assert.equal(sockets.length, 1)
+  const [{ url, options, socket }] = sockets
+  assert.equal(options.headers.authorization, 'Bearer comfy-test-token')
+  assert.deepEqual(submitted.slice(1).map(item => item.client_id), Array(2).fill(url.searchParams.get('clientId')))
+  socket.dispatchEvent(new MessageEvent('message', {
+    data: JSON.stringify({ type: 'progress', data: { prompt_id: submitted[1].prompt_id, value: 11, max: 40 } }),
+  }))
+  const read = async response => (await runtime.request('jobs?id=' + response.body.id)).body.job.percent
+  assert.equal(await read(first), 27)
+  assert.equal(await read(second), 0)
+})
+
 test('真实 runtime 上传不可变快照并保留编译后的完整 prompt graph、output binding 与双图显式映射', { timeout: 20000 }, async t => {
   const graph = workflow({ loaders: ['8', '9'], bindings: [{ node: '9', input: 'image' }, { node: '8', input: 'image' }] })
   const { fixture, runtime } = await setup(t, graph)

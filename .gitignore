@@ -16,6 +16,7 @@ test-results/
 
 # 本地临时输出（截图、手动验证产物等）
 output/
+/website/dist/
 
 # 本地代码分析资料、快照和缓存
 .ua/
@@ -44,10 +45,17 @@ docs/implementation/
 
 # The 大肥鱼 demo card (examples/dafeiyu-card): too big to ship with the program.
 /examples/dafeiyu-card/*.dshcard
-/examples/dafeiyu-card/*.dshcard.png
 /examples/dshcard-hello/*.dshcard
 *.bak-*
 
 # Bundled image plugin runtime data (never publish local reference assets/rules)
 /tavern-plugin/packages/dsh-tavern-image-bundled/reference-images/
 /tavern-plugin/packages/dsh-tavern-image-bundled/format-worldbooks/
+
+# Python 字节码缓存（android/apk 打包脚本等）
+__pycache__/
+*.py[cod]
+
+# 根目录临时输出与一次性脚本
+/out_*.txt
+/raw.mjs
