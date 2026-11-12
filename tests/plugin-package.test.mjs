@@ -116,11 +116,12 @@ test('standard package ships runtime resources without local links, host copies 
   parse(read('tavern-plugin/lib/client.js'), { ecmaVersion: 'latest', sourceType: 'script' })
 })
 
-test('standard bundle and sidebar distribution match their maintained sources', () => {
+test('standard bundle and sidebar distribution match their maintained sources', async () => {
+  const { patchSidebarTeams } = await import('../bin/sidebar-team-compat.mjs')
   execFileSync(process.execPath, ['bin/build-plugin-package.mjs', '--check'], { cwd: root })
   const patchTitle = vm.runInNewContext(sourceFunction(read('bin/vendor-plugin-package.mjs'), 'patchSidebarTitle') + '; patchSidebarTitle')
   for (const name of ['index.js', 'client.js', 'client-registry.js', 'client-terminal.js', 'client-editor.js', 'client-mermaid.js', 'client-locale.js']) {
-    const source = read(`node_modules/dsh-better-sidebar/lib/${name}`)
+    const source = patchSidebarTeams(read(`node_modules/dsh-better-sidebar/lib/${name}`), name)
     const expected = name === 'client.js' || name === 'client-registry.js' ? patchTitle(source) : source
     assert.equal(read(`tavern-plugin/packages/dsh-better-sidebar/lib/${name}`), expected)
   }

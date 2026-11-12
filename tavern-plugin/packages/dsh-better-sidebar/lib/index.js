@@ -6372,10 +6372,20 @@ function buildTeamsApi(ctx) {
 	const membershipOf = async (payload) => {
 		if (teams === void 0) throw new SidebarError("team-error", "the agent-teams layer is not mounted in this deployment", 503);
 		const rootSessionId = requireString(payload, "rootSessionId");
-		const agent = agents?.get(rootSessionId);
+		let agent = agents?.get(rootSessionId);
+    // 只有显式写操作才恢复冷会话；查看 Tasks 不激活 Agent。
+    if (agent === void 0) {
+      const result = await ctx.get("sessionController")?.resolveAgent(rootSessionId);
+      if (result?.error) throw result.error;
+      agent = result?.agent;
+    }
 		if (agent === void 0) throw new SidebarError("team-error", "the tree root is not live in this process", 404);
 		try {
-			if (teams.tryMembership(agent) === void 0) throw new SidebarError("team-error", "the tree root leads no team", 404);
+			// Tavern rc.2 Tasks 接口适配
+      if (typeof teams.isEnabled === "function") {
+        if (ctx.get("subagents").rootOf(agent) !== agent) throw new SidebarError("team-error", "change tasks from the root Session", 400);
+        if (!teams.isEnabled(agent)) throw new SidebarError("team-error", "enable Agent Teams before using the task board", 400);
+      } else if (teams.tryMembership(agent) === void 0) throw new SidebarError("team-error", "the tree root leads no team", 404);
 		} catch (error) {
 			if (error instanceof SidebarError) throw error;
 			throw new SidebarError("team-error", error instanceof Error ? error.message : String(error), 404);

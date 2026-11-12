@@ -17974,35 +17974,66 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 		* @param projections - `SessionListState.projectionsBySession`.
 		* @param rootId - the tree's root session (the only session that can be Lead).
 		*/
-		function teamProjectionOf(projections, rootId) {
-			if (rootId === void 0) return void 0;
-			return projections?.[rootId]?.values.agentTeam;
-		}
-		/**
-		* Overlay runtime activity onto the durable roster.
-		*
-		* Status precedence is deliberately narrow: the durable phase wins for the two
-		* states it owns (`failed` never becomes "running" because a retry is in
-		* flight, `provisioning` is not yet a turn), and only an `active` member asks
-		* the live channel whether it is running right now. A member the channel does
-		* not mention yet (the first poll of a freshly rooted tree) reads as `idle`,
-		* which is the safe direction: it never claims work that is not happening.
-		*
-		* @param team - the Lead's projection ({@link teamProjectionOf}).
-		* @param live - the `subagents.live` map (`session id → live view`).
-		* @param byId - the session list by id (the Lead's own running flag lives here).
-		*/
-		function teamMembersOf(team, live, byId) {
-			if (team === void 0) return [];
-			return team.members.map((member) => ({
-				id: member.id,
-				name: member.name,
-				role: member.role,
-				phase: member.phase,
-				status: memberStatus(member, live, byId),
-				diagnostics: member.error === void 0 ? [] : [member.error]
-			}));
-		}
+		// Tavern rc.2 Tasks 接口适配
+function teamProjectionOf(projections, rootId) {
+  if (rootId === undefined) return undefined
+  const team = projections?.[rootId]?.values.agentTeam
+  return team?.enabled === false ? undefined : team
+}
+function teamMembersOf(team, live, byId, catalogs, rootId) {
+  if (team === undefined) return []
+  const members = []
+  const add = (member, ownerKey) => members.push({
+    ...member, ownerKey,
+    status: memberStatus(member, live, byId),
+    diagnostics: member.error === undefined ? [] : [member.error],
+  })
+  // 旧宿主的显式名单仍按原语义读取；rc.2 的身份与成员来源是子代理目录。
+  if (Array.isArray(team.members)) {
+    for (const member of team.members) add(member, member.name)
+    return members
+  }
+  if (team.enabled !== true || rootId === undefined) return members
+  add({ id: rootId, name: 'lead', role: 'lead', phase: 'active' }, rootId)
+  const seen = new Set([rootId])
+  const pending = [{ id: rootId, path: '' }]
+  while (pending.length) {
+    const parent = pending.shift()
+    const catalog = catalogs[parent.id]
+    if (catalog?.state !== 'ready') continue
+    for (const entry of catalog.entries) {
+      if (seen.has(entry.id) || entry.mode === 'external' || entry.label?.startsWith('Side: ')
+        || byId[entry.id]?.displayTitle?.startsWith('Side: ')) continue
+      seen.add(entry.id)
+      const path = parent.path === undefined || entry.name === undefined ? undefined
+        : parent.path === '' ? entry.name : `${parent.path}/${entry.name}`
+      if (entry.mode === 'continuable') add({
+        id: entry.id, name: path ?? entry.id, role: 'teammate', phase: 'active',
+      }, entry.id)
+      pending.push({ id: entry.id, path })
+    }
+  }
+  return members
+}
+function taskOwnerKey(task, members) {
+  const member = members.find(item => task.ownerId !== undefined ? item.id === task.ownerId : item.name === task.ownerName)
+  return member?.ownerKey ?? task.ownerId ?? task.ownerName
+}
+function taskCatalogReads(projections, rootId) {
+  if (rootId === undefined) return []
+  const reads = [], pending = [rootId], seen = new Set()
+  while (pending.length) {
+    const id = pending.shift()
+    if (seen.has(id)) continue
+    seen.add(id)
+    const snapshot = projections?.[id]
+    if (!snapshot || snapshot.state === 'idle') reads.push(id)
+    for (const child of snapshot?.values.subagentCatalog ?? []) {
+      if (child.mode !== 'external' && !child.label?.startsWith('Side: ')) pending.push(child.id)
+    }
+  }
+  return reads
+}
 		/** One member's runtime status (see {@link teamMembersOf} for the rule). */
 		function memberStatus(member, live, byId) {
 			if (member.phase === "failed") return "failed";
@@ -19067,8 +19098,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			for (const member of teamMembers) nodeByOwner.set(member.name, member.id);
 			const tasksByNode = /* @__PURE__ */ new Map();
 			for (const task of teamTasks) {
-				if (task.status === "deleted" || task.ownerName === void 0) continue;
-				const nodeId = nodeByOwner.get(task.ownerName);
+				if (task.status === "deleted") continue;
+				const nodeId = task.ownerId ?? nodeByOwner.get(task.ownerName);
 				if (nodeId === void 0) continue;
 				const list = tasksByNode.get(nodeId);
 				const entry = {
@@ -23840,7 +23871,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						id: "owner:",
 						label: t("teamTaskUnowned")
 					}, ...teammates.map((member) => ({
-						id: `owner:${member.name}`,
+						id: `owner:${member.ownerKey}`,
 						label: member.name
 					}))]
 				},
@@ -23940,7 +23971,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const { members, tasks, onOpenTask, collapsed, onToggleCollapsed } = props;
 			const [ownerFilter, setOwnerFilter] = (0, react.useState)(void 0);
 			const live = (0, react.useMemo)(() => tasks.filter((task) => task.status !== "deleted"), [tasks]);
-			const shown = (0, react.useMemo)(() => live.filter((task) => ownerFilter === void 0 || task.ownerName === ownerFilter), [live, ownerFilter]);
+			const shown = (0, react.useMemo)(() => live.filter((task) => ownerFilter === void 0 || taskOwnerKey(task, members) === ownerFilter), [live, ownerFilter, members]);
 			const teammates = (0, react.useMemo)(() => members.filter((member) => member.role === "teammate"), [members]);
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 				className: tasks_graph_module_css_default.teamBoard,
@@ -23985,10 +24016,10 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							},
 							children: t("teamFilterAll")
 						}), members.map((member) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
-							active: ownerFilter === member.name,
+							active: ownerFilter === member.ownerKey,
 							title: `${member.name} · ${member.role}`,
 							onClick: () => {
-								setOwnerFilter((current) => current === member.name ? void 0 : member.name);
+								setOwnerFilter((current) => current === member.ownerKey ? void 0 : member.ownerKey);
 							},
 							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, {
 								size: 6,
@@ -24082,11 +24113,11 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 					},
 					children: t("teamTaskUnowned")
 				}), props.members.map((member) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Pill, {
-					className: clsx(tasks_graph_module_css_default.taskOwnerPill, props.owner === member.name && tasks_graph_module_css_default.taskOwnerPillActive),
-					active: props.owner === member.name,
+					className: clsx(tasks_graph_module_css_default.taskOwnerPill, props.owner === member.ownerKey && tasks_graph_module_css_default.taskOwnerPillActive),
+					active: props.owner === member.ownerKey,
 					disabled: props.disabled,
 					onClick: () => {
-						props.onPick(member.name);
+						props.onPick(member.ownerKey);
 					},
 					children: member.name
 				}, member.id))]
@@ -24119,7 +24150,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						}),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: tasks_graph_module_css_default.jobPopValue,
-							children: task.ownerName ?? t("teamTaskUnowned")
+							children: task.ownerName ?? task.ownerId ?? t("teamTaskUnowned")
 						}),
 						task.blockedBy.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: tasks_graph_module_css_default.popKey,
@@ -24155,8 +24186,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 						children: t("teamTaskOwner")
 					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(OwnerPicker, {
 						members: props.teammates,
-						owner: task.ownerName,
-						disabled: props.busy,
+						owner: taskOwnerKey(task, props.teammates),
+						disabled: props.busy || task.status === "completed",
 						onPick: props.onReassign
 					})]
 				})
@@ -24653,10 +24684,16 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const metrics = (0, react.useMemo)(() => sessionMetrics(list.projectionsBySession), [list.projectionsBySession]);
 			const rootId = (0, react.useMemo)(() => rootAncestor(byId, sessionId), [byId, sessionId]);
 			const rootSummary = rootId === void 0 ? void 0 : byId[rootId];
+      (0, react.useEffect)(() => {
+        if (!active || typeof sessions.refreshProjections !== "function") return;
+        for (const id of taskCatalogReads(list.projectionsBySession, rootId)) void sessions.refreshProjections(id).catch(() => {});
+      }, [active, rootId, sessions, list.projectionsBySession]);
 			const live = useSubagentLive(rootId, active);
 			const runs = useWorkflowRuns(rootId, active);
 			const team = (0, react.useMemo)(() => teamProjectionOf(list.projectionsBySession, rootId), [list.projectionsBySession, rootId]);
-			const teamMembers = (0, react.useMemo)(() => teamMembersOf(team, live, byId), [
+			const teamMembers = (0, react.useMemo)(() => teamMembersOf(team, live, byId, catalogs, rootId), [
+				rootId,
+				catalogs,
 				team,
 				live,
 				byId
@@ -25010,6 +25047,7 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 							})
 						]
 					}),
+					team?.failure !== void 0 && (0, react_jsx_runtime.jsx)("div", { role: "alert", children: team.failure }),
 					rootId !== void 0 && team !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TeamBoard, {
 						rootId,
 						members: teamMembers,

@@ -1,6 +1,7 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { patchSidebarTeams } from './sidebar-team-compat.mjs'
 
 // Deliberately explicit: never download or advance the fixed host baseline.
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -21,7 +22,7 @@ copyFileSync(path.join(web, 'LICENSE'), path.join(root, 'config/plugin-web.LICEN
 const target = path.join(root, 'tavern-plugin/packages/dsh-better-sidebar')
 mkdirSync(path.join(target, 'lib'), { recursive: true })
 for (const name of ['index.js', 'client.js', 'client-registry.js', 'client-terminal.js', 'client-editor.js', 'client-mermaid.js', 'client-locale.js']) {
-  const source = readFileSync(path.join(sidebar, 'lib', name), 'utf8')
+  const source = patchSidebarTeams(readFileSync(path.join(sidebar, 'lib', name), 'utf8'), name)
   writeFileSync(path.join(target, 'lib', name), name === 'client.js' || name === 'client-registry.js' ? patchSidebarTitle(source) : source)
 }
 copyFileSync(path.join(sidebar, 'LICENSE'), path.join(target, 'LICENSE'))
