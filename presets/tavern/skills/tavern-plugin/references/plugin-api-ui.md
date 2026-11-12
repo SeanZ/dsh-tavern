@@ -1,6 +1,6 @@
 # 本 fork 故事视图契约
 
-上游通用插件 API 文档已迁移至社区 Wiki；本文件仅保留 trunkbase 的额外故事视图契约。
+通用插件 API 见社区 Wiki 的[插件接口总览](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)。本文件记录 trunkbase 的故事视图契约与本轮浏览器接口更新。
 
 ## 故事视图契约（本 fork）
 
@@ -85,3 +85,9 @@ Tavern 在浏览器侧另提供服务 `tavernStory`（`inject: ['tavernStory']`�
 - `StaticHtml`（`{ html }`）、`sanitizeHtml(html)`：同一套净化与 shadow root 显示。
 
 稳定性：同 `tavernStory`。
+
+## 浏览器输入框停靠区
+
+`ctx.tavernUi.registerComposerSlot({ id, modes, render })` 在输入框上方显示插件界面，适用于卡片工作台引导员、剧情建议和状态栏。`modes` 默认为 `['card']`，`['play']` 覆盖剧情和剧本，也可单独指定 `story` 或 `script`。
+
+`render({ sessionId, busy })` 返回 React 元素或 `null`。`busy` 表示当前轮次正在执行。建议按钮可调用 `setInput({ gameId: sessionId, text })` 填入文字，或用相同参数调用 `submitInput` 直接发送。内置输入框始终可用。

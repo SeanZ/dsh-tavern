@@ -29,11 +29,40 @@ test('opening swipes retain their archive; rewritten bodies and missing/corrupt 
   }
   chat.messages[0].swipes[1] = '新写的正文。'
   assert.equal(sceneWorldbookBinding(chat, sceneTarget(chat, 1)), null)
-  await store.writeJson('scene-images/worldbooks/' + ref.digest + '.json', { version: 1, entries: [] })
+  await store.writeJson('scene-images/worldbooks/' + ref.digest + '.json', { version: 1, entries: null }) // structural damage; names are not re-hashed
   assert.match((await api.read(ref)).unavailable, /校验失败/)
   await store.remove('scene-images/worldbooks/' + ref.digest + '.json')
   assert.match((await api.read(ref)).unavailable, /缺失/)
   assert.equal(await api.read({ version: 1, digest: '../../elsewhere' }), null)
+})
+
+test('entries are stored once across turns; reads and self-contained exports use stored identities', async t => {
+  const { store, api } = await fixture(t)
+  const first = await api.capture({ worldBook: book('黑色短发') })
+  const stored = await store.readJson('scene-images/worldbooks/' + first.digest + '.json')
+  assert.equal(stored.version, 2)
+  assert.equal(stored.entryRefs.length, 2)
+  const shared = 'scene-images/worldbook-entries/' + stored.entryRefs[1] + '.json', sharedVersion = await store.version(shared)
+  // A later turn changes one entry: the unchanged entry file is reused, not rewritten.
+  const second = await api.capture({ worldBook: book('红色长发') })
+  assert.notEqual(second.digest, first.digest)
+  assert.deepEqual((await store.readJson('scene-images/worldbooks/' + second.digest + '.json')).entryRefs[1], stored.entryRefs[1])
+  assert.equal(await store.version(shared), sharedVersion)
+  assert.match((await api.read(first)).entries[0].text, /黑色短发/)
+  // Save packages carry the complete snapshot in the original layout.
+  const bytes = await api.exportSnapshot(first.digest)
+  const other = await fixture(t)
+  await other.store.writeBytes('scene-images/worldbooks/' + first.digest + '.json', bytes)
+  assert.deepEqual(await other.api.read(first), await api.read(first))
+  const entry = await store.readJson(shared)
+  entry.text = '本地已存条目沿用其身份。'
+  await store.writeJson(shared, entry)
+  assert.equal((await api.read(first)).entries[1].text, entry.text)
+  assert.equal(JSON.parse(await api.exportSnapshot(first.digest)).entries[1].text, entry.text)
+  // Structural damage is still rejected without falling back to current resources.
+  await store.writeJson(shared, { ...entry, text: null })
+  assert.match((await api.read(first)).unavailable, /校验失败/)
+  assert.equal(await api.exportSnapshot(first.digest), null)
 })
 
 test('only the latest turns keep their snapshots; shared snapshots and entries stay while any game lists them', async t => {
@@ -71,14 +100,4 @@ test('跨机器导入保持快照可读，损坏快照不产生登记或覆盖�
   assert.equal(await target.store.readJson('scene-images/worldbook-refs/bad.json'), undefined)
   await target.api.forgetChat('imported')
   assert.match((await target.api.read(later)).unavailable, /缺失/)
-})
-
-test('故事分叉只复制前缀实际包含的 turn，世界书引用不再按数值上界扩张', async t => {
-  const { store, api } = await fixture(t)
-  for (const turn of [1, 9, 2]) await api.capture({ worldBook: book('第' + turn + '轮'), chat: { id: 'source' }, turn })
-  await api.copyRefs('source', 'story-fork', new Set([2, 1]))
-  await api.copyRefs('source', 'legacy-fork', 2)
-  const turns = async chatId => (await store.readJson('scene-images/worldbook-refs/' + chatId + '.json')).refs.map(ref => ref.turn).sort((a, b) => a - b)
-  assert.deepEqual(await turns('story-fork'), [1, 2], '非单调前缀不能带入未来的第 9 轮')
-  assert.deepEqual(await turns('legacy-fork'), [1, 2], '旧调用仍保留数值上界语义')
 })

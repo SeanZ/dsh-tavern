@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto'
 import {mkdir, open, readFile, readdir, rename, rm, link, stat} from 'node:fs/promises'
 import path from 'node:path'
 import {createDurableFilePromotion} from '../durable-file-promotion.js'
+import {createConversationReadLanes,conversationReadLane} from './conversation-read-lanes.js'
 
 // Syncing every touched directory on every commit costs tens of milliseconds each on a phone.
 // Inside a relaxed window the store only remembers them; the window's end syncs each once,
@@ -40,6 +41,11 @@ const POINTER_FORMAT=2
 const readablePointer=format=>format===1||format===POINTER_FORMAT
 const PACK_BYTES=64*1024, PACK_ENTRIES=256
 const hash=value=>createHash('sha256').update(value).digest('hex')
+// The one record-block encoding. Callers that address records before
+// writing them (buffered-json-records) use it and pass the refs to writeRecords,
+// which then trusts them instead of hashing every record a second time.
+const recordBlockBytes=value=>JSON.stringify({kind:'record',value})
+export function recordBlock(value){const bytes=recordBlockBytes(value);return {bytes,ref:hash(bytes)}}
 const copy=value=>JSON.parse(JSON.stringify(value))
 const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)
 // Every 64-hex string inside a value, in document order: candidate block references.
@@ -63,7 +69,9 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
  // A live, slow writer must never lose its lock merely due to elapsed time.
  // Dead process recovery and pending head promotion use the existing protocol.
  const promotion=createDurableFilePromotion({writeLockStaleMs:Number.MAX_SAFE_INTEGER})
- const packed=new Map();let packedBytes=0
+ const packed=new Map(),loading=new Map();let packedBytes=0
+ // Physical reads are bounded and a player's reads go before background recovery's.
+ const scheduleRead=createConversationReadLanes()
  function cachePacked(dir,id,value,size){
   const key=dir+'/'+id,old=packed.get(key)
   if(old){packedBytes-=old.size;packed.delete(key)}
@@ -71,25 +79,27 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   if(size<=8*1024*1024){packed.set(key,{value,size});packedBytes+=size}
  }
  // `contents`, when given, receives the refs the file holds (a pack holds several).
+ // Blocks are this store's own content-addressed files. The id is the lookup
+ // key; reads parse and dispatch on `kind` without re-hashing.
  function decodeBlock(dir,id,bytes,contents){
-  if(hash(bytes)===id){
-   const value=JSON.parse(bytes)
+  let value
+  try{value=JSON.parse(bytes)}catch{throw Error('Invalid immutable block')}
+  if(!record(value)||typeof value.kind!=='string')throw Error('Invalid immutable block')
+  if(value.kind!=='record-pack-v1'&&value.kind!=='block-pack-v1'){
    contents?.push(id)
    // Content hashes are immutable across revisions. Keep small index/record
    // blocks warm across field reads; the mutable head pointer is never cached.
    if(Buffer.byteLength(bytes)<=64*1024)cachePacked(dir,id,value,Buffer.byteLength(bytes)*2+128)
    return value
   }
-  let pack
-  try{pack=JSON.parse(bytes)}catch{throw Error('Immutable block checksum mismatch')}
-  const blockPack=pack?.kind==='block-pack-v1'
-  if(!blockPack&&pack?.kind!=='record-pack-v1'||!Array.isArray(pack.records)||pack.records.length>PACK_ENTRIES)throw Error('Immutable block checksum mismatch')
+  const blockPack=value.kind==='block-pack-v1'
+  if(!Array.isArray(value.records)||value.records.length>PACK_ENTRIES)throw Error('Invalid immutable record pack')
   const entries=[],seen=new Set()
-  for(const entry of pack.records){
-   if(!Array.isArray(entry)||entry.length!==2||seen.has(entry[0]))throw Error('Immutable pack checksum mismatch')
-   const [ref,value]=entry,block=blockPack?value:{kind:'record',value},encoded=JSON.stringify(block)
-   if(hash(encoded)!==ref)throw Error('Immutable pack checksum mismatch')
-   seen.add(ref);entries.push([ref,block,Buffer.byteLength(encoded)*2+128])
+  for(const entry of value.records){
+   if(!Array.isArray(entry)||entry.length!==2||typeof entry[0]!=='string'||seen.has(entry[0]))throw Error('Invalid immutable record pack')
+   const [ref,item]=entry,block=blockPack?item:{kind:'record',value:item}
+   if(!record(block)||typeof block.kind!=='string')throw Error('Invalid immutable block')
+   seen.add(ref);entries.push([ref,block,Buffer.byteLength(JSON.stringify(block))*2+128])
   }
   if(!seen.has(id))throw Error('Immutable pack is missing requested block')
   for(const entry of entries)cachePacked(dir,...entry)
@@ -108,8 +118,8 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   if(relaxedDepth>0){relaxedDirectories.add(dir);return}
   await fsyncDirectoryRaw(dir)
  }
- async function writeBlock(dir,value,directories){
-  const bytes=JSON.stringify(value),id=hash(bytes),target=blobPath(dir,id),parent=path.dirname(target)
+ async function writeBlock(dir,value,directories,known){
+  const bytes=known?.bytes??JSON.stringify(value),id=known?.id??hash(bytes),target=blobPath(dir,id),parent=path.dirname(target)
   await mkdir(parent,{recursive:true})
   if(directories){directories.add(parent);directories.add(path.dirname(parent));directories.add(dir)}
   let existing
@@ -141,8 +151,18 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
     const remembered=packed.get(dir+'/'+id)
     if(remembered){cache.set(id,remembered.value);packed.delete(dir+'/'+id);packed.set(dir+'/'+id,remembered)}
     else {
-     const bytes=await readFile(blobPath(dir,id),'utf8'),value=decodeBlock(dir,id,bytes)
-     cache.set(id,value);onIO({kind:'read',type:value.kind,bytes:Buffer.byteLength(bytes)})
+     // Concurrent readers of one block share a single file read and parse.
+     const key=dir+'/'+id
+     let pending=loading.get(key)
+     if(!pending){
+      pending=scheduleRead(async()=>{
+       const bytes=await readFile(blobPath(dir,id),'utf8'),value=decodeBlock(dir,id,bytes)
+       onIO({kind:'read',type:value.kind,bytes:Buffer.byteLength(bytes)})
+       return value
+      })
+      loading.set(key,pending)
+     }else if(conversationReadLane()!=='background')pending.promote()
+     try{cache.set(id,await pending.promise)}finally{if(loading.get(key)===pending)loading.delete(key)}
     }
    }
    const value=cache.get(id)
@@ -155,7 +175,7 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   return head
  }
  async function current(dir,id,read){
-  const bytes=await promotion.read(path.join(dir,'head.json'))
+  const bytes=await scheduleRead(()=>promotion.read(path.join(dir,'head.json'))).promise
   if(bytes===undefined)return undefined
   const pointer=JSON.parse(bytes)
   if(!readablePointer(pointer.format))throw Error('Unsupported conversation format')
@@ -246,7 +266,7 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
    if(kind&&value.kind!==kind)throw Error('Invalid block type')
    return value
   }
-  async function flush(){await writePacked(dir,[...pending.values()])}
+  async function flush(){await writePacked(dir,[...pending.values()],[...pending.keys()])}
   if(!integer(change.expectedRevision,1)||!Array.isArray(change.append??[])||!(change.append??[]).every(record)
     ||!Array.isArray(change.edits??[])||(Object.hasOwn(change,'state')&&!record(change.state)))throw Error('Invalid commit')
   let result
@@ -356,19 +376,21 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
  async function writeRecord(id,value){return writeBlock(directory(id),{kind:'record',value:copy(value)})}
  // Independent immutable blocks may be flushed concurrently. All files and
  // directory entries are durable before this returns and BEFORE head publication.
- async function writeRecords(id,values){
-  return writePacked(directory(id),copy(values).map(value=>({kind:'record',value})))
+ async function writeRecords(id,values,known){
+  return writePacked(directory(id),copy(values).map(value=>({kind:'record',value})),known)
  }
  // Durably store blocks, several per pack file. Each block keeps its own path
  // as a hard link to its pack, so lookups need no index; filesystems without
  // hard links fall back to one file per block. Everything (files and
  // directory entries) is synced before this returns, i.e. before any head
  // naming these blocks is published.
- async function writePacked(dir,blocks){
+ // `known`: refs the caller already derived from the same encoding (recordBlock / commit's write).
+ async function writePacked(dir,blocks,known){
   const directories=new Set(),refs=new Array(blocks.length)
+  if(known!==undefined&&(!Array.isArray(known)||known.length!==blocks.length))throw Error('Invalid record references')
   const entries=new Map(),groups=[]
   for(let i=0;i<blocks.length;i++){
-   const bytes=JSON.stringify(blocks[i]),ref=hash(bytes)
+   const bytes=JSON.stringify(blocks[i]),ref=known?known[i]:hash(bytes)
    refs[i]=ref;entries.set(ref,{ref,block:blocks[i],bytes})
   }
   let group=[],groupBytes=64
@@ -376,7 +398,7 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
    let existing
    try{existing=await readFile(blobPath(dir,entry.ref),'utf8')}catch(error){if(error.code!=='ENOENT')throw error}
    if(existing!==undefined){
-    if(JSON.stringify(decodeBlock(dir,entry.ref,existing))!==entry.bytes)throw Error('Immutable block corruption')
+    if(existing!==entry.bytes&&JSON.stringify(decodeBlock(dir,entry.ref,existing))!==entry.bytes)throw Error('Immutable block corruption')
     onIO({kind:'read',type:entry.block.kind,bytes:Buffer.byteLength(existing),reason:'deduplication'})
     continue
    }
@@ -395,7 +417,7 @@ export function createConversationPageStore({root,onIO=()=>{},linkFile=link}={})
   const workers=Array.from({length:Math.min(8,groups.length)},async()=>{
    while(index<groups.length){
     const group=groups[index++]
-    if(group.length===1){await writeBlock(dir,group[0].block,directories);continue}
+    if(group.length===1){await writeBlock(dir,group[0].block,directories,{bytes:group[0].bytes,id:group[0].ref});continue}
     const bytes=JSON.stringify({kind:'block-pack-v1',records:group.map(entry=>[entry.ref,entry.block])})
     const target=path.join(packDirectory,hash(bytes)+'.json'),staging=target+'.staging-'+randomUUID()
     let handle

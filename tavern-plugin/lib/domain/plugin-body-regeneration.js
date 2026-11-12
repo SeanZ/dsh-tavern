@@ -6,14 +6,15 @@ import { computeSceneTarget } from './scene-illustration.js'
 import { sessionEvents } from './session-events.js'
 import { isNewPlayerInput } from './session-turn-input.js'
 import { regenerationProjection, applyRegenerationProjection, failedTurnReplayAvailability, surfaceTurnOfSeq } from './rollback-surface.js'
-import { assertRegenerationSourceCurrent, replaceLastRound } from './last-round-replacement.js'
+import { replaceLastRound } from './last-round-replacement.js'
 import { plainReplyProse, replyProse } from './reply-prose.js'
 import { lastTavernHelperVariables } from './tavern-helper-context.js'
 import { consumeScriptPrompts } from './tavern-script-prompts.js'
 import { findBodyRegenerationFrame } from './body-regeneration-materials.js'
 import { untilAborted } from './plugin-callback.js'
 import { projectPlayerContent } from './player-input-content.js'
-import { createRegenerationDiscard, regenerationAttemptMessages, restoreDiscardedRegeneration, installRegenerationDiscard, clearRegenerationFailure, retainRegenerationFailure } from './regeneration-discard.js'
+import { restoreDiscardedRegeneration } from './regeneration-discard.js'
+import { frameUserInput } from './agent-input-frame.js'
 
 const text = value => typeof value === 'string' ? value : ''
 const clone = value => value === undefined ? undefined : structuredClone(value)
@@ -35,42 +36,6 @@ function pendingSettlement(chat) {
 // they only have to be kept out of the commit's write-back.
 const BACKGROUND_WRITE_KEYS = ['macroState', 'variables', 'posture', 'scriptState']
 
-function historyRows(messages) {
-  return messages.map(row => [row?.role, row?.turn, row?.sourceText, row?.projectionText,
-    row?.text, row?.swipeId, row?.tavernHidden, row?.is_hidden, row?.hidden, row?.messageUid, row?.regenerationDiscarded])
-}
-
-function assertRegenerationMarker(current, operationId) {
-  if (current?.regenRecovery?.id !== operationId || current.regenRecovery?.phase !== 'prepared') {
-    throw error('TAVERN_PLUGIN_STALE_VERSION', '正文重新生成操作已经失效')
-  }
-}
-
-// Before the body is committed only the target row and the branch matter: a
-// settlement that advanced the timeline revision is not a different story.
-function assertTargetCurrent(current, original, index, operationId) {
-  assertRegenerationMarker(current, operationId)
-  if (current.timeline?.branchId !== original.timeline?.branchId) {
-    throw error('TAVERN_PLUGIN_STALE_VERSION', '重新生成期间剧情状态已经变化')
-  }
-  const expected = regenerationAttemptMessages(original.messages, index === null ? null : current.regenRecovery.discarded)
-  if (!isDeepStrictEqual(historyRows(current.messages), historyRows(expected))) throw error('TAVERN_PLUGIN_STALE_VERSION', '重新生成期间历史消息已经变化')
-}
-
-// The commit replaces the whole story and timeline, so the branch and the story
-// rows must still be the ones this operation started from. The timeline revision
-// and the background settlement keys legitimately advance while the body is
-// generating (settlement, candidates, worldbook); they are not a different story,
-// and the write-back below keeps whatever they wrote instead of overwriting it.
-function assertCommitCurrent(current, original, index, operationId) {
-  assertRegenerationMarker(current, operationId)
-  if (current.timeline?.branchId !== original.timeline?.branchId) {
-    throw error('TAVERN_PLUGIN_STALE_VERSION', '重新生成期间剧情状态已经变化')
-  }
-  const expected = regenerationAttemptMessages(original.messages, index === null ? null : current.regenRecovery.discarded)
-  if (!isDeepStrictEqual(historyRows(current.messages), historyRows(expected))) throw error('TAVERN_PLUGIN_STALE_VERSION', '重新生成期间历史消息已经变化')
-}
-
 /**
  * A provider only supplies a candidate. The old prose is discarded with the
  * durable busy marker; retry material stays outside visible story rows. The
@@ -81,20 +46,7 @@ export function createPluginBodyRegeneration(deps) {
     sessionPatch, readRegenerationMaterials, prepareRegenerationReply, notifyRegeneration,
     recovery, pendingRegenerations, pendingRollbacks, selectTarget } = deps
 
-  async function releasePrepared(chatId, operationId) {
-    return chats.update(chatId, current => {
-      if (current?.regenRecovery?.id !== operationId || current.regenRecovery?.phase !== 'prepared') return current
-      const recovery = current.regenRecovery
-      delete current.regenInProgress
-      delete current.regenRecovery
-      delete current.bodyGenerationCandidate
-      retainRegenerationFailure(current, recovery)
-      current.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
-      return current
-    }, { source: 'foreground.plugin-regen-release', worldSelection: { preserveWorld: true } })
-  }
-
-  return async function regenerateWithProvider({ gameId, sessionId = gameId, expectedTarget, turn, textVersion, generate, prepare, providerId, validateProvider, guidance = '', signal, onPhase } = {}) {
+  return async function regenerateWithProvider({ gameId, sessionId = gameId, expectedTarget, turn, textVersion, generate, prepare, providerId, hostRegex = false, validateProvider, guidance = '', signal, onPhase } = {}) {
     if (typeof generate !== 'function') throw new TypeError('generate 必须是函数')
     if (typeof readRegenerationMaterials !== 'function') throw new Error('当前宿主未提供正文重生成材料接口')
     if (sessionPatch && !sessionPatch.replacementAllowed()) throw new Error(sessionPatch.blockReason())
@@ -107,7 +59,7 @@ export function createPluginBodyRegeneration(deps) {
     if (pendingRegenerations.has(chatId) || pendingRollbacks.has(chatId)) throw error('TAVERN_PLUGIN_BUSY', '当前对话正在重新生成或回退')
     pendingRegenerations.add(chatId)
     const operationId = randomUUID()
-    let committed = false, marked = false, interruptedSettlement = null
+    let committed = false, startedAttempt, interruptedSettlement = null
     const phase = async value => { try { if (typeof onPhase === 'function') await onPhase(value) } catch { /* Observers never change commit semantics. */ } }
     try {
       let agent = sessions.get(sessionId)
@@ -156,7 +108,7 @@ export function createPluginBodyRegeneration(deps) {
       if (!card) throw new Error('人物卡不可读取')
       const frame = findBodyRegenerationFrame(original, oldTurn)
       if (!frame?.source?.regenerationState && ((original.mode || 'story') === 'script'
-        || /{{|<%/.test(frame?.userInput?.sourceText || '') || frame?.userInput?.sourceText !== frame?.userInput?.projectedText
+        || /{{|<%/.test(frameUserInput(frame).sourceText) || frameUserInput(frame).sourceText !== frameUserInput(frame).projectedText
         || inputRow?.templateInputSource)) {
         throw error('TAVERN_PLUGIN_MATERIALS_UNAVAILABLE', '这条旧存档缺少本轮输入处理后的快照，无法安全重生成')
       }
@@ -164,7 +116,7 @@ export function createPluginBodyRegeneration(deps) {
       const failedInput = failedMode ? text(original.userInputEdits?.[String(oldTurn)]?.text) || failed.userText : ''
       let materials = await readRegenerationMaterials({ chat: original, beforeChat, card, turn: oldTurn, assistantIndex: index, inputIndex, operationId,
         ...(failedMode ? { kind: 'failed', targetInput: { raw: failedInput } } : {}) })
-      materials = { ...materials, guidance: String(guidance).trim() }
+      materials = { ...materials, guidance: String(guidance).trim(), outputProcessing: { hostRegex } }
       delete materials.digest
       materials.digest = createHash('sha256').update(JSON.stringify(materials)).digest('hex')
       if (failedMode && textVersion !== undefined && textVersion !== materials.target?.textVersion) throw error('TAVERN_PLUGIN_STALE_VERSION', '失败输入版本已经变化')
@@ -187,51 +139,38 @@ export function createPluginBodyRegeneration(deps) {
       // placeholder remains until the validated replacement commits.
       const replacingTurn = appendRound ? null : surfaceTurnOfSeq(sessionEvents(session), oldSeq)
       if (!failedMode) captureStoryResults(original.messages[index], sessionEvents(session))
-      const discarded = failedMode ? null : createRegenerationDiscard(original.messages[index], index, inputIndex)
-      const replacedUid = discarded?.assistant.messageUid || ''
-      await chats.update(chatId, current => {
+      const attempt = recovery.attempt({
+        originalChat: original, session, sessionId, operationId, eventStart, replacingTurn,
+        assistantIndex: failedMode ? null : index, inputIndex, provider: true
+      })
+      const { targetMessageUid: replacedUid } = attempt
+      await attempt.begin(current => {
         if (agent.phase?.kind === 'running' || current.regenInProgress) throw error('TAVERN_PLUGIN_BUSY', '当前对话正忙')
-        const logical = restoreDiscardedRegeneration(current)
-        // Only the target row is checked. This marker write touches neither the
-        // messages nor the timeline, so a bulk comparison here only refused retries
-        // that background settlement had touched in passing; the commit below still
-        // holds the full CAS.
-        if (index !== null) assertRegenerationSourceCurrent({ originalChat: original, currentChat: logical, assistantIndex: index, inputIndex })
-        current.regenInProgress = true
-        current.regenRecovery = { id: operationId, phase: 'prepared', detached: true,
-          beforeRevision: Number(current._storageRevision || 0), sessionId, eventStart,
-          temporaryReplacingTurn: replacingTurn, targetMessageUid: replacedUid,
-          ...(discarded ? { discarded } : {}) }
-        if (discarded) installRegenerationDiscard(current, discarded)
-        else clearRegenerationFailure(current)
-        current.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
-        return current
-      }, { source: 'foreground.plugin-regen-begin', worldSelection: { preserveWorld: true } })
-      marked = true
+      })
+      startedAttempt = attempt
       await phase('generating')
       signal?.throwIfAborted()
       const fingerprint = createHash('sha256').update(JSON.stringify({ ...materials, digest: undefined,
+        outputProcessing: hostRegex ? materials.outputProcessing : undefined,
         target: { ...materials.target, operationId: undefined }, providerId })).digest('hex')
       const reusable = original.bodyGenerationCandidate?.fingerprint === fingerprint && original.bodyGenerationCandidate?.providerId === providerId
         ? original.bodyGenerationCandidate : null
       const snapshot = reusable?.snapshot || await prepare?.({ gameId: sessionId, reason: failedMode ? 'retry' : 'regenerate', signal })
-      await chats.update(chatId, current => {
-        assertTargetCurrent(current, original, index, operationId)
-        current.regenRecovery.generation = { provider: providerId, snapshot: clone(snapshot), materialsDigest: materials.digest, status: 'running' }
-        return current
-      }, { source: 'foreground.plugin-regen-config' })
-      const generation = Promise.resolve().then(() => reusable ? { text: reusable.text } : generate({ materials: clone(materials), snapshot, signal }))
+      await attempt.updatePrepared('config', marker => {
+        marker.generation = { provider: providerId, snapshot: clone(snapshot), materialsDigest: materials.digest, status: 'running' }
+      })
+      const generation = Promise.resolve().then(() => reusable ? { text: reusable.text, regexScripts: reusable.regexScripts, projectionWarning: reusable.projectionWarning } : generate({ materials: clone(materials), snapshot, signal }))
       const candidate = await (signal ? untilAborted(generation, signal) : generation)
       signal?.throwIfAborted()
       const body = typeof candidate === 'string' ? candidate : candidate?.text
       if (typeof body !== 'string' || !body.trim() || body.length > 200000) throw error('TAVERN_PLUGIN_INVALID_BODY', '插件必须返回非空正文，且不能超过 200000 字符')
       await validateProvider?.()
-      await chats.update(chatId, current => {
+      await attempt.updatePrepared('candidate', marker => {
         signal?.throwIfAborted()
-        assertTargetCurrent(current, original, index, operationId)
-        current.regenRecovery.candidate = { fingerprint, providerId, snapshot: clone(snapshot), text: body }
-        return current
-      }, { source: 'foreground.plugin-regen-candidate' })
+        marker.candidate = { fingerprint, providerId, snapshot: clone(snapshot), text: body,
+          ...(candidate?.regexScripts !== undefined ? { regexScripts: clone(candidate.regexScripts) } : {}),
+          ...(candidate?.projectionWarning ? { projectionWarning: candidate.projectionWarning } : {}) }
+      })
       await phase('validating')
       signal?.throwIfAborted()
       // Input macros and template side effects have already run in the original
@@ -248,7 +187,7 @@ export function createPluginBodyRegeneration(deps) {
         delete draft.ledgerInjection
       }
       const projected = typeof prepareRegenerationReply === 'function'
-        ? await prepareRegenerationReply({ chat: draft, card, turn: bodyTurn, text: body }) : null
+        ? await prepareRegenerationReply({ chat: draft, card, turn: bodyTurn, text: body, hostRegex, regexChat: original, pluginRegexScripts: candidate?.regexScripts, projectionWarning: candidate?.projectionWarning }) : null
       const prose = projected ? replyProse(projected.sourceText ?? body, projected) : plainReplyProse(body)
       if (!text(prose.text).trim()) throw error('TAVERN_PLUGIN_INVALID_BODY', '插件正文处理后为空')
       const originalUser = failedMode ? { role: 'user', text: failedInput, native: true,
@@ -257,6 +196,8 @@ export function createPluginBodyRegeneration(deps) {
       const previousVariables = lastTavernHelperVariables(originalUser ? [originalUser] : []) ?? lastTavernHelperVariables(beforeChat.messages)
       const oldRow = failedMode ? {} : original.messages[index]
       const row = { role: 'assistant', ...prose, native: true, turn: bodyTurn, ts: Date.now(), swipeId: 0, bodyRegenerationProcessed: true,
+        ...(hostRegex ? { bodyHostRegexApplied: true } : {}),
+        ...(candidate?.regexScripts !== undefined || candidate?.projectionWarning ? { bodyPluginProjection: true } : {}),
         swipes: [prose.projectionText], ...(oldRow.nativeAnchor ? { nativeAnchor: clone(oldRow.nativeAnchor) } : {}),
         ...(oldRow.stagePageVersion ? { stagePageVersion: oldRow.stagePageVersion } : {}) }
       if (previousVariables !== undefined) row.variables = [clone(previousVariables)]
@@ -272,7 +213,7 @@ export function createPluginBodyRegeneration(deps) {
           event: { kind: 'commit', userText: text(originalUser?.text), nativeTurn: failedMode ? oldTurn : bodyTurn } })
         draft.scriptState = progressed.state
       }
-      const begun = timeline.apply({ chat: draft, intent: { kind: 'body.begin', turn: bodyTurn, userText: text(originalUser?.text) } })
+      const begun = timeline.apply({ chat: draft, detach: false, intent: { kind: 'body.begin', turn: bodyTurn, userText: text(originalUser?.text) } })
       draft = begun.chat
       const bodyOperation = draft.timeline.operations[begun.value.operationId]
       // The new checkpoint must still return to the ORIGINAL pre-turn revision,
@@ -285,7 +226,7 @@ export function createPluginBodyRegeneration(deps) {
           operationId: bodyOperation.id, branchId: draft.timeline.branchId, basedOnRevision: bodyOperation.basedOn.revision,
           ...(failedMode ? { turn: bodyTurn } : {}) } }
       }
-      const completed = timeline.complete({ chat: draft, operationId: bodyOperation.id, basedOn: bodyOperation.basedOn,
+      const completed = timeline.complete({ chat: draft, detach: false, operationId: bodyOperation.id, basedOn: bodyOperation.basedOn,
         outcome: { status: 'success' }, apply(current) {
           if (failedMode) current.messages = clone(original.messages).concat([originalUser, row])
           else {
@@ -313,34 +254,30 @@ export function createPluginBodyRegeneration(deps) {
       if (checkpoint.before !== undefined) draft.timeline.checkpoints.at(-1).before = clone(checkpoint.before)
       projection.data.message.content = [{ type: 'text', text: prose.text }]
       signal?.throwIfAborted()
-      let saved = await chats.update(chatId, async current => {
-        await validateProvider?.()
-        signal?.throwIfAborted()
-        if (agent.phase?.kind === 'running') throw error('TAVERN_PLUGIN_STALE_VERSION', '前台已开始新一轮')
-        assertCommitCurrent(current, original, index, operationId)
-        // 别的插件/后台写几条上下文不算本轮失效：只要玩家没有新输入、旧正文还在面上。
-        if (playerInputSince(session, eventStart) || (!appendRound && !bodyStillOnSurface(session, oldSeq, oldTurn))) throw error('TAVERN_PLUGIN_STALE_VERSION', '模型会话已经变化')
-        // Keep concurrent non-story settings; only story-owned fields come from
-        // the detached rollback/commit. No hidden provider transcript is stored.
-        for (const key of ['messages', 'timeline', 'foregroundFrames', ...INPUT_STATE_FIELDS, 'posture', 'ledger', 'candidates',
-          'settleStatus', 'settleError', 'lastSettle', 'foregroundError', 'presentationWarnings', 'candidateAgent',
-          ...(failedMode ? ['suppressedDshTurns', 'nativeCommits', 'userInputEdits'] : [])]) {
-          // A background writer that advanced one of its own keys while the body
-          // was generating keeps that value; the detached draft is stale for it.
-          if (BACKGROUND_WRITE_KEYS.includes(key) && !isDeepStrictEqual(current[key], original[key])) continue
-          if (Object.hasOwn(draft, key)) current[key] = clone(draft[key])
-          else delete current[key]
+      let saved = await attempt.commit({
+        projection,
+        validate: validateProvider,
+        apply(current) {
+          signal?.throwIfAborted()
+          if (agent.phase?.kind === 'running') throw error('TAVERN_PLUGIN_STALE_VERSION', '前台已开始新一轮')
+          // Background context can grow while the provider runs. Only a new
+          // player input or missing target invalidates the native projection.
+          if (playerInputSince(session, eventStart) || (!appendRound && !bodyStillOnSurface(session, oldSeq, oldTurn))) throw error('TAVERN_PLUGIN_STALE_VERSION', '模型会话已经变化')
+          for (const key of ['messages', 'timeline', 'foregroundFrames', ...INPUT_STATE_FIELDS, 'posture', 'ledger', 'candidates',
+            'settleStatus', 'settleError', 'lastSettle', 'foregroundError', 'presentationWarnings', 'candidateAgent',
+            ...(failedMode ? ['suppressedDshTurns', 'nativeCommits', 'userInputEdits'] : [])]) {
+            // The detached draft is stale for fields advanced by background work.
+            if (BACKGROUND_WRITE_KEYS.includes(key) && !isDeepStrictEqual(current[key], original[key])) continue
+            if (Object.hasOwn(draft, key)) current[key] = clone(draft[key])
+            else delete current[key]
+          }
         }
-        current.regenRecovery = { ...current.regenRecovery, phase: 'committed', projection }
-        delete current.bodyGenerationCandidate
-        current.tavernHelperLifecycleRevision = Number(current.tavernHelperLifecycleRevision || 0) + 1
-        return current
-      }, { source: 'foreground.plugin-regen-commit' })
+      })
       committed = true
       await phase('committed')
-      saved = await recovery.complete({ chatId, session, operationId }) || saved
+      saved = await attempt.project() || saved
       try { await notifyRegeneration?.(sessionId, { turn: bodyTurn }) } catch { /* The committed story must still reach settlement. */ }
-      try { await replyCommitted?.(sessionId) } catch { /* Listeners do not own the story commit. */ }
+      try { await replyCommitted?.(sessionId, saved._storageRevision) } catch { /* Listeners do not own the story commit. */ }
       await phase('settling')
       try { await queueSettlement(chatId) }
       catch (cause) {
@@ -356,7 +293,7 @@ export function createPluginBodyRegeneration(deps) {
       return { gameId: sessionId, turn: bodyTurn, textVersion: computeSceneTarget(latest, bodyTurn).key,
         text: prose.text, settlement: latest.settleStatus, ...(latest.settleError ? { settlementError: latest.settleError } : {}) }
     } catch (cause) {
-      if (marked && !committed) await releasePrepared(chatId, operationId)
+      if (!committed) await startedAttempt?.abandon()
       // A rejected candidate must not leave the old body's interrupted
       // settlement holding a permanent running slot. Never recover unrelated
       // tasks or resume after a user edit, stop, new turn or branch change.

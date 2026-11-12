@@ -65,12 +65,12 @@ const outputOwner = (plugin, name) => 'output:' + plugin + ':' + name
 // A plugin's own moments per game in 10 s: two plugins answering each other cannot spin forever.
 const MAX_OWN_EVENTS = 60
 
-function ownerOf(service) {
+function callerOf(service) {
   const ctx = service && service.ctx
   const fiber = ctx && (ctx[Symbol.for('cordis.shadow')] ? Object.getPrototypeOf(ctx) : ctx).fiber
   const name = String(fiber && fiber.name || '').trim()
   if (!name || name === 'root') throw new Error('请在插件里通过 ctx.inject 取得 tavern 服务，并以 tavern.方法名() 的形式调用')
-  return name
+  return { fiber, name }
 }
 
 /** Register through the caller's Cordis fiber so plugin unload disposes it. */
@@ -181,7 +181,69 @@ export function createTavernPluginApi(deps) {
   const pricingProviders = new Map()
   const galleryProviders = new Map()
   const mvuSettlementProviders = new Map()
-  const capabilities = Object.freeze({ gameMode: 1, hostBehavior: 1, controlInput: 1, mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1, pricingProvider: 1, imageModels: 1, imageLibrary: 1, bodyGeneration: 1 })
+  // Runtime name -> 'host' | 'tavern' | 'conflict', as the Cordis loader attributes each caller's fiber
+  // (deps.loaderOrigin). A plugin a host/profile entry loaded is global; only Tavern guards load card plugins.
+  const loaderOrigins = new Map()
+  function ownerOf(service) {
+    const { fiber, name } = callerOf(service)
+    const origin = deps.loaderOrigin?.(fiber)
+    if (origin) {
+      const seen = loaderOrigins.get(name)
+      loaderOrigins.set(name, seen && seen !== origin ? 'conflict' : origin)
+    }
+    return name
+  }
+  const capabilities = Object.freeze({ gameMode: 1, hostBehavior: 1, controlInput: 1, mvuSettlementProvider: 1, worldbookStrategy: 1, galleryProvider: 1, pricingProvider: 1, imageModels: 1, imageLibrary: 1, bodyGeneration: 1, bodyProjection: 1, stContractService: 1,
+    ...(deps.generationPresets ? { generationPresets: 1 } : {}) })
+  // Allocated only when a plugin declares a read capability.
+  let readDeclarations
+  let readEpoch = 0
+  const staleRead = () => Object.assign(new Error('Read capability was revoked'), { code: 'TAVERN_PLUGIN_READ_REVOKED' })
+  function readDefinition({ sources, authorize } = {}) {
+    if (!Array.isArray(sources) || typeof authorize !== 'function') throw new TypeError('sources and authorize are required')
+    const readers = new Map()
+    for (const { name, readRaw } of sources) {
+      sectionName(name)
+      if (readers.has(name) || typeof readRaw !== 'function') throw new TypeError('Unique source names and readRaw functions are required')
+      readers.set(name, readRaw)
+    }
+    return { readers, authorize }
+  }
+  async function resolveReadCapability({ owner, name, sessionId, consumer, anchor, scope, readHistory }) {
+    const key = owner + ':' + name
+    const entry = readDeclarations?.get(key)
+    if (!entry) return null
+    const epoch = entry.epoch
+    const current = () => readDeclarations?.get(key) === entry && entry.epoch === epoch
+    await guardScope(owner, { gameId: sessionId })
+    const binding = structuredClone({ sessionId, consumer, anchor, scope })
+    if (!await entry.authorize(structuredClone(binding)) || !current()) return null
+    if (typeof readHistory !== 'function') throw new TypeError('readHistory is required')
+    const readers = new Map([...entry.readers].map(([local, reader]) => [owner + ':' + name + ':' + local, reader]))
+    const execute = async (reader, { args, signal } = {}) => {
+      if (!current()) throw staleRead()
+      signal?.throwIfAborted()
+      const result = await reader({ sessionId: binding.sessionId, anchor: structuredClone(binding.anchor),
+        args: structuredClone(args), signal, scope: structuredClone(binding.scope) })
+      if (!current()) throw staleRead()
+      signal?.throwIfAborted()
+      return result
+    }
+    return Object.freeze({ generation: String(epoch), sources: Object.freeze([...readers.keys()].sort()),
+      readHistory: context => execute(readHistory, context),
+      readSource: context => {
+        const args = context?.args
+        const reader = readers.get(args?.sourceId)
+        if (!reader) throw new Error('Source is not authorized')
+        if (Object.keys(args).some(key => !['sourceId', 'turn', 'para'].includes(key)) ||
+          !Number.isSafeInteger(args.turn) || args.turn < 1 || args.turn > binding.anchor.turn ||
+          (args.para !== undefined && (!Number.isSafeInteger(args.para) || args.para < 0 ||
+            args.turn === binding.anchor.turn && binding.anchor.para !== undefined && args.para > binding.anchor.para))) {
+          throw new Error('Query exceeds the bound anchor or contains unsupported fields')
+        }
+        return execute(reader, context)
+      } })
+  }
   const sections = new Map()
   const turnSections = new Map()
   const settlementSections = new Map()
@@ -243,8 +305,7 @@ export function createTavernPluginApi(deps) {
 
   const imageCatalog = createPluginImageCatalog({ imageProviders, reportError: recordError,
     available: async (owner, context) => {
-      const scopes = deps.cardScope ? await deps.cardScope() : null
-      const scope = scopes?.get(owner)
+      const scope = await accessScope(owner)
       return !scope || Boolean(context.card && scope.cards.includes(context.card))
     }
   })
@@ -281,24 +342,36 @@ export function createTavernPluginApi(deps) {
 
   /** Card plugins (card-plugins.js): those of another card than this game's, and this card's own. */
   async function cardPluginsFor(game) {
-    let scopes = null
-    if (deps.cardScope) {
-      try { scopes = await deps.cardScope() } catch { return [] }
-      if (!(scopes instanceof Map)) return []
-    }
-    if (!scopes?.size) return { elsewhere: new Set(), own: new Set() }
     const cardPath = game && deps.cardPathOf ? await deps.cardPathOf(game.sessionId).catch(() => null) : null
     const elsewhere = new Set(), own = new Set()
-    for (const [name, scope] of scopes) (scope.cards.includes(cardPath) ? own : elsewhere).add(name)
+    for (const identity of deps.runningUserPlugins?.values() || []) {
+      const scope = await accessScope(identity.runtimeName)
+      if (scope) (scope.cards.includes(cardPath) ? own : elsewhere).add(identity.runtimeName)
+    }
     return { elsewhere, own }
   }
 
-  /** A card plugin's calls reach only its own card and that card's games. */
-  async function guardScope(owner, input) {
+  function runtimeIdentity(owner) {
+    return [...(deps.runningUserPlugins?.values() || [])].find(identity => identity.runtimeName === owner)
+  }
+
+  async function accessScope(owner) {
+    const identity = runtimeIdentity(owner)
+    if (identity?.origin === 'global') return null
+    if (!identity && loaderOrigins.get(owner) === 'host') return null
     const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
     const scope = scopes?.get(owner)
+    if (identity?.origin === 'card' && scope) return scope
+    recordError(null, owner, '访问范围', new Error('运行身份未登记或卡内插件缺少有效 scope，拒绝访问'))
+    return { cards: [] }
+  }
+
+  /** Only a trusted global identity grants unrestricted access. */
+  async function guardScope(owner, input) {
+    const scope = await accessScope(owner)
     if (!scope) return
     const refuse = () => { throw Object.assign(new Error('卡内插件 ' + owner + ' 只能用于它所在的人物卡'), { code: 'TAVERN_PLUGIN_SCOPE' }) }
+    if (!scope.cards.length) refuse()
     if (input.card !== undefined && !scope.cards.includes(String(input.card))) refuse()
     if (input.gameId !== undefined && (typeof input.gameId !== 'string' || !scope.cards.includes(await deps.cardPathOf?.(input.gameId).catch(() => null)))) refuse()
   }
@@ -398,6 +471,29 @@ export function createTavernPluginApi(deps) {
     return !(await choicesFor(gameId)).disabled.has(owner)
   } })
   const service = {
+    readCapability({ name, ...definition } = {}) {
+      const owner = ownerOf(this)
+      sectionName(name)
+      const initial = readDefinition(definition)
+      const key = owner + ':' + name
+      let entry
+      const revoke = owned(this, () => {
+        readDeclarations ??= new Map()
+        if (readDeclarations.has(key)) throw new Error('Read capability already registered')
+        entry = { ...initial, epoch: ++readEpoch }
+        readDeclarations.set(key, entry)
+        return () => {
+          if (readDeclarations?.get(key) !== entry) return
+          readDeclarations.delete(key)
+          if (!readDeclarations.size) readDeclarations = undefined
+        }
+      }, 'tavern.readCapability()')
+      return Object.freeze({ revoke, update(next) {
+        if (readDeclarations?.get(key) !== entry) throw staleRead()
+        const value = readDefinition(next)
+        Object.assign(entry, value, { epoch: ++readEpoch })
+      } })
+    },
     hostBehavior(input) {
       const owner = ownerOf(this)
       return owned(this, () => hostBehavior.register(owner, input), 'tavern.hostBehavior()')
@@ -763,6 +859,24 @@ export function createTavernPluginApi(deps) {
       return deps.pluginData ? deps.pluginData.read(owner) : null
     },
 
+    async listGenerationPresets() {
+      ownerOf(this)
+      if (!deps.generationPresets) throw new Error('当前 Tavern 不支持共享预设')
+      return deps.generationPresets.list()
+    },
+
+    async readGenerationPreset({ id, gameId } = {}) {
+      ownerOf(this)
+      if (!deps.generationPresets) throw new Error('当前 Tavern 不支持共享预设')
+      if (id === undefined) {
+        const game = await requireGame(gameId)
+        id = await deps.generationPresets.currentId(game.sessionId)
+        if (!id) throw new Error('本局未绑定宿主预设，请在本局应用一个预设或选择指定预设')
+      }
+      if (typeof id !== 'string' || id.trim() === '') throw new TypeError('共享预设标识无效')
+      return deps.generationPresets.read(id)
+    },
+
     // Options of this plugin in each game's settings: Tavern draws them in 本局设置 and keeps the values with the game.
     gameSettings(input) {
       const owner = ownerOf(this)
@@ -810,8 +924,8 @@ export function createTavernPluginApi(deps) {
     async setDefaultPlayerName({ playerName } = {}) {
       const owner = ownerOf(this)
       const name = playerNameOf(playerName)
-      const scopes = deps.cardScope ? await deps.cardScope() : null
-      if (scopes?.has(owner)) throw Object.assign(new Error('卡内插件不能修改全局默认玩家称呼'), { code: 'TAVERN_PLUGIN_SCOPE' })
+      const scope = await accessScope(owner)
+      if (scope) throw Object.assign(new Error('卡内插件不能修改全局默认玩家称呼'), { code: 'TAVERN_PLUGIN_SCOPE' })
       return await deps.writeDefaultPlayerName(name)
     },
 
@@ -897,7 +1011,7 @@ export function createTavernPluginApi(deps) {
 
     // Every character card in the library, read-only. `id` is what card-taking methods accept.
     async listCards() {
-      const scope = deps.cardScope ? (await deps.cardScope().catch(() => null))?.get(ownerOf(this)) : null
+      const scope = await accessScope(ownerOf(this))
       return (await deps.listCards()).filter(card => !scope || scope.cards.includes(card.path)).map(card => ({
         id: card.path, name: card.name, fileName: String(card.path).split('/').pop(),
         imageUrl: card.hasImage ? '/api/dsh-tavern/card-image?path=' + encodeURIComponent(card.path) : '',
@@ -1035,8 +1149,8 @@ export function createTavernPluginApi(deps) {
       return owned(this, () => {
         let dispose = deps.addSkillRoot({ owner, dir: path.resolve(dir), role })
         // A card's own plugin lives in that card's games: its skills would reach every game, so they are not added.
-        void (deps.cardScope ? deps.cardScope() : Promise.resolve(null)).then(scopes => {
-          if (scopes?.has(owner)) { dispose(); dispose = () => {}; recordError(null, owner, 'Skill 来源', new Error('卡内插件不能添加 Skill')) }
+        void accessScope(owner).then(scope => {
+          if (scope) { dispose(); dispose = () => {}; recordError(null, owner, 'Skill 来源', new Error('卡内插件不能添加 Skill')) }
         }, () => {})
         return () => dispose()
       }, 'tavern.skillSource()')
@@ -1393,8 +1507,11 @@ export function createTavernPluginApi(deps) {
   /** Called by Tavern after a card's working copy changed; a card plugin hears only about its own card. */
   async function cardChanged(cardPath, revision) {
     if (cardHandlers.size === 0) return
-    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
-    const elsewhere = new Set(Array.from(scopes || []).filter(([, scope]) => !scope.cards.includes(cardPath)).map(([name]) => name))
+    const elsewhere = new Set()
+    for (const { owner } of cardHandlers) {
+      const scope = await accessScope(owner)
+      if (scope && !scope.cards.includes(cardPath)) elsewhere.add(owner)
+    }
     dispatch(cardHandlers, { card: cardPath, revision }, 'onCardChanged', elsewhere)
   }
 
@@ -1402,9 +1519,10 @@ export function createTavernPluginApi(deps) {
   async function cardImporterFor(name) {
     const extension = (/\.[^./\\]+$/.exec(String(name || '').toLowerCase()) || [''])[0]
     if (!extension || NATIVE_CARD_EXTENSIONS.has(extension)) return null
-    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
-    const entry = Array.from(cardImporters.values()).find(item => item.extensions.includes(extension) && !scopes?.has(item.owner))
-    return entry ? { owner: entry.owner, id: entry.id, label: entry.label } : null
+    for (const entry of cardImporters.values()) {
+      if (entry.extensions.includes(extension) && !await accessScope(entry.owner)) return { owner: entry.owner, id: entry.id, label: entry.label }
+    }
+    return null
   }
 
   /** Seam: run the importer for `name` on the file's bytes; the card and its files, checked. */
@@ -1848,11 +1966,13 @@ export function createTavernPluginApi(deps) {
     const gameId = gameIdOf(sessionId)
     const context = await deps.resolveGalleryContext?.(gameId).catch(() => null)
     if (!context || context.sessionId !== gameId) return []
-    const scopes = deps.cardScope ? await deps.cardScope().catch(() => null) : null
-    return Array.from(galleryProviders.values()).filter(entry => entry.active && (() => {
-      const scope = scopes?.get(entry.owner)
-      return !scope || (typeof context.cardPath === 'string' && scope.cards.includes(context.cardPath))
-    })())
+    const available = []
+    for (const entry of galleryProviders.values()) {
+      if (!entry.active) continue
+      const scope = await accessScope(entry.owner)
+      if (!scope || scope.cards.includes(context.cardPath)) available.push(entry)
+    }
+    return available
   }
 
   async function providerItems(entry, sessionId) {
@@ -1937,14 +2057,14 @@ export function createTavernPluginApi(deps) {
     return results.sort((a, b) => (order.get(a.versionId) ?? 0) - (order.get(b.versionId) ?? 0))
   }
 
-  return Object.freeze({ hostBehavior, gameModes, bodyGenerators, taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolSkillsFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved, onPictureReady,
+  return Object.freeze({ resolveReadCapability, hostBehavior, gameModes, bodyGenerators, taskCatalog, service, mvuProvider, mvuProviderActive, mvuProviderRegistered, capabilities, toolModesFor, toolSkillsFor, toolNetworkFor: name => toolNetworks.get(name)?.capability, callHandler, turnState, exportGame, importGame, turnSettled, castAnnotated, castAssetSources, gameRemoved, mediaRemoved, onPictureReady,
     listGalleryProviderItems, readGalleryProviderImage, removeGalleryProviderItems,
     // The asset library's access to the 配图 人物库 records (registerImageLibrary schema 4); outside any card.
     imageCharacters: (op, input) => imageCatalog.record(op, {}, input),
     imageCharacterLibraries: () => imageCatalog.recordLibraries({}),
     listImageLibrary: (kind, input) => imageCatalog.list(kind, {}, input),
-    builtinPromptSection({name,target,text,unbounded = false}) {
-      return register.call({ctx:deps.ctx},sections,'dsh-tavern\u0000'+target+'\u0000'+name,
+    builtinPromptSection({name,target,text,unbounded = false}, ctx = deps.ctx) {
+      return register.call({ctx},sections,'dsh-tavern\u0000'+target+'\u0000'+name,
         {owner:'dsh-tavern',name,target,text,unbounded},'tavern builtin prompt section','Duplicate built-in prompt section')
     },
     speechProviders: (capability = 'synthesize') => Array.from(speechProviders.values()).filter(entry => typeof entry[capability] === 'function'), imageProviders: () => Array.from(imageProviders.values()), pricingProviders: () => Array.from(pricingProviders.values()), timelineChanged, checkVersions, pluginState, cardChanged, cardImporterFor, convertCard, cardImported, gameForked, forkTurns, promptSections, turnContext, worldbookPoolEntries, settlement, candidate, compactionNotes, replaceSettlement, replaceLedger,

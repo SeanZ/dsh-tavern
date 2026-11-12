@@ -14,8 +14,7 @@ function section(start, end) {
 }
 const scope = {}
 vm.runInNewContext(
-  section('function toAssistantBlocks(content)', 'function emptyAssistantBlock(blockType)') +
-    section('function initialState(turn, step)', 'function registerAssistantConversationNode(ctx)') +
+  section('function toAssistantBlocks(', 'function registerAssistantConversationNode(') +
     '\nthis.fold = assistantDefinition;',
   scope,
 )

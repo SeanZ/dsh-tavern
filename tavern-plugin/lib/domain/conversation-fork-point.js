@@ -4,6 +4,11 @@ import { assistantResultForTurn } from './session-turn-result.js'
 import { sessionEvents } from './session-events.js'
 import { assertConversationForkable } from './conversation-fork.js'
 
+// How far back from the live head an unanchored snapshot search reads. A save keeps a
+// bounded number of revisions for its own history, so this bounds the fallback scan
+// instead of letting a fork read every revision a long game ever wrote.
+const MAX_HISTORY_SCAN = 64
+
 const turnOf = message => Number(message?.turn || (message?.greeting ? 1 : 0))
 const lastAssistant = chat => (chat.messages || []).findLast(message => message?.role === 'assistant')
 
@@ -15,6 +20,12 @@ function rowsOf(state) {
   return Array.isArray(state?.messages) ? state.messages : []
 }
 
+function sameStoryRow(old, current) {
+  if (!old || !current || old.role !== current.role || (old.sourceText ?? old.text) !== (current.sourceText ?? current.text)) return false
+  if (old.messageUid && current.messageUid && old.messageUid !== current.messageUid) return false
+  return !(old.storyResultId && current.storyResultId && old.storyResultId !== current.storyResultId)
+}
+
 // A snapshot is usable only when it holds exactly the story prefix the chosen
 // message ends: same absolute row count, same roles, same narrative text.
 // Turn numbers are deliberately ignored here: duplicated, missing or out-of-order
@@ -22,13 +33,7 @@ function rowsOf(state) {
 function holdsStoryPrefix(state, sourceMessages, messageIndex) {
   const rows = rowsOf(state)
   if (rows.length !== messageIndex + 1) return false
-  for (let index = 0; index <= messageIndex; index++) {
-    const old = rows[index]
-    const now = sourceMessages[index]
-    if (!old || !now || old.role !== now.role) return false
-    if ((old.sourceText ?? old.text) !== (now.sourceText ?? now.text)) return false
-  }
-  return true
+  return holdsAvailablePrefix(state, sourceMessages)
 }
 
 // Revisions reachable from a Chat: its own bounded checkpoints, then the parent
@@ -72,17 +77,16 @@ function harvestSnapshots(state, queue, claimed) {
 function holdsAvailablePrefix(state, sourceMessages) {
   const rows = rowsOf(state)
   for (let index = 0; index < rows.length; index++) {
-    const old = rows[index], now = sourceMessages[index]
-    if (!old || !now || old.role !== now.role) return false
-    if ((old.sourceText ?? old.text) !== (now.sourceText ?? now.text)) return false
+    if (!sameStoryRow(rows[index], sourceMessages[index])) return false
   }
   return true
 }
 
 /**
- * Resolve the Chat state that a story message ends at, addressed by absolute message
- * index. The chosen snapshot's messages are the source prefix `[0..messageIndex]`; no
- * turn is consulted to find it. A request on the live head resolves to the source itself.
+ * Resolve the Chat state a story message ends at, addressed by absolute message index.
+ * The chosen prefix is `[0..messageIndex]`; no turn is consulted to find it.
+ *
+ * 当前楼层直接使用源存档，历史楼层必须匹配一份已结算的快照。
  * @returns `{ messageIndex, state, turn }` — `turn` is informational, for legacy receipts.
  */
 export async function conversationStateAtMessage(source, messageIndex, readRevision) {
@@ -97,14 +101,22 @@ export async function conversationStateAtMessage(source, messageIndex, readRevis
     assertConversationForkable(source)
     return { messageIndex: index, state: source, turn: turnOf(lastAssistant(source)) }
   }
+  let readable = false, stale = false, pendingError = null
+  const exact = state => {
+    try {
+      assertConversationForkable(state, { historical: true })
+      return { messageIndex: index, state, turn: turnOf(lastAssistant(state)) }
+    } catch (error) {
+      if (error?.forkTransient !== true) throw error
+      pendingError ||= error
+      return null
+    }
+  }
   const queue = [], claimed = new Set()
   harvestSnapshots(source, queue, claimed)
   const visited = new Set()
   const MAX_FORWARD_PROBES = 64
   let forwardProbes = 0
-  let readable = false
-  let stale = false
-  let pendingError = null
   const queueForward = candidate => {
     if (!Number.isSafeInteger(candidate.scanUntil) || candidate.revision >= candidate.scanUntil || forwardProbes >= MAX_FORWARD_PROBES) return false
     const next = { chatId: candidate.chatId, revision: candidate.revision + 1, scanUntil: candidate.scanUntil, probe: true }
@@ -125,8 +137,7 @@ export async function conversationStateAtMessage(source, messageIndex, readRevis
       state = await readRevision(candidate.chatId, candidate.revision)
     } catch (error) {
       if (error?.code === 'DSH_TAVERN_REVISION_NOT_FOUND') {
-        // Sparse revisions and compaction holes do not end a bounded probe; the
-        // original anchor still reports that its requested history was reclaimed.
+        // Sparse revisions and compaction holes do not end a bounded probe.
         if (candidate.probe) queueForward(candidate)
         else stale = true
         continue
@@ -139,13 +150,8 @@ export async function conversationStateAtMessage(source, messageIndex, readRevis
     }
     readable = true
     if (holdsStoryPrefix(state, messages, index)) {
-      try {
-        assertConversationForkable(state, { historical: true })
-        return { messageIndex: index, state, turn: turnOf(lastAssistant(state)) }
-      } catch (error) {
-        if (error?.forkTransient !== true) throw error
-        pendingError ||= error
-      }
+      const resolved = exact(state)
+      if (resolved) return resolved
     }
     // Legacy checkpoints point at the pre-reply row; early afterRevision values
     // point at the exact but still-settling row. Walk forward only inside this
@@ -153,6 +159,35 @@ export async function conversationStateAtMessage(source, messageIndex, readRevis
     if (rowsOf(state).length <= index + 1 && holdsAvailablePrefix(state, messages)) queueForward(candidate)
     // A later snapshot can still hold this prefix through its own parent chain.
     harvestSnapshots(state, queue, claimed)
+  }
+  // A save can stop naming its own history: a rollback drops the checkpoint it
+  // consumed, a story edit or import rewrites the timeline, and maintenance only keeps
+  // the revisions some feature still points at. The rows are what identifies a state,
+  // so when no anchor reaches the chosen message, walk the Chat's own revisions back
+  // from the head and take the newest one that ends exactly at it. The anchors above
+  // stay first: they name settled revisions without scanning.
+  const chatId = str(source.id)
+  const head = Number(source._storageRevision)
+  let missing = 0
+  for (let revision = head - 1, probes = 0; Number.isSafeInteger(revision) && revision >= 1 && probes < MAX_HISTORY_SCAN; revision--, probes++) {
+    const key = chatId + '\u0000' + revision
+    if (visited.has(key)) continue
+    visited.add(key)
+    let state
+    try {
+      state = await readRevision(chatId, revision)
+    } catch (error) {
+      if (error?.code !== 'DSH_TAVERN_REVISION_NOT_FOUND') throw error
+      // Two holes in a row mean the retained history ends here.
+      if (++missing >= 2) break
+      continue
+    }
+    missing = 0
+    if (!state || state._storageRevision !== revision) continue
+    readable = true
+    if (!holdsStoryPrefix(state, messages, index)) continue
+    const resolved = exact(state)
+    if (resolved) return resolved
   }
   if (pendingError) throw pendingError
   if (stale) throw new Error(`这条消息的历史状态已清理（只保留最近 ${FORK_HISTORY_TURNS} 个原生回合），无法从这条消息分叉`)

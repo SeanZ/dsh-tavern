@@ -457,7 +457,7 @@ function createStoryServiceAdapter(dependencies) {
 					try {
 						const result = await rpc("saveBodyEdit", { ...floor.target, token: edit.token, texts: edit.texts }, sessionId);
 						clearPanels();
-						return { view: result && result.view };
+						return { view: result && result.view, queued: result?.queued === true };
 					} finally { afterChange(sessionId); }
 				}
 			},
@@ -479,7 +479,7 @@ function createStoryServiceAdapter(dependencies) {
 					if (!edit || edit.role !== "user") throw new Error("读取这条输入失败");
 					const result = await rpc("saveBodyEdit", { ...input.target, token: edit.token, role: "user", texts: [text] }, sessionId);
 					clearPanels();
-					return { view: result && result.view };
+					return { view: result && result.view, queued: result?.queued === true };
 				} finally { afterChange(sessionId); }
 			},
 			/**
@@ -507,7 +507,9 @@ function createStoryServiceAdapter(dependencies) {
 			/** Replay a failed or stopped latest round with its original input. */
 			retryFailed: async function (sessionId) {
 				tavernStorySessionArgument(sessionId, "retryFailed");
-				const result = await regenerateBody(sessionId, "", {});
+				const failed = foldNow(sessionId).interrupted;
+				if (!failed) throw new Error("当前没有待重试的失败回合");
+				const result = await regenerateBody(sessionId, "", { retryFailedTurn: failed.turn });
 				return { view: result && result.view };
 			},
 			/** The input a failed or stopped round dropped, while the player has not moved on; or null. */

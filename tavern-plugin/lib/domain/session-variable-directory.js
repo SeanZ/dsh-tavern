@@ -1,4 +1,11 @@
+import { promptSection } from './prompt-section.js'
 import { sessionEvents, appendSessionEvent } from './session-events.js'
+
+// Prompt prose source. Keys are stable; interpolation arguments are data.
+export const PROMPT_PROSE = Object.freeze({
+  p001: "A one-time index of variable paths and types, taken after initialization. It holds no current values and may be incomplete; arrays list only the container. For latest values or more paths, call tavern_read_variables with list, search or read; paths are relative to stat_data. The background maintains variables; the foreground only reads them.\n"
+})
+
 
 const name = 'tavern:variable-directory'
 export function sessionVariableDirectorySection(session) {
@@ -6,9 +13,18 @@ export function sessionVariableDirectorySection(session) {
   return event?.data?.source?.sections?.find(section => section.name === name) || null
 }
 
+/**
+ * The directory sits in the system prompt, which must stay byte-identical once a
+ * model has answered under it (prompt cache, reasoning signatures). So it can only
+ * be frozen before the session's first request; later stat_data never adds it.
+ */
+export function variableDirectoryOpen(session) {
+  return !sessionVariableDirectorySection(session) && !sessionEvents(session).some(event => event.type === 'request/header')
+}
+
 /** Freeze discovery once; current values remain available through the read tool. */
 export function ensureSessionVariableDirectory(session, chat) {
-  if (!['story', 'script'].includes(chat?.mode || 'story') || sessionVariableDirectorySection(session)) return null
+  if (!['story', 'script'].includes(chat?.mode || 'story') || !variableDirectoryOpen(session)) return null
   let state
   for (const message of [...(chat.messages || [])].reverse()) {
     if (message.role === 'tavern-helper') continue
@@ -39,6 +55,6 @@ export function ensureSessionVariableDirectory(session, chat) {
   return appendSessionEvent(session, 'user/message', {
     id: 'tavern-variable-directory:' + session.id, role: 'user', content: [],
     source: { kind: 'plugin:dsh-tavern', form: 'snapshot', sections: [{ name,
-      text: '【变量目录】\n以下是初始化后的一次性变量路径与类型索引，不代表当前值，也可能未列全。数组仅列容器。需要最新值或更多路径时，调用 tavern_read_variables 的 list、search 或 read；路径相对于 stat_data。变量由后台维护，前台只读查询。\n' + JSON.stringify(entries) }] }
+      text: promptSection('variable_directory', PROMPT_PROSE.p001 + JSON.stringify(entries)) }] }
   }, { surfaceOp: 'append' })
 }

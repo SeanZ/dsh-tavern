@@ -24,7 +24,7 @@ function selectedSwipe(message) {
   return Math.max(0, Math.min(count - 1, Number(message && message.swipeId) || 0))
 }
 
-function normalizeMessageId(messages, value) {
+export function normalizeMessageId(messages, value) {
   const rawId = value === undefined || value === null || value === 'latest' ? -1 : Number(value)
   const messageId = rawId < 0 ? messages.length + rawId : rawId
   if (!Number.isInteger(messageId) || messageId < 0 || messageId >= messages.length) {
@@ -34,7 +34,7 @@ function normalizeMessageId(messages, value) {
 }
 
 /** Read the selected variable snapshot from the latest message that has one. */
-export function lastTavernHelperVariables(messages) {
+export function lastTavernHelperVariables(messages, chatVariables) {
   const source = Array.isArray(messages) ? messages : []
   for (let messageId = source.length - 1; messageId >= 0; messageId--) {
     const message = source[messageId]
@@ -44,6 +44,8 @@ export function lastTavernHelperVariables(messages) {
     const variables = message.variables[swipeId]
     if (variables !== undefined) return clone(variables)
   }
+  // A zero-message opening stores its MVU baseline in the existing chat scope.
+  if (chatVariables?.stat_data !== undefined && chatVariables?.schema !== undefined) return clone(chatVariables)
   return undefined
 }
 

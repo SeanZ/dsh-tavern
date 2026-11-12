@@ -14,7 +14,22 @@
 function createStoryFloorRail(root, options) {
 	const host = (options && options.window) || (typeof window !== "undefined" ? window : null);
 	const doc = host && host.document || (root && root.ownerDocument) || (typeof document !== "undefined" ? document : null);
-	const scope = (root && root.closest && root.closest("[data-conversation-scroll]")) || root || (doc && doc.body);
+	// 滚动容器是宿主的 scrollBody（[data-conversation-scroll]）。切换会话或宿主重挂会话视图时，
+	// 这一层会被整个换成新节点，而传进来的 root 还指着旧节点：旧节点脱离文档后量到的宽高全是
+	// 0，刻度列就被判成「看不见」，并且再没有尺寸变化 / 滚动事件把它叫回来 —— 表现就是同一局
+	// 里有刻度、下一次会话却一直没有。所以每次都重新解析一次，旧节点失效就回到当前会话的那个
+	// 滚动容器。
+	const resolveScope = (options && options.resolveScope) || null;
+	function findScope() {
+		const resolved = resolveScope ? resolveScope() : null;
+		if (resolved) return resolved;
+		if (root && root.isConnected === false) {
+			const live = doc && doc.querySelector("[data-conversation-scroll]");
+			if (live) return live;
+		}
+		return (root && root.closest && root.closest("[data-conversation-scroll]")) || root || (doc && doc.body);
+	}
+	let scope = findScope();
 	const hiddenAttribute = "data-dsh-tavern-rail-hidden";
 	const compactAttribute = "data-compact";
 	const label = (options && options.label) || "楼层跳转";
@@ -26,9 +41,23 @@ function createStoryFloorRail(root, options) {
 	// 紧凑版最多画几根刻度：14 根 × 18px ≈ 252px，手机上不会长成一列可滚动的东西。
 	const compactTicks = (options && options.compactTicks) || 14;
 	const flashMs = 700, undoMs = 1800;
+	// 窄屏要点两下才跳：第一下只是「选定这一层」，这个窗口内再点同一下才真的跳。
+	const armMs = (options && options.armMs) || 350;
+	const hintLabel = (options && options.hintLabel) || "再点一下 · 第 {floor} 楼";
 	let rail = null, frame = 0, floorsKey = "", compact = false;
 	let undoBox = null, undoTimer = 0, flashTimer = 0, undoFrom = 0, undoRow = null;
+	let hintBox = null, armTimer = 0, armedFloor = null;
+	let retryTimer = 0, retries = 0;
+	// 收到「暂时看不见」之后自己补几次迟到的复查：容器某一刻量到 0 宽、不到 96 高（切会话、
+	// 开合面板、窗口一度藏起来）时先收起；这类状态未必带着新的尺寸变化或滚动事件，不复查就会
+	// 一直藏着，等人滚一下才回来。
+	function recheck() {
+		if (!host || retryTimer || retries >= 6) return;
+		retries++;
+		retryTimer = host.setTimeout(function () { retryTimer = 0; sync(); }, 400);
+	}
 	const ticks = new Map(); // floor -> { button, row }
+	const hiddenHostNavs = new Set(); // 被这一列收起来的宿主刻度列，卸下时还给宿主
 	function floorOf(row) {
 		const value = Number(row.getAttribute("data-floor"));
 		return Number.isInteger(value) && value > 0 ? value : null;
@@ -77,7 +106,29 @@ function createStoryFloorRail(root, options) {
 		placeUndo();
 		undoTimer = host.setTimeout(hideUndo, undoMs);
 	}
+	// 双击的两步：先选定（刻度变粗 + 边上提示「再点一下」），窗口内再点同一下才跳。
+	function disarm() {
+		if (armTimer) { host.clearTimeout(armTimer); armTimer = 0; }
+		armedFloor = null;
+		for (const [, tick] of ticks) tick.button.removeAttribute("data-armed");
+		if (hintBox) hintBox.remove();
+		hintBox = null;
+	}
+	function arm(floor, button) {
+		disarm();
+		armedFloor = floor;
+		button.setAttribute("data-armed", "");
+		const hint = doc.createElement("span");
+		hint.className = "dsh-tavern-turn-rail-hint";
+		hint.setAttribute("aria-hidden", "true");
+		hint.textContent = hintLabel.replace("{floor}", String(floor));
+		hintBox = hint;
+		doc.body.appendChild(hint);
+		placeHint();
+		armTimer = host.setTimeout(disarm, armMs);
+	}
 	function jump(floor) {
+		disarm();
 		const row = rowOf(floor);
 		if (!row) return;
 		const from = scope.scrollTop || 0;
@@ -123,17 +174,44 @@ function createStoryFloorRail(root, options) {
 			// 固定层里的按钮收不到宿主的滚动手势（固定定位不在滚动容器里，浏览器不会把这次
 			// 滑动交给正文，等于一块吃手的死区），所以触屏滑动由我们自己按位移滚正文：
 			// 手感还是跟着手指走，抬手也不跳。
-			let startY = null, lastY = 0, dragged = false, panning = false;
+			let startY = null, lastY = 0, dragged = false, panning = false, pressed = false, pressTouch = false;
+			// 手指（触屏、笔）要点两下；鼠标一下就到 —— 判断看输入方式，不看窗口宽度：
+			// 手机上就算量到了宽布局，也不会退回单击跳。
+			function activate(touch) {
+				if (!touch) { jump(floor); return; }
+				if (armedFloor === floor) { jump(floor); return; }
+				arm(floor, button);
+			}
 			button.addEventListener("pointerdown", function (event) {
+				pressed = true;
+				pressTouch = event.pointerType === "touch" || event.pointerType === "pen";
 				startY = typeof event.clientY === "number" ? event.clientY : null;
 				lastY = startY || 0;
 				dragged = false;
+			});
+			// 「点」以 pointerup 为准，不看 click：click 是浏览器合成的，个别手机内核一次抬手会
+			// 发两下（detail 也不一定是 1），双击逻辑会在同一次点击里被自己喂饱 —— 表现就是
+			// 单击也跳。一次抬手只算一次点。
+			button.addEventListener("pointerup", function () {
+				if (!pressed) return;
+				pressed = false;
+				const moved = dragged;
+				dragged = false;
+				startY = null;
+				if (moved) return;
+				activate(pressTouch);
 			});
 			button.addEventListener("pointermove", function (event) {
 				if (startY === null || typeof event.clientY !== "number") return;
 				if (Math.abs(event.clientY - startY) > tapSlop) dragged = true;
 			});
-			button.addEventListener("pointercancel", function () { startY = null; dragged = false; });
+			button.addEventListener("pointercancel", function () { pressed = false; startY = null; dragged = false; });
+			// 键盘 / 读屏走 keydown：原生按钮的 Enter、空格会合成一个 click，这里直接跳，不等第二下。
+			button.addEventListener("keydown", function (event) {
+				if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") { event.preventDefault(); jump(floor); }
+			});
+			// 兜底：没有 Pointer Events 的老内核只能靠 click，那就按 click 次数数双击。
+			if (!host || !host.PointerEvent) button.addEventListener("click", function () { if (!dragged) activate(true); dragged = false; });
 			button.addEventListener("touchstart", function (event) {
 				const touch = event.touches && event.touches[0];
 				startY = touch ? touch.clientY : null;
@@ -153,10 +231,6 @@ function createStoryFloorRail(root, options) {
 				scope.scrollTop = (scope.scrollTop || 0) - (touch.clientY - lastY);
 				lastY = touch.clientY;
 			}, { passive: false });
-			button.addEventListener("click", function () {
-				if (dragged) { dragged = false; startY = null; return; }
-				jump(floor);
-			});
 			ticks.set(floor, { button, row });
 			box.appendChild(button);
 		}
@@ -182,13 +256,24 @@ function createStoryFloorRail(root, options) {
 		// `hidden` 只是 UA 的 display:none，class 上那条 display:flex 会把它压回去；
 		// 二者一起写，没被定位的刻度才不会停在 body 末尾 —— 手机上的左下角。
 		rail.style.display = visible ? "" : "none";
-		if (!visible) { hideUndo(); return; }
+		if (!visible) { hideUndo(); disarm(); recheck(); return; }
+		retries = 0;
 		if (roomy) rail.removeAttribute(compactAttribute);
 		else rail.setAttribute(compactAttribute, "");
 		// 窄屏离边 10px：退出系统边缘手势区（iOS 右缘返回、安卓边缘返回），少一层误触来源。
 		rail.style.right = Math.max(0, Math.round(host.innerWidth - rect.right)) + (roomy ? 12 : 10) + "px";
 		rail.style.top = Math.round(rect.top + rect.height / 2) + "px";
 		placeUndo();
+		placeHint();
+	}
+	// 选定的那根旁边提示「再点一下」：提示自己不吃点击，第二下照样落在刻度上。
+	function placeHint() {
+		if (!hintBox || !rail) return;
+		const tick = armedFloor === null ? null : ticks.get(armedFloor);
+		const rect = tick ? tick.button.getBoundingClientRect() : rail.getBoundingClientRect();
+		if (!rect.width) return;
+		hintBox.style.right = Math.max(0, Math.round(host.innerWidth - rect.left)) + 8 + "px";
+		hintBox.style.top = Math.round(rect.top + rect.height / 2) + "px";
 	}
 	// 「回到刚才」跟着刻度列走：挂在列的正下方，列一动它跟着动。
 	function placeUndo() {
@@ -204,11 +289,14 @@ function createStoryFloorRail(root, options) {
 	}
 	function sync() {
 		if (frame) { host.clearTimeout(frame); frame = 0; }
+		// 宿主换过滚动容器就跟着换：观察对象与刻度列一起落到新节点上。
+		const next = findScope();
+		if (next && next !== scope) { scope = next; floorsKey = ""; watch(scope); }
 		const list = rows();
 		// 宿主那列刻度还在 DOM 里（它按 turn 画，跟故事楼层对不上），继续收起来。
 		const mark = scope.querySelector('[class*="_mark"][aria-label]');
 		const hostNav = mark ? mark.closest("nav") : null;
-		if (hostNav && !hostNav.hasAttribute(hiddenAttribute)) hostNav.setAttribute(hiddenAttribute, "");
+		if (hostNav && !hostNav.hasAttribute(hiddenAttribute)) { hostNav.setAttribute(hiddenAttribute, ""); hiddenHostNavs.add(hostNav); }
 		// 宽/窄决定刻度怎么取样，所以也进 key：跨过 900px 时整列重画。
 		const width = scope.getBoundingClientRect().width;
 		compact = width > 0 && width <= narrow;
@@ -216,17 +304,22 @@ function createStoryFloorRail(root, options) {
 		if (key !== floorsKey) {
 			floorsKey = key;
 			hideUndo();
+			disarm();
 			if (rail) rail.remove();
 			rail = list.length ? build(list) : null;
 			if (rail) doc.body.appendChild(rail);
 		}
 		if (rail) { mirror(list); place(); }
-		else hideUndo();
+		else { hideUndo(); disarm(); }
 	}
 	const observer = host && typeof host.MutationObserver === "function" ? new host.MutationObserver(schedule) : null;
-	if (observer) observer.observe(scope, { subtree: true, childList: true });
 	const resize = host && typeof host.ResizeObserver === "function" ? new host.ResizeObserver(schedule) : null;
-	if (resize) resize.observe(scope);
+	function watch(target) {
+		if (!target) return;
+		if (observer) { observer.disconnect(); observer.observe(target, { subtree: true, childList: true }); }
+		if (resize) { resize.disconnect(); resize.observe(target); }
+	}
+	watch(scope);
 	const onScroll = function () { schedule(); };
 	if (host) {
 		host.addEventListener("scroll", onScroll, true);
@@ -243,9 +336,13 @@ function createStoryFloorRail(root, options) {
 				host.removeEventListener("resize", onScroll);
 			}
 			if (frame) { host.clearTimeout(frame); frame = 0; }
+			if (retryTimer) { host.clearTimeout(retryTimer); retryTimer = 0; }
 			hideUndo();
+			disarm();
 			if (flashTimer) { host.clearTimeout(flashTimer); flashTimer = 0; }
 			if (undoRow) { undoRow.removeAttribute("data-floor-flash"); undoRow = null; }
+			for (const nav of hiddenHostNavs) nav.removeAttribute(hiddenAttribute);
+			hiddenHostNavs.clear();
 			for (const nav of Array.from(scope.querySelectorAll("[" + hiddenAttribute + "]"))) nav.removeAttribute(hiddenAttribute);
 			if (rail) rail.remove();
 			rail = null; ticks.clear(); floorsKey = "";

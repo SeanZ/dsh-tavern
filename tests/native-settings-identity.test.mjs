@@ -8,11 +8,15 @@ test('设置所有者支持旧 Fiber 和 alpha.3 上下文身份，不能串到�
   const fiber = {}, other = {}
   for (const current of [fiber, { ctx: { fiber } }]) {
     const ctx = { fiber, get: () => ({ entries: () => [
+      { fiber: other, options: { id: 'legacy-other' } },
       { fiber: { ctx: { fiber: other } }, options: { id: 'other' } },
       { fiber: current, options: { id: 'owner' } }
     ] }) }
     assert.equal(nativeSettingsEntryId(ctx), 'owner')
   }
+  assert.equal(nativeSettingsEntryId({ fiber: { entry: { options: { id: 'early-owner' } } },
+    get: () => assert.fail('加载器已提供 entry 时无需查询配置编辑器') }), 'early-owner')
+  assert.throws(() => nativeSettingsEntryId({ get: () => ({ entries: () => [{ options: { id: 'unrelated' } }] }) }), /not a profile entry/)
   assert.throws(() => nativeSettingsEntryId({ fiber, get: () => ({ entries: () => [] }) }), /not a profile entry/)
 })
 

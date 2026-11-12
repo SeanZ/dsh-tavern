@@ -13,6 +13,7 @@ import { foldStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 import { isScopedMessages } from '../tavern-plugin/lib/domain/scoped-messages.js'
 import { createConversationPageStore } from '../tavern-plugin/lib/domain/conversation-page-store.js'
 import { createConversationState } from '../tavern-plugin/lib/domain/conversation-state.js'
+import { legacyMessageUid } from '../tavern-plugin/lib/domain/message-uid.js'
 
 const model = { kind: 'model', provider: 'fixture', model: 'fixture' }
 
@@ -155,6 +156,21 @@ function comparable(chat) {
   return value
 }
 
+function comparableRegeneration(chat) {
+  const value = comparable(chat)
+  const reply = value.messages.at(-1)
+  reply.ts = 0
+  const current = reply.storyResults.at(-1)
+  assert.equal(reply.storyResultId, current.id)
+  assert.match(current.id, /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i)
+  assert.equal(reply.storyResults.filter(result => result.id === current.id).length, 1)
+  // 两次独立生成会分配不同 UUID，保留历史结果原有身份及当前选中关系。
+  current.id = reply.storyResultId = 'NEW_RESULT'
+  if (value.nativeSync) value.nativeSync.at = 0
+  for (const op of Object.values(value.timeline.operations)) if (op.regenerationId) op.regenerationId = 'R'
+  return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
+}
+
 test('bounded rollback stores the same Chat as the complete rollback without reading the whole history', async t => {
   const results = []
   for (const bounded of [true, false]) {
@@ -251,7 +267,10 @@ test('rollback to a turn removes every later round and one undo restores them al
     for (const text of ['上楼', '开窗']) { h.agent.followup({ content: [{ type: 'text', text }] }); await h.agent.whenIdle() }
     const before = await h.p.read('chat'), nodes = [...h.session.surface.nodes]
     assert.equal(before.messages.at(-1).turn, 83)
-    const result = await h.rounds.rollbackTo('session', 'chat', 81)
+    const targetIndex = before.messages.findIndex(row => row.role === 'assistant' && row.turn === 81)
+    await assert.rejects(h.rounds.rollbackTo('session', 'chat', 81, 'stale-uid'), /回退目标楼层已变化/)
+    assert.deepEqual((await h.p.read('chat')).messages, before.messages)
+    const result = await h.rounds.rollbackTo('session', 'chat', 81, legacyMessageUid(before.messages[targetIndex], targetIndex))
     assert.deepEqual(result.rolledBackTo, { target: 81, latest: 81, removed: 2, turns: [83, 82] })
     assert.equal(result.rollbackWarning, undefined)
     const after = await h.p.read('chat')
@@ -300,13 +319,7 @@ test('bounded regeneration stores the same Chat and surface as the complete rege
   const [b, f] = results
   for (const h of [b.h, f.h]) assert.ok(!h.calls.includes('patch:rollback.regen') && !h.calls.includes('update:rollback.regen'), JSON.stringify(h.calls))
   assert.ok(b.h.calls.includes('update:foreground.regen-commit') && f.h.calls.includes('update:foreground.regen-commit'))
-  const strip = chat => {
-    const value = comparable(chat)
-    if (value.messages?.length) value.messages.at(-1).ts = 0
-    for (const op of Object.values(value.timeline.operations)) if (op.regenerationId) op.regenerationId = 'R'
-    return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
-  }
-  assert.deepEqual(strip(b.after), strip(f.after))
+  assert.deepEqual(comparableRegeneration(b.after), comparableRegeneration(f.after))
   // The original floors around the new round, including the floor settlement edited after the checkpoint.
   assert.equal(b.after.messages.length, b.before.messages.length)
   assert.deepEqual(b.after.messages.slice(0, -1), b.before.messages.slice(0, -1))
@@ -389,14 +402,7 @@ test('被截断的重新生成保留已生成的部分正文，两种路径结�
     assert.equal(completed.messages.at(-1).incomplete, undefined, '完整生成不继承旧标记')
     assert.equal(foldStoryRounds(h.session.events).floors.at(-1).reply.incomplete, undefined)
   }
-  const strip = chat => {
-    const value = comparable(chat)
-    if (value.messages?.length) value.messages.at(-1).ts = 0
-    if (value.nativeSync) value.nativeSync.at = 0
-    for (const op of Object.values(value.timeline.operations)) if (op.regenerationId) op.regenerationId = 'R'
-    return JSON.parse(JSON.stringify(value).replace(/tavern-regen:[0-9a-f-]+/g, 'tavern-regen:R'))
-  }
-  assert.deepEqual(strip(results[0]), strip(results[1]))
+  assert.deepEqual(comparableRegeneration(results[0]), comparableRegeneration(results[1]))
 })
 
 test('max-tokens 已落原生正文的重生成也保留截断标记', async t => {

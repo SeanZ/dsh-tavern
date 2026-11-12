@@ -22,7 +22,7 @@ export function createRequestPerformance({ now = () => performance.now(), wall =
   let active = 0
   // Requests whose reads are traced: the stage's first view, and the stage readers of one round.
   const coldMethods = new Set(['getStageDirection', 'getDialogueBubbles', 'getAssetPackPresentation', 'getStageMusicTracks', 'getStageBackgrounds', 'startup-history',
-    'getStageItems', 'readStageModMedia', 'getStageModHistory', 'getStageTimerReaction', 'getStagePhoneThreads', 'getStagePhonePresentation'])
+    'getStageItems', 'getStageModHistory', 'getStageTimerReaction', 'getStagePhoneThreads', 'getStagePhonePresentation'])
   // Past its first three, a request is logged when it is slow enough to matter for a spike.
   const slowLogMs = 250
   const firstReads = new Map(), reads = channel('dsh.asset.read'), chatReads = channel('dsh.chat.read'), modReads = channel('dsh.mod.read')
@@ -71,7 +71,7 @@ export function createRequestPerformance({ now = () => performance.now(), wall =
   function append(rows, row, limit) { rows.push(row); if (rows.length > limit) rows.shift() }
   return {
     async run(method, id, operation) {
-      if (!coldMethods.has(method) && !['getSession', 'getStoryTranscript', 'syncSession', 'regenBody', 'getCardOpenings', 'initializeOpeningTemplate', 'preparePlayStart', 'startChat', 'stage-director'].includes(method)) return operation()
+      if (!coldMethods.has(method) && !['getSession', 'getStoryTranscript', 'syncSession', 'regenBody', 'generatePrepare', 'generateRequest', 'generateCommit', 'getCardOpenings', 'initializeOpeningTemplate', 'preparePlayStart', 'startChat', 'stage-director'].includes(method)) return operation()
       const sampled = method !== 'getStoryTranscript'
       const start = now(), utilization = sampled ? performance.eventLoopUtilization() : undefined
       const row = { startedMono: start, method, id: (/^(?:session-)?[a-f0-9-]{36}$/.test(id || '') || method === 'stage-director' && /^operation-[a-z0-9-]{1,140}$/.test(id || '')) ? id : '', receivedAt: wall(), active: ++active, stages: [] }
@@ -100,7 +100,7 @@ export function createRequestPerformance({ now = () => performance.now(), wall =
         row.durationMs = Math.round(now() - start)
         if (sampled) row.eventLoopUtilization = performance.eventLoopUtilization(utilization).utilization
         append(recent, row, 120)
-        if (!['getSession', 'getStoryTranscript', 'syncSession', 'regenBody', 'stage-director'].includes(method)) append(openings, row, 60)
+        if (!['getSession', 'getStoryTranscript', 'syncSession', 'regenBody', 'generatePrepare', 'generateRequest', 'generateCommit', 'stage-director'].includes(method)) append(openings, row, 60)
         if (row.durationMs >= 1000) append(slow, row, 60)
         if (coldMethods.has(method) && (row.ordinal <= 3 || row.durationMs >= slowLogMs)) onColdRead({...row, phase:'end', endedAt:wall()})
       }

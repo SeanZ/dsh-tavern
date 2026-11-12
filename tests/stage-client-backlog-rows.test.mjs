@@ -16,15 +16,6 @@ test('player input projection ignores seed trajectories and uses edited source',
  const nodes=[{kind:'user',content:'seed'},{kind:'assistant',turn:1,messageId:'tavern-seed-trajectory:x'},{kind:'user',content:[{type:'text',text:'original'}]},{kind:'assistant',turn:2}]
  assert.deepEqual(rows.galPlayerInputs(nodes,n=>n+10,()=> 'edited'),{12:'edited'})
 })
-test('performance history retains paragraph placement and does not mutate text rows',()=>{
- const rows=createStageBacklogRows({})
- const entries=[{type:'page',turn:1,para:1,text:'first'},{type:'page',turn:1,para:1,text:'second'}]
- const registry={get:()=>({kind:'core.item',backlog:{renderer:'item',role:'notice'}})}
- const result=rows.stageModHistoryEntries(entries,[{turn:1,performances:[{id:'i',kind:'core.item',at:1,payload:{action:'gain',name:'钥匙',count:1}}]}],registry,new Map())
- assert.deepEqual(result.map(row=>row.text),['first','钥匙 ×1','second'])
- assert.equal(rows.backlogRole(result[1]),'notice')
- assert.equal(entries.length,2)
-})
 test('marked paragraphs join pages and gate voice without changing source rows',()=>{
  const rows=createStageBacklogRows({pointer:(value,key)=>value[key]})
  const entries=[{type:'page',turn:1,kind:'line',para:2,text:'hello ',voice:'audio',descriptor:'voice',anchor:{offset:0}},{type:'page',turn:1,kind:'line',para:2,text:'world',here:true,anchor:{offset:6}}]
@@ -39,4 +30,15 @@ test('marked paragraphs join pages and gate voice without changing source rows',
  assert.equal(result[0].descriptor,null)
  assert.deepEqual(entries,snapshot)
  assert.deepEqual(rows.backlogLineKindEntries(entries,new Map([[1,{...direction,through:1}]]),kinds),entries)
+})
+test('a mod stage feature supplies its 履历 renderer: the textcard row comes from mods/textcard/client',()=>{
+ const require=createRequire(import.meta.url)
+ const {createStageFeatures}=require('../tavern-plugin/packages/dsh-tavern-stage/src/client/features.cjs')
+ const features=createStageFeatures();features.register('textcard',require('../tavern-plugin/mods/textcard/client/stage.cjs'))
+ const rows=createStageBacklogRows({renderers:features.backlogRenderers()})
+ const declaration={kind:'dsh.textcard.card',backlog:{renderer:'textcard',role:'notice'}}
+ const row=payload=>rows.backlogPerformanceEntry(declaration,{payload},{turn:1,id:{performance:'t'}})
+ const after=row({style:'word',parts:['原来你一直都知道。'],placement:'after'})
+ assert.deepEqual([after.parts,after.place,after.role],[['原来你一直都知道。'],'end','notice'])
+ assert.equal(row({style:'word',parts:['冥土']}).place,'before')
 })

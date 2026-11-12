@@ -1,16 +1,24 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { parseExpressionAt } from 'acorn'
 
 const pluginRequire = createRequire(new URL('../../tavern-plugin/package.json', import.meta.url))
 const hostRequire = createRequire(pluginRequire.resolve('@deepseek-ai/dsh-tools'))
 const client = await readFile(new URL('../../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const host = await readFile(hostRequire.resolve('@deepseek-ai/dsh-client-ui-conversation/client'), 'utf8')
-const cssStrings = [...host.matchAll(/const css(?:\$\d+)? = ("(?:[^"\\]|\\.)*");/g)].map(m => JSON.parse(m[1]))
+function cssOf(source) {
+  return [...source.matchAll(/\bconst css(?:\$\d+)?\s*=\s*(?=["`])/g)].map(match => {
+    const literal = parseExpressionAt(source, match.index + match[0].length, { ecmaVersion: 'latest' })
+    if (literal.type === 'Literal') return literal.value
+    if (literal.type === 'TemplateLiteral' && literal.expressions.length === 0) return literal.quasis[0].value.cooked
+    throw Error('宿主 CSS 已不再使用静态字符串')
+  })
+}
+const cssStrings = cssOf(host)
 const hostCss = cssStrings.find(css => css.includes('_composerSeat{'))
 if (!hostCss) throw Error('宿主会话布局已变化，请更新移动端 fixture')
 const prefix = hostCss.match(/\.([\w]+)_root\{/)[1]
-const cssOf = source => [...source.matchAll(/const css(?:\$\d+)? = ("(?:[^"\\]|\\.)*");/g)].map(m => JSON.parse(m[1]))
 // DSH 0.2.x 的外壳、右栏和 dockkit 均来自宿主核心包；手机布局不再有 dsh-web-mobile 的 mobile-nav 标记。
 const layoutCss = cssOf(await readFile(hostRequire.resolve('@deepseek-ai/dsh-client-ui-layout/client'), 'utf8')).find(css => /_frame\{/.test(css) && css.includes('_rightbarCol'))
 if (!layoutCss) throw Error('宿主外壳布局已变化，请更新移动端 fixture')
@@ -111,7 +119,7 @@ export async function viewport(page, values) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 }
 
-// alpha.3 原生抽屉包含真实遮罩，不能仅用旧移动插件的 data-mobile-nav 夹具代替。
+// 原生抽屉包含真实遮罩，不能仅用旧移动插件的 data-mobile-nav 夹具代替。
 export async function nativeDrawer(page) {
   await page.evaluate(layoutPrefix => {
     const frame = document.getElementById('frame')
@@ -169,7 +177,7 @@ export async function mountClientAudit(page) {
 
 export async function nativeSettings(page) {
   const source = await readFile(hostRequire.resolve('@deepseek-ai/dsh-client-ui-settings-general/client'), 'utf8')
-  const styles = [...source.matchAll(/const css(?:\$\d+)? = ("(?:[^"\\]|\\.)*");/g)].map(match => JSON.parse(match[1]))
+  const styles = cssOf(source)
   const settingsCss = styles.find(css => css.includes('_navList{') && css.includes('_panel{'))
   if (!settingsCss) throw Error('宿主设置面板合约已变化')
   const key = settingsCss.match(/\.([\w-]+)_panel\{/)[1]

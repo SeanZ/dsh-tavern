@@ -7,9 +7,9 @@ import ReactDOM from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { JSDOM } from 'jsdom'
 
-const source = await readFile(new URL('../tavern-plugin/src/client/features/play-controls.js', import.meta.url), 'utf8')
+const source = await readFile(new URL('../tavern-plugin/src/client/features/play-turn-actions.js', import.meta.url), 'utf8')
 const start = source.indexOf('function TavernMoreActions(')
-const component = source.slice(start, source.indexOf('// @include variable-receipt.js', start))
+const component = source.slice(start)
 
 test('Portal menu supports focus, keyboard navigation, outside click and stage scheme', async t => {
   const dom = new JSDOM('<div data-dsh-card-stage-scheme="dark"><div id="root"></div></div><button id="outside">outside</button>')
@@ -24,6 +24,7 @@ test('Portal menu supports focus, keyboard navigation, outside click and stage s
   const button = (name, disabled = false) => () => React.createElement('button', { disabled }, name)
   const Menu = vm.runInNewContext(component + ';TavernMoreActions', {
     React, ReactDOM, window, document, MutationObserver: window.MutationObserver,
+    useTavernStoryViewMode: sessionId => sessionId === 'story',
     TavernStopBackgroundAction: button('stop', true), TavernEditBodyAction: button('edit'),
     TavernRollbackAction: button('rollback'), TavernUndoRollbackAction: button('undo'),
     TavernDebugButton: button('debug'), TavernCompactionAction: button('compact')
@@ -56,4 +57,8 @@ test('Portal menu supports focus, keyboard navigation, outside click and stage s
   await act(() => outside.dispatchEvent(new window.Event('pointerdown', { bubbles: true })))
   assert.equal(document.activeElement, outside)
   assert.equal(document.querySelector('[role="menu"]'), null)
+  await act(() => root.render(React.createElement(Menu, { sessionId: 'story' })))
+  await act(() => trigger.click())
+  assert.deepEqual([...document.querySelector('[role="menu"]').querySelectorAll('button')].map(item => item.textContent),
+    ['stop', 'undo', 'debug', 'compact'])
 })

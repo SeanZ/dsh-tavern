@@ -11,7 +11,7 @@ import { planTranscriptRows } from '../tavern-plugin/lib/domain/transcript-row-p
 const source = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 function loadClient() {
   const declarations = ['nodeTurn', 'latestTavernUserTurn', 'tavernPlanShowsRow'].map(name => sourceFunction(source, name)).join('\n');
-  return vm.runInNewContext(declarations + '\n({ latestTavernUserTurn })');
+  return vm.runInNewContext(declarations + '\n({ latestTavernUserTurn })', { latestUserTurnByNodes: new WeakMap() });
 }
 
 function playTurn(session, turn, text) {

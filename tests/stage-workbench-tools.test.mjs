@@ -5,32 +5,46 @@ import {workbenchFixture,requestFor} from './fixtures/workbench-features.mjs'
 import {registerStageWorkbench} from '../tavern-plugin/packages/dsh-tavern-stage/lib/workbench/index.js'
 import {WORKBENCH_SKILLS,WORKBENCH_TOOL_NAMES} from '../tavern-plugin/packages/dsh-tavern-stage/lib/workbench/schema.js'
 import {createSkillGatedTools} from '../tavern-plugin/lib/domain/skill-gated-tools.js'
+import {createRequire} from 'node:module'
+import {pathToFileURL} from 'node:url'
 
 test('the stage registers its workbench tools for the card workbench only, each behind its Skills, and removes them with the stage',async ()=>{
   const registered=new Map(),modes=new Map(),skills=new Map(),owners=new Set()
-  const services={tools:{register(tool){registered.set(tool.name,tool);return ()=>registered.delete(tool.name)}},
-    // Like the Cordis service proxy: writes are refused, and a method called on the proxy gets the caller's ctx as this.
-    tavern:new Proxy({toolModes({name,modes:value}){owners.add(this.ctx.fiber.name);modes.set(name,value);return ()=>modes.delete(name)},
-      toolSkills({name,skills:value}){owners.add(this.ctx.fiber.name);skills.set(name,value);return ()=>skills.delete(name)}},{set:()=>false,
-      get:(target,prop,receiver)=>new Proxy(target[prop],{apply:(method,self,args)=>Reflect.apply(method,self===receiver?{ctx:{fiber:{name:'dsh-tavern'}}}:self,args)})})}
-  const dispose=registerStageWorkbench({ctx:{get:name=>services[name]},deps:{},call:async()=>{throw new Error('no request expected')}})
-  assert.deepEqual([...owners],['dsh-tavern-stage'])
+  const require=createRequire(pathToFileURL(process.env.DSH_BOOT_MODULE))
+  const {Context,Service}=await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href)
+  const root=new Context()
+  class Tavern extends Service {
+    toolModes({name,modes:value}){owners.add(this.ctx.fiber);modes.set(name,value);return ()=>modes.delete(name)}
+    toolSkills({name,skills:value}){owners.add(this.ctx.fiber);skills.set(name,value);return ()=>skills.delete(name)}
+  }
+  new Tavern(root,'tavern')
+  root.provide('tools',{register(tool){registered.set(tool.name,tool);return ()=>registered.delete(tool.name)}})
+  const child=root.plugin({name:'dsh-tavern-stage',inject:['tools','tavern'],apply(ctx){
+    ctx.effect(()=>registerStageWorkbench({ctx,deps:{},call:async()=>{throw new Error('no request expected')}}))
+  }})
+  await child.await()
+  assert.deepEqual([...owners],[child.ctx.fiber])
+  assert.equal(child.parent.fiber,root.fiber)
   const names=[...registered.keys()]
   assert.deepEqual(names.toSorted(),WORKBENCH_TOOL_NAMES.toSorted())
   for(const name of names) {assert.deepEqual(modes.get(name),['card']);assertSupportedJsonSchema(registered.get(name).parameters)}
   // Compiled schemas stay small: at most 10 KiB per Skill, 25 KiB together, nothing before a Skill loads.
+  // stage-assets is the one 素材库 Skill (packs, figures, voice, generation, transfer): its tasks share one
+  // entry and its references load on demand, so it carries all seven asset tools (about 15 KiB) under 16 KiB.
+  const skillLimit=skill=>skill==='stage-assets'?16*1024:10*1024
   const size=name=>{const {description,parameters}=registered.get(name);return Buffer.byteLength(JSON.stringify({name,description,parameters}))+1}
   const visible=createSkillGatedTools({pluginSkills:name=>skills.get(name) || null})
   assert.deepEqual(visible(names,{id:'empty',events:[]}),[])
   for(const [skill,tools] of Object.entries(WORKBENCH_SKILLS)) {
     const bytes=tools.reduce((sum,name)=>sum+size(name),0)
-    assert.ok(bytes<=10*1024,skill+': '+bytes)
+    assert.ok(bytes<=skillLimit(skill),skill+': '+bytes)
     assert.deepEqual(visible(names,{id:skill,events:[{type:'tool/result',data:{content:'<skill_content name="'+skill+'">'}}]}).toSorted(),tools.toSorted())
   }
   const all=names.reduce((sum,name)=>sum+size(name),0)
   assert.ok(all<=25*1024,String(all))
-  await dispose()
+  await child.dispose()
   assert.equal(registered.size+modes.size+skills.size,0)
+  await root.fiber.dispose()
 })
 
 test('mod config writes go to the stage mod owner: the card layer directly, the global layer only after approval',async t=>{
@@ -83,8 +97,9 @@ test('prepare uses the application generation owner without issuing a paid reque
   let generated=0
   const imageProvider=()=>({label:'fixture',status:async()=>({ready:true,model:'fixture-image',maxReferences:4}),generate:async()=>{generated++;throw new Error('No paid request permitted in fixture')}})
   const f=await workbenchFixture({imageProvider});t.after(()=>f.close())
-  const result=await f.invoke('asset_generation',{action:'prepare',target:{packId:f.pack.manifest.id,kind:'background'},expectedRevision:f.pack.revision,userPrompt:'Quiet library',count:2})
+  const result=await f.invoke('asset_generation',{action:'prepare',target:{packId:f.pack.manifest.id,kind:'background'},expectedRevision:f.pack.revision,userPrompt:'Quiet library',quality:'max',count:2})
   assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.data.imageCount,2)
+  assert.equal(result.data.output.quality,'max')
   assert.ok(result.data.planId);assert.equal(f.paidCalls,0);assert.equal(generated,0);assert.equal(f.approvals.length,0)
   assert.ok(!JSON.stringify(result).includes('fixture-no-network'))
   assert.equal((await f.library.getPackSnapshot({packId:f.pack.manifest.id})).revision,f.pack.revision)
@@ -143,28 +158,36 @@ test('paid generation approval displays frozen count and cost risk, rejected cal
 })
 
 test('real approval policy never auto-rejects without answerer; ask waits, rejects, then allows one write',async t=>{
-  const {ApprovalService}=await import(new URL('../../dsh-user-approval/lib/index.js',import.meta.resolve('@deepseek-ai/dsh-tools')))
+  const require=createRequire(pathToFileURL(process.env.DSH_BOOT_MODULE))
+  const load=name=>import(pathToFileURL(require.resolve(name)).href)
+  const {Context}=await load('@deepseek-ai/cordis')
+  const {default:SessionStore}=await load('@deepseek-ai/dsh-session')
+  const {default:SessionProjectionRegistry}=await load('@deepseek-ai/dsh-session-projection')
+  const {default:ApprovalService,setApprovalPolicy}=await load('@deepseek-ai/dsh-user-approval')
+  const ctx=new Context()
+  t.after(()=>ctx.fiber.dispose())
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(ApprovalService,{policy:'never'})
   let answer,asked,answererCalls=0
-  const service=Object.create(ApprovalService.prototype)
-  Object.defineProperty(service,'ctx',{value:{waterfall:async()=>{answererCalls++;asked();return new Promise(resolve=>{answer=resolve})}}})
-  service.config={policy:'never'}
-  const f=await workbenchFixture({approval:service});t.after(()=>f.close())
-  const events=[{type:'turn/start',data:{}}],session=f.exec.agent.session
-  Object.defineProperty(session,'seq',{get:()=>events.length})
-  session.eventAt=index=>events[index]
-  session.append=(type,data)=>events.push({type,data})
+  ctx.on('approval/request',()=>{answererCalls++;asked();return new Promise(resolve=>{answer=resolve})})
+  const f=await workbenchFixture({approval:ctx.approval});t.after(()=>f.close())
+  const session=ctx.sessions.create(f.exec.agent.session.id,{meta:{cwd:f.workspace}})
+  session.append('turn/start',{turn:1})
+  const execution={...f.exec,agent:{session}}
+  const lastEvent=()=>session.eventAt(session.seq-1)
   const input={action:'engine',expectedRevision:f.engine.read().revision,patch:{stageToggles:{music:false}}}
-  const policy=await f.invoke('stage_patch',input)
+  const policy=await f.invoke('stage_patch',input,execution)
   assert.equal(policy.error.reason,'policy-rejected')
   assert.match(policy.error.message,/策略自动拒绝/)
   assert.equal(answererCalls,0)
-  assert.equal(events.at(-1).data.outcome,'rejected')
-  service.config.policy='ask'
+  assert.equal(lastEvent().data.outcome,'rejected')
+  setApprovalPolicy(session,'ask')
   for(const outcome of ['rejected','allowed-once']) {
     const waiting=new Promise(resolve=>{asked=resolve})
-    const pending=f.invoke('stage_patch',input)
+    const pending=f.invoke('stage_patch',input,execution)
     await waiting
-    assert.match(events.at(-1).data.reason,/等待用户批准/)
+    assert.match(lastEvent().data.reason,/等待用户批准/)
     assert.equal(f.calls.filter(c=>c.method==='saveAssetEngineSettings').length,0)
     answer(outcome)
     const result=await pending
@@ -176,4 +199,23 @@ test('real approval policy never auto-rejects without answerer; ask waits, rejec
   }
   assert.equal(f.engine.read().values.stageToggles.music,false)
   assert.equal(f.calls.filter(c=>c.method==='saveAssetEngineSettings').length,1)
+})
+test('asset item, schema and removal accept canonical kinds, including props, not items',async t=>{
+  const {ASSET_KINDS}=await import('../tavern-plugin/packages/dsh-asset-library/src/asset-packs/manifest.js')
+  const f=await workbenchFixture();t.after(()=>f.close())
+  const packId=f.pack.manifest.id
+  for(const kind of ASSET_KINDS) {
+    assert.equal((await f.invoke('assets_read',{action:'schema',kind})).data.kind,kind)
+    assert.equal((await f.invoke('assets_read',{action:'item',packId,kind})).ok,true)
+    requestFor('assets_patch',{action:'remove-item',packId,expectedRevision:f.pack.revision,kind,id:'sample'})
+  }
+  assert.throws(()=>requestFor('assets_read',{action:'item',packId,kind:'items'}),/Cannot encode/)
+  const item={kind:'props',id:'key',name:'Key',enabled:true,recall:{mode:'keyword',keywords:['brass key','lock teeth','key ring']},directorNote:'',media:null,pendingMedia:true}
+  const added=await f.invoke('assets_patch',{action:'item',packId,expectedRevision:f.pack.revision,item})
+  assert.equal(added.ok,true,JSON.stringify(added))
+  const read=await f.invoke('assets_read',{action:'item',packId,kind:'props',id:'key'})
+  assert.equal(read.data.items[0].name,'Key')
+  f.setApproval('allowed-once')
+  assert.equal((await f.invoke('assets_patch',{action:'remove-item',packId,expectedRevision:read.data.revision,kind:'props',id:'key'})).ok,true)
+  assert.deepEqual((await f.invoke('assets_read',{action:'item',packId,kind:'props'})).data.items,[])
 })

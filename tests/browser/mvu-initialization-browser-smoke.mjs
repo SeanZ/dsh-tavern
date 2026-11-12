@@ -5,7 +5,8 @@
 // and persistence are isolated. ?mode=manual|auto|unsafe|json|server-error covers recovery/diagnostics.
 // Add navigation=1 to test game ownership across parent/child header unmounts.
 // mode=capture overlaps a display capture with real MVU execution/persistence.
-// mode=opening starts without variables. Optional MVU_SMOKE_CARD_PATH plus
+// mode=opening starts without variables; mode=opening-blank starts with no floor
+// (an explicitly blank opening) and runs one scripted turn. Optional MVU_SMOKE_CARD_PATH plus
 // MVU_SMOKE_OPERATIONS (JSON array) exercises a real card in mode=opening-card,
 // reading it without modifying any live chat or invoking a paid model.
 // mode=opening-card-flow drives preparation -> start -> immediate foreground ->
@@ -40,6 +41,7 @@ import { projectTavernHelperWorldbook } from '../../tavern-plugin/lib/domain/tav
 import { createCardPreparation } from '../../tavern-plugin/lib/domain/card-preparation.js'
 import { projectTavernHelperScripts } from '../../tavern-plugin/lib/domain/tavern-helper-scripts.js'
 import { projectTavernHelperContext, lastTavernHelperVariables } from '../../tavern-plugin/lib/domain/tavern-helper-context.js'
+import { readVariables } from '../../tavern-plugin/lib/domain/read-variables.js'
 import { createTurnOrchestrator } from '../../tavern-plugin/lib/domain/turn-orchestration.js'
 import { createStoryTimeline } from '../../tavern-plugin/lib/domain/story-timeline.js'
 import { createForegroundFrameBuilder } from '../../tavern-plugin/lib/domain/agent-input-frame.js'
@@ -59,7 +61,7 @@ const gate = createTavernScriptDispatch({ publishSignal: (sessionId, signal) => 
 const states = new Map()
 const records = new Map()
 const diagnostics = createMvuDiagnosticStore({ readJson: async key => records.get(key), updateJson: async (key, update) => { records.set(key, update(records.get(key))) } })
-const openingBook = { name: '开场变量', entries: [{ id: 1, comment: '[initvar]初始值', content: 'hp: 10', enabled: true }] }
+const openingBook = { name: '开场变量', entries: [{ id: 1, comment: '[initvar]初始值', content: 'hp: 10\naffection: 5\nstage: early', enabled: false }] }
 const cardWorkspace = process.env.MVU_SMOKE_CARD_PATH ? JSON.parse(await readFile(process.env.MVU_SMOKE_CARD_PATH, 'utf8')) : null
 const cardPreparation = createCardPreparation()
 const realCard = cardWorkspace ? cardPreparation.project(cardWorkspace) : null
@@ -93,6 +95,10 @@ function state(id) {
       const swipeId = Math.min(2, swipes.length - 1)
       states.get(id).chat.messages[0] = { role: 'assistant', greeting: true, turn: 1, text: swipes[swipeId], swipeId, swipes, variables: swipes.map(() => ({})) }
     }
+    if (id.startsWith('opening-blank')) {
+      states.get(id).chat.messages = []
+      states.get(id).chat.mvu.openingInitialization = { version: 2, status: 'pending' }
+    }
     if (id.startsWith('opening-setup')) {
       const chat = states.get(id).chat
       const swipes = ['Unused scene<initvar>{"hp":0}</initvar>',
@@ -100,6 +106,14 @@ function state(id) {
       chat.messages[0] = { role: 'assistant', greeting: true, text: swipes[1], swipeId: 1, swipes, variables: [{}, {}] }
       chat.mvu.openingInitialization = { version: 2, status: 'pending' }
       applyOpeningCommand(chat, { removeGreeting: true, systemText: 'Mira starts at affinity 25.' }, {}, Date.now)
+    }
+    if (id.startsWith('opening-authored')) {
+      const swipes = ['Default greeting', 'Build a character<initvar>{"hp":0}</initvar>']
+      const chat = states.get(id).chat
+      chat.messages[0] = { role: 'assistant', greeting: true, text: swipes[1], swipeId: 1, swipes, variables: [{}, { stat_data: { hp: 5 } }] }
+      if (id.startsWith('opening-authored-helper')) {
+        chat.messages.push({ role: 'tavern-helper', tavernRole: 'user', text: 'Character setup context', variables: [{}] })
+      }
     }
     if (id.includes('replay') && replayChat) states.get(id).chat = { ...structuredClone(replayChat), id, sessionId: id }
   }
@@ -123,7 +137,7 @@ const persistence = createChatPersistence({ store: journal ? {
 const adapter = createTavernScriptHostAdapter({ diagnostics, resolveChat: async id => (journal || id.startsWith('capture')) ? persistence.read(id) : state(id).chat,
   writeChat: async (chat, metadata) => {
     const s = state(chat.id)
-    if (s.chat.messages[0].variables[0].stat_data?.hp !== chat.messages[0].variables[0].stat_data?.hp) s.hpWrites++
+    if (s.chat.messages[0]?.variables?.[0]?.stat_data?.hp !== chat.messages[0]?.variables?.[0]?.stat_data?.hp) s.hpWrites++
     s.writes++
     if (journal || chat.id.startsWith('capture')) await persistence.write(chat, metadata)
     else s.chat = structuredClone(chat)
@@ -327,14 +341,86 @@ const server = createServer(async (req, res) => {
       }
       else if (method === 'status') {
         const s = state(sessionId)
+        const variables = lastTavernHelperVariables(s.chat.messages, s.chat.variables) || {}
         result = { ...gate.status(sessionId), downloads: s.downloads, calls: s.calls, writes: s.writes, hpWrites: s.hpWrites, resumes: s.resumes,
-          hp: s.chat.messages[0].variables[0].stat_data?.hp, variableKeys: Object.keys(s.chat.messages[0].variables[0].stat_data || {}), initialized: s.chat.mvu.openingInitialization,
+          hp: variables.stat_data?.hp, variableKeys: Object.keys(variables.stat_data || {}), initialized: s.chat.mvu.openingInitialization,
           capture: sessionId.startsWith('capture') ? s.chat.messages[0].displayRuntime : undefined, receipt: s.result?.receipt, resumeError: s.resumeError }
       }
       else if (method === 'flow-context') result = projectTavernHelperContext(state(sessionId).chat)
       else if (method === 'run-opening-flow') result = await runOpeningFlow(sessionId)
+      else if (method === 'run-authored-settlement') {
+        const s = state(sessionId)
+        const greeting = s.chat.messages[0]
+        const snapshot = s.chat.messages.at(-1).variables[s.chat.messages.at(-1).swipeId || 0]
+        assert.equal(snapshot.stat_data.hp, 5, 'initialization must use the authored value')
+        assert.ok(snapshot.schema?.properties?.hp)
+        if (s.chat.messages.length === 1) {
+          assert.equal(greeting.variables[0].stat_data.hp, 10, 'the other swipe keeps its worldbook defaults')
+        } else {
+          // Simulate a save made before the fix, where a later Helper floor
+          // contained defaults but the foreground turn captured the right data.
+          s.chat.messages[1].variables[0] = { ...snapshot, stat_data: { hp: 0, affection: 0 } }
+        }
+        const baseline = { stat_data: { hp: 5, affection: 1 } }
+        const messageId = s.chat.messages.length
+        s.chat.messages.push({ role: 'assistant', text: 'The friends gather.', variables: [baseline] })
+        s.operations = [{ op: 'replace', path: '/affection', value: 25 }]
+        const outcome = await settlement.settleVariables({ ...settlementInput(sessionId), messageId, currentVariables: baseline })
+        assert.equal(outcome.receipt.status, 'updated', JSON.stringify(outcome.receipt))
+        applyMvuSettlementEffect(s.chat, outcome.effect)
+        assert.deepEqual(s.chat.messages[messageId].variables[0].stat_data, { hp: 5, affection: 25 })
+        if (messageId === 2) assert.equal(s.chat.messages[1].variables[0].stat_data.hp, 0, 'history remains intact')
+        result = { pass: true }
+      }
       else if (method === 'run') {
         const s = state(sessionId); s.writes = 0; s.hpWrites = 0
+        if (sessionId.startsWith('opening-blank')) {
+          assert.equal(s.chat.messages.length, 0, 'initialization must not fabricate a greeting')
+          assert.equal(s.chat.mvu.openingInitialization.status, 'complete')
+          const initial = structuredClone(s.chat.variables)
+          assert.deepEqual(initial.stat_data, { hp: 10, affection: 5, stage: 'early' })
+          assert.equal(readVariables(s.chat, { action: 'read', path: '/affection' }).value, 5)
+          let planned = false
+          s.chat.cardPath = 'fixture.json'
+          const turns = createTurnOrchestrator({
+            store: { chatForSession: async () => structuredClone(s.chat), readCard: async () => ({ name: 'Fixture' }),
+              writeChat: async chat => { s.chat = structuredClone(chat) } },
+            timeline: createStoryTimeline(), frameBuilder: createForegroundFrameBuilder(), projectReply: projectReplyLayers,
+            planner: { plan: async ({ chat }) => {
+              // Prompt templates read the chat scope; the next floor inherits the same baseline.
+              assert.deepEqual(chat.variables.stat_data, initial.stat_data)
+              assert.deepEqual(lastTavernHelperVariables(chat.messages, chat.variables).stat_data, initial.stat_data)
+              planned = true
+              return { text: 'stage early; affection 5', sections: [] }
+            } },
+            queueSettlement: async () => {},
+            // Like the prompt-template runtime with no floor to inherit from: the input row starts empty.
+            ...(sessionId.startsWith('opening-blank-template') ? { projectUserTemplate: async ({ chat, text }) => ({
+              scopes: { local: structuredClone(chat.variables), initial: {} },
+              message: { role: 'user', text, sourceText: text, swipeId: 0, swipes: [text], variables: [{}] }
+            }) } : {})
+          })
+          const prepared = await turns.prepare({ sessionId, turn: 2, userText: 'Hello' })
+          assert.equal(prepared.ready, true)
+          assert.equal(planned, true, 'initial state must be visible before prompt assembly')
+          await turns.finalize({ sessionId, turn: 2, userText: 'Hello', assistantText: 'A friendly encounter.' })
+          const messageId = s.chat.messages.findIndex(row => row.role === 'assistant')
+          const message = s.chat.messages[messageId]
+          assert.deepEqual(s.chat.messages[messageId - 1].variables[0].stat_data, initial.stat_data, 'the first player floor inherits the baseline')
+          assert.deepEqual(message.variables[0].stat_data, initial.stat_data)
+          s.operations = [{ op: 'replace', path: '/affection', value: 7 }, { op: 'replace', path: '/stage', value: 'friends' }]
+          const updated = await settlement.settleVariables({ sessionId, operationId: 'op', chatId: sessionId,
+            branchId: s.chat.timeline.branchId, basedOnRevision: s.chat.timeline.revision,
+            messageId, swipeId: 0, storyText: message.text, currentVariables: message.variables[0] })
+          assert.equal(updated.receipt.status, 'updated', JSON.stringify(updated.receipt))
+          applyMvuSettlementEffect(s.chat, updated.effect)
+          assert.equal(readVariables(s.chat, { action: 'read', path: '/affection' }).value, 7)
+          assert.equal(readVariables(s.chat, { action: 'read', path: '/stage' }).value, 'friends')
+          assert.deepEqual(s.chat.variables, initial, 'settlement must not mutate the chat-start baseline')
+          assert.equal(s.calls, 1)
+          s.result = updated
+          return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ pass: true, calls: s.calls, receipt: updated.receipt }))
+        }
         let input = settlementInput(sessionId), openingBefore
         if (sessionId.startsWith('opening')) {
           assert.equal(s.chat.mvu.openingInitialization?.status, 'complete', 'opening must initialize before settlement')
@@ -431,9 +517,10 @@ const server = createServer(async (req, res) => {
         const tavernSessionTransition = { getSnapshot:()=>active, subscribe(fn){transitionListeners.add(fn);return()=>transitionListeners.delete(fn)},
           begin(value){active=value;transitionListeners.forEach(fn=>fn())}, end(){active=null;transitionListeners.forEach(fn=>fn())} };
         const sessions = { list:{getSnapshot:()=>({current}), subscribe(fn){sessionListeners.add(fn);return()=>sessionListeners.delete(fn)}}, subagentAddress(){} };
+        const liveTavernView = {getSnapshot:()=>({phase:'ready',view}),invalidate(){},subscribe(id,fn){fn({phase:'ready',view});return()=>{}}};
         const owner = client.createTavernScriptSessionOwner({sessions,rpc,transition:tavernSessionTransition,
           signals:{subscribe(id,kind,run){const timer=setInterval(run,100);return()=>clearInterval(timer)}},
-          liveView:{invalidate(){},subscribe(id,fn){fn({phase:'ready',view});return()=>{}}}});
+          liveView:liveTavernView});
         owner.start();
         const openingPicker={openings:[]}, uiMode='play', setBusy=()=>{}, setError=()=>{}, setOpeningPicker=()=>{};
         const openingPerformance={begin:()=>({measure:(_name,run)=>run(),finish(){}})};

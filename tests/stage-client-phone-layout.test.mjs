@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
-const {createStagePhoneLayout}=createRequire(import.meta.url)('../tavern-plugin/packages/dsh-tavern-stage/src/client/phone-layout.cjs')
+const {createStagePhoneLayout}=createRequire(import.meta.url)('../tavern-plugin/mods/phone/client/layout.cjs')
 test('phone layout keeps legacy preferences and separates wide and narrow layouts',()=>{
   const writes=[],sections={}
   const view=createStagePhoneLayout({width:()=>500,sections,storage:{
@@ -23,11 +23,4 @@ test('phone layout keeps legacy preferences and separates wide and narrow layout
   view.prefs.update('wide',{size:100})
   assert.equal(writes.length,1)
   assert.equal(sections['dsh.phone'],undefined)
-})
-test('phone settings disposal preserves a replacement settings section',()=>{
-  const sections={}
-  const view=createStagePhoneLayout({sections})
-  sections['dsh.phone']='replacement'
-  view.dispose();view.dispose()
-  assert.equal(sections['dsh.phone'],'replacement')
 })

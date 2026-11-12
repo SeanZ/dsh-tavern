@@ -46,7 +46,7 @@ test('真实 DSH：精修工具逐处执行、完成后不再请求模型，跨�
 })
 
 
-test('真实 alpha.2：后台关闭世界书时既不声明也不执行，持久成员下次启用后恢复声明', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async t => {
+test('真实宿主：后台关闭世界书时既不声明也不执行，持久成员下次启用后恢复声明', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async t => {
   let enabled = false
   const runtime = await createBackgroundNativeRuntime(process.env.DSH_BOOT_MODULE, {
     residentOptions: { resolveWorldbookSkills: async () => enabled },
@@ -57,7 +57,9 @@ test('真实 alpha.2：后台关闭世界书时既不声明也不执行，持久
     selection: { provider: 'scene-fixture', model: 'fixture-text' }, messages: [], tools: [] }
   const first = await runtime.runBackground(input)
   for (const request of runtime.requests) assert.ok(!request.tools.some(tool => ['read', 'worldbook_list', 'worldbook_grep'].includes(tool.name)))
-  assert.match(JSON.stringify(runtime.traceEvents(first.traceSessionId)), /该工具在当前 Tavern 会话或任务中已关闭/)
+  const denied = runtime.traceEvents(first.traceSessionId).find(event => event.type === 'tool/result' && event.data.message?.toolCallId === 'closed-worldbook')
+  assert.equal(denied?.data.message.isError, true)
+  assert.match(denied.data.message.content[0].text, /该工具未在当前任务开放|该工具在当前 Tavern 会话或任务中已关闭/)
   enabled = true
   const second = await runtime.runBackground({ ...input, persistentSessionId: first.traceSessionId })
   assert.equal(second.traceSessionId, first.traceSessionId)

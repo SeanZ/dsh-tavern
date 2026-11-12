@@ -35,10 +35,32 @@ export function createResourceHandlers(deps) {
       return worldBookForClient(await worldBooks.setGlobal(args && args.source, args && args.enabled))
     },
     async listWorldBooks(args) {
-      return await worldBooks.catalog()
+      const catalog = await worldBooks.catalog()
+      const sessionId = str(args && args.sessionId)
+      if (!sessionId) return catalog
+      // 人物卡内置的世界书属于它那张卡：带上本局会话的卡，面板只列这一本，
+      // 别的卡的书换到对应会话（或世界书库）里才出现。
+      const chat = await chatHeaderForSession(sessionId, ['cardPath', 'cardName']).catch(() => null)
+      return Object.assign({}, catalog, { sessionCardPath: str(chat && chat.cardPath), sessionCardName: str(chat && chat.cardName) })
     },
     async getWorldBook(args) {
-      return worldBookForClient(await worldBooks.get(args && args.source))
+      const source = args && args.source
+      // A panel refresh may pass the revision it already holds. Answering that
+      // from one stat keeps a reopen from loading or re-projecting the book.
+      const ifRevision = args && args.ifRevision
+      if (ifRevision !== undefined && ifRevision !== null && typeof worldBooks.revision === 'function') {
+        const revision = await worldBooks.revision(source).catch(() => null)
+        if (revision !== null && revision !== undefined && String(revision) === String(ifRevision)) {
+          return { unchanged: true, source, revision }
+        }
+      }
+      const record = await worldBooks.get(source)
+      // Storage without a revision still needs the full-book comparison.
+      if (ifRevision !== undefined && ifRevision !== null && record && record.revision !== undefined && record.revision !== null
+        && String(record.revision) === String(ifRevision)) {
+        return { unchanged: true, source: record.source, revision: record.revision }
+      }
+      return worldBookForClient(record)
     },
     async getWorldBookBinding(args) {
       return { binding: await worldBooks.binding(args && args.cardPath) }
@@ -59,7 +81,13 @@ export function createResourceHandlers(deps) {
       return { worldBook: worldBookForClient(await worldBooks.import(args && args.payload)) }
     },
     async updateWorldBook(args) {
-      return worldBookForClient(await worldBooks.update(args && args.source, args && args.update))
+      const record = await worldBooks.update(args && args.source, args && args.update)
+      // 快捷面板一次只翻一个开关：回身份与 revision，视图用客户端的乐观结果，
+      // 不再每点一次就把整本书推回去。
+      if (args && args.lean === true) {
+        return { source: record.source, revision: record.revision === undefined ? null : record.revision, globalEnabled: record.globalEnabled, lean: true }
+      }
+      return worldBookForClient(record)
     },
     async exportWorldBook(args) {
       return { worldBook: await worldBooks.export(args && args.source) }

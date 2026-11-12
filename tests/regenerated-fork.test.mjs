@@ -5,7 +5,6 @@ import {
   conversationForkBoundary,
 } from '../tavern-plugin/lib/domain/conversation-fork-point.js'
 import { forkTurnsByMessageId } from '../tavern-plugin/lib/domain/conversation-fork-targets.js'
-import { planTranscriptRows } from '../tavern-plugin/lib/domain/transcript-row-plan.js'
 import { nativeRepairGame } from './fixtures/native-repair-game.mjs'
 import { appendSessionEvent, sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import {
@@ -153,9 +152,10 @@ test('真实 Session 连续重生成的分叉边界包含投影编辑轮且可�
       lastNativeTurn: native + 1,
     })
     assert.equal(fork.regeneratedDshTurns['3'], native)
-    const turns = planTranscriptRows({ chat, events: sessionEvents(session) })
-    const targets = forkTurnsByMessageId(session, chat.regeneratedDshTurns, { turns, from: null })
-    assert.equal(targets[`reply-${native}`], 3)
+    const targets = forkTurnsByMessageId(session, chat.regeneratedDshTurns)
+    assert.ok(session.surface.nodes.includes(seq), '当前投影仍在原生表面')
+    assert.equal(targets[`reply-${native}`], undefined, '原始尝试由投影替换')
+    if (native === 6) assert.equal(targets['tavern-regen:4'], undefined, '旧投影不再提供分叉目标')
     assert.equal(targets[`tavern-regen:${native}`], 3)
   }
 })

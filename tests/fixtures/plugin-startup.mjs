@@ -34,8 +34,7 @@ try {
   }
   const tavern = host.services.get('tavern')
   assert.equal(tavern?.apiVersion, 7, 'public plugin service provided')
-  const plugin = Object.create(tavern)
-  plugin.ctx = { fiber: { name: 'mode-smoke' } }
+  const plugin = host.pluginContext('mode-smoke').get('tavern')
   const unregister = plugin.gameMode({ name: 'counter', version: 1,
     create: () => ({ state: { count: 0, secret: 'private' } }),
     advance: ({ state }) => ({ state: { ...state, count: state.count + 1 } }),
@@ -57,7 +56,7 @@ try {
   host.services.get('sessions').set('stage-session', { id: 'stage-session', events: [] })
   const signalsAbort = new AbortController()
   const signals = host.services.get('tavernSessionSignals').follow(['stage-session'], signalsAbort.signal)
-  const identityPlugin = Object.assign(Object.create(tavern), { ctx: { fiber: { name: 'identity-test-plugin' } } })
+  const identityPlugin = host.pluginContext('identity-test-plugin').get('tavern')
   try {
     await signals.next()
     assert.equal((await host.rpc('getSession', { sessionId: 'stage-session' })).view.playerName, '你')

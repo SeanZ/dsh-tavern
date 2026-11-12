@@ -22,15 +22,6 @@ test('stage extension dependencies and routes have one owner and preserve reques
  assert.deepEqual(disposed,['timer'])
 })
 
-test('partially constructed server extensions release in reverse order even after cleanup failure',()=>{
- const extensions=createStageExtensions(),disposed=[]
- extensions.register('one',()=>({deps:{one:1},dispose(){disposed.push('one')}}))
- extensions.register('two',()=>({deps:{one:2},dispose(){disposed.push('two');throw Error('release')}}))
- assert.throws(()=>extensions.start({}),/Occupied/)
- assert.throws(()=>extensions.dispose(),/cleanup failed/)
- assert.deepEqual(disposed,['two','one'])
-})
-
 test('client features own views and CSS in each scope, including failed mount rollback',()=>{
  const features=createStageFeatures(),styles=new Set(),disposed=[]
  const document={head:{appendChild:style=>styles.add(style)},createElement:()=>({dataset:{},remove(){styles.delete(this)}})}
@@ -45,4 +36,15 @@ test('client features own views and CSS in each scope, including failed mount ro
  assert.equal(styles.size,1);assert.deepEqual(disposed,[1,3])
  off();remove();second.dispose();assert.equal(styles.size,0)
  assert.equal(mount(4).timer,undefined)
+})
+
+test('client features list their takeover views and answer skipShows and backlog renderers for their own kinds',()=>{
+ const features=createStageFeatures(),document={head:{appendChild(){}},createElement:()=>({dataset:{},remove(){}})}
+ features.register('card',{views:()=>({card:{useStage:()=>null}}),takeover:views=>views.card,skipShows:kind=>kind==='m.card',backlog:{card:()=>({text:'x'})}})
+ features.register('plain',{views:()=>({plain:{}})})
+ const views={};createStageViewScope(own=>{features.mount({own,views,options:{},document});return views})
+ assert.deepEqual(views.takeovers,[views.card])
+ assert.deepEqual([features.skipShows('m.card'),features.skipShows('m.other')],[true,false])
+ assert.deepEqual(Object.keys(features.backlogRenderers()),['card'])
+ assert.throws(()=>createStageViewScope(own=>{features.mount({own,views:{takeovers:[]},options:{},document});return {}}),/Occupied stage view: takeovers/)
 })

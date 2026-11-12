@@ -47,7 +47,7 @@ export async function createPluginHost({ withTools = false, composition, config 
       return () => registeredTools.delete(tool.name)
     }
   })
-  let disableAssets
+  let disableAssets, pluginContext, loadStage
   const dispose = async () => { for (const callback of disposers.reverse()) await callback() }
   try {
     if (composition) {
@@ -92,16 +92,48 @@ export async function createPluginHost({ withTools = false, composition, config 
         on: name => events.add(name),
         provide(name,value) {services.set(name,value);return () => {if(services.get(name)===value)services.delete(name)}}
       }
-      await apply(ctx)
-      if(config?.stage !== false) {
-        const stage=await import('../../tavern-plugin/packages/dsh-tavern-stage/lib/index.js')
-        await stage.apply(ctx)
+      // 模拟宿主加载器给每个插件分配的身份；只有已加载的 fiber 能取得宿主插件权限。
+      const entries = new Map()
+      services.set('loader', { locate: fiber => entries.get(fiber) })
+      pluginContext = name => {
+        const fiber = { name }
+        entries.set(fiber, name)
+        const child = {
+          ...ctx,
+          fiber,
+          get(service) {
+            const value = services.get(service)
+            return service === 'tavern' && value ? Object.assign(Object.create(value), { ctx: child }) : value
+          },
+          effect(callback) {
+            const stop = callback()
+            if (typeof stop !== 'function') return stop
+            let active = true
+            const release = () => {
+              if (!active) return
+              active = false
+              return stop()
+            }
+            disposers.push(release)
+            return release
+          },
+        }
+        return child
       }
+      await apply(ctx)
+      let stageLoaded = false
+      loadStage = async () => {
+        if (stageLoaded) return services.get('tavernStageControl').enable()
+        const stage = await import('../../tavern-plugin/packages/dsh-tavern-stage/lib/index.js')
+        await stage.apply(pluginContext(stage.name))
+        stageLoaded = true
+      }
+      if (config?.stage !== false) await loadStage()
       await new Promise(resolve => setImmediate(resolve))
     }
   } catch (error) { await dispose(); throw error }
   return {
-    services, events, registeredTools, dispose, nativeRoutes, disableAssets,
+    services, events, registeredTools, dispose, nativeRoutes, disableAssets, pluginContext, loadStage,
     async rpc(method, args = {}, headers = {}) {
       const req = Readable.from([Buffer.from(JSON.stringify(args))])
       Object.assign(req, { method: 'POST', url: '/api/dsh-tavern/' + method, headers: { host: 'localhost:3081', cookie: 'test-cookie', ...headers } })

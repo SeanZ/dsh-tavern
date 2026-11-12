@@ -22,8 +22,8 @@ function kindOrder(builtin, modKinds) {
 // The raw text goes to the console (and the 调试视图's 最新错误) only.
 const PLAYER_ERRORS={REVISION_CONFLICT:'内容已被修改，请重新载入',
   LIMIT_EXCEEDED:'素材数据超过大小或数量限制，未能保存；请减少本次提交的内容后重试',
-  TRIGGER_LINT:'触发词不符合要求：蓝灯、绿灯至少 3 个、最多 6 个正文里会出现的简短词语，去掉重复或过于笼统的词后再保存',
   MISSING_DEPENDENCY:'素材引用不完整，请补齐所引用的图片、差分或资源后重试；无需安装额外程序',
+  INVALID_ASSET_PACK:'改完的素材没通过保存前的检查，这次修改没有生效，素材包保持原样',
   PACK_UNAVAILABLE:'这张卡用到的一个素材包找不到了，请在 舞台设置 › 素材包 里移除或重新安装它',
   AbortError:'保存超时，结果尚未确认；请重新载入后检查',TimeoutError:'保存超时，结果尚未确认；请重新载入后检查'};
 // Names a player reads as words, not code: product names and short capitals (MP3、FLAC、CG、BGM — not HTTP or a CODE_NAME).
@@ -51,7 +51,7 @@ function playerErrorText(error,{codes,fallback='出错了，请稍后再试'}={}
   if(raw&&said!==raw&&!playerErrorSeen.has(raw)&&typeof console!=='undefined'){if(playerErrorSeen.size>200)playerErrorSeen.clear();playerErrorSeen.add(raw);console.warn('dsh-tavern:',raw);}
   return said;
 }
-function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, prepareImage: prepareImageOverride, live2d: live2dOption, spine: spineKit, timeGrade, autoChoices} = {}) {
+function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, prepareImage: prepareImageOverride, live2d: live2dOption, spine: spineKit, timeGrade, autoChoices, modClients = typeof tavernModClients === 'undefined' ? { slot: () => [], register() {} } : tavernModClients} = {}) {
   const h = React.createElement;
   // The Live2D preview kit: the stage's Live2D module, bound with the stage pages (stageScope.bind, views.live2dKit), else
   // the one given here. The pages that read it draw only once the stage is bound.
@@ -71,7 +71,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
   // the one order every kind list uses (library tabs + 更多, pack-row chips, pack window tabs, setup, add/copy menus).
   // 入场演出 (`entrances`, dsh.entrance/1) - what the stage plays as it opens; 蓝灯 or 关闭.
   const BUILTIN_KINDS = {figures:'人物', backgrounds:'背景', cg:'CG', props:'物品', performances:'演出组合', music:'音乐', sfx:'音效', ambience:'环境音', looks:'滤镜', skins:'舞台皮肤', entrances:'入场演出', videos:'视频', widgets:'模组', directions:'演出风格'};
-  const MOD_KINDS = [['timers','dsh.timer','计时器']];
+  const MOD_KINDS = modClients.slot('assetKind').map(part=>[part.value[0],part.modId,part.value[1]]);
   const KIND_ORDER = kindOrder(Object.keys(BUILTIN_KINDS), MOD_KINDS);
   const kinds = Object.fromEntries(KIND_ORDER.map(key => [key, BUILTIN_KINDS[key] ?? MOD_KINDS.find(row => row[0] === key)[2]]));
   // shorter labels for the library's one-row kind filter (full name stays the tab's name).
@@ -881,7 +881,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
   }
   const fileStem=name=>[...String(name||'').replace(/\.[^.]+$/,'').trim()].slice(0,120).join('')||'未命名';
   let entrySerial=0;
-  // An added file starts 关闭 with no words: 蓝灯 / 绿灯 need 3–6 of them, which the player writes in the opened entry.
+  // An added file starts 关闭 with no words; the player adds words (optional — the name alone is matched) in the opened entry.
   const newFileEntry=(kind,id,name,content)=>({kind,id,name,enabled:false,recall:{mode:'keyword',keywords:[]},directorNote:'',...content});
   const newEntryId=(pack,kind)=>{let id;do{id='u'+Date.now().toString(36)+(entrySerial++).toString(36)+Math.random().toString(36).slice(2,5);}while(pack.manifest.assets.some(a=>a.kind===kind&&a.id===id));return id;};
   // One figure picture (立绘 / 头像) into a pack through its serialized writer `enqueue(job(snapshot) → {snapshot})`: the pack
@@ -1391,7 +1391,7 @@ function createAssetPackUI(React, {VoicePicker, AvatarImage, HelpTip, emotions, 
     const notify=()=>{for(const fn of [...listeners])fn();};
     const take=next=>{({CandidateArt, CandidateImageView, FigureGenTab, GEN_ART_ROLE, GEN_CELL_WORDS, GEN_PROBLEMS, GEN_REASONS, GEN_REF_LIMIT, GEN_SHEET_FACES, GenCellStatus, GenDialog, GenFaceCandidate, GenFaceMarks, GenGateNote, GenRefChip, GenSheet, GenStageCandidate, GenStageWait, ManagedModSection, PackPreviews, StageAvatar, StageKindJump, genBasis, genCell, genFailText, genKey, genMenuKeys, genOwnSprite, genPromptFor, genReadUpload, stageBytesText, stageFigure, stageFigureRows, stageKindPacks, stagePackBytes, stageSwitchTag, unbindPatch, useAssetGen, useElapsed, useGenNote, useManagedModControls, useStageWriter}=next);};
     // The exact names the stage pages reference from this factory (its declarations and parameters) and from the core client.
-    const names={VoiceCataloguePicker, voiceKey, voiceFromKey, generalVoiceOptions, React, autoChoices, Actions, BustArt, Button, CAST_FACE, CardCover, CardImportSheet, CatAddTile, CatBand, CatSheet, CatSub, ConfirmDialog, ErrorBox, FigureCastFace, Glyph, Help, HintLine, IconButton, ImageFramer, KIND_ORDER, KindSortTools, LampMenu, Loading, MOD_BUILTIN_PACKS, MOD_GLYPHS, MenuItem, ModEntries, Modal, NewFigurePage, PackImageView, PackList, PackModal, PackRow, PackSearchBox, Popover, RevealImg, STAGE_NAMES, Silhouette, StageItemsPage, StageModPage, StageModSection, StageOpenings, StageSection, StageSetupWizard, SubpageHead, SwitchRow, Thumb, UploadButton, VOICE_PROVIDERS, catBusyLabel, cellMenuTrigger, clone, downloadPackMedia, emotionMapped, emotionState, errorText, figureAvatar, figureEditorEmotions, figureOutfitView, globalFirst, glyphs, h, holdMedia, keywordProblem, kindGlyphs, kinds, loadPackDetail, loadPackRows, newResourceKey, openingMenuFocus, openingMenuKeys, orderPacks, outfitEmotionRows, outfitHead, outfitImageId, packCount, packFilter, packRowClick, splitKeywords, spriteSlotTakesStill, stageMissing, stageSetupCardPack, stageSetupReady, standInValue, stateBust, subpageKeys, switchRowClick, useLoad, usePackScope, usePackSort, useStageFold, useStageSetupAutoOpen, useVoiceLoad, useVoiceRefresh, validDraft, voiceIssueText, voiceNeedle, voiceMatches,
+    const names={CastVoiceList, useReadingPointers, React, autoChoices, Actions, BustArt, Button, CAST_FACE, CardCover, CardImportSheet, CatAddTile, CatBand, CatSheet, CatSub, ConfirmDialog, ErrorBox, FigureCastFace, Glyph, Help, HintLine, IconButton, ImageFramer, KIND_ORDER, KindSortTools, LampMenu, Loading, MOD_BUILTIN_PACKS, MOD_GLYPHS, MenuItem, ModEntries, Modal, NewFigurePage, PackImageView, PackList, PackModal, PackRow, PackSearchBox, Popover, RevealImg, STAGE_NAMES, Silhouette, StageItemsPage, StageModPage, StageModSection, StageOpenings, StageSection, StageSetupWizard, SubpageHead, SwitchRow, Thumb, UploadButton, VOICE_PROVIDERS, catBusyLabel, cellMenuTrigger, clone, downloadPackMedia, emotionMapped, emotionState, errorText, figureAvatar, figureEditorEmotions, figureOutfitView, globalFirst, glyphs, h, holdMedia, keywordProblem, kindGlyphs, kinds, loadPackDetail, loadPackRows, newResourceKey, openingMenuFocus, openingMenuKeys, orderPacks, outfitEmotionRows, outfitHead, outfitImageId, packCount, packFilter, packRowClick, splitKeywords, spriteSlotTakesStill, stageMissing, stageSetupCardPack, stageSetupReady, standInValue, stateBust, subpageKeys, switchRowClick, useLoad, usePackScope, usePackSort, useStageFold, useStageSetupAutoOpen, useVoiceLoad, useVoiceRefresh, validDraft, voiceIssueText, voiceNeedle, voiceMatches,
       EmptyState, InlineAdd, InlineField, InlineGrid, InlineRow, OverrideDot, ResetButton, ScopeSwitch, Segmented, Spinner, Switch, TextArea, browserSpeechVoiceList, directorCommands, playerErrorText, selectFigureAvatar, selectPackAvatar};
     return {names, get views(){return views;}, bound:()=>views!==null,
       bind(next){views=next;take(next);live2dKit=next.live2dKit||live2dOption;notify();return()=>{if(views!==next)return;views=null;take({});live2dKit=live2dOption;notify();};},

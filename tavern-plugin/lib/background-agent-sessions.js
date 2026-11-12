@@ -89,6 +89,10 @@ export function createBackgroundAgentSessions(options, task) {
   const conversations = new Map()
   const runs = createBackgroundRunLedger({ now: options.now })
   const queues = new Map()
+  const preparing = new Map()
+  // Tasks that run beside the game's background work (the stage director): a game-wide cancel and the
+  // game's progress leave them alone; only a cancel naming the task stops them.
+  const parallelTasks = new Set(options.parallelTasks || [])
 
   const now = typeof options.now === 'function' ? options.now : Date.now
   const idleMs = Number.isSafeInteger(options.residentIdleMs) && options.residentIdleMs > 0 ? options.residentIdleMs : 5 * 60 * 1000
@@ -113,6 +117,12 @@ export function createBackgroundAgentSessions(options, task) {
     if (releasing.has(id)) return releasing.get(id)
     const pending = Promise.resolve().then(async () => {
       try {
+        resident.state.sharedRequest = null
+        resident.state.sharedAnchor = null
+        if (resident.state.sharedWork) {
+          resident.state.progress?.cancel()
+          await resident.state.sharedWork.catch(() => {})
+        }
         if (typeof options.flushSession === 'function') await options.flushSession(resident.handle.agent.session)
         await resident.handle.dispose()
         if (residentHandles.get(id) === resident) {
@@ -174,7 +184,10 @@ export function createBackgroundAgentSessions(options, task) {
     const member = persistent ? pluginMember(input.member) : null
     if (member) return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-plugin-member-v1', label: '插件成员：' + member.name })
     if (input.task === 'polish') return snapshotSubagentDescriptor({ mode: 'continuable', provider: 'dsh-tavern-polish', label: '正文精修', agentProvider: input.selection.provider, agentModel: input.selection.model, persona: '只审读正文，通过精修工具逐处提交修改。' })
-    if (input.task === 'stage-director') return snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'dsh-tavern-stage', label: '舞台导演' })
+    if (input.task === 'stage-director') return snapshotSubagentDescriptor({
+      mode: 'one-shot', provider: 'dsh-tavern-stage-director', label: '舞台导演',
+      persona: '独立处理已完成正文的增量演出，与变量和姿势任务并行；不改写剧情或变量。'
+    })
     if (input.task === 'phone') return snapshotSubagentDescriptor({
       mode: 'one-shot', provider: 'dsh-tavern-phone', label: '手机私聊',
       persona: '只扮演指定联系人回复一条手机私聊，不推进正文或修改游戏状态。'
@@ -200,7 +213,21 @@ export function createBackgroundAgentSessions(options, task) {
     input.runRecord?.start(input.selection)
     const parent = agents.get(input.sessionId)
     if (parent === undefined || parent.session === undefined) throw new Error('无法创建后台 Agent：前台会话不可用')
+    if (typeof options.prepareSharedContext === 'function') {
+      const controller = new AbortController()
+      const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal
+      preparing.set(controller, input)
+      try {
+        await options.prepareSharedContext({ ...input, signal })
+        signal.throwIfAborted()
+      } catch (error) {
+        signal.throwIfAborted()
+        console.warn('dsh-tavern: 共享后台准备失败', error?.message || error)
+      } finally { preparing.delete(controller) }
+    }
     const runtimeInput = Object.assign({}, input)
+    // Read capabilities are an optional part of the task contract: a task without them runs as before.
+    const readCapability = await task.resolveReadCapability?.(input) ?? null
     runtimeInput.worldbookSkillsEnabled = !['phone', 'stage-director', 'polish'].includes(input.task) && input.ownPrefix !== true && Boolean(await options.resolveWorldbookSkills?.(input))
     // The game's web search setting, unless the task rules it out (style reference, worldbook
     // filter: paid, slow, and what they look for is not on the open web).
@@ -241,7 +268,7 @@ export function createBackgroundAgentSessions(options, task) {
     let handle = resident && resident.handle
     let state = resident && resident.state
     if (handle === undefined) {
-      state = { input: runtimeInput, ctx: null }
+      state = { input: runtimeInput, ctx: null, readCapability }
       try {
         if (!abandoned && (requestedSessionId !== '' || (persistent && residentSessionId !== ''))) {
           if (typeof agents.resume !== 'function') throw new Error('当前 DSH 不支持恢复持久后台 Agent')
@@ -275,7 +302,7 @@ export function createBackgroundAgentSessions(options, task) {
         if (handle === undefined) {
           // A resumed handle may already have run setup before being discarded.
           // Tool registrations and their cache belong to that handle's context.
-          state = { input: runtimeInput, ctx: null }
+          state = { input: runtimeInput, ctx: null, readCapability }
           const meta = {
             parentSession: parent.id,
             origin: 'subagent',
@@ -309,6 +336,13 @@ export function createBackgroundAgentSessions(options, task) {
         residentSessionByParent.set(key, traceSessionId)
       }
     }
+    if ((state.readCapability?.key ?? null) !== (readCapability?.key ?? null)) {
+      state.sharedRequest = null
+      state.sharedAnchor = null
+      for (const dispose of (state.stableToolDisposers || []).slice().reverse()) await dispose()
+      state.stableToolDisposers = null
+      state.readCapability = readCapability
+    }
     state.input = runtimeInput
     if (state.modelSelection) state.modelSelection.current = { ...input.selection }
     // 0.2.2 installModelSelection no longer reads the caller's mutable selection:
@@ -327,12 +361,36 @@ export function createBackgroundAgentSessions(options, task) {
       parentSessionId: str(input.sessionId),
       selection: { ...input.selection },
       maxTokens,
+      operationId: str(input.operationId),
+      ...(input.contextPolicy ? { contextPolicy: input.contextPolicy } : {}),
+      ...(input.frozenBackground ? { frozenBackground: { policy: input.frozenBackground.policy, historical: input.frozenBackground.historical, binding: input.frozenBackground.binding } } : {}),
       task: str(input.task) || 'background',
+      // Dev diagnostics: the streaming director window this request stages (request log).
+      ...(input.window ? { window: { first: input.window.first, through: input.window.through } } : {}),
       turn: Math.max(0, Number(input.turn) || 0)
     })
     input.runRecord?.bind(traceSessionId)
     try {
-      return await task.execute({ agent: handle.agent, state, traceSessionId, persistent }, input)
+      const result = await task.execute({ agent: handle.agent, state, traceSessionId, persistent }, {
+        ...input,
+        async onSharedContextUnavailable() {
+          // Anchor resolution can revoke an optional binding after setup froze its tools.
+          state.sharedRequest = null
+          state.sharedAnchor = null
+          if (!state.readCapability) return
+          for (const dispose of (state.stableToolDisposers || []).slice().reverse()) await dispose()
+          state.stableToolDisposers = null
+          state.readCapability = null
+          state.refreshConfiguredTools?.()
+        }
+      })
+      if (state.sharedRequest && !state.abandoned && !input.signal?.aborted) {
+        try {
+          await task.checkReadCapability?.(state)
+          input.capture.anchor = structuredClone(state.sharedRequest.anchor)
+        } catch { /* Revocation suppresses readiness, not the completed normal task. */ }
+      }
+      return result
     } catch (error) {
       // Discarding all task history equals starting a new session. Some hosts
       // (an unpatched DSH) cannot replace surface messages; never strand every
@@ -385,14 +443,15 @@ export function createBackgroundAgentSessions(options, task) {
   function run(input) {
     if (stopped) return Promise.reject(new Error('后台 Agent 管理器已关闭'))
     const record = runs.begin({ ...input, member: input.persistent === true ? memberFor(input) : '' })
-    input = { ...input, runRecord: record }
+    input = { ...input, runRecord: record, capture: {} }
     const work = input.persistent !== true ? execute(input) : enqueue(queueKey(input), () => {
       if (stopped) throw new Error('后台 Agent 管理器已关闭')
       return execute(input)
     })
     // Every run's end is announced (任务完成), so other work can follow it.
     const finished = status => options.onRunFinished?.({ sessionId: str(input.sessionId), task: str(input.task), plugin: str(input.pluginName),
-      member: input.persistent === true ? memberFor(input) : '', turn: Math.max(0, Number(input.turn) || 0), status })
+      member: input.persistent === true ? memberFor(input) : '', turn: Math.max(0, Number(input.turn) || 0), status,
+      ...(status === 'completed' && input.capture.anchor ? { data: { sharedContext: { anchor: input.capture.anchor } } } : {}) })
     return work.then(result => { record.finish(); finished('completed'); return result }, error => {
       const cancelled = input.signal?.aborted === true || error?.name === 'AbortError'
       record.fail(error, cancelled)
@@ -433,6 +492,41 @@ export function createBackgroundAgentSessions(options, task) {
       }
     })
     return Promise.race([edited, waited])
+  }
+
+  // The resident background session's queue drained, and the anchor of its last captured shared request (or null).
+  const idle = sessionId => (queues.get(str(sessionId)) || Promise.resolve()).catch(() => {})
+  function sharedAnchor(sessionId) {
+    const id = residentSessionByParent.get(JSON.stringify([str(sessionId), 'background']))
+    const anchor = !releasing.has(id) && residentHandles.get(id)?.state?.sharedRequest?.anchor
+    return anchor ? structuredClone(anchor) : null
+  }
+  async function runSharedTask({ sessionId, anchor, instruction, signal }) {
+    if (typeof instruction !== 'string' || !instruction.trim()) throw new TypeError('instruction 必须是非空字符串')
+    return enqueue(str(sessionId), async () => {
+      signal?.throwIfAborted()
+      if (stopped) throw new Error('后台 Agent 管理器已关闭')
+      if (options.allowRun && !await options.allowRun({ sessionId, anchor })) {
+        throw Object.assign(new Error('本局插件已关闭后台智能体'), { code: 'TAVERN_BACKGROUND_DISABLED' })
+      }
+      const id = residentSessionByParent.get(JSON.stringify([str(sessionId), 'background']))
+      const resident = residentHandles.get(id)
+      const state = resident?.state
+      if (state) await task.checkReadCapability?.(state)
+      const saved = !releasing.has(id) && state?.sharedRequest?.anchor
+      if (!saved || !anchor || saved.branchId !== anchor.branchId || saved.turn !== anchor.turn || saved.textVersion !== anchor.textVersion) {
+        throw Object.assign(new Error('没有与正文锚点匹配的共享后台请求快照'), { code: 'TAVERN_SHARED_SNAPSHOT_UNAVAILABLE' })
+      }
+      activeSessions.add(id)
+      try {
+        state.sharedWork = task.runSharedTask(state, { instruction, signal })
+        return await state.sharedWork
+      } finally {
+        state.sharedWork = null
+        activeSessions.delete(id)
+        resident.lastUsedAt = now()
+      }
+    })
   }
 
   // An opaque token for run({conversation}); close() releases the native session once idle.
@@ -503,10 +597,17 @@ export function createBackgroundAgentSessions(options, task) {
 
   async function dispose() {
     stopped = true
+    for (const controller of preparing.keys()) controller.abort()
     clearTimeout(reapTimer)
     if (reaping) await reaping
     await Promise.allSettled([...releasing.values()])
     const residents = Array.from(residentHandles.values()).concat([...conversations.values()].filter(entry => entry.handle))
+    for (const resident of residents) {
+      resident.state.sharedRequest = null
+      resident.state.sharedAnchor = null
+      if (resident.state.sharedWork) resident.state.progress?.cancel()
+    }
+    await Promise.allSettled(residents.map(resident => resident.state.sharedWork))
     conversations.clear()
     residentHandles.clear()
     residentSessionByParent.clear()
@@ -519,12 +620,22 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   // `task`: only that task's runs (停止选项 stops the choices, an interrupted turn its director);
-  // without it every run of the game but the phone's.
-  function cancel(parentSessionId, { task } = {}) {
+  // without it every run of the game but the phone's and the parallel tasks'.
+  function cancel(parentSessionId, input = {}) {
     let count = 0
+    for (const [controller, pending] of preparing) {
+      if (pending.sessionId !== parentSessionId || pending.task === 'phone' || (input.task ? pending.task !== input.task : parallelTasks.has(pending.task))) continue
+      controller.abort(); count++
+    }
+    for (const [id, resident] of residentHandles) {
+      const context = requestContexts.get(id)
+      if (context?.parentSessionId !== parentSessionId || context.task === 'phone' || (input.task ? context.task !== input.task : parallelTasks.has(context.task))) continue
+      resident.state.sharedRequest = null
+      resident.state.sharedAnchor = null
+    }
     for (const sessionId of activeSessions) {
       const context = requestContexts.get(sessionId)
-      if (context?.parentSessionId !== parentSessionId || context.task === 'phone' || (task && context.task !== task)) continue
+      if (context?.parentSessionId !== parentSessionId || context.task === 'phone' || (input.task ? context.task !== input.task : parallelTasks.has(context.task))) continue
       const agent = residentHandles.get(sessionId)?.handle?.agent || agents.get(sessionId)
       const progress=residentHandles.get(sessionId)?.state.progress
       if (progress) { progress.cancel(); count++ }
@@ -534,7 +645,7 @@ export function createBackgroundAgentSessions(options, task) {
   }
 
   function progress(parentSessionId) {
-    for(const id of activeSessions) if(requestContexts.get(id)?.parentSessionId===parentSessionId && requestContexts.get(id)?.task!=='phone') {
+    for(const id of activeSessions) if(requestContexts.get(id)?.parentSessionId===parentSessionId && requestContexts.get(id)?.task !== 'phone' && !parallelTasks.has(requestContexts.get(id)?.task)) {
       const snapshot=residentHandles.get(id)?.state.progress?.snapshot()
       if(snapshot) return {...snapshot,task:requestContexts.get(id).task}
     }
@@ -549,5 +660,5 @@ export function createBackgroundAgentSessions(options, task) {
       if (requestContexts.get(id)?.parentSessionId === parent || JSON.parse(resident.key)[0] === parent) await releaseResident(id, resident)
     }
   }
-  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, conversation, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
+  return Object.freeze({ progress, runs: gameId => runs.list(gameId), discardRun: target => runs.discard(target), noteLock: event => runs.lock(event), locks: gameId => runs.locks(gameId), run, runSharedTask, idle, sharedAnchor, conversation, withSession, owns, requestContext, activeRequestContext: id => activeSessions.has(str(id)) ? requestContext(id) : null, requestSession, compact, cancel, reapIdle, dispose, releaseFor })
 }

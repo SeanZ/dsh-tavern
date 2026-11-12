@@ -4,49 +4,16 @@
 // The chat view can stay frozen or unmounted; backlog reads the same session index.
 
 // @include-domain stage-narration.cjs
-// @include widget-source.js
-// @include-mod phone/stage-phone.cjs
 // @include stage-offstage.cjs
 // @include-protocol stage-pacing.cjs
 // @include-protocol stage-soundscape.cjs
 // @include gal-history.js
-// @include mod-performance.js
-// @include textcard-stage.js
-// @include gal-entry.js
-// @include stage-video.js
-// @include timer-stage.js
+// @include-protocol stage-video.cjs
+// @include mod-options.js
 
 // @include gal-stage-helpers.cjs
 // @include gal-stage-active.cjs
-function GalTypewriter(props) {
-    return stageViews ? React.createElement(stageViews.Typewriter, props) : null;
-}
-function GalNarrationLines(props) {
-    return stageViews ? React.createElement(stageViews.NarrationLines, props) : null;
-}
-function GalBoxFrame(props) { return stageViews ? React.createElement(stageViews.BoxFrame, props) : null; }
-// Scene names are 「地点·细节·时间」. When the cued scene has no picture yet (待补图), stand in with the
-// closest picture of the card's range: shared place words first, then the same time of day, and grade
-// the picture towards the wanted time (a night filter over a daytime street) rather than show sunshine.
-const GAL_TIMES = [["night", /夜|晚上|深夜|午夜/], ["dusk", /黄昏|傍晚|夕/], ["day", /清晨|早晨|早上|晨|白天|昼|中午|午后|下午|上午|晴/]];
-function galTimeOf(name) { const hit = GAL_TIMES.find(([, pattern]) => pattern.test(String(name || ""))); return hit ? hit[0] : ""; }
-function galStandIn(name, entries) {
-    const parts = String(name || "").split(/[·・\s]+/).filter(part => part && !galTimeOf(part));
-    const time = galTimeOf(name);
-    let best = null, bestScore = 0;
-    entries.forEach(function (entry) {
-        const words = entry.name.split(/[·・\s]+/);
-        let score = 0;
-        parts.forEach(part => { if (words.includes(part)) score += 4; else if (words.some(word => word.includes(part) || part.includes(word))) score += 2; else { const shared = new Set([...part].filter(ch => entry.name.includes(ch))).size; if (shared >= 2) score += shared * 0.8; } });
-        if (time && galTimeOf(entry.name) === time) score += 1.5;
-        if (score > bestScore) { best = entry; bestScore = score; }
-    });
-    return bestScore >= 1.5 ? best : null;
-}
-function GalFace(props) { return stageViews ? React.createElement(stageViews.Face, props) : null; }
-function GalSide(props) { return stageViews ? React.createElement(stageViews.Side, props) : null; }
-function galPlaceholderFace(...args) { return stageViews.placeholderFace(...args); }
-function GalTitle(props) { return stageViews ? React.createElement(stageViews.Title, props) : null; }
+
 // Machine preference: film mode (letterbox + subtitles instead of the dialogue box), off by default.
 const stageFilm = (function () {
     const KEY = "fork-stage-film";
@@ -58,7 +25,7 @@ const stageFilm = (function () {
         subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
     };
 })();
-function useStageFilm() { return React.useSyncExternalStore(stageFilm.subscribe, stageFilm.get); }
+
 // Machine preference: reading pace (Config → 文字). textSpeed = milliseconds per typed character (0 = the whole
 // line at once); autoWait = the auto mode's pause after a line's voice ends. A silent page waits its reading
 // time (galAutoHold) shifted by the same amount. autoSpeed scales both waits;
@@ -129,53 +96,9 @@ const stageReading = (function () {
 })();
 function useStageReading() { return React.useSyncExternalStore(stageReading.subscribe, stageReading.get); }
 
-
-function useGalFaceColumn(...args) { return stageViews.useFaceColumn(...args); }
-function useGalFaceHandoff(...args) { return stageViews.useFaceHandoff(...args); }
-function galFaceClearMs(...args) { return stageViews.faceClearMs(...args); }
-function galHandoffAutoDelay(...args) { return stageViews.handoffAutoDelay(...args); }
-function useGalSpriteFallbacks(...args) { return stageViews.notices.useSpriteFallbacks(...args); }
-function GalStandIns(props) { return stageViews ? React.createElement(stageViews.StandIns, props) : null; }
-
-// first-run hints, shown in the stage's notice stack (not a modal) once the entry
-// is revealed. keys: the stage's real shortcuts (GAL_SHORTCUTS), once per profile — 「已看过」 is kept in the persisted
-// host-only frame storage (forkFrameStorage.seen / markSeen, frame-storage.json), which survives restarts and port changes;
-// nothing shows before that store has loaded, nor without it. sound: 「点任意处开启声音」 while the browser's autoplay policy
-// holds the BGM back (stageMusic.blocked()), at most once per page load. Any key or click dismisses both; the same
-// gesture resumes the audio (the BGM kick and the mixer resume listen to it). A click on the bare stage only dismisses
-// (it does not also turn the page); keys pass through (A still starts auto). the first page turn
-// (auto, skip or a click) also retires the key list, and the system menu's 「快捷键」 shows it again (showKeys).
-const GAL_NO_PHONE_CALL = Object.freeze({ subscribe: () => () => {}, stage: () => '' });
-function useGalFirstRunHints(...args) { return stageViews.hints.useHints(...args); }
-// The text box's wait names it (its aria-label); the default one shows the rotating wait lines (wait-lines.js).
-const GAL_AWAITING_WRITING = '正在书写下一幕';
-function galAwaitingText(activity) {
-    if (activity?.role === 'settlement' && (activity.busy || ['pending', 'running'].includes(activity.phase))) {
-        return '正在等待上一轮后台结算，完成后开始正文';
-    }
-    return GAL_AWAITING_WRITING;
-}
-function useCapabilityNotice(...args) { return stageViews.notices.useCapabilityNotice(...args); }
-function GalRuntimeStatus(props) { return stageViews ? React.createElement(stageViews.notices.Status, props) : null; }
-// a stage moment's skin cue, or (cue "") the shown skin's palette (returns its
-// cleanup). Pages without the UI sound module (tests, previews) stay silent.
-function galSkinSfx(cue, palette) {
-    const sfx = typeof forkUiSfx === "object" && forkUiSfx ? forkUiSfx : null;
-    if (cue) return void sfx?.play?.(cue);
-    sfx?.useSkin?.(palette || null);
-    return () => sfx?.useSkin?.(null);
-}
-function useGalNarrow() { return stageViews.useNarrow(); }
-function useGalTopbarGroup(...args) { return stageViews.useTopbarGroup(...args); }
-function useGalHudReveal(...args) { return stageViews.useHudReveal(...args); }
-
 function GalHudLabels(props) {
     return stageViews ? React.createElement(stageViews.HudLabels, props) : null;
 }
-function GalNamePlate(props) {
-    return stageViews ? React.createElement(stageViews.NamePlate, props) : null;
-}
-function galNameParts(...args) { return stageViews.nameParts(...args); }
 
 // Stable slots render only the optional plugin's current view implementation.
 let stageViews = null;
@@ -192,20 +115,25 @@ function GalStageToggle(props) {
     const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
     return enabled && stageViews ? React.createElement(stageViews.Toggle, props) : null;
 }
+// the opening floor's 进入舞台 bar for a card played on the stage (stage views.cjs OpeningEntry)
+function GalStageOpeningEntry(props) {
+    const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
+    return enabled && stageViews?.OpeningEntry ? React.createElement(stageViews.OpeningEntry, props) : null;
+}
 function bindStageViews(createViews) {
     if (stageViews) throw new Error('Stage views already mounted');
     const views = createViews({React, ReactDOM, window, document, navigation:stageNavigation,
         speech:{player:voicePlayer,available:()=>!!forkTtsScope?.get('ttsClient')?.available(),speechInput:segmentSpeechInput,character:bubbleCharacter,language:characterVoiceLanguage,open:(id,args)=>rpc('openAssetPackVoice',args,id)},
-        sourceWidgets:{storage:(()=>{try{return localStorage;}catch{return null;}})(),foreground:forkForeground,rpc,signals:tavernSessionSignals,characters:{character:bubbleCharacter,mood:bubbleMood,moods:bubbleMoodList,actor:stageActorCharacter},avatarCache,phoneProtocol:{phoneModDirect,phoneModOwnership,run:phoneModRun},figureResolution,playerErrorText,fetch,createImageBitmap,
+        sourceWidgets:{storage:(()=>{try{return localStorage;}catch{return null;}})(),foreground:forkForeground,rpc,signals:tavernSessionSignals,characters:{character:bubbleCharacter,mood:bubbleMood,moods:bubbleMoodList,actor:stageActorCharacter},avatarCache,phoneProtocol:tavernModClients.slot('source')[0]?.value.protocol,figureResolution,playerErrorText,fetch,createImageBitmap,
             sandbox:{stopSfx:()=>stageWidgetMediaOwner?.stopSfx(),scroll:(id,...args)=>stageWidgetScrollTargets.get(id)?.wheel(...args),theme:root=>stageWidgetThemeOwners.get(root)}},
-        modSurface:{timing:{validate:validateStagePerformanceTiming,overlaps:stagePerformanceRegionsOverlap},readMedia:(id,args)=>rpc('readStageModMedia',args,id),readItems:(id,turn)=>rpc('getStageItems',{turn},id),readViews:id=>rpc('getModStageViews',{sessionId:id},id),subscribe:(id,...callbacks)=>tavernSessionSignals.subscribe(id,'mod-view',...callbacks),useLiveView:useLiveTavernView},
+        modSurface:{timing:{validate:validateStagePerformanceTiming,overlaps:stagePerformanceRegionsOverlap},readItems:(id,turn)=>rpc('getStageItems',{turn},id)},
         performanceSurface:{fonts:tavernFonts,resolution:galResolution,subscribeResolution:galResolutionSubscribe,policy:{stageFlashAt,stageFlashDark,stageFlashGate,stageFlashSafe,stageSafety,stageEffectHex,stageEffectRgb}},
         textIndex:{pageCards:stagePageCards},
         playbackTiming:{delay:stageAutoDelay,remaining:stageAutoRemaining},
         performances:{read:id=>rpc('getStagePerformanceKinds',{},id),registry:createStagePerformanceRegistry,core:STAGE_PERFORMANCE_CORE},
         directorCommands,
         resourceDependencies:{createPerformanceTimeline,performanceSustained},
-        runtimeProtocol:{performanceStateKernel:{performanceSustained,reducePerformanceEvent},modProjectionKernel:{modPerformanceLedgerKey},phoneBeatKernel:{phoneModAutoVoiceAllowed},
+        runtimeProtocol:{performanceStateKernel:{performanceSustained,reducePerformanceEvent},modProjectionKernel:{modPerformanceLedgerKey},phoneBeatKernel:{phoneModAutoVoiceAllowed:stageAutoVoiceAllowed},
             performanceKindsKernel:{stagePerformanceKindOf,stagePerformanceBlocks,stagePerformancePhaseBlocks,STAGE_PERFORMANCE_CORE}},
         entrance:{reading:stageReading,safety:stageSafety,flashGate:stageFlashGate},
         entranceMedia:{getService:()=>packTransport.service,fetch,AbortController},
@@ -215,7 +143,7 @@ function bindStageViews(createViews) {
         useBubbles, Icon,
         controller:{useLiveView:useLiveTavernView,storyTurn:tavernStoryTurnForDshTurn,useCoordination:useTavernCoordination,rpc,phoneCall:()=>typeof phoneModCall==='object'?phoneModCall:null,
             dialogue:{color:bubbleColor,displayName:bubbleDisplayName,moodBadge:bubbleMoodBadge,moods:bubbleMoodList,actor:stageActorCharacter},figures:{layers:createPackSceneLayers,performance:packPerformanceScene,render:packFigureRenderInputs,reactions:packFigureReactions},
-            DiceRolls,DiceThrow,narration:stageNarrationPresentation,offstage:stageOffstage,skinFigures:stageSkinFigures,phoneBeat:phoneModBeat,playEvents:tavernPlayEvents,
+            modClients:tavernModClients,narration:stageNarrationPresentation,offstage:stageOffstage,skinFigures:stageSkinFigures,phoneBeat:stageSourceBeat,playEvents:tavernPlayEvents,
             // 场景生图 pictures of the round on screen (stage-scene-images.js): the CG insert pages and the 「正在生成 CG…」 notice.
             pictures:{use:useStagePictures}},
         // Clip export (clip-export.cjs) lives in the stage package; these are the core names it uses.
@@ -255,7 +183,7 @@ function bindStageViews(createViews) {
         choices:{ReactDOM,playEvents:tavernPlayEvents,sounds:forkUiSfx,useSounds:useForkUiSfxControls,episode:stageWaitLinesEpisode,waitLines:STAGE_WAIT_LINES,TextArea,Icon,StageWaitStop,StageWaitLines,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
         choiceLayout:{getComputedStyle},
         regenerate:{report:(...args)=>tavernErrorHub.report(...args),sounds:forkUiSfx,useSounds:useForkUiSfxControls,episode:stageWaitLinesEpisode,waitLines:STAGE_WAIT_LINES,HelpTip,Segmented,TextArea,StageWaitStop,StageWaitLines},
-        backlogView:{voicePlayer,useDiceBacklog,diceBacklogEntries,diceLine,useJumpLatest,JumpLatest,useFigureTextContrast,bubbleCharacter,galQuoted,VoiceButton,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
+        backlogView:{voicePlayer,modClients:tavernModClients,useJumpLatest,JumpLatest,useFigureTextContrast,bubbleCharacter,galQuoted,VoiceButton,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver:globalThis.ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
         backlogHistory:{read:sessionId=>rpc('getStageModHistory',{},sessionId), subscribe:(sessionId,refresh)=>tavernSessionSignals.subscribe(sessionId,'stage-direction',refresh,refresh,refresh)},
         backlogVoice:{player:voicePlayer, wake:()=>forkLipSync?.wake?.()},
         backlogRows:{registry:createStagePerformanceRegistry, core:STAGE_PERFORMANCE_CORE, pointer:stagePerformancePointer},
@@ -272,8 +200,13 @@ function bindStageViews(createViews) {
         // document, Helper and trust model) with the session slash executor message frames use; the page's data is re-read
         // after each session state signal while open; asset() reads the card's bound packs through the pack service.
         // newGame() asks with the core confirm, and the sidebar opens the session card's 游戏准备 (dsh-tavern-new-game).
+        // newGame(id, {fresh:true}) (a never-played chat) resolves true when the sidebar opened a 游戏准备 that replaces it,
+        // false when there is nothing to prepare (no listener answers: false).
         statusPanel:{rpc, signals:{subscribe:(id,refresh)=>tavernSessionSignals.subscribe(id,'tavern-state',refresh,()=>{},refresh)}, themeTokens:stageWidgetThemeTokens, sounds:forkUiSfx,
-            confirm:askTavernConfirm, newGame:sessionId=>window.dispatchEvent(new CustomEvent('dsh-tavern-new-game',{detail:{sessionId}})),
+            confirm:askTavernConfirm, newGame:(sessionId,options)=>new Promise(resolve=>{const detail={sessionId,fresh:options?.fresh===true,respond:resolve};window.dispatchEvent(new CustomEvent('dsh-tavern-new-game',{detail}));if(!detail.handled)resolve(false);}),
+            // startOpening(id, {openingId, values, withoutGreeting}): a card's opening page starts the game (the sidebar's
+            // one start path, dsh-tavern-stage-opening); it settles once the game stands and the stage has entered it.
+            startOpening:(sessionId,choice)=>new Promise((resolve,reject)=>{const detail={sessionId,choice,respond:resolve,fail:reject};window.dispatchEvent(new CustomEvent('dsh-tavern-stage-opening',{detail}));if(!detail.handled)reject(new Error('开始游戏不可用'));}),
             useLiveView:useLiveTavernView, packService:()=>packTransport?.service,
             createCardFrame:props=>createTavernMessageFrameLifecycle(props,{executeSlash:stageCardPageSlash()})},
         device:{matchMedia},

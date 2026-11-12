@@ -215,15 +215,21 @@ export function projectedReplyTurns({ events = [], nodes = [] } = {}) {
   const resolveSeat = createReplySeatResolver(seq => bySeq.get(seq))
   const turns = new Map()
   for (const event of events) {
-    if (event?.type !== 'assistant/message' || event.surfaceOp?.op !== 'replace') continue
+    if (event?.type !== 'assistant/message') continue
     if (visible.size && !visible.has(Number(event.seq))) continue
     const source = event.data?.message?.source
+    const story = Number(source?.tavernStoryTurn)
+    if (!Number.isSafeInteger(story) || story < 1) continue
+    // Session upgrades also move appended repair bodies into administrative turns.
+    // Their explicit story identity must reach the same native-to-story view map.
+    if (event.surfaceOp === 'append') {
+      turns.set(story, Number(event.data.turn))
+      continue
+    }
     // Repair rewrites a span of model context, not a regeneration projection. Its
     // range tail can belong to any round; recordNativeSurfaceRepair stores the real
     // edit turn instead, so this derived regeneration mapping must leave it alone.
     if (source?.provider === 'dsh-tavern' && source?.model === 'native-repair') continue
-    const story = Number(source?.tavernStoryTurn)
-    if (!Number.isSafeInteger(story) || story < 1) continue
     const seat = resolveSeat(event)
     if (seat) turns.set(story, seat.turn)
   }
@@ -519,6 +525,7 @@ export function pendingFailedSurfaceTurns({ events = [], nodes = [], suppressed 
 // cleanup tombstone.
 export function replayableFailedTurn(input) {
   const events = Array.isArray(input && input.events) ? input.events : []
+  const retryFailedTurn = input?.retryFailedTurn
   let lastEnd = null
   for (const event of events) {
     if (!event || event.type !== 'turn/end' || !Number.isSafeInteger(Number(event.seq))) continue
@@ -527,16 +534,28 @@ export function replayableFailedTurn(input) {
     if (lastEnd === null || Number(event.seq) > Number(lastEnd.seq)) lastEnd = event
   }
   if (lastEnd === null) return null
-  const reason = lastEnd.data && lastEnd.data.reason ? lastEnd.data.reason.kind : ''
-  if (!isFailedTurnEnd(reason)) return null
-  const turn = Number(lastEnd.data.turn)
-  const endSeq = Number(lastEnd.seq)
   // A turn that already started after this failure owns the tail now; replaying
   // would insert an older input behind newer story.
   for (const event of events) {
     if (!event || event.type !== 'turn/start' || !Number.isSafeInteger(Number(event.seq))) continue
-    if (Number(event.seq) > endSeq) return null
+    if (Number(event.seq) > Number(lastEnd.seq)) return null
   }
+  if (retryFailedTurn !== undefined) {
+    // 同一输入的补写失败后，界面仍持有原失败轮。只越过明确绑定该轮的失败尝试。
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index]
+      if (event?.type !== 'turn/end') continue
+      const turn = storyEventTurn(event)
+      if (turn === retryFailedTurn) { lastEnd = event; break }
+      const attempt = inputEventForTurn({ events }, turn)?.data
+      if (!isFailedTurnEnd(event.data?.reason?.kind) || inputKind(attempt) !== 'regenerate' ||
+          attempt.source.retryFailedTurn !== retryFailedTurn) return null
+    }
+    if (storyEventTurn(lastEnd) !== retryFailedTurn) return null
+  }
+  if (!isFailedTurnEnd(lastEnd.data?.reason?.kind)) return null
+  const turn = Number(lastEnd.data.turn)
+  const endSeq = Number(lastEnd.seq)
   let startSeq = -1
   for (const event of events) {
     if (!event || event.type !== 'turn/start' || storyEventTurn(event) !== turn) continue
@@ -1071,10 +1090,10 @@ function unclearedFailedTail(chat, events, nodes) {
     return !isRollbackAssistantTombstone(event, events) && !isRollbackUserTombstone(event) && !isForegroundContext(event)
   })
   if (tail === undefined) return []
-  const latest = (chat.messages || []).findLast(message => message?.role === 'assistant')
+  const latest = (chat.messages || []).findLast(message => message?.role === 'assistant' && message.placeholder !== true)
   const lastEvent = eventAt(events, tail)
   if (lastEvent?.type === 'assistant/message' && (storyEventTurn(lastEvent) === Number(latest?.turn) || storyEventTurn(lastEvent) === Number(chat.regeneratedDshTurns?.[String(latest?.turn)]))) return []
-  const committed = new Set((chat.messages || []).filter(message => message?.role === 'assistant').map(message => Number(message.turn)))
+  const committed = new Set((chat.messages || []).filter(message => message?.role === 'assistant' && message.placeholder !== true).map(message => Number(message.turn)))
   for (const turn of Object.values(chat.regeneratedDshTurns || {})) committed.add(Number(turn))
   const intervals = turnIntervals(events)
   const ownership = createSurfaceOwnership(events)
@@ -1097,11 +1116,28 @@ function unclearedFailedTail(chat, events, nodes) {
   return result
 }
 
+function incompleteReplyTarget(chat, failedTurns) {
+  const failedTurn = failedTurns.at(-1)
+  const reply = chat.messages?.at(-1)
+  if (reply?.role === 'assistant' && reply.greeting !== true) {
+    const turn = Number(reply.turn) || 0
+    const nativeTurn = Number(chat.regeneratedDshTurns?.[String(turn)]) || Number(reply.nativeAnchor?.turn) || turn
+    // A failure after this row owns the action, even when the saved history
+    // does not contain its input. A placeholder also needs a proven failure.
+    if ((failedTurn === undefined || nativeTurn === failedTurn) &&
+      (reply.incomplete === true || (reply.placeholder === true && nativeTurn === failedTurn))) {
+      return { kind: 'reply', turn, messageUid: reply.messageUid || null }
+    }
+  }
+  return failedTurn === undefined ? null : { kind: 'failed-tail', turn: failedTurn }
+}
+
 // UI and mutation share the same native target and failed-tail precedence.
 function planRollbackAvailability(chat, { events = [], nodes = [] } = {}) {
   const unclearedTurns = unclearedFailedTail(chat, events, nodes)
   const failedTurns = [...new Set([...pendingFailedSurfaceTurns({ events, nodes, suppressed: chat.suppressedDshTurns || [] }), ...unclearedTurns])].sort((a, b) => a - b)
-  if (failedTurns.length) return { canRollback: true, canClearIncompleteReply: true, failedTurns, unclearedTurns, target: null, reason: '' }
+  const clearIncompleteReplyTarget = incompleteReplyTarget(chat, failedTurns)
+  if (failedTurns.length) return { canRollback: true, canClearIncompleteReply: true, clearIncompleteReplyTarget, failedTurns, unclearedTurns, target: null, reason: '' }
   const messages = Array.isArray(chat.messages) ? chat.messages : []
   const latest = messages.findLast(message => message?.role === 'assistant' && message.greeting !== true)
   const target = locateRollbackSurface({ events, nodes, anchor: latest?.nativeAnchor })
@@ -1113,7 +1149,7 @@ function planRollbackAvailability(chat, { events = [], nodes = [] } = {}) {
   const matches = matchesTurn || matchesAnchor
   const hasMessages = hasRollbackMessages(messages)
   const canRollback = hasMessages && Boolean(matches)
-  return { canRollback, canClearIncompleteReply: false, failedTurns, target: canRollback ? target : null,
+  return { canRollback, canClearIncompleteReply: clearIncompleteReplyTarget !== null, clearIncompleteReplyTarget, failedTurns, target: canRollback ? target : null,
     reason: canRollback ? '' : hasMessages ? '当前轮次已不在可回退的消息流中，请继续发送新消息；历史正文仍保留。' : '当前没有可回退的已提交轮次' }
 }
 

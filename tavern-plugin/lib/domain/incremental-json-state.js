@@ -1,6 +1,7 @@
 import {copyJsonTree} from './copy-json-tree.js'
 import {createHash} from 'node:crypto'
 import {isDeepStrictEqual} from 'node:util'
+import {conversationReadLane,createConversationReadContext} from './conversation-read-lanes.js'
 
 const fail=message=>Object.assign(new Error(message),{code:'STATE_DELTA_INVALID'})
 // 一个子树整体小于这个字节数就不拆块了：直接内联在父节点的条目里。以前每个对象都要
@@ -31,8 +32,20 @@ function indexOf(key,length,append=false){
 
 /** Owned, bounded decoded values for immutable record references. */
 export function createDecodedJsonCache(maxBytes = 0) {
- const entries = new Map(); let bytes = 0
+ const entries = new Map(), pending = new Map(); let bytes = 0
  return {
+  // Independent readers of one immutable reference share its in-flight decode; each gets its own copy.
+  // A foreground reader joining a background decode promotes that decode's remaining reads.
+  async load(ref, operation) {
+   let work = pending.get(ref)
+   if (!work) {
+    const context=createConversationReadContext()
+    work = {context,promise:context.run(()=>Promise.resolve().then(operation))}
+    pending.set(ref, work)
+   }else if(conversationReadLane()==='foreground')work.context.promote()
+   try { return copyJsonTree(await work.promise) }
+   finally { if (pending.get(ref) === work) pending.delete(ref) }
+  },
   get(ref) {
    const entry = entries.get(ref)
    if (entry) { entries.delete(ref); entries.set(ref, entry) }
@@ -59,8 +72,9 @@ export function createDecodedJsonCache(maxBytes = 0) {
 // shareSubtrees is for short-lived instances (one storage operation). Floors of a
 // chat repeat most of their tree (variables, card state); with it each referenced
 // subtree is built once per instance and shared inside the decoder-owned trees.
-// Callers still receive detached copies.
-export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decodedCache=createDecodedJsonCache(decodedCacheBytes),shareSubtrees=false}){
+// Callers still receive detached copies by default. `detach:false` is reserved for
+// an outer store that owns the only public copy boundary and keeps this tree private.
+export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decodedCache=createDecodedJsonCache(decodedCacheBytes),shareSubtrees=false,detach=true}){
  const rememberDecoded = (ref,value,owned) => decodedCache.remember(ref,value,owned)
  const subtrees=shareSubtrees?new Map():null
  function session(){
@@ -117,22 +131,25 @@ export function createIncrementalJsonState({read,write,decodedCacheBytes=0,decod
  }
  async function decode(s,link,cacheResult=true){
   if(own(link,'value'))return link.value
-  if(own(link,'inline'))return copyJsonTree(link.inline)
+  if(own(link,'inline'))return detach?copyJsonTree(link.inline):link.inline
   const previous=decodedCache.get(link.ref)
   // With shared subtrees a nested result stays inside a decoder-owned tree.
-  if(previous)return subtrees&&!cacheResult?previous.value:copyJsonTree(previous.value)
+  if(previous)return (subtrees&&!cacheResult)||!detach?previous.value:copyJsonTree(previous.value)
   if(subtrees&&!cacheResult){
    let work=subtrees.get(link.ref)
    if(!work){work=build(s,link);subtrees.set(link.ref,work);work.catch(()=>subtrees.delete(link.ref))}
    return work
   }
-  const value=await build(s,link)
   // Budget only requested projections. Retaining every nested subtree repeats
   // the same large strings and evicts otherwise reusable resource snapshots.
-  if(!cacheResult)return value
-  if(!subtrees){rememberDecoded(link.ref,value);return value}
-  rememberDecoded(link.ref,value,true)
-  return copyJsonTree(value)
+  if(!cacheResult)return build(s,link)
+  // Concurrent header/window/full readers share one in-flight projection. The decoded
+  // tree is only ever handed out as copies (load), so the cache may keep it as is.
+  return decodedCache.load(link.ref,async()=>{
+   const value=await build(s,link)
+   rememberDecoded(link.ref,value,true)
+   return value
+  })
  }
  async function build(s,link){
   const node=await s.get(link.ref)

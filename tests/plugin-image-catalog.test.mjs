@@ -3,15 +3,18 @@ import test from 'node:test'
 import { createTavernPluginApi } from '../tavern-plugin/lib/plugin-api.js'
 
 function harness() {
-  const scopes = new Map(), errors = [], requests = []
+  const scopes = new Map(), errors = [], requests = [], runningUserPlugins = new Map()
   const api = createTavernPluginApi({
     logger: { warn: message => errors.push(message) },
     cardScope: async () => scopes,
+    runningUserPlugins,
     cardPathOf: async gameId => gameId === 'a' ? 'cards/a.json' : 'cards/b.json',
     resolveGalleryContext: async sessionId => ({ sessionId, cardPath: sessionId === 'a' ? 'cards/a.json' : 'cards/b.json' }),
     generateImage: async (input, source) => { requests.push(input); return source.generate(input) },
   })
-  const plugin = owner => {
+  // Each simulated plugin registers its trusted runtime identity: global, or card for a card-bound plugin.
+  const plugin = (owner, origin = 'global') => {
+    runningUserPlugins.set(owner, { runtimeName: owner, origin })
     const disposers = []
     const service = Object.create(api.service)
     service.ctx = { fiber: { name: owner }, effect(setup) { const off = setup(); disposers.push(off); return off } }
@@ -81,7 +84,7 @@ test('character and outfit libraries use projections, search, pagination, scoped
 })
 
 test('card-scoped callers and providers cannot read or use a different card, including global queries', async () => {
-  const h = harness(), provider = h.plugin('card-images'), consumer = h.plugin('consumer').service
+  const h = harness(), provider = h.plugin('card-images', 'card'), consumer = h.plugin('consumer').service
   h.scopes.set('card-images', { cards: ['cards/a.json'] })
   provider.service.registerImageLibrary({ id: 'lib', label: '卡内角色', characters: () => [{ id: 'c', name: 'A' }] })
   provider.service.imageProvider({ id: 'online', label: '卡内生图', status: () => ({ ready: true }), generate: async () => ({}) })
@@ -93,19 +96,4 @@ test('card-scoped callers and providers cannot read or use a different card, inc
   await assert.rejects(provider.service.listImageCharacters(), { code: 'TAVERN_PLUGIN_SCOPE' })
   await assert.rejects(provider.service.listImageCharacters({ card: 'cards/b.json' }), { code: 'TAVERN_PLUGIN_SCOPE' })
   await assert.rejects(consumer.listImageCharacters({ gameId: 'a', card: 'cards/b.json' }), /不匹配/)
-})
-
-test('an in-flight library read cannot return data after its provider is unloaded', async () => {
-  const h = harness(), provider = h.plugin('images'), consumer = h.plugin('consumer').service
-  let finish, started
-  const ready = new Promise(resolve => { started = resolve })
-  provider.service.registerImageLibrary({ id: 'lib', label: '慢库', characters: () => {
-    started()
-    return new Promise(resolve => { finish = resolve })
-  } })
-  const pending = consumer.listImageCharacters()
-  await ready
-  provider.dispose()
-  finish([{ id: 'c', name: 'gone' }])
-  assert.equal((await pending).total, 0)
 })

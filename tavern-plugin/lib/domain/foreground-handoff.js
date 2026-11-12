@@ -22,10 +22,27 @@ export function createForegroundHandoff(options = {}) {
     return await turns.finalize(input)
   }
 
+  // MVU's greeting/initvar path runs while floor 0 is still the latest floor, or on
+  // the first input when the page loads its scripts after the player sent. An
+  // immediate first send must wait before the system prompt, templates, context or
+  // body.begin capture an empty baseline and advance beyond that initialization boundary.
+  function openingPending(chat) {
+    return Boolean(chat?.mvu?.enabled && chat.mvu.owner === 'official' && chat.mvu.openingInitialization?.status === 'pending')
+  }
+  async function awaitOpening(sessionId) {
+    const opening = store.openingStateForSession ? await store.openingStateForSession(sessionId) : null
+    const chat = opening ? opening.chat : await store.chatForSession(sessionId)
+    if (openingPending(chat)) await options.scriptDispatch.waitUntilReady(sessionId)
+  }
+
+  async function waitForDiscard(sessionId) {
+    await discarded.get(sessionId)
+  }
+
   async function prepare(input) {
     if (typeof turns.prepare !== 'function') throw new Error('Foreground Handoff 缺少 prepare adapter')
     // 上一轮异步丢弃会缩短逻辑历史；下一轮须在其完成后再读取准备基线。
-    await discarded.get(input.sessionId)
+    await waitForDiscard(input.sessionId)
     // A save being reconciled (#196) finishes that first; both write the story.
     await options.waitReconcile?.(input.sessionId)
     await options.cancelPresentation?.(input.sessionId)
@@ -39,12 +56,7 @@ export function createForegroundHandoff(options = {}) {
       const marked = await store.chatForSession(input.sessionId)
       if (marked?.regenRecovery?.candidateFrame?.kind === 'foreground') return await turns.prepare(input)
     }
-    // MVU's greeting/initvar path runs while floor 0 is still the latest floor.
-    // An immediate first send must wait before templates, context or body.begin
-    // capture an empty baseline and advance beyond that initialization boundary.
-    if (chat?.mvu?.enabled && chat.mvu.owner === 'official' && chat.mvu.openingInitialization?.status === 'pending') {
-      await options.scriptDispatch.waitUntilReady(input.sessionId)
-    }
+    if (openingPending(chat)) await options.scriptDispatch.waitUntilReady(input.sessionId)
     // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
     if (chat !== undefined) await options.beforeNextTurn?.(chat)
     // 等待后台任务后再检查，刚完成的重新结算可能已清除变量未重算标记。
@@ -88,6 +100,13 @@ export function createForegroundHandoff(options = {}) {
     const pending = later(async function () {
       await previous
       const target = { sessionId: input.sessionId, turn: input.turn }
+      // A turn that failed (model API error, preparation error) wrote no reply: its
+      // kept input says why, before the discard retires the reply placeholder.
+      if (reason === 'error' && input.edit !== true) {
+        const failure = input.error || {}
+        await turns.recordFailure({ ...target, code: str(failure.code).trim() || 'turn-error',
+          message: '这一轮没有生成正文：' + (str(failure.message).trim() || '模型请求失败') })
+      }
       await turns.discard(target)
       if (cleanupFailedTurn !== null) await cleanupFailedTurn(target)
     }, '清理未完成前台回合')
@@ -110,5 +129,5 @@ export function createForegroundHandoff(options = {}) {
     }
   }
 
-  return Object.freeze({ prepare, finalize, end, recover })
+  return Object.freeze({ awaitOpening, waitForDiscard, prepare, finalize, end, recover })
 }

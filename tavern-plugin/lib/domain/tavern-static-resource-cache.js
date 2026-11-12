@@ -2,7 +2,6 @@ import { projectTavernHostScript } from './tavern-host-script-projection.js'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { Agent } from 'undici'
 
 const DEFAULT_MAX_ENTRY_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -168,7 +167,8 @@ export function createTavernStaticResourceCache(options = {}) {
       const metadata = JSON.parse(await readFile(files.metadata, 'utf8'))
       if (metadata.version !== CACHE_VERSION || metadata.url !== url) return null
       const body = await readFile(files.body)
-      if (body.length !== metadata.bytes || createHash('sha256').update(body).digest('hex') !== metadata.contentHash) return null
+      // entries are published by rename; a hit is not re-hashed.
+      if (body.length !== metadata.bytes) return null
       const now = new Date()
       void Promise.allSettled([utimes(files.body, now, now), utimes(files.metadata, now, now)])
       return { url, finalUrl: metadata.finalUrl || url, body, mediaType: metadata.mediaType, bytes: body.length, cachedAt: metadata.cachedAt, cache: 'hit' }
@@ -200,7 +200,8 @@ export function createTavernStaticResourceCache(options = {}) {
 
   async function fetchHop(url) {
     const pinned = await verifyHostname(url)
-    const dispatcher = pinned && new Agent({ connect: { lookup(_host, options, callback) {
+    // Cache hits and pages without external styles do not need the download transport.
+    const dispatcher = pinned && new (await import('undici')).Agent({ connect: { lookup(_host, options, callback) {
       if (options.all) callback(null, pinned)
       else callback(null, pinned[0].address, pinned[0].family)
     } } })
@@ -248,7 +249,6 @@ export function createTavernStaticResourceCache(options = {}) {
       finalUrl,
       mediaType,
       bytes: body.length,
-      contentHash: createHash('sha256').update(body).digest('hex'),
       cachedAt: Date.now()
     }
     await writeFile(files.body + suffix, body)
@@ -269,9 +269,5 @@ export function createTavernStaticResourceCache(options = {}) {
     return await pending
   }
 
-  async function warm(urls) {
-    return await Promise.allSettled(Array.from(new Set(urls || [])).map(get))
-  }
-
-  return Object.freeze({ get, read, warm, rootDir })
+  return Object.freeze({ get, read, rootDir })
 }

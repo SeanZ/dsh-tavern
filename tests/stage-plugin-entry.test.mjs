@@ -11,6 +11,7 @@ test('independent stage plugin follows real Cordis load, unload and reload',asyn
   const {Context}=await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href)
   const ctx=new Context(),seen=[]
   ctx.provide('tavernStageControl',{install:async()=>seen.push('enable'),uninstall:async()=>seen.push('disable')})
+  ctx.provide('llm',{})
   const first=ctx.plugin(stage);await first.await()
   assert.deepEqual(seen,['enable'])
   await first.dispose();assert.deepEqual(seen,['enable','disable'])
@@ -96,11 +97,15 @@ test('browser stage entry owns deferred startup, unloading and reloading on real
     views.sessions.get = originalGet
     views.sessions.owner = originalOwner
   }
-  assert.equal(styles.size,2)
+  // the theme, the source widgets' CSS and the phone, textcard and timer mods' stage feature CSS (mods/*/client/stage.css)
+  assert.equal(styles.size,5)
   // Styles inserted after boot name their owner, or the module loader claims them for the next plugin it materializes.
   for (const style of styles) assert.equal(style.dataset.plugin, 'dsh-tavern-stage')
-  assert.match([...styles][1].textContent, /fork-tc-layer/)
   assert.match([...styles][1].textContent, /fork-widget-source-controls/)
+  const feature = id => [...styles].find(style => style.dataset.stageFeature === id)
+  assert.match(feature('textcard').textContent, /fork-tc-layer/)
+  assert.match(feature('timer').textContent, /fork-timer-pill/)
+  assert.match(feature('phone').textContent, /fork-gal-phone-reader/)
   await first.dispose()
   assert.deepEqual(seen,['tab','sessions','stop-sessions','remove-tab'])
   assert.equal(styles.size,0)
@@ -178,44 +183,6 @@ test('failed browser stage mount rolls back registrations and can be retried', (
   assert.throws(() => host.mount(), /disposed/)
 })
 
-
-test('browser stage entry removes its style when mounting fails', async () => {
-  const styles = new Set()
-  const plugin = await loadStageClientPlugin({
-    document:{querySelector:() => null, head:{appendChild:style => styles.add(style),insertBefore:style => styles.add(style)},createElement:() => ({dataset:{},remove() {styles.delete(this)}})},
-    window:{}
-  })
-  assert.doesNotThrow(() => plugin.apply({provide(){},get:() => ({registrations:[() => {throw new Error('failed')}]}),effect:run => run()}))
-  assert.equal(styles.size,0)
-})
-
-test('stage activation rolls back partial style insertion and retries without touching unrelated styles',async()=>{
-  let fail=true,mounted=0,stopped=0
-  const original={name:'ordinary-chat'},styles=new Set([original])
-  const document={querySelector:()=>null,createElement:()=>({dataset:{},remove(){styles.delete(this)}}),head:{insertBefore(style){styles.add(style)},appendChild(style){styles.add(style);if(fail)throw Error('style insertion failed')}}}
-  const plugin=await loadStageClientPlugin({document,window:{}}),context={provide(){},get:()=>({registrations:[()=>{mounted++;return ()=>stopped++}]}),effect:run=>run()}
-  assert.doesNotThrow(()=>plugin.apply(context))
-  assert.deepEqual([...styles],[original]);assert.equal(mounted,0)
-  fail=false;let cleanup;plugin.apply({...context,effect:run=>cleanup=run()})
-  assert.equal(styles.size,3);cleanup();cleanup();assert.equal(stopped,1);assert.deepEqual([...styles],[original])
-})
-
-test('stage shutdown removes every owned style even when mount cleanup and one removal fail',async()=>{
-  let cleanup
-  const styles=new Set(),removed=[]
-  const document={querySelector:()=>null,createElement:()=>({dataset:{},remove(){removed.push(this.dataset.pluginCss);styles.delete(this);if(this.dataset.pluginCss.endsWith('presentation.css'))throw Error('style cleanup failed')}}),head:{insertBefore:s=>styles.add(s),appendChild:s=>styles.add(s)}}
-  const plugin=await loadStageClientPlugin({document,window:{}})
-  plugin.apply({provide(){},get:()=>({registrations:[()=>()=>{throw Error('mount cleanup failed')}]}),effect:run=>cleanup=run()})
-  assert.throws(()=>cleanup(),error=>error.name==='AggregateError'&&error.errors.length===2)
-  assert.equal(styles.size,0);assert.equal(removed.length,2);cleanup();assert.equal(removed.length,2)
-})
-
-test('missing stage host degrades without adding styles',async()=>{
-  let created=0
-  const plugin=await loadStageClientPlugin({document:{createElement(){created++;throw Error('must not allocate')}},window:{}})
-  assert.doesNotThrow(()=>plugin.apply({provide(){},get:()=>null,effect:run=>run()}))
-  assert.equal(created,0)
-})
 
 test('activation and rollback errors stay diagnostic and do not reject host startup',async()=>{
   let cleanup

@@ -3,6 +3,7 @@
 // exactly once) and a startup self-test, never on a DSH version or file hash,
 // so a DSH release that leaves these validators alone needs no Tavern change.
 import assert from 'node:assert/strict'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
@@ -120,9 +121,11 @@ export async function prepareExpandedPatch(runtime) {
       text.replace(/\bnew SessionQueryError\(/g, 'new NativeQueryError(').replace(/\binstanceof SessionQueryError\b/g, 'instanceof NativeQueryError') +
       '\nexport { SessionCorpus, SessionObservationReader };')
     const { text: originalClient } = await source('@deepseek-ai/dsh-api-session-controller/client')
-    const clientSource = once(originalClient,
-      'if (event.type === "assistant/message" && raw !== void 0) throw',
-      `if (event.type === "assistant/message" && raw !== void 0 && !${own}) throw`)
+    // rc.2 客户端压缩为无空格和模板字符串；仍只放宽同一条替换校验。
+    const clientAnchor = /if\s*\(event\.type\s*===\s*(["'`])assistant\/message\1\s*&&\s*raw\s*!==\s*void\s+0\)\s*throw/g
+    const clientMatches = [...originalClient.matchAll(clientAnchor)]
+    assert.equal(clientMatches.length, 1, '补丁锚点已变化：客户端 assistant/message 来源校验')
+    const clientSource = originalClient.replace(clientAnchor, match => match.replace(/\)\s*throw$/, ` && !${own}) throw`))
     const undoPersistence = []
     // Prove the relaxation end to end before any live instance is touched: an
     // in-memory session replaces an assistant reply while citing it, and the
@@ -251,46 +254,65 @@ function runtimeRoot(sessionFile) {
   return parts.slice(0, index).join(sep)
 }
 
+const MAX_SESSION_PATCH_PAGES = 256
+
+function rememberPage(map, page, value) {
+  map.delete(page)
+  map.set(page, value)
+  if (map.size > MAX_SESSION_PATCH_PAGES) map.delete(map.keys().next().value)
+}
+
 function createHandle(fields) {
+  const pageContext = new AsyncLocalStorage()
+  const readyPages = new Map()
+  const failedPages = new Map()
   const handle = {
     protocol: SESSION_PATCH_PROTOCOL,
     status: fields.status,
     serverReady: fields.status === 'ready',
-    clientReady: false,
     hostVersion: fields.hostVersion || '',
     reason: fields.reason || '',
-    clientReason: '',
     clientSource: fields.clientSource || '',
+    runForPage(page, run) {
+      const valid = typeof page === 'string' && /^[0-9a-f]{32}$/.test(page)
+      return pageContext.run(valid ? page : null, run)
+    },
     confirmClient(report = {}) {
-      if (this.status !== 'ready') return
-      if (report.protocol !== SESSION_PATCH_PROTOCOL || report.installed !== true) {
-        this.clientReady = false
-        this.clientReason = report.reason || '客户端会话补丁没有装上'
-        return
+      const page = pageContext.getStore()
+      if (!this.serverReady || !page) return
+      if (report.protocol === SESSION_PATCH_PROTOCOL && report.installed === true) {
+        failedPages.delete(page)
+        rememberPage(readyPages, page, true)
+      } else {
+        readyPages.delete(page)
+        const reason = typeof report.reason === 'string' && report.reason.slice(0, 512)
+        rememberPage(failedPages, page, reason || '客户端会话补丁没有装上')
       }
-      this.clientReady = true
-      this.clientReason = ''
     },
     replacementAllowed() {
-      // 补丁没装上时宿主 dsh-session 仍会拒绝 assistant/message + sourceEventSeqs 的
-      // replace 写入；只有服务端补丁装好且页面完成握手才算就绪。
-      return this.serverReady && this.clientReady
+      const page = pageContext.getStore()
+      if (!this.serverReady) return false
+      // Host-owned jobs such as automatic polishing have no request context.
+      // Keep their existing requirement that at least one page is ready.
+      if (page === undefined) return readyPages.size > 0
+      if (!readyPages.has(page)) return false
+      rememberPage(readyPages, page, true)
+      return true
     },
     blockReason() {
-      if (this.status === 'failed') return this.reason
-      if (this.serverReady && !this.clientReady) return this.clientReason || '页面尚未完成会话补丁握手，请刷新后再试'
+      if (this.serverReady) return failedPages.get(pageContext.getStore()) || '页面尚未完成会话补丁握手，请刷新后再试'
       return this.reason || '会话补丁未就绪'
     },
     view() {
-      const waitingForClient = this.serverReady && !this.clientReady
+      const clientReady = Boolean(pageContext.getStore()) && this.replacementAllowed()
       return {
         protocol: this.protocol,
         status: this.status,
-        ready: this.replacementAllowed(),
+        ready: clientReady,
         serverReady: this.serverReady,
-        clientReady: this.clientReady,
+        clientReady,
         hostVersion: this.hostVersion,
-        reason: waitingForClient ? this.blockReason() : this.reason,
+        reason: this.serverReady && !clientReady ? this.blockReason() : this.reason,
       }
     },
   }

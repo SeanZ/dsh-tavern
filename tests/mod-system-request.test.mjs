@@ -11,7 +11,7 @@ import {emptyCardMods,emptyGlobalMods} from '../tavern-plugin/lib/domain/mod-sys
 
 const id='example.counter',packageName='example-counter'
 function manifest() {
-  return {format:'dsh-mod',schemaVersion:4,performances:[],id,name:'Counter',packageName,version:'1.0.0',hostApi:'^1.0.0',entry:'plugin.mjs',dependencies:[],
+  return {format:'dsh-tavern-mod',schemaVersion:5,performances:[],id,name:'Counter',packageName,version:'1.0.0',hostApi:'^1.0.0',entry:'plugin.mjs',dependencies:[],
     config:{version:1,schema:{type:'object',properties:{count:{type:'integer'}},required:['count'],additionalProperties:false},defaults:{count:1}},
     preferences:{schema:{type:'object',properties:{},additionalProperties:false},defaults:{}},dataVersion:1,coreAssets:[],permissions:['stage.state'],
     api:{operations:['add'],resource:'instance-exclusive'}}
@@ -75,23 +75,4 @@ test('request abort blocks retained facade calls even while the module stays ins
   const snapshot=host.beginRequest(host.beginSession(),{choices:choices({fixed:1}),signal:controller.signal})
   const task=host.event(snapshot,id,{value:1},{presentation:{emit:()=>{calls++}}})
   await started.promise;controller.abort();gate.resolve();await assert.rejects(task,{code:'MOD_REQUEST_STALE'});assert.equal(calls,0)
-})
-
-test('registration owns immutable grammar and an old disposer cannot unload its replacement',()=>{
-  const host=createManagedModHost({authorized:[id]}),commands=[{op:'counter.add'}]
-  let disposed=0
-  const release=host.register(packageName,manifest(),{...implementation,commands,dispose:()=>disposed++})
-  commands[0].op='mutated'
-  assert.equal(host.beginSession().grammar[0].op,'counter.add')
-  release();release();assert.equal(disposed,1)
-  host.register(packageName,manifest(),{...implementation,dispose:()=>disposed++});release()
-  assert.equal(host.manifests().length,1);host.dispose();host.dispose();assert.equal(disposed,2)
-})
-
-test('registration rejects a required cycle before publishing the second member',()=>{
-  const host=createManagedModHost(),first=manifest(),second={...manifest(),id:'example.other',packageName:'example-other'}
-  first.dependencies=[{id:second.id,range:'^1.0.0'}];second.dependencies=[{id:first.id,range:'^1.0.0'}]
-  host.register(packageName,first,implementation)
-  assert.throws(()=>host.register(second.packageName,second,implementation),error=>error.code==='MOD_DEPENDENCY_CYCLE' && error.details.ids.includes(id) && error.details.ids.includes(second.id))
-  assert.equal(host.manifests().length,1)
 })

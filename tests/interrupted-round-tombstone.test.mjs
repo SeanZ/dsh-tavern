@@ -15,11 +15,13 @@ const SAVE = { messages: [{ role: 'assistant', greeting: true, turn: 1 }, { role
 
 // A story turn as the foreground writes it: the player's input, the frame's world book
 // snapshot and context messages, then the reply.
+const snapshotFor = (session, text) => worldbookSnapshot(session, [{ ref: 'fixture:' + text, text }])
+
 function storyTurn(session, turn, input, body, end, { inputSource = { kind: 'user' }, worldbook = '世界书' + turn } = {}) {
   appendSessionEvent(session, 'turn/start', { turn })
   const seqs = { input: appendSessionEvent(session, 'user/message', { id: 'in-' + turn, role: 'user', content: [{ type: 'text', text: input }], source: inputSource }, { surfaceOp: 'append' }).seq }
   appendSessionEvent(session, 'step/start', { turn, step: 1 })
-  const snapshot = worldbookSnapshot(session, worldbook)
+  const snapshot = snapshotFor(session, worldbook)
   if (snapshot) seqs.worldbook = appendSessionEvent(session, 'user/message', { id: 'wb-' + turn, role: 'user', content: [{ type: 'text', text: snapshot.rendered }],
     source: { kind: 'plugin:dsh-tavern', form: 'worldbook-snapshot', worldbookSnapshot: snapshot, trace: { frameId: 'f' + turn, turn } } }, { surfaceOp: 'append' }).seq
   seqs.frame = appendSessionEvent(session, 'user/message', { id: 'frame-' + turn, role: 'user', content: [{ type: 'text', text: '【本轮状态】' + turn }],
@@ -86,11 +88,11 @@ test('墓碑后下一轮重发同一份世界书快照：去重读的是消息�
   const session = game('tombstone-worldbook')
   storyTurn(session, 3, '说到一半', '半截', 'aborted', { worldbook: '本轮新触发' })
   // Before: the failed turn's snapshot still counts, so the next turn would skip it.
-  assert.equal(worldbookSnapshot(session, '本轮新触发'), null)
+  assert.equal(snapshotFor(session, '本轮新触发'), null)
   await tombstone(session).run(3)
-  assert.equal(worldbookSnapshot(session, '本轮新触发')?.text, '本轮新触发')
+  assert.equal(snapshotFor(session, '本轮新触发')?.text, '本轮新触发')
   // A snapshot of a kept round is still deduplicated.
-  assert.equal(worldbookSnapshot(session, '同一条世界书'), null)
+  assert.equal(snapshotFor(session, '同一条世界书'), null)
 })
 
 test('后续新消息不被盖掉：墓碑落地前玩家已发出的新输入与新回合都留在模型上下文', async () => {

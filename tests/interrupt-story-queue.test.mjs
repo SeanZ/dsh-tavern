@@ -66,7 +66,9 @@ test('真实宿主取消后继续消费原队列且只消费一次', { skip: !pr
   const { LlmAdapter } = await import(new URL('../../dsh-llm/lib/index.js', bootUrl))
   const root = await mkdtemp(join(tmpdir(), 'interrupt-queue-'))
   t.after(() => rm(root, { recursive: true, force: true }))
+  const toolExecutor = await import(new URL('../../dsh-tool-executor-native/lib/index.js', bootUrl)).then(() => ['dsh-tool-executor-native'], () => [])
   const packages = [
+    ...toolExecutor,
     'dsh-system-prompt',
     'dsh-tools',
     'dsh-agent',

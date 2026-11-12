@@ -24,7 +24,7 @@
 				stop(id);
 				refresh(id);
 				if (active !== true) return;
-				const ticket = { timer: null };
+				const ticket = { timer: null, tries: 0 };
 				pending.set(id, ticket);
 				function confirmMarker() {
 					if (pending.get(id) !== ticket) return;
@@ -32,6 +32,11 @@
 					if (pending.get(id) !== ticket) return;
 					const snapshot = liveView.getSnapshot(id);
 					if (snapshot && snapshot.view && snapshot.view.regenInProgress === true) {
+						pending.delete(id);
+						return;
+					}
+					// 停止或失败时标记可能永远不出现：确认不到就收手，别把读取一直钉在这里。
+					if (++ticket.tries >= 60) {
 						pending.delete(id);
 						return;
 					}
@@ -581,16 +586,6 @@
 				} }));
 		}
 
-		function MobileComposerStatsToggle() {
-			const [open, setOpen] = React.useState(false);
-			const label = open ? "收起运行信息" : "展开运行信息";
-			return React.createElement("button", {
-				type: "button", className: "dsh-tavern-mobile-stats-toggle",
-				"aria-label": label, title: label, "aria-expanded": open,
-				onClick: function () { setOpen(!open); }
-			}, React.createElement("span", { "aria-hidden": "true", className: "dsh-tavern-mobile-stats-glyph" }, "⌃"));
-		}
-
 		function CandidateDockActions(props) {
 			const address = props.sessions && props.sessions.subagentAddress(props.sessionId);
 			const ownerSessionId = address ? address.parentSessionId : props.sessionId;
@@ -702,10 +697,21 @@
 				tavernCoordination.invalidate(props.sessionId);
 			}
 			React.useEffect(function () {
-				const root = chatShown && marker.current && marker.current.closest("[data-conversation-scroll]");
+				if (!chatShown) return;
+				// input.dock 在会话还没就绪时可能整棵卸载，marker 一时还没进滚动容器：
+				// 退回页面里当前的会话滚动容器，别把刻度列一起丢掉。
+				const root = (marker.current && marker.current.closest("[data-conversation-scroll]"))
+					|| document.querySelector("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
-				const rail = createStoryFloorRail(root);
+				// 宿主重挂会话视图时，marker 跟着换进新的滚动容器；刻度列每次同步都按 marker
+				// 重新找容器，不会跟着旧节点一起「消失」。
+				const rail = createStoryFloorRail(root, {
+					resolveScope: function () {
+						const live = marker.current && marker.current.closest("[data-conversation-scroll]");
+						return live || null;
+					}
+				});
 				const controls = createTurnErrorControls(root, {
                     sessionId: props.sessionId, storage: window.localStorage, hiddenTurns: hiddenTurns, failedTailTurn: failedTailTurn,
                     onVisible: function (turn) { tavernPlayEvents.emitOnce(props.sessionId + ":" + turn, "native_error", props.sessionId, { nativeTurn: turn }); },
@@ -931,10 +937,10 @@
 				function (props) { return React.createElement(CandidateGuidePanel, props); }
 			)), ctx.sessions), "dsh-tavern: candidate guide panel");
 			// 长按监听放在常驻会话层：input.dock 在 session/inputState 未就绪时会整棵卸载，不能承载全局手势。
-			ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.session.header.utilities", () => slots.register(
 				{ name: "conversation.session.header.utilities", id: "dsh-tavern-send-hold", order: -105, label: "长按发送键重新生成" },
 				function (props) { return React.createElement(TavernSendLongPress, { sessionId: props.sessionId }); }
-			)), "dsh-tavern: long press send key");
+			)), ctx.sessions), "dsh-tavern: long press send key");
 			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-fork-session-shell", order: -200, label: "会话外壳" },
 				function (props) { return React.createElement(React.Fragment, null,
@@ -976,7 +982,7 @@
 			)), ctx.sessions), "dsh-tavern: regen body panel");
 		}
 		// Fork contract C5: the story service (story/service.js) reuses these flows.
-		return Object.freeze({ register: register, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, refreshDisplay: refreshDisplay }) });
+		return Object.freeze({ register: register, RollbackToTurnButton: TavernRollbackToTurnButton, TurnReceiptButton, LatestReplyActions, storyActions: Object.freeze({ interactions: interactions, historyProjection: historyProjection, refreshDisplay: refreshDisplay }) });
 		}
 		const playControlsFeature = createPlayControlsFeatureModule();
 		const assistantRendererFeature = createTavernAssistantRendererFeatureModule();

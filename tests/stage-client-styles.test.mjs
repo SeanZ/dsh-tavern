@@ -25,12 +25,14 @@ test('stage theme retains its cascade position and all stage styles leave on unl
   install(document,'base refreshed',['before refreshed','after refreshed'])
   assert.equal(nodes[2].dataset.pluginCss,'dsh-tavern-stage/themes.css','refreshing core CSS preserves the slot')
   stop()
-  assert.deepEqual(nodes.map(node => node.textContent),['base refreshed','before refreshed','after refreshed'])
+  const [base, ...features] = nodes.map(node => node.textContent)
+  assert.equal(base.split('\n')[0], 'base refreshed')
+  assert.deepEqual(features, ['before refreshed', 'after refreshed'])
 })
 
 test('plugin style source blocks are structurally valid CSS', async () => {
-  for (const name of ['themes.css','phone.css','textcard.css']) {
-    const css=await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/src/client/'+name,import.meta.url),'utf8')
+  for (const name of ['packages/dsh-tavern-stage/src/client/themes.css','packages/dsh-tavern-stage/src/client/source-widgets.css','mods/phone/client/stage.css','mods/textcard/client/stage.css']) {
+    const css=await readFile(new URL('../tavern-plugin/'+name,import.meta.url),'utf8')
     assert.doesNotThrow(() => checkCssSyntax(css,name))
   }
 })

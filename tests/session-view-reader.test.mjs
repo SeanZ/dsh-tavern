@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createSessionViewReader } from '../tavern-plugin/lib/domain/session-view-reader.js'
+import { projectionFixture } from './fixtures/session-view-projection.mjs'
 const gate=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}}
 function fixture() {
   let chat={id:'c',sessionId:'s',mode:'story',cardPath:'card',_storageRevision:1,messages:[{role:'assistant',text:'one'}]}
@@ -13,7 +14,7 @@ function fixture() {
     activity:()=>({busy:false}),foregroundRunning:()=>false,trace:{stage:(_name,fn)=>fn(),state:state=>states.push(state)},
     synchronize:(_id,view,_cursor,options)=>({view,...options})}
   // Closures let the tests replace adapters at the actual asynchronous seam.
-  const reader=createSessionViewReader({...deps,readChat:(...args)=>deps.readChat(...args),readChanges:(...args)=>deps.readChanges(...args),readViewDelta:(...args)=>deps.readViewDelta?.(...args)})
+  const reader=createSessionViewReader({...deps,readState:(...args)=>deps.readState(...args),readChat:(...args)=>deps.readChat(...args),readChanges:(...args)=>deps.readChanges(...args),readViewDelta:(...args)=>deps.readViewDelta?.(...args)})
   return {reader,deps,calls,states,get chat(){return chat},set chat(value){chat=value}}
 }
 for (const changes of [undefined,{revision:99,indices:[0]}]) test(`missing or mismatched change coverage rebuilds the full view: ${JSON.stringify(changes)}`,async()=>{
@@ -33,16 +34,86 @@ for (const kind of ['revision', 'resource', 'missing']) test(`invalid delta ${ki
   assert.equal(f.calls.fullRead,2)
 })
 
-test('Helper hydration cannot promote incomplete ranges, another session or an obsolete revision',async()=>{
- const f=fixture()
- f.deps.project.full=async value=>({chatId:value.id,tavernHelper:{chatId:value.id,stateRevision:value._storageRevision,messages:[{message_id:0,stub:true}],messagesPending:{from:0,to:0}}})
- await f.reader.read('s',{windowHelperMessages:true})
- for(const [session,revision,payload] of [['other',1,{from:0,to:0,messages:[{message_id:0}]}],['s',2,{from:0,to:0,messages:[{message_id:0}]}],['s',1,{from:0,to:0,messages:[]}],['s',1,{from:0,to:0,messages:[{message_id:1}]}]]){
-  assert.equal(f.reader.acceptHelperMessages(session,'c',revision,payload),false)
- }
- f.chat={...f.chat,_storageRevision:2}
- await f.reader.read('s',{windowHelperMessages:true})
- assert.equal(f.reader.acceptHelperMessages('s','c',1,{from:0,to:0,messages:[{message_id:0}]}),false)
+test('同版本窗口的并发刷新共享一次投影', async () => {
+  const release = gate()
+  let projections = 0
+  const window = {revision:1,from:4,to:4,messageCount:5,chat:{id:'c',sessionId:'s',messages:[{role:'assistant'}]}}
+  const reader = createSessionViewReader({
+    readOpeningWindow:async () => window,
+    project:{opening:async () => { projections++; await release.promise; return {chatId:'c'} }},
+    trace:{stage:(_name,fn) => fn(),state() {}},synchronize:(_id,view) => ({view})
+  })
+  const request = {sessionId:'s',openingWindow:1,viewSync:1}
+  const first = reader.response(request), second = reader.response(request)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(projections, 1)
+  release.resolve()
+  await Promise.all([first,second])
+  assert.equal(projections, 1)
+})
+
+test('同版本窗口重读反映宿主挂接和结算状态变化', async () => {
+  let loaded = false, busy = false
+  const session = { id:'s', events:[], surface:{nodes:[]} }
+  const f = projectionFixture({
+    activityOf:() => ({busy,phase:busy ? 'running' : 'idle',role:'settlement'}),
+    sessionStore:{get:() => loaded ? session : undefined},
+    sessionDebugEvidence:() => ({loaded,events:session.events,session:loaded ? session : undefined})
+  })
+  const window = {chat:f.chat,revision:1,from:20,to:20,messageCount:21}
+  const reader = createSessionViewReader({
+    readOpeningWindow:async () => window,project:f.projection.project,
+    trace:{stage:(_name,fn) => fn(),state() {}},synchronize:(_id,view) => ({view})
+  })
+  const request = {sessionId:'s',openingWindow:1,viewSync:1}
+  const first = (await reader.response(request)).view
+  assert.equal(first.activity.phase,'idle')
+  assert.equal(first.transcriptTurns,null)
+  loaded = true
+  busy = true
+  const next = (await reader.response(request)).view
+  assert.equal(next.activity.phase,'running')
+  assert.equal(next.activity.busy,true)
+  assert.deepEqual(next.railTurns,[])
+  assert.notEqual(next.transcriptTurns,null)
+  busy = false
+  assert.equal((await reader.response(request)).view.activity.phase,'idle')
+})
+
+test('不可用窗口按 revision 负缓存，版本前进后重新判定并可切换窗口', async () => {
+  let chat = {id:'c',sessionId:'s',mode:'story',_storageRevision:1,messages:[{role:'assistant',text:'正文'}]}
+  let openingReads = 0, fullReads = 0, available = false
+  const reader = createSessionViewReader({
+    readState:async () => ({...chat,messages:[]}),
+    readChat:async () => { fullReads++; return structuredClone(chat) },
+    readChanges:async () => ({revision:chat._storageRevision,indices:[0]}),
+    readOpeningWindow:async () => {
+      openingReads++
+      return available ? {revision:chat._storageRevision,from:0,to:0,messageCount:1,chat} : null
+    },
+    project:{
+      full:async value => ({revision:value._storageRevision}),
+      cached:async (_value,previous) => previous,
+      dirty:async value => ({revision:value._storageRevision}),
+      opening:async value => ({revision:value.revision,window:true})
+    },
+    activity:() => ({}),foregroundRunning:() => false,
+    trace:{stage:(_name,fn) => fn(),state() {}},synchronize:(_id,view) => ({view})
+  })
+  const request = {sessionId:'s',openingWindow:1,viewSync:1}
+  await reader.response(request)
+  await reader.response(request)
+  assert.equal(openingReads,1,'同版本不再重复读取已知不可用的窗口')
+  assert.equal(fullReads,1,'第二次仍复用完整视图缓存')
+  chat = {...chat,_storageRevision:2}
+  await reader.response(request)
+  assert.equal(openingReads,2,'revision 变化必须重新判定')
+  chat = {...chat,_storageRevision:3}
+  available = true
+  const response = await reader.response(request)
+  assert.equal(openingReads,3)
+  assert.equal(response.view.window,true)
+  assert.equal(fullReads,2,'可用窗口直接返回，不再补完整整读')
 })
 
 for(const request of [{viewSync:1},{viewSync:1,openingWindow:1,fullView:true}])test('legacy clients and explicit complete reads never receive a window: '+JSON.stringify(request),async()=>{
@@ -136,4 +207,39 @@ test('刷新拒绝生成中的会话，计算时存档变化则不缓存过期�
  await assert.rejects(f.reader.refresh('s'),/已有变化/)
  assert.equal((await f.reader.read('s')).tavernHelper.messages[0].text,'后续正文')
  await assert.rejects(f.reader.refresh(''),/sessionId/)
+})
+
+
+test('显示刷新等待本会话窗口投影并只失效本会话增量投影', async () => {
+  const started = gate(), release = gate()
+  let text = '旧正文', block = false
+  const counts = new Map(), invalidated = []
+  const chat = id => ({id:'chat-'+id,sessionId:id,mode:'story',_storageRevision:1,messages:[]})
+  const reader = createSessionViewReader({
+    readState:async id => chat(id),readChat:async id => chat(id),
+    readOpeningWindow:async id => ({chat:chat(id),revision:1,from:0,to:0,messageCount:1}),
+    project:{
+      opening:async window => {
+        const id = window.chat.sessionId, value = id === 's' ? text : '另一局正文'
+        counts.set(id,(counts.get(id)||0)+1)
+        if(block && id==='s'){started.resolve();await release.promise}
+        return {text:value}
+      },
+      full:async () => ({text}),invalidate:id => invalidated.push(id)
+    },
+    trace:{stage:(_name,fn)=>fn(),state(){}},activity:()=>({busy:false}),foregroundRunning:()=>false,
+    synchronize:(_id,view)=>({view})
+  })
+  const request = id => ({sessionId:id,openingWindow:1,viewSync:1})
+  await reader.response(request('other'))
+  block = true
+  const old = reader.response(request('s'));await started.promise
+  text = '新正文'
+  const refresh = reader.refresh('s'), next = reader.response(request('s'))
+  release.resolve();await old;await refresh
+  assert.equal((await next).view.text,'新正文')
+  assert.equal(counts.get('s'),2)
+  assert.equal(counts.get('other'),1)
+  assert.deepEqual(invalidated,['chat-s'])
+  assert.equal((await reader.response(request('other'))).view.text,'另一局正文')
 })

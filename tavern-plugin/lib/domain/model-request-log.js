@@ -4,6 +4,13 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
+// DSH usage buckets are disjoint: inputTokens excludes cache reads and cache writes.
+// cacheWrite1hTokens + cacheWrite5mTokens split cacheWriteTokens by Anthropic cache TTL.
+function providerUsage(usage) {
+  return Object.fromEntries(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'cacheWrite1hTokens', 'cacheWrite5mTokens']
+    .filter(key => Number.isSafeInteger(usage[key])).map(key => [key, usage[key]]))
+}
+
 function phaseEntries(messages, phase) {
   const name = 'tavern:runtime-preset-' + phase
   return (Array.isArray(messages) ? messages : []).filter(function (message) {
@@ -26,7 +33,9 @@ function serializableRequest(options) {
     // Preserve prompt/tool evidence verbatim; redact transport/config metadata only.
     result[key] = ['messages', 'tools', 'system'].includes(key) ? value : redactRequestMetadata({ [key]: value })[key]
   }
-  return JSON.parse(JSON.stringify(result))
+  // The complete evidence record is serialized and detached once below. Keeping
+  // prompt/tool references here avoids a second JSON round trip of the largest field.
+  return result
 }
 
 // Keep the public evidence shape stable; phases are a projection of the request.
@@ -60,7 +69,8 @@ export function createModelRequestLog(options = {}) {
   const remove = typeof options.remove === 'function' ? options.remove : async function () {}
   // Bodies are written compactly when the adapter allows: indentation alone inflates MBs.
   const writeBody = typeof options.writeText === 'function'
-    ? function (path, value) { return options.writeText(path, JSON.stringify(value)) } : writeJson
+    ? function (path, value, serialized) { return options.writeText(path, serialized ?? JSON.stringify(value)) }
+    : function (path, value) { return writeJson(path, value) }
   const now = typeof options.now === 'function' ? options.now : Date.now
   const id = typeof options.id === 'function' ? options.id : function () { return randomUUID() }
   if (typeof readJson !== 'function' || typeof writeJson !== 'function' || typeof updateJson !== 'function') throw new TypeError('模型请求日志缺少存储适配器')
@@ -158,12 +168,12 @@ export function createModelRequestLog(options = {}) {
     const requestId = stamp.toString(36) + '-' + id()
     const scope = context && context.scope === 'background' ? 'background' : 'foreground'
     const turn = scope === 'background' ? Math.max(0, Number(context.turn) || 0) : Math.max(0, Number(coordinates && coordinates.turn) || 0)
-    const record = {
+    const draft = {
       version: 2,
       id: requestId,
       chatId: chat.id,
       scope,
-      task: scope === 'background' ? str(context.task) : 'reply',
+      task: scope === 'background' ? str(context.task) : str(context && context.task) || 'reply',
       sessionId: str(requestOptions && requestOptions.sessionId),
       turn,
       agentTurn: Math.max(0, Number(coordinates && coordinates.turn) || 0),
@@ -172,9 +182,10 @@ export function createModelRequestLog(options = {}) {
       status: 'running',
       requestMode: chat.requestMode === 'sillytavern' ? 'sillytavern' : 'dsh',
       compatibility: chat.requestMode === 'sillytavern' && chat.compatibilityTraces && chat.compatibilityTraces[String(turn)]
-        ? JSON.parse(JSON.stringify(chat.compatibilityTraces[String(turn)]))
+        ? chat.compatibilityTraces[String(turn)]
         : null,
       frame: coordinates && coordinates.frame ? JSON.parse(JSON.stringify(coordinates.frame)) : null,
+      ...(context && context.window ? { window: { first: context.window.first, through: context.window.through } } : {}),
       bypassPlan: {
         id: str(chat.bypassPlanId || chat.runtimePresetSnapshot && chat.runtimePresetSnapshot.planId),
         name: str(chat.runtimePresetSnapshot && chat.runtimePresetSnapshot.planName),
@@ -182,11 +193,15 @@ export function createModelRequestLog(options = {}) {
       },
       request: serializableRequest(requestOptions)
     }
+    // One immutable representation drives the detached evidence, byte accounting and
+    // text write. The queue changes only scheduling; it no longer stringifies MBs again.
+    const serialized = JSON.stringify(draft)
+    const record = JSON.parse(serialized)
     const base = 'model-requests/' + chat.id + '/'
     // The body was cloned above; the model request itself must not wait for the disk.
     enqueue(chat.id, async function () {
-      const bytes = Buffer.byteLength(JSON.stringify(record))
-      await writeBody(base + requestId + '.json', record)
+      const bytes = Buffer.byteLength(serialized)
+      await writeBody(base + requestId + '.json', record, serialized)
       // Persist timing separately so completion after a restart never loads the body.
       await writeJson(base + requestId + '.result.json', { createdAt: stamp, status: 'running' })
       const pruned = []
@@ -199,14 +214,14 @@ export function createModelRequestLog(options = {}) {
           requests: retainRecentBodies(requests.concat([{
             id: requestId, scope, task: record.task, sessionId: record.sessionId,
             turn: record.turn, agentTurn: record.agentTurn, step: record.step,
-            createdAt: record.createdAt, preset: record.preset, bytes
+            createdAt: record.createdAt, preset: record.preset, bytes, ...(record.window ? { window: record.window } : {})
           }]), Math.max(turn, record.agentTurn), pruned)
         }
       })
       for (const prunedId of pruned) await remove(base + prunedId + '.json')
       await ensureSessionOwner(record.sessionId, chat.id)
     })
-    return evidenceRecord(record)
+    return evidenceRecord({ ...draft, request: record.request, compatibility: record.compatibility, frame: record.frame })
   }
 
   function complete(input = {}) {
@@ -221,15 +236,19 @@ export function createModelRequestLog(options = {}) {
     if (!previous) return null
     const completedAt = now()
     const createdAt = Number.isFinite(previous.createdAt) ? previous.createdAt : completedAt
+    const interrupted = input.interrupted === true || (!input.finish && !input.error) || input.finish?.kind === 'aborted'
+    const error = str(input.error) || (interrupted ? '模型流已中断，未确认完整结束。' : input.finish?.kind === 'error' ? '模型返回错误结束标记。' : '')
     const result = {
       createdAt,
-      status: str(input.error) !== '' ? 'failed' : 'completed',
+      status: interrupted ? 'interrupted' : error !== '' ? 'failed' : 'completed',
+      ...(input.timing ? {timing:input.timing} : {}),
+      ...(input.usage ? { usage: providerUsage(input.usage) } : {}),
       completedAt,
       durationMs: Math.max(0, completedAt - createdAt),
       response: {
         text: str(input.text),
         finish: input.finish === undefined ? null : JSON.parse(JSON.stringify(input.finish)),
-        error: str(input.error) || null
+        error: error || null
       }
     }
     await writeJson(resultPath, result)

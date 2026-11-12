@@ -20,14 +20,21 @@ test('第二个 HTTP 浏览器没有脚本执行器时，旧卡 parent.Mvu 状�
   </script>`
   const viewer = client.buildTavernFrameDocument({ token: 'viewer', helperContext: context(10), trustedCardMode: true, persistent: true, preserveInstance: true, content })
   const executor = client.buildTavernHelperScriptDocument({ token: 'executor', context: context(10), trustedCardMode: true,
-    scripts: [{ id: 'start', content: 'parent.executorStarts=(parent.executorStarts||0)+1;' }] })
+    scripts: [{ id: 'start', content: 'if (!window.jQuery?.fn.jquery) throw Error("缺少宿主 jQuery"); parent.executorStarts=(parent.executorStarts||0)+1;' }] })
+  // 可信执行器由宿主在挂载 iframe 前提供 jQuery 准备函数。
+  const desktopDocument = `<body><script>
+    const frame = document.createElement('iframe');
+    frame.__dshTavernPrepareTrustedHost = () => (${client.ensureTavernHostJQuery})(window);
+    frame.src = '/executor';
+    document.body.appendChild(frame);
+  </script></body>`
   const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname
     const asset = await readTavernRuntimeAsset(path)
     if (asset) { res.setHeader('content-type', asset.mediaType); res.end(asset.body); return }
     res.setHeader('content-type', 'text/html')
     res.end(path === '/viewer' ? viewer : path === '/executor' ? executor
-      : `<iframe src="${path === '/desktop' ? '/executor' : '/viewer'}"></iframe>`)
+      : path === '/desktop' ? desktopDocument : '<iframe src="/viewer"></iframe>')
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise(resolve => server.close(resolve)))
@@ -35,8 +42,9 @@ test('第二个 HTTP 浏览器没有脚本执行器时，旧卡 parent.Mvu 状�
   t.after(() => browser.close())
   const desktop = await browser.newPage()
   const url = 'http://127.0.0.1:' + server.address().port
-  await desktop.goto('http://127.0.0.1:' + server.address().port + '/desktop')
+  await desktop.goto(url + '/desktop')
   await desktop.waitForFunction(() => window.executorStarts === 1)
+  assert.equal(await desktop.evaluate(() => typeof window.Mvu?.getMvuData), 'function')
   await desktop.evaluate(() => {
     window.executorMvu = window.Mvu
     const frame = document.createElement('iframe')

@@ -23,8 +23,11 @@ export function hostReferences(base = root) {
   function walk(relative) {
     if (!existsSync(path.join(base, relative))) return
     for (const entry of readdirSync(path.join(base, relative), { withFileTypes: true })) {
+      if (entry.name.startsWith('.legacy-node_modules-')) continue
       if (['node_modules', 'vendor', 'host-build', 'client-assets', 'artifact', '.git'].includes(entry.name)) continue
       const file = path.posix.join(relative, entry.name)
+      // 侧栏 lib 是发行包的固定副本，由打包回归校验。生成器仍参与依赖检查。
+      if (file === 'tavern-plugin/packages/dsh-better-sidebar/lib') continue
       if (entry.isDirectory()) walk(file)
       else if (/\.(?:[cm]?js|tsx?)$/.test(entry.name) && file !== 'tavern-plugin/lib/client.js') {
         const names = [...new Set([...readFileSync(path.join(base, file), 'utf8').matchAll(/['"`](@deepseek-ai\/[\w./-]+)['"`]/g)].map(match => match[1]))].sort()

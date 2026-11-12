@@ -36,6 +36,8 @@ function canProjectDirty(previous, chat, indices, changedHeaderFields) {
 export function createSessionViewReader({ readState, readChat, readChanges, readViewDelta, readOpeningWindow, readStoryWindow, project, activity,
   trace, foregroundRunning, synchronize, resourceVersion = async () => '', readRefreshChat = readChat, readRefreshState = readState }) {
   const cache = new Map()
+  const openingPending = new Map()
+  const openingNegative = new Map()
   const helperWindows = new Map()
   const pending = new Map()
   const inFlight = new Map(), refreshes = new Map()
@@ -46,17 +48,17 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     const changed = await readChanges(chat.id, revision)
     return changed?.revision === target ? new Set(changed.indices) : null
   }
-  function load(sessionId, options = {}) {
+  function withRead(sessionId, read) {
     const id = String(sessionId)
     const refreshing = refreshes.get(id)
-    if (refreshing) return refreshing.catch(() => {}).then(() => load(sessionId, options))
-    const work = Promise.resolve().then(() => loadCurrent(sessionId, options))
+    if (refreshing) return refreshing.catch(() => {}).then(() => withRead(sessionId, read))
+    const work = Promise.resolve().then(read)
     const reads = inFlight.get(id) || new Set()
     reads.add(work); inFlight.set(id, reads)
     return work.finally(() => { reads.delete(work); if (!reads.size) inFlight.delete(id) })
   }
-  async function loadCurrent(sessionId, options) {
-    const state=await readState(sessionId)
+  async function load(sessionId, options = {}, selectedState) {
+    const state=selectedState ? selectedState.state : await readState(sessionId)
     const resources=(state ? await resourceVersion(state) : '') + (options.deferResources ? '\ndeferred-resources' : '')
     const key=JSON.stringify([String(sessionId),state?.id,state && identity(state),resources,options])
     if (pending.has(key)) return pending.get(key)
@@ -84,13 +86,18 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
           if (canProjectDirty(cached.view, delta.chat, dirty, delta.changedHeaderFields)) return { chat: delta.chat, cached, dirty, layoutChanged:delta.layoutChanged,layoutFrom:delta.layoutFrom, changedHeaderFields:delta.changedHeaderFields,runtimeInputChanges:delta.runtimeInputChanges, resourceVersion: resources }
         }
       }
+      if (state._sessionStateHistoryComplete === true) {
+        return { chat: state, cached: cache.get(state.id), resourceVersion: resources }
+      }
       const chat = await trace.stage('readFullChat', () => readChat(sessionId))
       const evidence=chat && verifiedDelta && chat.id===verifiedDelta.chat.id && identity(chat).revision===verifiedDelta.revision
         ? {dirty:new Set(verifiedDelta.indices),layoutChanged:verifiedDelta.layoutChanged,layoutFrom:verifiedDelta.layoutFrom,changedHeaderFields:verifiedDelta.changedHeaderFields,runtimeInputChanges:verifiedDelta.runtimeInputChanges} : {}
       return { chat, cached: chat && cache.get(chat.id), resourceVersion: resources, ...evidence }
     })
     const { chat, cached } = selected
-    if (chat === undefined) return { view: null, revision: 0, chat: undefined }
+    // 会话在、存档没建出来时这里只能给空视图。空视图不是「这一局没有正文」，
+    // 前端得知道是哪一种，否则只能把「读不到」当成「读完了」。
+    if (chat === undefined) return { view: null, revision: 0, chat: undefined, emptyReason: state === undefined ? 'no-session' : 'no-chat' }
     const next = {...identity(chat),resourceVersion:selected.resourceVersion}, currentActivity = activity(chat)
     let view, rebuild
     // The selected cache entry is request-local, even if another read replaces it.
@@ -123,7 +130,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       helperMessageCount: Array.isArray(view?.tavernHelper?.messages) ? view.tavernHelper.messages.length : 0 })
     return { view, revision: next.revision, chat }
   }
-  async function read(sessionId, options) { return (await load(sessionId, options)).view }
+  function read(sessionId, options) { return withRead(sessionId, async () => (await load(sessionId, options)).view) }
   function refresh(sessionId) {
     const id = String(sessionId || '')
     if (!id) return Promise.reject(new Error('刷新显示需要 sessionId'))
@@ -141,6 +148,7 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       if (busy(chat)) throw new Error('正在生成或结算，请完成后再刷新显示')
       const resources = await resourceVersion(chat)
       cache.delete(chat.id); helperWindows.delete(chat.id)
+      for (const key of openingNegative.keys()) if (JSON.parse(key)[0] === id) openingNegative.delete(key)
       project.invalidate(chat.id)
       const view = await project.full(chat, { displayOnly: true })
       const current = await readRefreshState(id)
@@ -159,7 +167,8 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
     work.then(clear, clear)
     return work
   }
-  async function response(args = {}) {
+  function response(args = {}) { return withRead(args.sessionId, () => responseCurrent(args)) }
+  async function responseCurrent(args) {
     const sessionId = args.sessionId
     // New clients read the worldbook from Helper context; old clients keep the alias.
     const transportView = view => {
@@ -167,35 +176,61 @@ export function createSessionViewReader({ readState, readChat, readChanges, read
       const { tavernHelperWorldbook: _alias, ...result } = view
       return result
     }
-    // Story history has no native-session or complete-view dependency. It is a
-    // read-only transport and never participates in native view cursors.
+    // Story history is read-only and independent of native view cursors.
     if (args.storyTranscript === 1 && readStoryWindow && project.story) {
-      const window = await trace.stage('readStoryWindow', () => readStoryWindow(sessionId, args.historyFrom))
+      const window = await trace.stage('readStoryWindow', () => readStoryWindow(sessionId, args.historyFrom,
+        { includeToolCalls: args.includeToolCalls === true }))
       if (!window) return { view: null, storyTranscript: null, revision: 0 }
       const view = await trace.stage('projectStoryWindow', () => project.story(window, {deferResources:args.resourceSync === 1}))
       trace.state({viewRebuild:'story',helperMessageCount:window.chat.messages.length})
       const {storyTranscript:_embedded,...storyView}=view
       return {view:transportView(storyView),storyTranscript:window.storyTranscript,revision:window.revision}
     }
-    // Bounded views have their own contract and never enter the complete view
-    // cache. Explicit full reads retain the existing compatibility path.
+    // 窗口按存档版本和资源版本合并同时发生的投影。会话挂接、原生事件和活动可在同版本下变化，后续读取重新投影。
+    const openingKey = JSON.stringify([String(sessionId),args.historyFrom ?? null])
+    let selectedState, openingAttempted = false
     if (args.openingWindow === 1 && args.viewSync === 1 && args.fullView !== true && readOpeningWindow && project.opening) {
-      const window = await trace.stage('readOpeningWindow', () => readOpeningWindow(sessionId, args.historyFrom))
-      if (window) {
-        const view = await trace.stage('projectOpeningWindow', () => project.opening(window, {deferResources:args.resourceSync === 1}))
-        trace.state({viewRebuild:'window',helperMessageCount:window.chat.messages.length})
-        return synchronize(String(sessionId),transportView(view),args.viewCursor,{revision:window.revision,receiptSync:args.receiptSync})
+      const negative = openingNegative.get(openingKey)
+      if (negative) {
+        const state = await readState(sessionId)
+        if (state?.id === negative.chatId && identity(state).revision === negative.revision) selectedState = { state }
+        else openingNegative.delete(openingKey)
+      }
+      if (!selectedState) {
+        openingAttempted = true
+        const window = await trace.stage('readOpeningWindow', () => readOpeningWindow(sessionId, args.historyFrom))
+        if (window) {
+          openingNegative.delete(openingKey)
+          const resources = await resourceVersion(window.chat)
+          const key = JSON.stringify([String(sessionId),window.chat.id,window.revision,window.from,window.to,window.messageCount,resources,args.resourceSync === 1])
+          let work = openingPending.get(key)
+          const shared = work !== undefined
+          if (!shared) {
+            work = trace.stage('projectOpeningWindow', () => project.opening(window, {deferResources:args.resourceSync === 1}))
+            openingPending.set(key, work)
+          }
+          try {
+            const view = await work
+            trace.state({viewRebuild:shared ? 'window-pending' : 'window',helperMessageCount:window.chat.messages.length})
+            return synchronize(String(sessionId),transportView(view),args.viewCursor,{revision:window.revision,receiptSync:args.receiptSync})
+          } finally { if (openingPending.get(key) === work) openingPending.delete(key) }
+        }
       }
     }
     const previous = args.viewSync === 1 ? synchronize.peek?.(args.viewCursor) : null
     const result = await load(sessionId, {
       deferResources: args.resourceSync === 1,
       windowHelperMessages: args.fullView !== true && args.viewSync === 1 && (args.viewCursor === undefined || args.viewCursor === null || args.viewCursor === '')
-    })
-    if (args.viewSync !== 1) return { view: transportView(result.view) }
+    }, selectedState)
+    if (openingAttempted && result.chat) {
+      openingNegative.set(openingKey, { chatId: result.chat.id, revision: result.revision })
+      while (openingNegative.size > 16) openingNegative.delete(openingNegative.keys().next().value)
+    }
+    if (args.viewSync !== 1) return result.emptyReason ? { view: transportView(result.view), emptyReason: result.emptyReason } : { view: transportView(result.view) }
     const dirtyMessageIndices = result.chat && previous?.sessionId === String(sessionId)
       && Number.isSafeInteger(previous.revision) ? await changes(result.chat, previous.revision) : null
-    return synchronize(String(sessionId), transportView(result.view), args.viewCursor, { revision: result.revision, dirtyMessageIndices, receiptSync:args.receiptSync })
+    const synced = synchronize(String(sessionId), transportView(result.view), args.viewCursor, { revision: result.revision, dirtyMessageIndices, receiptSync:args.receiptSync })
+    return result.emptyReason ? { ...synced, emptyReason: result.emptyReason } : synced
   }
   function acceptHelperMessages(sessionId, chatId, revision, payload) {
     const pending = helperWindows.get(chatId)

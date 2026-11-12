@@ -1,16 +1,13 @@
 import { openingInitializationPayload } from '../domain/opening-transport.js'
-import { prepareSessionOpening } from '../domain/session-opening.js'
 
 // Opening selection and game start requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createOpeningHandlers(deps) {
-  const { chatForSession, ensureNativeOpening, fullTemplateRuntime, getCardOpenings, openingPreparation,
-    readChatCard, requestPerformance, runtimePresets, startChat, str } = deps
+  const { ensureNativeOpening, fullTemplateRuntime, getCardOpenings, openingPreparation,
+    requestPerformance, runtimePresets, startChat, switchSessionOpening, str } = deps
   return {
-    async prepareSessionOpening(args) {
-      const chat = await chatForSession(args && args.sessionId)
-      if (!chat) throw new Error('找不到原对话')
-      return await prepareSessionOpening({ chat, card: await readChatCard(chat), swipeId: args.swipeId, message: args.message, preparation: openingPreparation })
+    async switchSessionOpening(args) {
+      return await switchSessionOpening(args?.sessionId, args)
     },
     async callOpeningRuntime(args) {
       return await openingPreparation.callRuntime(args && args.id, args && args.method, args && args.args)
@@ -26,7 +23,8 @@ export function createOpeningHandlers(deps) {
       try { return openingInitializationPayload(await openingPreparation.applyTemplateInitial(args.id, await requestPerformance.stage('templateInitialize', () => fullTemplateRuntime.forSession('opening:' + args.id).initializeVariables([]))), args.compact) } finally { fullTemplateRuntime.cancel('opening:' + args.id) }
     },
     async createOpeningPreparation(args) {
-      return await openingPreparation.create(args && args.path)
+      // brief: only the draft id (a stage opening page starts from its own read of the card, not the draft's projection)
+      return args?.brief === true ? await openingPreparation.begin(args.path) : await openingPreparation.create(args && args.path)
     },
     async getOpeningPreparation(args) {
       return args?.touchOnly === true ? openingPreparation.retain(args.id) : openingPreparation.get(args && args.id)

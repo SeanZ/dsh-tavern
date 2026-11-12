@@ -64,7 +64,7 @@
 			const counts = new Map();
 			for (const entry of chats) { const key = tavernCardPathKey(entry.cardPath); counts.set(key, { name: entry.cardName || key, count: (counts.get(key)?.count || 0) + 1 }); }
 			const lines = paths.length > 1 ? "\n\n" + Array.from(counts.values()).slice(0, 20).map(item => "• " + item.name + "：" + item.count + " 个").join("\n") + (counts.size > 20 ? "\n……共 " + counts.size + " 张卡" : "") : "";
-			const accepted = await askConfirm((paths.length > 1 ? "所选人物卡中有 " + counts.size + " 张" : "这张人物卡") + "还有 " + chats.length + " 个游玩记录，要一起删除吗？" + lines + "\n\n删除后无法恢复。", { confirmText: "一起删除", cancelText: "保留游玩记录" });
+			const accepted = await askConfirm((paths.length > 1 ? "所选人物卡中有 " + counts.size + " 张" : "这张人物卡") + "还有 " + chats.length + " 个游玩记录，要一起彻底删除吗？" + lines + "\n\n此操作不可撤销。", { confirmText: "一起彻底删除", cancelText: "保留游玩记录" });
 			return accepted ? chats : [];
 		}
 
@@ -135,7 +135,7 @@
 					h("span", { className: "dsh-tavern-card-batch-count" }, selected.length ? "已选 " + selected.length + " 张" : "点击人物卡选择"),
 					h("span", { className: "dsh-tavern-spacer" }),
 					extra || null,
-					h("button", { className: "dsh-tavern-btn danger", disabled: busy || !selected.length, onClick: removeSelected }, busy ? "正在删除…" : "删除" + (selected.length ? "（" + selected.length + "）" : "")),
+					h("button", { className: "dsh-tavern-btn danger", disabled: busy || !selected.length, onClick: removeSelected }, running.current ? "正在删除…" : "删除" + (selected.length ? "（" + selected.length + "）" : "")),
 					h("button", { className: "dsh-tavern-btn", disabled: busy, onClick: reset }, "完成"),
 					notice ? h("div", { role: "status", className: "dsh-tavern-card-batch-notice" }, notice) : null);
 			}
@@ -163,10 +163,38 @@
 			return Math.max(timestamp(item.lastOpenedAt), timestamp(item.updatedAt), timestamp(summaries[item.sessionId]?.updatedAt));
 		}
 
-		function groupTavernHistory(history, summaries = {}) {
+		// 设置 › 高级 › 对话按最新回复排序：默认 created（创建时间固定排列），recent 为最近活动优先。
+		function tavernHistoryOrder(order) { return order === "recent" ? "recent" : "created"; }
+
+		// 一行右侧那个时间：创建序时是创建时间，最新回复序时是这次排序用的活动时间。
+		function tavernHistoryStamp(item, summary, summaries, order) {
+			if (tavernHistoryOrder(order) === "recent") {
+				return tavernHistoryActivity(item, summaries || (summary ? { [item.sessionId]: summary } : {}));
+			}
+			return Number(item.createdAt) || Number(item.lastOpenedAt) || Number(summary && summary.updatedAt) || Number(item.updatedAt) || 0;
+		}
+
+		function sortTavernHistoryByActivity(history, summaries = {}) {
+			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
+			return history.slice().sort(function (left, right) {
+				return tavernHistoryActivity(right, summaries) - tavernHistoryActivity(left, summaries) || timestamp(right.createdAt) - timestamp(left.createdAt);
+			});
+		}
+
+		// 最新回复序下整张列表按活动排；创建序保持注册表的固定位置（同时间按最近打开）。
+		function orderTavernHistory(history, summaries = {}, order) {
+			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
+			if (tavernHistoryOrder(order) === "recent") return sortTavernHistoryByActivity(history, summaries);
+			return history.slice().sort(function (left, right) {
+				return timestamp(right.createdAt) - timestamp(left.createdAt) || timestamp(right.lastOpenedAt) - timestamp(left.lastOpenedAt);
+			});
+		}
+
+		function groupTavernHistory(history, summaries = {}, order) {
 			function timestamp(value) { const n = Number(value); return Number.isFinite(n) ? n : (Date.parse(value) || 0); }
 			function activity(item) { return tavernHistoryActivity(item, summaries); }
-			// Groups follow the latest activity; conversations inside keep their creation order.
+			// Groups follow the latest activity; conversations inside keep their creation order
+			// unless 「对话按最新回复排序」 is on, then the inner list follows the same activity.
 			const groups = new Map();
 			for (const item of history.slice().sort((a, b) => timestamp(b.createdAt) - timestamp(a.createdAt))) {
 				const key = tavernHistoryCardKey(item);
@@ -175,5 +203,63 @@
 				group.items.push(item);
 				group.activity = Math.max(group.activity, activity(item));
 			}
-			return Array.from(groups.values()).sort((a, b) => b.activity - a.activity);
+			const grouped = Array.from(groups.values());
+			if (tavernHistoryOrder(order) === "recent") for (const group of grouped) group.items = sortTavernHistoryByActivity(group.items, summaries);
+			return grouped.sort((a, b) => b.activity - a.activity);
+		}
+
+		// 在人物卡分组下展示时，剥离 SillyTavern 导入产生的重复角色名前缀（如 "Storyteller - Storyteller - 2026-..."）。
+		function compactTavernHistoryTitle(rawTitle, cardName) {
+			const title = String(rawTitle || "").trim();
+			const card = String(cardName || "").trim();
+			if (!title || !card) return title;
+			let rest = title;
+			for (let step = 0; step < 3; step++) {
+				if (rest.slice(0, card.length).toLowerCase() !== card.toLowerCase()) break;
+				const tail = rest.slice(card.length);
+				const match = /^\s*(?:[-_—·:|/]+|\s+)\s*(.+)$/.exec(tail);
+				if (!match || !match[1].trim()) break;
+				rest = match[1].trim();
+			}
+			return rest || title;
+		}
+
+		function tavernPreviewLines(text, limit, role, label) {
+			const lines = String(text || "").split(/\r?\n/).map(function (line) { return line.trim(); }).filter(Boolean);
+			if (!lines.length) return null;
+			// Folded to one paragraph: the clamp in CSS counts wrapped lines, so a
+			// pre-wrapped list would make "one line here, five lines expanded" lie.
+			return { role: role, label: label, text: lines.slice(0, limit).join(" ") };
+		}
+
+		function formatTavernHistoryPreview(preview) {
+			const empty = { hasPreview: false, turnCount: 0, messageCount: 0, isOpeningOnly: false, turnBadge: "", compactLines: [], detailLines: [], tooltip: "", searchText: "" };
+			if (!preview || typeof preview !== "object") return empty;
+			const turnCount = Math.max(0, Number(preview.turnCount) || 0);
+			const messageCount = Math.max(0, Number(preview.messageCount) || 0);
+			const userText = String(preview.userText || "").trim();
+			const replyText = String(preview.replyText || "").trim();
+			const openingText = String(preview.openingText || "").trim();
+			const hasDialogue = Boolean(userText || replyText);
+			const turnBadge = turnCount > 0 ? (turnCount + " 轮") : (messageCount > 0 || openingText || userText ? "仅开场" : "空对话");
+			const compactLines = [];
+			const detailLines = [];
+			function push(brief, full) { if (brief) compactLines.push(brief); if (full) detailLines.push(full); }
+			if (hasDialogue) {
+				push(tavernPreviewLines(userText, 1, "user", "你"), tavernPreviewLines(userText, 3, "user", "你"));
+				push(tavernPreviewLines(replyText, 2, "reply", "角色"), tavernPreviewLines(replyText, 5, "reply", "角色"));
+			} else if (openingText) {
+				push(tavernPreviewLines(openingText, 2, "opening", "开场"), tavernPreviewLines(openingText, 5, "opening", "开场"));
+			}
+			return {
+				hasPreview: compactLines.length > 0,
+				turnCount,
+				messageCount,
+				isOpeningOnly: turnCount === 0 && !hasDialogue,
+				turnBadge,
+				compactLines,
+				detailLines,
+				tooltip: detailLines.map(function (line) { return line.label + "：" + line.text; }).join("\n"),
+				searchText: [userText, replyText, openingText].filter(Boolean).join("\n").toLowerCase()
+			};
 		}

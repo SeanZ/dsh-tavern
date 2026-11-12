@@ -10,6 +10,8 @@ import { IMAGE_PROVIDERS, PROVIDER_DEFAULTS as PROVIDERS } from './provider-defi
 export { IMAGE_PROVIDERS } from './provider-definitions.js'
 
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const openaiImageQualities = new Set(['auto', 'low', 'medium', 'high', 'xhigh', 'max'])
+const openaiImageModeration = new Set(['auto', 'low'])
 const secretValues = channel => [channel?.apiKey, channel?.password,
   channel?.authMode === 'basic' && (channel.username || channel.password) ? `${channel.username || ''}:${channel.password || ''}` : '',
 ].filter(Boolean).map(String)
@@ -124,7 +126,7 @@ async function fetchBytes(fetchImpl, url, init, max, signal, channel) {
   const type = imageType(bytes, response.headers?.get?.('content-type') || '')
   return { bytes, mediaType: type }
 }
-async function fetchJson(fetchImpl, url, init, limit, signal, channel) {
+async function fetchJson(fetchImpl, url, init, limit, signal, channel, onMetadata) {
   const response = await fetchImpl(url, { ...init, redirect: 'error', signal })
   const bytes = await readLimited(response, limit)
   if (!response.ok) {
@@ -132,7 +134,10 @@ async function fetchJson(fetchImpl, url, init, limit, signal, channel) {
     try { const j = JSON.parse(message); message = j.error?.message || j.message || j.detail || message } catch {}
     throw new Error(`生图服务 HTTP ${response.status}${message ? `：${redact(message, channel)}` : ''}`)
   }
-  try { return JSON.parse(bytes.toString('utf8')) } catch { throw new Error('生图服务返回了无效 JSON') }
+  let value
+  try { value = JSON.parse(bytes.toString('utf8')) } catch { throw new Error('生图服务返回了无效 JSON') }
+  onMetadata?.(value)
+  return value
 }
 export function combinedPrompt(request) {
   const prompt = String(request.positive ?? '').trim()
@@ -252,7 +257,7 @@ async function generateNovelaiChat(ch, request, ctx) {
     nai: { tag: tags, artist: '', size, scale, cfg, negative, sampler, noise_schedule: String(option(ch, 'noiseSchedule', 'karras')) } }
   // 只填了域名的地址，OpenAI 风格接口在 /v1 下。
   const path = new URL(base).pathname.replace(/\/+$/, '') ? '/chat/completions' : '/v1/chat/completions'
-  const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', path)), { method: 'POST', headers: requestHeaders(ch, 'novelai'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', path)), { method: 'POST', headers: requestHeaders(ch, 'novelai'), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   const text = String(data.choices?.[0]?.message?.content ?? '')
   const link = text.match(/!\[[^\]]*\]\(((?:https?:\/\/|data:image\/[^;]+;base64,)[^\s)]+)\)/)?.[1] || text.match(/https?:\/\/[^\s)\]"'<>]+/)?.[0]
   const found = link ? findImage(link, max) : null
@@ -305,12 +310,17 @@ async function generateNovelai(channel, request, ctx) {
     v4Prompt.caption.char_captions.push({ char_caption: String(item.prompt), centers: [center || {}] })
     v4Negative.caption.char_captions.push({ char_caption: String(item.uc ?? ''), centers: [center || {}] })
   })
+  // 有些第三方站点把 variety_boost 当未知字段直接 422，选 'omit' 时整条字段都不发
+  const varietyRaw = option(ch, 'varietyBoost', false)
+  const omitVarietyBoost = varietyRaw === 'omit'
   const payload = { input: String(request.positive || ''), model: novelaiModel, action: 'generate', parameters: {
     width, height, seed: Number.isFinite(Number(request.seed)) ? Number(request.seed) : Math.floor(Math.random() * 2 ** 32),
     steps: bounded(request.steps ?? option(ch, 'steps', 28), 1, 100), scale: clampedNumber(request.cfg ?? option(ch, 'cfg', option(ch, 'scale', 5)), 0, 30, 5), n_samples: 1,
     cfg_rescale: clampedNumber(option(ch, 'cfgRescale', 0), 0, 1, 0),
     negative_prompt: negative, sampler: novelaiSampler, noise_schedule: option(ch, 'noiseSchedule', 'karras'),
-    qualityToggle: option(ch, 'qualityToggle', true) !== false, ucPreset: clampedNumber(option(ch, 'ucPreset', 3), 0, 4, 3), variety_boost: isNovelaiV5 ? false : option(ch, 'varietyBoost', false) === true, sm: false, dynamic_thresholding: false, params_version: isNovelaiV5 ? 4 : 3,
+    qualityToggle: option(ch, 'qualityToggle', true) !== false, ucPreset: clampedNumber(option(ch, 'ucPreset', 3), 0, 4, 3),
+    ...(omitVarietyBoost ? {} : { variety_boost: isNovelaiV5 ? false : varietyRaw === true }),
+    sm: false, dynamic_thresholding: false, params_version: isNovelaiV5 ? 4 : 3,
     v4_prompt: v4Prompt,
     v4_negative_prompt: v4Negative,
     add_original_image: true, legacy: false, legacy_uc: false, controlnet_strength: 1,
@@ -338,8 +348,11 @@ async function generateOpenai(channel, request, ctx, provider) {
   const size = provider === 'seedream' ? option(ch, 'size', '2K') : request.exactSize === true ? orientationSize : option(ch, 'size', orientationSize)
   const payload = { model: ch.model || PROVIDERS[provider][2], prompt: combinedPrompt(request), size, n: 1 }
   if (provider === 'openai') {
+    const quality = openaiImageQualities.has(request.quality) ? request.quality : ch.options?.quality
+    const moderation = ch.options?.moderation
+    if (openaiImageQualities.has(quality)) payload.quality = quality
+    if (openaiImageModeration.has(moderation)) payload.moderation = moderation
     if (payload.model.startsWith('gpt-image-')) {
-      payload.quality = ['low', 'medium', 'high', 'auto'].includes(request.quality) ? request.quality : option(ch, 'quality', 'medium')
       payload.output_format = request.background === 'transparent' ? 'png' : option(ch, 'outputFormat', 'png')
       if (request.background === 'transparent') payload.background = 'transparent'
     }
@@ -352,28 +365,28 @@ async function generateOpenai(channel, request, ctx, provider) {
       const edit = { model: payload.model, prompt: payload.prompt,
         image: { url: imageDataUrl(refs[0]), type: 'image_url' } }
       const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'editPath', '/images/edits')),
-        { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(edit) }, jsonLimit, signal, ch)
+        { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(edit) }, jsonLimit, signal, ch, ctx.onMetadata)
       return fromDataObject(data.data, fetchImpl, max, signal, ch)
     }
     if (provider === 'seedream') {
       payload.image = refs.map(imageDataUrl)
-      const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+      const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
       return fromDataObject(data.data, fetchImpl, max, signal, ch)
     }
     const body = new FormData()
     body.append('model', payload.model)
     body.append('prompt', payload.prompt)
     body.append('size', payload.size)
-    body.append('n', '1')
-    if (payload.quality) body.append('quality', String(payload.quality))
-    if (payload.output_format) body.append('output_format', String(payload.output_format))
-    if (payload.background) body.append('background', String(payload.background))
+    body.append('n', String(payload.n))
+    for (const name of ['quality', 'moderation', 'output_format', 'background']) {
+      if (payload[name]) body.append(name, String(payload[name]))
+    }
     for (const [index, ref] of refs.entries()) body.append('image[]', new Blob([ref.bytes], { type: ref.mediaType }), `reference-${index + 1}.${imageExtension(ref.mediaType)}`)
     const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'editPath', '/images/edits')),
-      { method: 'POST', headers: requestHeaders(ch, provider, false), body }, jsonLimit, signal, ch)
+      { method: 'POST', headers: requestHeaders(ch, provider, false), body }, jsonLimit, signal, ch, ctx.onMetadata)
     return fromDataObject(data.data, fetchImpl, max, signal, ch)
   }
-  const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, provider), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   return fromDataObject(data.data, fetchImpl, max, signal, ch)
 }
 
@@ -389,7 +402,7 @@ async function generateGemini(channel, request, ctx) {
   const payload = { contents: [{ parts }], generationConfig: {
     responseModalities: ['IMAGE'], responseFormat: { image: { aspectRatio: ratio, imageSize } }
   } }
-  const data = await fetchJson(fetchImpl, joinUrl(base, `/models/${model}:generateContent`), { method: 'POST', headers: requestHeaders(ch, 'gemini'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const data = await fetchJson(fetchImpl, joinUrl(base, `/models/${model}:generateContent`), { method: 'POST', headers: requestHeaders(ch, 'gemini'), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   const responseParts = data.candidates?.flatMap(candidate => candidate.content?.parts || []) || []
   for (const part of responseParts) if (part.inlineData?.data || part.inline_data?.data) {
     const blob = part.inlineData || part.inline_data
@@ -436,7 +449,7 @@ async function generateGeminiChat(channel, request, ctx) {
   const { base, fetchImpl, signal, max, channel: ch, jsonLimit } = ctx
   const content = [...referenceFiles(request.references, max).map(ref => ({ type: 'image_url', image_url: { url: imageDataUrl(ref) } })), { type: 'text', text: combinedPrompt(request) }]
   const payload = { model: ch.model || PROVIDERS['gemini-chat'][2], messages: [{ role: 'user', content: request.references?.length ? content : combinedPrompt(request) }], n: 1 }
-  const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', '/chat/completions')), { method: 'POST', headers: requestHeaders(ch, 'gemini-chat'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const data = await fetchJson(fetchImpl, joinUrl(base, endpointFromOption(ch, 'generatePath', '/chat/completions')), { method: 'POST', headers: requestHeaders(ch, 'gemini-chat'), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   const message = data.choices?.[0]?.message || data
   const contents = [message.content, ...(Array.isArray(message.images) ? message.images.map(x => x.image_url?.url || x.url || x) : [])]
   for (const content of contents) {
@@ -468,7 +481,7 @@ async function generateQwen(channel, request, ctx) {
   const headers = requestHeaders(ch, 'qwen')
   if (legacyAsync) headers['X-DashScope-Async'] = 'enable'
   const response = ctx.resumeTaskId ? { output: { task_id: ctx.resumeTaskId } }
-    : await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers, body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+    : await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers, body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   if (!legacyAsync) {
     const content = response.output?.choices?.[0]?.message?.content || []
     const image = content.find?.(part => part.image)?.image
@@ -490,7 +503,7 @@ async function generateQwen(channel, request, ctx) {
   const deadline = Date.now() + bounded(option(ch, 'pollTimeoutMs', 240000), 1000, 600000)
   while (Date.now() < deadline) {
     await wait(bounded(option(ch, 'pollIntervalMs', 1500), 1, 30_000), signal)
-    const task = await fetchJson(fetchImpl, joinUrl(base, `${pollPath.replace(/\/?$/, '/')}${encodeURIComponent(taskId)}`), { method: 'GET', headers: requestHeaders(ch, 'qwen', false) }, jsonLimit, signal, ch)
+    const task = await fetchJson(fetchImpl, joinUrl(base, `${pollPath.replace(/\/?$/, '/')}${encodeURIComponent(taskId)}`), { method: 'GET', headers: requestHeaders(ch, 'qwen', false) }, jsonLimit, signal, ch, ctx.onMetadata)
     const output = task.output || task
     if (['SUCCEEDED', 'succeeded', 'done', 'completed'].includes(output.task_status || output.status)) {
       const urls = output.results?.map(item => item.url) || output.choices?.flatMap(choice => choice.message?.content?.map(part => part.image).filter(Boolean) || []) || []
@@ -533,6 +546,7 @@ async function fetchAtlasJson(ctx, path, init) {
     error.providerDefinitiveFailure = failed || (init.method === 'POST' && code >= 400 && code < 500)
     throw error
   }
+  ctx.onMetadata?.(data)
   return task
 }
 
@@ -654,7 +668,7 @@ async function generateSdwebui(channel, request, ctx) {
   if (refs.length > 1) throw new Error('SD WebUI img2img 一次只支持 1 张参考图；请改用支持多图参考的协议或减少所选参考图')
   const path = refs.length ? endpointFromOption(ch, 'editPath', '/sdapi/v1/img2img') : endpointFromOption(ch, 'generatePath', '/sdapi/v1/txt2img')
   if (refs.length) payload.init_images = refs.map(ref => ref.bytes.toString('base64'))
-  const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, 'sdwebui'), body: JSON.stringify(payload) }, jsonLimit, signal, ch)
+  const data = await fetchJson(fetchImpl, joinUrl(base, path), { method: 'POST', headers: requestHeaders(ch, 'sdwebui'), body: JSON.stringify(payload) }, jsonLimit, signal, ch, ctx.onMetadata)
   if (!Array.isArray(data.images) || !data.images[0]) throw new Error('SD WebUI 没有返回图片')
   return decodeBase64(String(data.images[0]).replace(/^data:image\/[^;]+;base64,/i, ''), max)
 }
@@ -668,6 +682,21 @@ async function generateSdwebui(channel, request, ctx) {
  * onGenerationSubmit is awaited immediately before the first billable POST for
  * every protocol. Atlas uploads and task resumption never invoke the hook.
  */
+/** Only provider-reported generation metadata, never a fabricated client seed. */
+export function reportedImageSeed(data) {
+  if (!data || typeof data !== 'object') return undefined
+  let info = data.info
+  if (typeof info === 'string' && info.length < 100000) { try { info = JSON.parse(info) } catch { info = null } }
+  const first = Array.isArray(data.data) ? data.data[0] : data.data
+  const values = [data.seed, first?.seed, data.output?.seed, data.output?.results?.[0]?.seed, data.result?.seed,
+    data.parameters?.seed, info?.seed, info?.all_seeds?.[0]]
+  for (const value of values) {
+    if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value))) continue
+    const seed = Number(value)
+    if (Number.isSafeInteger(seed) && seed >= 0) return seed
+  }
+}
+
 export async function generateImage(channel, request = {}, { signal, fetchImpl = globalThis.fetch, maxImageBytes = DEFAULT_MAX, onTask, onGenerationSubmit, resumeTaskId } = {}) {
   let scope
   let sentGeneration = false
@@ -709,14 +738,20 @@ export async function generateImage(channel, request = {}, { signal, fetchImpl =
       if (generation) generationStatus = response.status
       return response
     }
-    const ctx = { base, fetchImpl: trackedFetch, uploadFetch, signal: scope.signal, max, jsonLimit, channel, onTask, onGenerationSubmit, resumeTaskId }
-    if (provider === 'novelai') return await generateNovelai(channel, request, ctx)
-    if (provider === 'openai' || provider === 'grok' || provider === 'seedream') return await generateOpenai(channel, request, ctx, provider)
-    if (provider === 'gemini') return await generateGemini(channel, request, ctx)
-    if (provider === 'gemini-chat') return await generateGeminiChat(channel, request, ctx)
-    if (provider === 'qwen') return await generateQwen(channel, request, ctx)
-    if (provider === 'atlascloud') return await generateAtlascloud(channel, request, ctx)
-    return await generateSdwebui(channel, request, ctx)
+    let seed, usage
+    const ctx = { base, fetchImpl: trackedFetch, uploadFetch, signal: scope.signal, max, jsonLimit, channel, onTask, onGenerationSubmit, resumeTaskId,
+      onMetadata: value => {
+        const reported = reportedImageSeed(value); if (reported !== undefined) seed = reported
+        if (value?.usage && typeof value.usage === 'object' && !Array.isArray(value.usage)) usage = structuredClone(value.usage)
+      } }
+    const result = provider === 'novelai' ? await generateNovelai(channel, request, ctx)
+      : ['openai', 'grok', 'seedream'].includes(provider) ? await generateOpenai(channel, request, ctx, provider)
+      : provider === 'gemini' ? await generateGemini(channel, request, ctx)
+      : provider === 'gemini-chat' ? await generateGeminiChat(channel, request, ctx)
+      : provider === 'qwen' ? await generateQwen(channel, request, ctx)
+      : provider === 'atlascloud' ? await generateAtlascloud(channel, request, ctx)
+      : await generateSdwebui(channel, request, ctx)
+    return { ...result, ...(seed === undefined ? {} : { seed }), ...(usage ? { usage } : {}) }
   } catch (error) {
     const message = scope?.signal.aborted && !signal?.aborted ? '生图请求超时' : redact(error?.message || '生图请求失败', channel)
     const failure = new Error(message)

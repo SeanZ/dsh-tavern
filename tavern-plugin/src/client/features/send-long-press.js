@@ -1,8 +1,8 @@
-// 长按输入框的发送键 2 秒：直接重新生成本轮正文，跳过「重新生成正文」的意见面板。
-// 开关在 设置 › 高级 › 长按 2 秒发送键重新生成（默认关闭）；中途松开、取消、移开、切换窗口都算放弃。
+// 长按输入框的发送键 1 秒：直接重新生成本轮正文，跳过「重新生成正文」的意见面板。
+// 开关在 设置 › 高级 › 长按 1 秒发送键重新生成（默认关闭）；中途松开、取消、移开、切换窗口都算放弃。
 // 触屏使用原生 TouchEvent 主通道，PointerEvent 的取消不会误删仍在进行的触摸；命中与移动容差避免手抖中断。
 // 发送键是宿主的图标按钮，图标随状态（↑ / ■）变化，唯一稳定的标识是它的 aria-label。
-const TAVERN_SEND_HOLD_MS = 2000;
+const TAVERN_SEND_HOLD_MS = 1000;
 const TAVERN_SEND_TOUCH_HIT_SLOP = 10;
 const TAVERN_SEND_TOUCH_MOVE_SLOP = 24;
 const TAVERN_SEND_HOLD_LABELS = /^(发送消息|排队发送|插话发送|停止|Send message|Queue message|Steer message|Stop)$/;
@@ -139,12 +139,15 @@ function TavernSendLongPress(props) {
             mutedButton = button;
             repaint(button, true);
             // 每次完成长按都进入同一个提交流程；忙碌、目标与历史校验由 regenBody 决定并上报原因。
-            try { await interactions.submitBodyRegeneration(sessionId, { tail: null }, ""); }
+            try {
+                notifyRegenerating(sessionId, true);
+                await interactions.submitBodyRegeneration(sessionId, { tail: null }, "");
+            }
             catch (error) { /* interactions 已经上报这次失败（错误中心里有完整原因） */ }
             finally {
                 window.setTimeout(function () { button.classList.remove(TAVERN_SEND_HOLD_FIRED_CLASS); }, 900);
-                liveTavernView.invalidate(sessionId);
-                tavernCoordination.invalidate(sessionId);
+                // 正文换了、视图与故事列表一起收尾，玩家不必刷新页面看新的一楼。
+                notifyRegenerating(sessionId, false);
                 notifyTavernDataChanged(["sessions"], "play-controls");
             }
         }

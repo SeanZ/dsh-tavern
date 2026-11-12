@@ -18,22 +18,30 @@ function loadClient(host = {}) {
 function chatRows(client, services = {}) {
   const rows = {}
   const ctx = { sessions: {}, get: name => services[name], effect(run) { try { run() } catch (_) {} } }
-  const slots = { inject: (_name, run) => run(), register(options, component) { if (options.name === 'conversation.chat.node') rows[options.key] = component; return () => {} } }
+  const slots = {
+    inject: (_name, run) => run(),
+    register(options, component) {
+      if (options.name === 'conversation.chat.node') {
+        rows[options.key] = props => component({ ...options.inject?.(props.sessionId), ...props })
+      }
+      return () => {}
+    },
+  }
   client.createTavernAssistantRendererFeatureModule().register({ ctx, slots })
   return rows
 }
 const at = turn => ({ kind: 'step', turn: { turn, status: 'closed' } })
 
-test('行计划隐藏的用户行与正文行在自身 hook 之前返回 null', () => {
+test('行计划在自身 hook 之前隐藏用户行，并裁掉未展示的正文行', () => {
   const client = loadClient()
   client.liveTavernView.setView('s1', { transcriptTurns: { 5: { input: 0, reply: 0 }, 6: { input: 1, reply: 0 } }, transcriptFrom: null })
   const rows = chatRows(client)
-  // Only the gate renders here: a hidden row returns null and never builds its own row.
   const render = (key, turn, data) => {
-    const gate = rows[key]({ sessionId: 's1', node: { kind: key, data, location: at(turn) } })
-    return gate.type(gate.props)
+    const row = rows[key]({ sessionId: 's1', node: { kind: key, data, location: at(turn) },
+      ...(key === 'assistant-step' ? { useTurnData: () => undefined } : {}) })
+    return row.type(row.props)
   }
-  const reply = { status: 'completed', blocks: [], finalNode: { seq: 9, messageId: 'a5' } }
+  const reply = { status: 'running', blocks: [] }
   assert.equal(render('user', 5, { time: 1, content: [] }), null, '回退掉的输入行')
   assert.equal(render('assistant-step', 5, reply), null, '回退掉的正文行')
   assert.equal(render('assistant-step', 6, reply), null, '保留输入轮不画正文')
@@ -148,8 +156,7 @@ for (const legacy of [false, true]) test(`聊天正文文件引用兼容 ${legac
     useTurnData: () => ({ closing: { finalNode } }), openFile,
     ...(legacy ? { fileMentions(owner) { calls.push(['legacy', owner]); return mentions } } : {})
   })
-  const row = gate.props.children
-  row.type(row.props)
+  gate.type(gate.props)
   assert.equal(calls.length, 1)
   assert.equal(calls[0][0], legacy ? 'legacy' : 'service')
   assert.equal(calls[0][1].seq, 12)

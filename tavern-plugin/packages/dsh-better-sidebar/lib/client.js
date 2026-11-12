@@ -29879,8 +29879,8 @@ Mode: this is a continuable side conversation. Your answers stay in this side th
 			const nativeTab = info.tab;
 			(0, react.useSyncExternalStore)((listener) => records.subscribe(listener), () => records.versionOf(sessionId, nativeTab.id));
 			const record = records.get(sessionId, nativeTab.id);
-			const title = record?.tab.title ?? nativeTab.title;
 			const descriptor = service.getTab(descriptorId) ?? service.getTab(record?.tab.type ?? nativeTab.kind);
+			const title = descriptor?.single === true ? titleOf(descriptor) : record?.tab.title ?? nativeTab.title;
 			const path = record?.tab.path ?? paramsOf?.(info)?.path;
 			const glyph = (path !== void 0 && descriptorId === EDITOR_KIND$1 ? service.fileIcon(path, CHIP_ICON_SIZE) : void 0) ?? (typeof descriptor?.icon === "function" ? descriptor.icon(CHIP_ICON_SIZE) : descriptor?.icon);
 			const unread = (0, react.useSyncExternalStore)((listener) => service.subscribeState(listener), () => isUnread(service.getSnapshot().state, record?.tab.type ?? descriptorId));

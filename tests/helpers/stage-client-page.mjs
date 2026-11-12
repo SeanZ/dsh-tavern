@@ -25,7 +25,7 @@ const HOST_SOURCES = ['shared/color-math.cjs', 'packages/dsh-presentation-protoc
   'packages/dsh-asset-library/src/shared/emotion-identity.cjs', 'packages/dsh-asset-library/src/shared/layered-sprite.cjs',
   'src/client/pack-playback.cjs',
   // The runtime protocol kernels the core hands the stage (gal-stage.js runtimeProtocol).
-  'packages/dsh-presentation-protocol/src/performance-state.cjs', 'src/client/mod-projection.cjs', 'src/client/phone-beat.cjs',
+  'packages/dsh-presentation-protocol/src/performance-state.cjs', 'src/client/mod-projection.cjs', 'src/client/source-beat.cjs',
   // The narration presentation the controller reads for a skin's art.narration (options.controller.narration).
   'lib/domain/stage-narration.cjs',
   // The core's waiting lines and stoppable wait (options.choices / regenerate / notices: the text box's and the end panel's waits).
@@ -85,15 +85,15 @@ export function stageHostScript() {
     skinPresentation:{fonts,appearance:stageSkinAppearance,forDevice:stageSkinForDevice},
     skinResources:{setTimeout,clearTimeout},
     directorCommands,
-    // no checks offline: useDiceBacklog null keeps the rows as they are (diceBacklogEntries merges rolls into them)
-    backlogView:{voicePlayer:player,useDiceBacklog:()=>null,diceBacklogEntries:rows=>rows,diceLine:()=>'',useJumpLatest:()=>({}),JumpLatest:Nothing,useFigureTextContrast:typeof useFigureTextContrast==='function'?useFigureTextContrast:noop,bubbleCharacter,galQuoted,VoiceButton:Nothing,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
-    modSurface:{timing:{validate:validateStagePerformanceTiming,overlaps:stagePerformanceRegionsOverlap},readMedia:async()=>null,readItems:async()=>({performances:[]}),readViews:async()=>({views:[]}),subscribe:off,useLiveView:()=>({view:{}})},
+    // no mod parts offline (mod-clients.js): the rows stay as they are
+    backlogView:{voicePlayer:player,modClients:{slot:()=>[]},useJumpLatest:()=>({}),JumpLatest:Nothing,useFigureTextContrast:typeof useFigureTextContrast==='function'?useFigureTextContrast:noop,bubbleCharacter,galQuoted,VoiceButton:Nothing,PackImage,Icon,HelpTip,Spinner,getComputedStyle,ResizeObserver,setTimeout,clearTimeout,requestAnimationFrame,cancelAnimationFrame},
+    modSurface:{timing:{validate:validateStagePerformanceTiming,overlaps:stagePerformanceRegionsOverlap},readItems:async()=>({performances:[]})},
     performanceSurface:{fonts,resolution:()=>1,subscribeResolution:off,policy:{stageFlashAt,stageFlashDark,stageFlashGate,stageFlashSafe,stageSafety,stageEffectHex,stageEffectRgb}},
     textIndex:{pageCards:stagePageCards},
     playbackTiming:{delay:stageAutoDelay,remaining:stageAutoRemaining},
     performances:{read:async()=>({kinds:[]}),registry:createStagePerformanceRegistry,core:STAGE_PERFORMANCE_CORE},
     runtimeProtocol:{performanceKindsKernel:{stagePerformanceKindOf,stagePerformanceBlocks,stagePerformancePhaseBlocks,STAGE_PERFORMANCE_CORE},
-      performanceStateKernel:{performanceSustained,reducePerformanceEvent},modProjectionKernel:{modPerformanceLedgerKey},phoneBeatKernel:{phoneModAutoVoiceAllowed}},
+      performanceStateKernel:{performanceSustained,reducePerformanceEvent},modProjectionKernel:{modPerformanceLedgerKey},phoneBeatKernel:{phoneModAutoVoiceAllowed:stageAutoVoiceAllowed}},
     entrance:{reading,safety:stageSafety,flashGate:stageFlashGate},
     text:{performance,ResizeObserver,getComputedStyle,clock:foreground,fonts,sounds,defaultTextSpeed:28},
     music:{audio,foreground,fetch,AbortController},
@@ -117,7 +117,7 @@ export function stageHostScript() {
       // the core's resolver and display name; colour as bubbles.js bubbleColor (no mood badges offline)
       dialogue:{color:character=>character?.color||'var(--fork-figure-fallback)',displayName:bubbleDisplayName,moodBadge:()=>null,moods:()=>[],actor:stageActorCharacter},
       figures:{layers:createPackSceneLayers,performance:packPerformanceScene,render:packFigureRenderInputs,reactions:packFigureReactions},
-      DiceRolls:Nothing,DiceThrow:Nothing,narration:stageNarrationPresentation,offstage:()=>new Set(),skinFigures:stageSkinFigures,phoneBeat:()=>null,
+      modClients:{slot:()=>[]},narration:stageNarrationPresentation,offstage:()=>new Set(),skinFigures:stageSkinFigures,phoneBeat:()=>null,
       playEvents:{emit:noop}},
     controllerLegacy:{film:stageFilm,background:(_id,scene)=>scene,widgetTheme:()=>null,entryContext:stageEntryContextType,entryStore:createStageEntryStore},
     // The core's shared controls (Segmented/Slider/ResetButton/TextArea/FloatingPanel/wait lines) as inert stand-ins.

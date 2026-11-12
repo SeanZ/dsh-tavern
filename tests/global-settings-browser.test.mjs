@@ -156,6 +156,24 @@ test('舞台模型只在舞台设置展示，保存沿用原有模型槽', async
   assert.equal(settings.modModels['dsh.stage'].director.model,'next')
 })
 
+test('舞台设置可以只加载本次运行而不改启动偏好', async t => {
+  let runtime = { installed: true, loadOnStartup: true, enabled: false, status: 'disabled' }
+  const {page, calls} = await openTavernSettings(t, {section:'dsh-tavern: stage settings section', respond(method, args) {
+    if (method === 'getStageRuntimeStatus') return runtime
+    if (method === 'setStageLoadOnStartup') return runtime = {...runtime, loadOnStartup:args.enabled}
+    if (method === 'setStageEnabled') return runtime = {...runtime, enabled:args.enabled, status:'ready'}
+  }})
+  const startup = page.getByRole('switch', {name:'启动时加载舞台'})
+  await startup.press('Space')
+  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启动时加载舞台"]')?.checked === false)
+  const load = page.getByRole('button', {name:'本次加载舞台'})
+  await load.click()
+  await load.waitFor({state:'hidden'})
+  assert.equal(await startup.isChecked(),false)
+  assert.deepEqual(calls.filter(row => row.method.startsWith('setStage')).map(row => [row.method, row.args.enabled]),
+    [['setStageLoadOnStartup', false], ['setStageEnabled', true]])
+})
+
 test('插件列表隐藏内置配图与模组，保留用户安装的插件', async t => {
   const {page}=await openTavernSettings(t,{section:'dsh-tavern: plugins settings section',respond(method){
     if(method==='listUserPlugins')return {plugins:[
@@ -172,21 +190,22 @@ test('插件列表隐藏内置配图与模组，保留用户安装的插件', as
 
 test('侧栏显示开关即时保存，失败保留原值，焦点刷新读取已保存值', async t => {
   const backend = fixture()
-  const { page, calls } = await openTavernSettings(t, { respond(method, args) {
+  const { page, calls } = await openTavernSettings(t, { displayPreferences: true, respond(method, args) {
     if (method === 'getDisplayPreferences') return backend.respond('getTavernSettings').settings
     return backend.respond(method, args)
   } })
-  await page.getByText('侧栏显示', { exact: true }).click()
-  const toggle = page.getByRole('switch', { name: '显示系统功能入口', exact: true })
+  const display = page.getByRole('region', { name: '显示与交互', exact: true })
+  const toggle = display.getByRole('switch', { name: '显示系统功能入口', exact: true })
+  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="显示系统功能入口"]')?.disabled === false)
   assert.equal(await toggle.isChecked(), false)
-  assert.equal(await page.getByRole('switch', { name: '隐藏上下文注入和思考过程', exact: true }).count(), 0)
-  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dsh-tavern-hide-process')), true, '上游始终隐藏过程，旧配置不能恢复废弃开关')
-  await toggle.click()
+  assert.equal(await display.getByRole('switch', { name: '游玩显示工作过程', exact: true }).isChecked(), false)
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dsh-tavern-hide-process')), true, '游玩默认隐藏工作过程')
+  await toggle.press('Space')
   await page.waitForFunction(() => document.documentElement.classList.contains('dsh-tavern-show-system-navigation'))
   assert.deepEqual(calls.filter(c => c.method === 'updateTavernSettings').at(-1).args.patch, { showSystemNavigation: true })
   backend.setFail(true)
-  await toggle.click()
-  await page.getByText('保存失败：保存失败测试', { exact: true }).waitFor()
+  await toggle.press('Space')
+  await display.getByText('保存失败测试', { exact: true }).waitFor()
   assert.equal(await toggle.isChecked(), true)
   backend.setFail(false)
   backend.respond('updateTavernSettings', { patch: { showSystemNavigation: false } })

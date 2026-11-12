@@ -6,7 +6,6 @@ import {check,validateUuid,validateShortId} from '../asset-packs/common.js'
 import {validateVoiceBinding,voiceReferences} from '../shared/voice-schema.js'
 import {jsonBytes,readDocument} from './validation.js'
 
-
 // A changed voice cannot retain pointers into a different voice's options.
 export function retainVoiceEmotionPointers(figure,manifest) {
   const options=manifest.voiceLibrary?.voices[figure.voice?.voice]?.emotions || {};
@@ -47,7 +46,45 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
       return {affectedFigures:users.map(f => ({id:f.id,name:f.name}))}
     })
   }
+  // A stored voice (a template, or a legacy reading voice) becomes a new voice of the pack, assigned to the figure with its
+  // binding; its reference clips are copied into the pack.
+  function assignStored(input, item, missing) {
+    return edit(input,async (manifest,files) => {
+      const stored = item(await index())
+      check(stored,missing[0],missing[1],'VOICE_NOT_FOUND')
+      check(manifest.figures.includes(input.figureId),'$.figureId','Figure missing','ASSET_UNAVAILABLE')
+      const voiceId = 'v-' + randomUUID(), voiceSpec = structuredClone(stored.voiceSpec)
+      for (const hash of new Set(voiceReferences(voiceSpec).map(r => r.media))) {
+        const descriptor = stored.blobs[hash]
+        check(descriptor,'$.media','Missing reference','MISSING_REFERENCE')
+        const relative = 'media/' + hash + '.' + descriptor.ext
+        if (manifest.blobs[hash]) check(manifest.blobs[hash].ext === descriptor.ext && manifest.blobs[hash].size === descriptor.size,'$.media','Blob conflict','INVALID_INPUT')
+        // Reuse installed bytes; new copies receive their write-time identity in sealPack.
+        if (!files.has(relative)) {
+          const bytes = await storage.read('voice-templates/' + relative)
+          check(bytes,'$.media','Missing reference','MISSING_REFERENCE')
+          files.set(relative,bytes)
+        }
+        manifest.blobs[hash] = structuredClone(descriptor)
+      }
+      ;(manifest.voiceLibrary ||= {version:1,voices:{}}).voices[voiceId] = voiceSpec
+      const name = 'figures/' + input.figureId + '.json', figure = readDocument(files.get(name))
+      figure.voice = {...structuredClone(stored.binding),voice:voiceId}; retainVoiceEmotionPointers(figure,manifest); files.set(name,jsonBytes(figure))
+      return {voiceId}
+    })
+  }
   return {
+    // One-time (dsh-tavern-stage reading-voice-migration.js): 通用声音 / 旁白's voices kept here before they became pointers
+    // at figures (tts.reading general / narrator .figure). Listed, each own voice assigned to a figure, then dropped.
+    legacyReadingVoices() { return run([],async () => Object.values((await index()).readings || {}).map(item => structuredClone(item.link ? {id:item.id,link:item.link} : {id:item.id,voiceSpec:item.voiceSpec,binding:item.binding}))) },
+    assignLegacyReadingVoice(input) { return assignStored(input,data => data.readings?.[input.readingId]?.voiceSpec && data.readings[input.readingId],['$.readingId','Reading voice missing']) },
+    dropLegacyReadingVoices() {
+      return run([],async () => {
+        const data = await index(), dropped = Object.keys(data.readings || {}).length
+        if (!data.readings && !data.readingMedia) return {dropped:0}
+        delete data.readings; delete data.readingMedia; await publish(data); return {dropped}
+      })
+    },
     savePackVoiceVariant:input => variantEdit(input,false),
     deletePackVoiceVariant:input => variantEdit(input,true),
     listVoiceTemplates() { return run([],async () => ({templates:Object.values((await index()).templates).map(publicTemplate)})) },
@@ -98,29 +135,7 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
     },
     assignVoiceTemplate(input) {
       validateUuid(input.templateId)
-      return edit(input,async (manifest,files) => {
-        const item = (await index()).templates[input.templateId]
-        check(item,'$.templateId','Template missing','VOICE_NOT_FOUND'); templateCas(item,input.templateRevision)
-        check(manifest.figures.includes(input.figureId),'$.figureId','Figure missing','ASSET_UNAVAILABLE')
-        const voiceId = 'v-' + randomUUID(), voiceSpec = structuredClone(item.voiceSpec)
-        for (const hash of new Set(voiceReferences(voiceSpec).map(r => r.media))) {
-          const descriptor = item.blobs[hash]
-          check(descriptor,'$.media','Missing reference','MISSING_REFERENCE')
-          const relative = 'media/' + hash + '.' + descriptor.ext
-          if (manifest.blobs[hash]) check(manifest.blobs[hash].ext === descriptor.ext && manifest.blobs[hash].size === descriptor.size,'$.media','Blob conflict','INVALID_INPUT')
-          // Reuse installed bytes; new copies receive their write-time identity in sealPack.
-          if (!files.has(relative)) {
-            const bytes = await storage.read('voice-templates/' + relative)
-            check(bytes,'$.media','Missing reference','MISSING_REFERENCE')
-            files.set(relative,bytes)
-          }
-          manifest.blobs[hash] = structuredClone(descriptor)
-        }
-        ;(manifest.voiceLibrary ||= {version:1,voices:{}}).voices[voiceId] = voiceSpec
-        const name = 'figures/' + input.figureId + '.json', figure = readDocument(files.get(name))
-        figure.voice = {...structuredClone(item.binding),voice:voiceId}; retainVoiceEmotionPointers(figure,manifest); files.set(name,jsonBytes(figure))
-        return {voiceId}
-      })
+      return assignStored(input,data => { const item = data.templates[input.templateId]; if (item) templateCas(item,input.templateRevision); return item },['$.templateId','Template missing'])
     },
   }
 }

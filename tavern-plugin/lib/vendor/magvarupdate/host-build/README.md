@@ -20,6 +20,9 @@ The deterministic host build applies these adaptations:
 
 - uses the complete current-floor snapshot when no earlier floor has valid MVU
   data, so resumed/imported games can settle without rewriting historical floors.
+- uses the host's frozen turn snapshot for background settlement, even if the
+  card supplied only `stat_data`. Initialization preserves authored data and
+  completes the missing schema, with each opening swipe keeping its own values.
 
 - disables ST JSONL variable compaction, its legacy prompt, manual cleanup button,
   and enable controls; historical snapshots remain available for rollback and
@@ -32,6 +35,11 @@ The deterministic host build applies these adaptations:
 
 - derives the schema from an opening `<initvar>` block and strips its `$meta` /
   `$arrayMeta` metadata, as upstream already does for lorebook `[initvar]` data.
+
+- initializes a chat with no floor (an explicitly blank opening) instead of
+  refusing it: the same initvar data, `VARIABLE_INITIALIZED` callbacks and
+  initial update are committed to the chat variable scope, which upstream's
+  chat-variable cleanup keeps until a floor carries the snapshot.
 
 It does not otherwise patch MVU parsing, validation or variable calculation.
 The sandbox-local uniqueness change is valid because the Host enforces exactly

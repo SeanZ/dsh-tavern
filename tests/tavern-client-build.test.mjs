@@ -16,7 +16,7 @@ test('完整客户端必须可解析，局部源码测试不能代替入口语�
   assert.equal(source.includes('function createStageNavigation('), false, 'navigation implementation belongs to the optional client')
   // These moved features must stay in the optional payload, even when a future include is edited.
   const stage = await readFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client.js', import.meta.url), 'utf8')
-  for (const name of ['GalStage', 'createStageController', 'createStageSourceWidgets', 'stageWidgetStageGeometry', 'stageWidgetThread', 'phoneModSettingsView', 'createStageModSurface', 'createModUiLayerHost', 'createModStageDock', 'itemShowcasePlace', 'createStagePerformanceSurface', 'createStageSessions', 'createStageTextIndexModule', 'createStageInput', 'createStagePlayback', 'createStageSpeech', 'createStageRuntimeUi', 'createStageSessionObservation', 'createStageScene', 'galCreateScene', 'createStageSceneMath', 'createStageRuntimeKernel', 'createStageDisplayConsumers', 'createStageDisplays', 'createStageModNotifications', 'createStageResourceRunnerModule', 'createStageDirectorModule', 'createStageSessionRuntime', 'createStageRuntimeStoreModule', 'createStageSessionModule', 'createStageFigurePose', 'createStageCastLayout', 'createStageCast', 'createStageFigureAppearance', 'createStageFigureAssets', 'createStageFigureBlink', 'createBlinkScheduler', 'blinkPlacement', 'createStageCallViews', 'createStageBust', 'galBustFrame', 'galBustEnter', 'createStageMonologue', 'createStageBackgrounds', 'createStageBackgroundLayers', 'createStageSceneCamera', 'galShotTarget', 'galCameraClamp', 'createStageSceneTextures', 'createStageSpineFigures', 'createStageSceneGraphics', 'galFilterChain', 'galUseFilter', 'galMakeTextures', 'createStageEntrancePresentation', 'StageEntrance', 'createStageEntranceMedia', 'createStageEntranceRenderer', 'entranceRenderer', 'entrancePlateFrames', 'entranceLoop', 'createStageSkinPresentation', 'createStageSkinResources', 'createStageSkinAdapter', 'createStageSkinMotion', 'createStageSkinBacklog', 'createStageEffects', 'galCreateEffects', 'createStageLookUi', 'createStageLooks', 'createStageLookShaders', 'createStageLookArt', 'galCreateLookRenderer', 'createStageWeather', 'createStageEmotes', 'createStageEffectColors', 'galParticleArt', 'galEmoteArt', 'createStageFigureIdle', 'createStageFigureTap', 'createStageFigureWarp', 'createStageFigureMotion', 'galInstallMotionLayers', 'createStageWidgets', 'createStagePhoneAdjust', 'createStagePhoneLayout', 'createStageGallery', 'createStageCg', 'createStageDevice', 'createStageMixer', 'createStageSfx', 'createStageTransitions', 'WidgetPanel', 'WidgetContextMenu', 'CgGalleryImage', 'createStageResourcesModule', 'stageEntranceContract']) {
+  for (const name of ['GalStage', 'createStageController', 'createStageSourceWidgets', 'stageWidgetStageGeometry', 'stageWidgetThread', 'phoneModSettingsView', 'createStageModSurface', 'itemShowcasePlace', 'createStagePerformanceSurface', 'createStageSessions', 'createStageTextIndexModule', 'createStageInput', 'createStagePlayback', 'createStageSpeech', 'createStageRuntimeUi', 'createStageSessionObservation', 'createStageScene', 'galCreateScene', 'createStageSceneMath', 'createStageRuntimeKernel', 'createStageDisplayConsumers', 'createStageDisplays', 'createStageResourceRunnerModule', 'createStageDirectorModule', 'createStageSessionRuntime', 'createStageRuntimeStoreModule', 'createStageSessionModule', 'createStageFigurePose', 'createStageCastLayout', 'createStageCast', 'createStageFigureAppearance', 'createStageFigureAssets', 'createStageFigureBlink', 'createBlinkScheduler', 'blinkPlacement', 'createStageCallViews', 'createStageBust', 'galBustFrame', 'galBustEnter', 'createStageMonologue', 'createStageBackgrounds', 'createStageBackgroundLayers', 'createStageSceneCamera', 'galShotTarget', 'galCameraClamp', 'createStageSceneTextures', 'createStageSpineFigures', 'createStageSceneGraphics', 'galFilterChain', 'galUseFilter', 'galMakeTextures', 'createStageEntrancePresentation', 'StageEntrance', 'createStageEntranceMedia', 'createStageEntranceRenderer', 'entranceRenderer', 'entrancePlateFrames', 'entranceLoop', 'createStageSkinPresentation', 'createStageSkinResources', 'createStageSkinAdapter', 'createStageSkinMotion', 'createStageSkinBacklog', 'createStageEffects', 'galCreateEffects', 'createStageLookUi', 'createStageLooks', 'createStageLookShaders', 'createStageLookArt', 'galCreateLookRenderer', 'createStageWeather', 'createStageEmotes', 'createStageEffectColors', 'galParticleArt', 'galEmoteArt', 'createStageFigureIdle', 'createStageFigureTap', 'createStageFigureWarp', 'createStageFigureMotion', 'galInstallMotionLayers', 'createStageWidgets', 'createStagePhoneAdjust', 'createStagePhoneLayout', 'createStageGallery', 'createStageCg', 'createStageDevice', 'createStageMixer', 'createStageSfx', 'createStageTransitions', 'WidgetPanel', 'WidgetContextMenu', 'CgGalleryImage', 'createStageResourcesModule', 'stageEntranceContract']) {
     const declaration = new RegExp('function\\s+' + name + '\\s*\\(')
     assert.equal(declaration.test(source), false, name + ' must not ship in the core payload')
     assert.equal(declaration.test(stage), true, name + ' must ship in the optional stage payload')
@@ -35,6 +35,7 @@ for (const check of [false, true]) {
     for (const directory of ['bin/lib', 'tavern-plugin/src/client', 'tavern-plugin/lib/client-assets']) {
       await mkdir(path.join(root, directory), { recursive: true })
     }
+    await symlink(new URL('../tavern-plugin/lib/vendor', import.meta.url), path.join(root, 'tavern-plugin/lib/vendor'))
     await copyFile(new URL('../bin/build-tavern-client.mjs', import.meta.url), builder)
     await copyFile(new URL('../bin/build-interface-skin-client.mjs', import.meta.url), path.join(root, 'bin/build-interface-skin-client.mjs'))
     const skin = path.join(root, 'tavern-plugin/packages/dsh-dream-skin')
@@ -44,7 +45,8 @@ for (const check of [false, true]) {
     const stage = path.join(root, 'tavern-plugin/packages/dsh-tavern-stage/lib/client')
     await mkdir(stage, {recursive:true})
     await copyFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client/skin-overlay-timing.cjs', import.meta.url), path.join(stage, 'skin-overlay-timing.cjs'))
-    await copyFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client/timer-clock.cjs', import.meta.url), path.join(stage, 'timer-clock.cjs'))
+    // The stage build bundles each mod's stage client (mods/<folder>/client) with the own-folder files it requires.
+    await cp(new URL('../tavern-plugin/mods/', import.meta.url), path.join(root, 'tavern-plugin/mods'), {recursive:true})
     for(const name of ['lifetime.cjs','entry.cjs','resources.cjs','runtime-store.cjs','session.cjs','director-source.cjs','resource-runner.cjs','runtime-kernel.cjs'])await copyFile(new URL('../tavern-plugin/packages/dsh-tavern-stage/lib/client/'+name,import.meta.url),path.join(stage,name))
     // The stage build inlines the stage-only protocol contracts (stage-entrance.cjs, card-stage-mode.cjs) from the sibling protocol package.
     await mkdir(path.join(root, 'tavern-plugin/packages/dsh-presentation-protocol/src'), {recursive:true})
@@ -63,9 +65,8 @@ for (const check of [false, true]) {
     for (const name of ['tavern.css', 'theme.css', 'layered-sprite.css', 'mod-config.css']) await writeFile(path.join(root, 'tavern-plugin/lib/client-assets', name), '')
     await mkdir(path.join(root, 'tavern-plugin/shared'), { recursive: true })
     await writeFile(path.join(root, 'tavern-plugin/shared/keyword-catalogue.cjs'), 'module.exports = {};')
-    // The copied builder imports its dependencies (acorn) by package name. Windows needs a privilege to make
-    // symlinks; there the test runner's resolve hook finds the packages instead.
-    if (process.platform !== 'win32') await symlink(new URL('../node_modules', import.meta.url).pathname, path.join(root, 'node_modules'), 'dir')
+    // The copied builder resolves its own dependencies from the fixture root.
+    await symlink(await realpath(new URL('../node_modules', import.meta.url)), path.join(root, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
     for (const name of ['logo', 'lockup', 'lockup-dark']) await writeFile(path.join(root, `tavern-plugin/lib/client-assets/${name}.svg`), '<svg/>')
     const valid = '// @include-stage runtime-kernel.cjs\nconst fixture = 1;\n'
     const invalid = 'const = 1;\n'
@@ -95,7 +96,7 @@ test('故事领域与前端适配器独立装配，拒绝越界读取并保留�
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'tavern-story-include-')))
   t.after(() => rm(root, {recursive:true,force:true}))
   for (const directory of ['bin', 'tavern-plugin/src/client/story','tavern-plugin/lib/story']) await mkdir(path.join(root,directory),{recursive:true})
-  for (const name of ['node_modules','bin/lib','tavern-plugin/packages','tavern-plugin/shared','tavern-plugin/lib/client-assets','tavern-plugin/src/client/surfaces.cjs']) {
+  for (const name of ['node_modules','bin/lib','tavern-plugin/packages','tavern-plugin/shared','tavern-plugin/lib/client-assets','tavern-plugin/lib/vendor','tavern-plugin/src/client/surfaces.cjs']) {
     await symlink(new URL('../'+name,import.meta.url),path.join(root,name))
   }
   for (const name of ['build-tavern-client.mjs','build-interface-skin-client.mjs']) await copyFile(new URL('../bin/'+name,import.meta.url),path.join(root,'bin',name))

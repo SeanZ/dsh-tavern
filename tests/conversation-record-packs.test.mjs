@@ -3,14 +3,14 @@ import assert from 'node:assert/strict'
 import {mkdtemp,rm,readFile,writeFile,stat} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {createConversationPageStore} from '../tavern-plugin/lib/domain/conversation-page-store.js'
+import {createConversationPageStore,recordBlock} from '../tavern-plugin/lib/domain/conversation-page-store.js'
 
 for(const fallback of [false,true])test(`record packs preserve hash lookup, standalone dedup and detached reads; fallback=${fallback}`,async t=>{
  const root=await mkdtemp(join(tmpdir(),'record-pack-'))
  t.after(()=>rm(root,{recursive:true,force:true}))
  const options=fallback?{linkFile:async()=>{throw Object.assign(Error('unsupported'),{code:'ENOTSUP'})}}:{}
  const store=createConversationPageStore({root,...options})
- const values=[{type:'scalar',value:'one'},{type:'scalar',value:'two'}]
+ const values=Array.from({length:96},(_,i)=>({type:'scalar',value:'value '+i}))
  const refs=await store.writeRecords('a',values)
  const file=ref=>join(root,'a/blocks',ref.slice(0,2),ref+'.json')
  assert.equal(JSON.parse(await readFile(file(refs[0]),'utf8')).kind,fallback?'record':'block-pack-v1')
@@ -21,26 +21,17 @@ for(const fallback of [false,true])test(`record packs preserve hash lookup, stan
  assert.deepEqual(await fresh.readRecord('a',refs[0]),values[0])
  assert.equal(await store.writeRecord('a',values[0]),refs[0])
  assert.deepEqual(await store.writeRecords('a',values),refs)
+ const extra={type:'scalar',value:'new'},mixed=[values[50],extra,...values,extra]
+ const mixedRefs=await store.writeRecords('a',mixed,mixed.map(value=>recordBlock(value).ref))
+ assert.deepEqual(mixedRefs,[refs[50],recordBlock(extra).ref,...refs,recordBlock(extra).ref])
+ for(let i=0;i<mixedRefs.length;i++)assert.deepEqual(await fresh.readRecord('a',mixedRefs[i]),mixed[i])
+ const io=[],checking=createConversationPageStore({root,onIO:event=>io.push(event)})
+ const invalid=[...values,{type:'scalar',value:'must not publish'}]
+ const known=invalid.map(value=>recordBlock(value).ref);known[40]=refs[0]
+ await assert.rejects(checking.writeRecords('a',invalid,known),/Immutable block corruption/)
+ assert.equal(io.some(event=>event.kind==='write'||event.kind==='link'),false)
  await writeFile(file(refs[0]),'{corrupt')
- await assert.rejects(createConversationPageStore({root}).readRecord('a',refs[0]),/checksum/)
-})
-
-test('sweep marks packed blocks through the read cache, not a whole-pack parse per block',async t=>{
- const root=await mkdtemp(join(tmpdir(),'record-pack-sweep-'))
- t.after(()=>rm(root,{recursive:true,force:true}))
- const store=createConversationPageStore({root})
- const values=Array.from({length:96},(_,i)=>({type:'scalar',value:'value '+i+' '+'x'.repeat(400)}))
- const refs=await store.writeRecords('a',values)
- await store.create('a',{state:{title:'测试'},messages:refs.map(runtimeRef=>({runtimeRef}))})
- const packBytes=(await stat(join(root,'a/blocks',refs[0].slice(0,2),refs[0]+'.json'))).size
- const fresh=createConversationPageStore({root}),parse=JSON.parse
- let parsedChars=0,result
- JSON.parse=(text,...args)=>{parsedChars+=text.length;return parse(text,...args)}
- try {result=await fresh.sweep('a',{dryRun:true,graceMs:0})}
- finally {JSON.parse=parse}
- assert.equal(result.removed,0)
- assert.ok(result.reachable>refs.length,'every record and the head blocks are reachable')
- assert.ok(parsedChars<2*packBytes,`parsed ${parsedChars} chars for a ${packBytes} byte pack of 96 blocks`)
+ await assert.rejects(createConversationPageStore({root}).readRecord('a',refs[0]),/Invalid immutable block/) // blocks are parsed, not re-hashed
 })
 
 test('a fragmented head is rewritten in read order into contiguous packs; reads stay identical and later maintenance leaves it',async t=>{

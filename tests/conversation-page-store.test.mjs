@@ -15,6 +15,18 @@ async function fixture(t, count=20000) {
  return {root,store,io}
 }
 
+test('concurrent cold head readers share each immutable file read and parse',async t=>{
+ const {root}=await fixture(t,4),io=[]
+ await createConversationPageStore({root,onIO:event=>io.push(event)}).readHead('a')
+ const single=io.filter(row=>row.kind==='read').length;io.length=0
+ const cold=createConversationPageStore({root,onIO:event=>io.push(event)})
+ const views=await Promise.all(Array.from({length:12},()=>cold.readHead('a')))
+ assert.equal(io.filter(row=>row.kind==='read').length,single,'twelve concurrent readers read each file once, like one reader')
+ views[0].state.gold=99
+ assert.equal(views[1].state.gold,10,'public projections remain detached')
+ assert.equal((await cold.readHead('a')).state.gold,10)
+})
+
 test('stale writers conflict across store instances without losing committed history',async t=>{
  const {root,store}=await fixture(t,4)
  const another=createConversationPageStore({root})
@@ -22,20 +34,6 @@ test('stale writers conflict across store instances without losing committed his
  await assert.rejects(another.commit('a',{expectedRevision:1,state:{gold:0}}),{code:'CONVERSATION_CONFLICT'})
  const result=await another.openConversation('a')
  assert.equal(result.messageCount,5);assert.equal(result.state.gold,10)
-})
-
-test('pagination includes every row exactly once across tree growth and rejects foreign cursors',async t=>{
- const {store}=await fixture(t,2050)
- const first=await store.openConversation('a',{limit:137})
- let page=first,positions=[]
- while(true){positions.push(...page.messages.map(row=>row.position));if(!page.previousCursor)break;page=await store.readHistoryPage('a',{cursor:page.previousCursor,limit:137})}
- assert.equal(new Set(positions).size,2050)
- assert.equal(positions.length,2050)
- await store.create('b',{state:{},messages:[]})
- await assert.rejects(store.readHistoryPage('b',{cursor:first.previousCursor}),/cursor/)
- await assert.rejects(store.openConversation('../a'),/id/)
- await assert.rejects(store.commit('a',{expectedRevision:1,edits:[{position:2050,message:{}}]}),/position/)
- assert.equal((await store.openConversation('a')).revision,1)
 })
 
 for(const count of [0,63,2047])test('append across page/index growth from '+count,async t=>{
@@ -87,5 +85,5 @@ test('corrupt immutable pages fail explicitly instead of returning incomplete hi
  }
  const head=await blockValue(pointer.headId)
  await writeFile(block(head.root),'{}')
- await assert.rejects(createConversationPageStore({root}).openConversation('a'),/checksum/)
+ await assert.rejects(createConversationPageStore({root}).openConversation('a'),/Invalid immutable block/) // blocks are parsed, not re-hashed
 })

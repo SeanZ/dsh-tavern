@@ -10,12 +10,6 @@ import { DEFAULT_HEADER_ITEMS, applyTavernSettingsPatch, presentTavernSettings }
 const client = await readFile(new URL('../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const css = await readFile(new URL('../tavern-plugin/lib/client-assets/tavern.css', import.meta.url), 'utf8')
 
-// the default top bar has only 导出 (the fork's ⋯ menu), no 酒馆状态 button.
-test('顶栏默认值与改动前一致：只有导出，图标加文字', () => {
-  assert.deepEqual({ display: DEFAULT_HEADER_ITEMS.display, items: [...DEFAULT_HEADER_ITEMS.items] }, { display: 'icon-text', items: ['header:export'] })
-  assert.deepEqual(presentTavernSettings({}, {}).headerItems, { display: 'icon-text', items: ['header:export'] })
-})
-
 test('非法顶栏设置被拒绝', () => {
   for (const bad of [
     { display: 'large', items: [] },

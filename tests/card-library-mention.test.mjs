@@ -3,15 +3,17 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
+const tabIcons = readFileSync(new URL('../tavern-plugin/src/client/tab-icons.js', import.meta.url), 'utf8')
 const source = readFileSync(new URL('../tavern-plugin/src/client/features/card-library.js', import.meta.url), 'utf8')
 
 function registerCardLibrary(modes, appendMention) {
   const tabs = []
   const context = vm.createContext({
+    DshUi: {},
     React: { createElement: (type, props) => ({ type, props }) },
     useTavernSessionMode: (sessionId) => modes[sessionId] || '',
   })
-  vm.runInContext(source + ';globalThis.cardLibraryFeature = cardLibraryFeature', context)
+  vm.runInContext(tabIcons + '\n' + source + ';globalThis.cardLibraryFeature = cardLibraryFeature', context)
   const ctx = {
     effect: (register) => register(),
     betterSidebar: {

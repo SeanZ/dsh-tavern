@@ -58,7 +58,11 @@ export async function createBackgroundNativeRuntime(bootPath, { systemAppend, re
     requests,
     runBackground: input => runner.run(input),
     conversation: () => runner.conversation(),
-    backgroundChildren: async () => await ctx.get('subagents').listChildren('scene-parent'),
+    async backgroundChildren() {
+      const subagents = ctx.get('subagents')
+      if (typeof subagents.listChildren === 'function') return await subagents.listChildren('scene-parent')
+      return (await subagents.listDescendants('scene-parent')).filter(row => row.kind === 'child' && row.depth === 1)
+    },
     reapBackground: () => runner.reapIdle(),
     backgroundLoaded: id => ({ agent: !!ctx.agents.get(id), session: !!ctx.sessions.get(id) }),
     traceEvents(sessionId) { return structuredClone(sessionEvents(ctx.sessions.get(sessionId))) },

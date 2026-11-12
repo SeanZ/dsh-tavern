@@ -10,6 +10,7 @@ import { normalizeConfiguredBackgroundTasks, normalizePlayDefaults } from './tav
 import { ensureSessionSeedTrajectory } from './session-seed-trajectory.js'
 import { defaultUserPreferenceProfile } from './user-preference-profile.js'
 import { replyProse } from './reply-prose.js'
+import { createSessionOpeningChanges } from './session-opening.js'
 
 function str(value) { return value === undefined || value === null ? '' : String(value) }
 function groupOfMode(mode) { return !mode || mode === 'story' || mode === 'script' ? 'play' : 'card' }
@@ -33,6 +34,8 @@ export function createConversationInitialization(options) {
     pending.set(key, operation)
     return operation.finally(function () { if (pending.get(key) === operation) pending.delete(key) })
   }
+
+  const opening = createSessionOpeningChanges({ chats, cards, native, scriptContinuity, serialize })
 
   function newChat(card, mode) {
     const chatMode = mode === 'card' ? 'card' : (mode === 'script' ? 'script' : 'story')
@@ -120,7 +123,7 @@ export function createConversationInitialization(options) {
         return await trace.stage('reopen', async () => {
           if (groupOfMode(current.mode) === 'play') await snapshots.ensure(current, card)
           await appendNativeOpening(sessionId, current, card, undefined, true)
-          return await present(current, card)
+          return await present(await opening.recover(current), card)
         })
       }
     }
@@ -169,8 +172,11 @@ export function createConversationInitialization(options) {
     // a card with an opening form replaces its greeting:
     // nothing is shown or sent. The greeting floor stays only to own the opening variables; its one
     // blank character keeps the native opening structure, which the chat and provider requests skip.
-    const formOpening = Boolean(openingExtensions?.openingSetup) && openingProjection.sessionText !== ''
-    const greeting = formOpening ? '\u3000' : openingProjection.sessionText
+    // A stage opening page picked this greeting (startCommand.keepGreeting): it is the game's first floor.
+    const formOpening = Boolean(openingExtensions?.openingSetup) && openingProjection.sessionText !== '' && preparation?.startCommand?.keepGreeting !== true
+    // Keep an anchor in the DSH transcript for a selectable blank greeting.
+    const greeting = formOpening || (openingChoices.length > 1 && openingProjection.sessionText === '')
+      ? '\u3000' : openingProjection.sessionText
     // connectWorkspace 返回时，Agent 注册偶尔仍在异步完成。先等到原生会话可写，
     // 再落盘 Tavern 对话，避免失败时留下只有映射、没有原生开场白的半初始化记录。
     const openingTarget = typeof sessionId === 'string' && sessionId !== '' ? await trace.stage('waitSession', () => native.wait(sessionId)) : undefined
@@ -233,6 +239,7 @@ export function createConversationInitialization(options) {
       stagePageVersion: 2,
       ts: now(),
       greeting: true,
+      ...(!formOpening && openingChoices[selectedOpeningIndex] ? { openingChoiceId: openingChoices[selectedOpeningIndex].id } : {}),
       turn: 1
     }, usesMvu !== true ? {} : {
       swipeId: selectedOpeningIndex,
@@ -247,13 +254,22 @@ export function createConversationInitialization(options) {
     if (preparation && groupOfMode(chatMode) === 'play') {
       chat.variables = structuredClone(preparation.variables || {});
       const opening = chat.messages.find(message => message.greeting);
+      if (usesMvu && !opening && preparation.messageVariables?.stat_data !== undefined && preparation.messageVariables?.schema !== undefined) {
+        Object.assign(chat.variables, structuredClone(preparation.messageVariables));
+        chat.mvu.openingInitialization = { version: 2, status: 'complete', completedAt: now() };
+      }
       if (usesMvu && opening) {
         if (preparation.openingVariables) {
           opening.variables = openingChoices.map(choice => structuredClone(preparation.openingVariables[choice.id] || {}));
         }
-        if (preparation.messageVariables) opening.variables[opening.swipeId || 0] = structuredClone(preparation.messageVariables);
+        const built = value => value && typeof value === 'object' && !Array.isArray(value) && value.stat_data !== undefined && value.schema !== undefined;
+        // No frame built the chosen floor before the start (a stage opening page): official MVU builds it in the game
+        // from <initvar>, and the start's values are laid over that build once (tavern-script-host-adapter.js).
+        const chosen = preparation.openingVariables?.[openingChoices[selectedOpeningIndex]?.id];
+        if (preparation.startVariables && !built(chosen)) chat.mvu.openingStartVariables = structuredClone(preparation.startVariables);
+        else if (preparation.messageVariables) opening.variables[opening.swipeId || 0] = structuredClone(preparation.messageVariables);
         // Preserve completion only when every opening carries real MVU data.
-        if (opening.variables.length && opening.variables.every(value => value && typeof value === 'object' && !Array.isArray(value) && value.stat_data !== undefined && value.schema !== undefined)) {
+        if (opening.variables.length && opening.variables.every(built)) {
           chat.mvu.openingInitialization = { version: 2, status: 'complete', completedAt: Date.now() };
         }
       }
@@ -279,7 +295,11 @@ export function createConversationInitialization(options) {
         chat.pendingOpeningMessageVariables = structuredClone(preparation.openingMessageVariables)
       }
     }
-    if (preparation && groupOfMode(chatMode) === 'play') applyOpeningCommand(chat, preparation.startCommand, preparation.messageVariables, now)
+    // (values waiting for MVU's first build are not written into the setting floor's baseline either)
+    // a game its player set up before it began (游戏准备, a stage opening page) is not a never-played chat, even before
+    // the player's first message (the stage's card pages read it as saved)
+    if (preparation?.startCommand && groupOfMode(chatMode) === 'play') chat.openingPrepared = true
+    if (preparation && groupOfMode(chatMode) === 'play') applyOpeningCommand(chat, preparation.startCommand, chat.mvu?.openingStartVariables ? {} : preparation.messageVariables, now)
     delete chat.sceneOpeningWorldbook
     const hasSession = typeof sessionId === 'string' && sessionId !== ''
     if (importDraft) {
@@ -411,12 +431,16 @@ export function createConversationInitialization(options) {
     if (chat === undefined) return null
     const card = (chat.mode || 'story') === 'card' && str(chat.cardPath) === '' ? null : await cards.readChat(chat)
     await appendNativeOpening(sessionId, chat, card, undefined, true)
-    return await present(chat, card)
+    const synced = await opening.recover(chat)
+    return await present(synced, card)
   }
 
   return Object.freeze({
     start: input => serialize(input.sessionId, () => initialize(input)),
     prepareImport: input => serialize(input.sessionId, () => initialize({ ...input, mode: 'play', requestMode: 'dsh', importDraft: true })),
-    ensureOpening: sessionId => serialize(sessionId, () => recover(sessionId))
+    ensureOpening: sessionId => serialize(sessionId, () => recover(sessionId)),
+    switchOpening: opening.switchOpening,
+    setPlayerName: opening.setPlayerName,
+    openingRequest: opening.request
   })
 }

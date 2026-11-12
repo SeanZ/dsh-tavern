@@ -135,3 +135,13 @@ function PhoneComposerPlus(props) {
             h("button", { type: "button", role: "menuitem", "data-fork-phone-item": "attach", onClick: attach }, phoneModIcon("attach"), "附件"),
             editTarget ? h("button", { type: "button", role: "menuitem", "data-fork-phone-item": "edit", onClick: function () { editTarget.click(); } }, phoneModIcon("edit"), "编辑上一条输入") : null));
 }
+
+function MobileComposerStatsToggle() {
+    const [open, setOpen] = React.useState(false);
+    const label = open ? "收起运行信息" : "展开运行信息";
+    return React.createElement("button", {
+        type: "button", className: "dsh-tavern-mobile-stats-toggle",
+        "aria-label": label, title: label, "aria-expanded": open,
+        onClick: function () { setOpen(!open); }
+    }, React.createElement("span", { "aria-hidden": "true", className: "dsh-tavern-mobile-stats-glyph" }, "⌃"));
+}

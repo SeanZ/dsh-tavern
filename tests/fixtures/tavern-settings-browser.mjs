@@ -5,7 +5,7 @@ import { chromium } from 'playwright'
 // Exercise the public plugin registration and real React effects/events. Only
 // the DSH host and HTTP boundary are fixtures; no component source extraction.
 // stageClient: the page loads the built stage client through the core's hold and loader, as in production.
-export async function openTavernSettings(t, { settings, respond, exposeConversationModels = false, section: pageSection, provided, sessionId, beforeRender, stageClient = false, browserExecutable, renderPropsCode, contextOptions } = {}) {
+export async function openTavernSettings(t, { settings, respond, exposeConversationModels = false, section: pageSection, provided, sessionId, beforeRender, stageClient = false, displayPreferences = false, browserExecutable, renderPropsCode, contextOptions } = {}) {
   const executablePath = browserExecutable || process.env.PLAYWRIGHT_EXECUTABLE_PATH
   const browser = await chromium.launch({ headless: true, args: ['--mute-audio'], ...(executablePath ? { executablePath } : {}) })
   t.after(() => browser.close())
@@ -60,7 +60,7 @@ export async function openTavernSettings(t, { settings, respond, exposeConversat
   if (exposeConversationModels) source = source.replace('function TavernConversationBackgroundModel(props) {', 'window.__modelSlotsChat = TavernConversationBackgroundModel; function TavernConversationBackgroundModel(props) {')
   await page.addScriptTag({ content: source })
   const section = provided ? '' : pageSection || (sessionId ? 'dsh-tavern: conversation settings tab' : 'dsh-tavern: settings section')
-  await page.evaluate(async ({ section, provided, sessionId, stageClient, renderPropsCode }) => {
+  await page.evaluate(async ({ section, provided, sessionId, stageClient, displayPreferences, renderPropsCode }) => {
     let Settings
     // stageClient: the core's stage client hold and loader run, and the loader's ctx.plugin applies the stage plugin
     // with the core's tavernStageFrontend.
@@ -76,7 +76,10 @@ export async function openTavernSettings(t, { settings, respond, exposeConversat
       sessions: { subagentAddress() {}, list: { getSnapshot: () => ({ byId: {} }), subscribe: () => () => {} } },
       betterSidebar: { registerTab(spec) { Settings = () => modules.react.createElement(spec.component, { scope: { sessionId } }); } },
       tavernSessionSignals: { subscribe() { return () => {} } },
-      effect(run, label) { if (label === section || (stageClient && stageEffects.includes(label))) return run() },
+      effect(run, label) {
+        if (label === section || (stageClient && stageEffects.includes(label)) ||
+          (displayPreferences && label === 'dsh-tavern: global display preferences')) return run()
+      },
       slots: { inject(name, run) { window.__tavernTestSlots.push(name); return run() }, register(_spec, Component) { Settings = Component } }
     })
     // A renamed or removed section would otherwise leave the test waiting forever.
@@ -84,7 +87,7 @@ export async function openTavernSettings(t, { settings, respond, exposeConversat
       if (Date.now() > deadline) throw new Error('No settings section ' + JSON.stringify(section || provided))
     const renderProps = renderPropsCode ? new Function('modules', 'return ' + renderPropsCode)(modules) : {};
     modules['react-dom/client'].createRoot(document.querySelector('main')).render(modules.react.createElement(Settings, { renderSlot: () => null, ...renderProps }))
-  }, { section, provided, sessionId, stageClient, renderPropsCode })
+  }, { section, provided, sessionId, stageClient, displayPreferences, renderPropsCode })
   t.after(() => { if (errors.length) throw Error(errors.join('\n')) })
   return { page, calls }
 }

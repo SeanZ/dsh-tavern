@@ -9,6 +9,7 @@ function fixture({ failCreate = false, failSend = false } = {}) {
   let transition = false
   const events = [], errors = [], busy = []
   const context = vm.createContext({
+    liveTavernView: { getSnapshot: () => ({ view: { playerName: 'Player' } }) },
     uiMode: 'play', openingPicker: { openings: [] },
     openingPerformance: { begin: () => ({ measure: (_name, run) => run(), finish() {} }) },
     playPrewarmRef: { current: { claim: async () => '' } },

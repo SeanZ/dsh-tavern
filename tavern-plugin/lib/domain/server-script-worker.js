@@ -23,7 +23,6 @@ process.on('message', message => {
   if (message.type === 'fetch-result') {
     const item = fetches.get(message.id)
     if (!item) return
-    fetches.delete(message.id)
     if (message.error) item.reject(new TypeError(message.error))
     else item.resolve(message)
   } else if (message.type === 'signal') {
@@ -38,13 +37,26 @@ function bridgeFetch(Response) {
   return async function fetch(input, init = {}) {
     const url = new URL(typeof input === 'string' ? input : input.url ?? String(input), ORIGIN)
     if (url.origin !== ORIGIN) return globalThis.fetch(url.href, init)
-    const id = ++fetchSequence
     const body = init.body === undefined || init.body === null ? undefined : String(init.body)
-    const result = await new Promise((resolve, reject) => {
-      fetches.set(id, { resolve, reject })
-      send({ type: 'fetch', id, path: url.pathname + url.search, method: String(init.method || 'GET').toUpperCase(), headers: init.headers || {}, body })
-    })
-    return new Response(Buffer.from(result.body, 'base64'), { status: result.status, headers: result.headers })
+    const method = String(init.method || 'GET').toUpperCase(), headers = init.headers || {}
+    const signal = init.signal === undefined ? input?.signal : init.signal
+    if (signal?.aborted) throw signal.reason
+    const id = ++fetchSequence
+    let abort
+    try {
+      const result = await new Promise((resolve, reject) => {
+        fetches.set(id, { resolve, reject })
+        if (signal) {
+          abort = () => reject(signal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+        }
+        send({ type: 'fetch', id, path: url.pathname + url.search, method, headers, body })
+      })
+      return new Response(Buffer.from(result.body, 'base64'), { status: result.status, headers: result.headers })
+    } finally {
+      fetches.delete(id)
+      if (abort) signal.removeEventListener('abort', abort)
+    }
   }
 }
 

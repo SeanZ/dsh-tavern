@@ -64,10 +64,15 @@ test('重生成携带身份与指导，非最新楼和后台忙碌不发写请�
 })
 
 test('失败重试使用现有 regenBody，服务端错误保留且清空交互面板', async t => {
-  const f = await fixture(t, { replies: { regenBody: { error: '前台正在生成' } } })
+  const events = [
+    { type: 'turn/start', seq: 1, data: { turn: 7 } },
+    { type: 'user/message', seq: 2, surfaceOp: 'append', data: { id: 'failed-input', role: 'user', content: [{ type: 'text', text: '失败输入' }], source: { kind: 'user', rpcId: 'r7' } } },
+    { type: 'turn/end', seq: 3, data: { turn: 7, reason: { kind: 'error' } } }
+  ]
+  const f = await fixture(t, { events, replies: { regenBody: { error: '前台正在生成' } } })
   await assert.rejects(f.service.retryFailed('s1'), /前台正在生成/)
   assert.equal(callsOf(f, 'replayTurn').length, 0)
-  assert.equal(callsOf(f, 'regenBody').length, 1)
+  assert.deepEqual(callsOf(f, 'regenBody'), [{ sessionId: 's1', guidance: '', retryFailedTurn: 7 }])
   assert.equal(f.client.playControlsFeature.storyActions.interactions.regeneration.getSnapshot(), null)
 })
 
@@ -228,4 +233,14 @@ test('中断后遗留的持久输入不归入下一层，导入的多条输入�
     { role: 'assistant', turn: 5, text: '导入回复', messageUid: 'imported' }
   ] })
   assert.deepEqual(plain(f.snapshot().floors.map(floor => floor.inputs.map(input => input.text))), [[], ['新输入'], ['导入一', '导入二']])
+})
+
+
+test('编辑回执保留上游排队状态，不把未应用的修改当作已保存', async t => {
+  const f = await fixture(t, { replies: {
+    getBodyEdit: args => ({ edit: { messageUid: args.messageUid, role: args.role || 'assistant', token: 'token', parts: [] } }),
+    saveBodyEdit: { view: null, queued: true, queuedCount: 1 }
+  } })
+  assert.deepEqual(plain(await f.service.editReply.save('s1', f.target(), { token: 'token', texts: ['排队正文'] })), { view: null, queued: true })
+  assert.deepEqual(plain(await f.service.editInput('s1', f.target(), '排队输入')), { view: null, queued: true })
 })
