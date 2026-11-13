@@ -193,3 +193,21 @@ test('宿主镜像通知按消息合并，不以语法组或 partIndex 重复运
   stops.forEach(stop=>stop())
  }finally{dom.window.close()}
 })
+
+test('消息在渲染通知前全部销毁时取消通知，单个组销毁不取消其余组',async()=>{
+ const dom=await hostDom()
+ try{
+  const {window}=dom,{document}=window;window.eval(read('helper-host.js')+';window.mountLayer=mountTavernScriptLayer')
+  const events=[];window.addEventListener('dsh-tavern-message-rendered',event=>events.push(event.detail.messageId))
+  const mount=messageId=>{const native=document.createElement('div'),layer=document.createElement('div');native.textContent='正文';document.body.append(native,layer);return window.mountLayer({native,layer,sessionId:'synthetic',messageId})}
+  const first=mount(8),second=mount(8);first();second()
+  const third=mount(9),fourth=mount(9);fourth()
+  await new Promise(resolve=>setTimeout(resolve,120))
+  assert.deepEqual(events,[9])
+  const latest=mount(9)
+  third()
+  await new Promise(resolve=>setTimeout(resolve,120))
+  assert.deepEqual(events,[9,9])
+  latest()
+ }finally{dom.window.close()}
+})

@@ -30795,11 +30795,25 @@ function bindTavernFontZoom(node, win) {
         const tavernRenderedAnnouncements = new Map();
         function announceTavernMessageRendered(view, sessionId, messageId) {
             const key = String(sessionId) + ":" + String(messageId);
-            view.clearTimeout(tavernRenderedAnnouncements.get(key));
-            tavernRenderedAnnouncements.set(key, view.setTimeout(function () {
+            let entry = tavernRenderedAnnouncements.get(key);
+            if (!entry) {
+                entry = { timer: null, owners: new Set() };
+                tavernRenderedAnnouncements.set(key, entry);
+            }
+            const owner = {};
+            entry.owners.add(owner);
+            view.clearTimeout(entry.timer);
+            entry.timer = view.setTimeout(function () {
                 tavernRenderedAnnouncements.delete(key);
                 view.dispatchEvent(new view.CustomEvent("dsh-tavern-message-rendered", { detail: { sessionId: String(sessionId), messageId: Number(messageId) } }));
-            }, 80));
+            }, 80);
+            // 同一消息的多个正文组共享通知；最后一个挂载点销毁才取消。
+            return function () {
+                entry.owners.delete(owner);
+                if (entry.owners.size || tavernRenderedAnnouncements.get(key) !== entry) return;
+                view.clearTimeout(entry.timer);
+                tavernRenderedAnnouncements.delete(key);
+            };
         }
         function mountTavernScriptLayer(options) {
             const native = options.native, layer = options.layer;
@@ -30824,9 +30838,10 @@ function bindTavernFontZoom(node, win) {
             rebuild();
             layerObserver.observe(layer, { childList: true, subtree: true, characterData: true, attributes: true });
             nativeObserver.observe(native, { childList: true, subtree: true, characterData: true });
-            announceTavernMessageRendered(view, options.sessionId, options.messageId);
+            const cancelAnnouncement = announceTavernMessageRendered(view, options.sessionId, options.messageId);
             return function () {
                 disposed = true;
+                cancelAnnouncement();
                 layerObserver.disconnect();
                 nativeObserver.disconnect();
                 // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。

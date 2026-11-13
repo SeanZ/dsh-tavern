@@ -18,11 +18,13 @@ test('正文媒体 portal、代码与提及交互、列表舞台坐标及流式�
 import * as ReactDOM from ${JSON.stringify(host.resolve('react-dom'))};
 import {createRoot} from ${JSON.stringify(host.resolve('react-dom/client'))};
 import * as DshUi from ${JSON.stringify(primitives)};
-import {renderBodyMarkdown,createBodyRenderPlan} from ${JSON.stringify(path.join(root,'lib/domain/body-renderer.js'))};
+import {renderBodyMarkdown as convertBodyMarkdown,createBodyRenderPlan} from ${JSON.stringify(path.join(root,'lib/domain/body-renderer.js'))};
 import bodyDom from ${JSON.stringify(path.join(root,'lib/domain/body-dom.cjs'))};
 import bubbleLine from ${JSON.stringify(path.join(root,'src/client/bubble-line.cjs'))};
 import stageEntry from ${JSON.stringify(path.join(root,'packages/dsh-tavern-stage/src/client/chat-entry.cjs'))};
 import {segmentPluginText} from ${JSON.stringify(path.join(root,'lib/domain/plugin-text-segments.js'))};
+window.bodyConversions=0;
+const renderBodyMarkdown=(...args)=>{window.bodyConversions++;return convertBodyMarkdown(...args)};
 const {sanitizeTavernBodyHtml}=bodyDom;
 const {parseBubbles,bubbleLiteralLines}=bubbleLine;
 const galParagraphCount=()=>0;
@@ -67,6 +69,13 @@ window.show();`
    await page.evaluate(()=>{window.oldMedia=document.querySelector('.media');window.show('\\n\\n追加正文')})
    await page.getByText('追加正文',{exact:false}).waitFor()
    assert.deepEqual(await page.evaluate(()=>({same:oldMedia===document.querySelector('.media'),open:document.querySelector('details').open,mountCount,events})),{same:true,open:true,mountCount:1,events:['media','file',{session:'synthetic',turn:7,para:4}]})
+   const conversions=await page.evaluate(()=>window.bodyConversions)
+   await page.evaluate(()=>window.show('\\n\\n追加正文'))
+   await page.waitForTimeout(100)
+   assert.equal(await page.evaluate(()=>window.bodyConversions),conversions,'相同正文重绘不重复转换')
+   await page.mouse.wheel(0,500)
+   await page.waitForTimeout(100)
+   assert.equal(await page.evaluate(()=>window.mountCount),1,'滚动不重挂媒体')
    assert.deepEqual(errors,[])
   }
  }finally{await browser?.close();await rm(dir,{recursive:true,force:true})}
