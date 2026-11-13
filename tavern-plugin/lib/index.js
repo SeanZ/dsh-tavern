@@ -3930,11 +3930,8 @@ export async function apply(ctx) {
   })
   const storyService = createStoryService({
     snapshots: floorSnapshots, chats: { forSession: chatForSession, update: updateChat },
-    sessions: { agent: id => ctx.get('agents')?.get(id),
-      get: id => sessionStore.get(id) || agentRegistry.get(id)?.session, flush: session => sessionStore.flush(session) },
-    timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch,
-    prepareFork: (sessionId, turn) => prepareConversationFork('', sessionId, turn),
-    bindFork: input => forkChat('', input.sessionId, input.targetSessionId, input.turn, input.sourceRevision, input.atSeq) })
+    sessions: { agent: id => ctx.get('agents')?.get(id), flush: session => sessionStore.flush(session) },
+    timeline: storyTimeline, activity: chat => backgroundTasks.activity(chat), project: bodyEditorProject, present: presentStory, sessionPatch })
 
   // 小组件变量、CG 图鉴、舞台计时器（stage-module.js）。
   stageRuntime.services({profileData, sessionSignals, conversationRegistry, tavernScriptDispatch, tavernScriptHostAdapter, readSessionMap, chatForSession, readRoundView, chatPersistence, storyTimeline, patchChat, cardStorage, cardPageOpening:projectCardPageOpening})

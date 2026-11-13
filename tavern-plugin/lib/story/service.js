@@ -1,13 +1,12 @@
 import { staleVariablesOf } from './state.js'
 import { createFloorResultSwitch } from './floor-result-switch.js'
-import { createFloorFork } from './floor-fork.js'
 import { interruptStoryQueue } from './interrupt-story-queue.js'
 import { createInterruptedRoundTombstone } from './interrupted-round-tombstone.js'
 import { sessionEvents } from '../domain/session-events.js'
 import { compactedHistoryWarning } from '../domain/rollback-compaction.js'
 import { createStaleVariablesGuard, dropQueuedPlayerInputs } from './stale-variables-guard.js'
 
-// 故事操作复用同一套存档、历史事务和原生会话，不另建结算或分叉引擎。
+// 故事操作复用同一套存档、历史事务和原生会话，不另建结算引擎；从楼层创建分支走通用对话分叉。
 export function createStoryService({
   snapshots,
   chats,
@@ -16,9 +15,7 @@ export function createStoryService({
   activity,
   project,
   present,
-  sessionPatch,
-  prepareFork,
-  bindFork
+  sessionPatch
 }) {
   return Object.freeze({
     snapshots,
@@ -30,12 +27,6 @@ export function createStoryService({
       project,
       present,
       sessionPatch
-    }),
-    fork: createFloorFork({
-      sessions: { get: sessions.get },
-      prepare: prepareFork,
-      snapshots,
-      bind: bindFork
     })
   })
 }

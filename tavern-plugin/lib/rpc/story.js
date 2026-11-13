@@ -1,8 +1,8 @@
 // 故事公开方法保持稳定，依赖只包含本组实际使用的服务。
+// 从楼层创建分支走通用的 prepareConversationFork / forkChat（rpc/conversations.js），这里不再有专用分叉入口。
 export function createStoryHandlers({
   snapshots,
   resultSwitch,
-  fork,
   refreshDisplay,
   interruptQueued,
   notifyTimeline
@@ -17,12 +17,6 @@ export function createStoryHandlers({
     },
     async getFloorSnapshots(args) {
       return await snapshots.read(args || {})
-    },
-    async prepareFloorFork(args) {
-      return await fork.prepare(args || {})
-    },
-    async forkFloor(args) {
-      return await fork.fork(args || {})
     },
     async interruptStoryQueue(args) {
       return await interruptQueued(args || {})
