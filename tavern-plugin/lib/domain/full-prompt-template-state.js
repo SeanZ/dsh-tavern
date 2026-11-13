@@ -1,4 +1,4 @@
-import {projectTemplateMessage} from './template-message.js'
+import {projectTemplateMessage, templateMessageFields as templateFields} from './template-message.js'
 import { applyTemplateStateChanges } from './template-state-patch.js'
 import { isDeepStrictEqual } from 'node:util'
 import { projectTavernHelperContext, replaceTavernHelperMessages } from './tavern-helper-context.js'
@@ -6,7 +6,6 @@ import { assertPluginJson } from './tavern-chat-plugin-data.js'
 
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
 const fixedMessageFields = ['mes', 'is_user', 'is_system', 'name', 'swipe_id', 'swipes']
-const templateFields = ['variables_initialized', 'is_ejs_processed', 'template_display', 'template_rendered']
 
 /** Detached upstream-shaped state, not a second authoritative chat history. */
 export function projectFullPromptTemplateState(chat) {

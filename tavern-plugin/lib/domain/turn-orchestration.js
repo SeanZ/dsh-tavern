@@ -1,3 +1,4 @@
+import { inputTemplateDigest, preparationMessageContent, preparationTemplateHeaderChange, mergeInputTemplateData } from './foreground-template-state.js'
 import { bodyGenerationFailure } from './body-generation-failure.js'
 import { createScopedMessages, isScopedMessages } from './scoped-messages.js'
 import { promptSection } from './prompt-section.js'
@@ -71,7 +72,7 @@ function storageStamp(change) {
 }
 
 function compatiblePreparationHeaderChange({ path }) {
-  return path[0] === 'variables' || path[0] === 'tavernHelperScriptVariables'
+  return preparationTemplateHeaderChange({ path }) || path[0] === 'variables' || path[0] === 'tavernHelperScriptVariables'
     || (path[0] === 'macroState' && path[1] === 'userName')
     || (path[0] === 'rollbackUndo' && path[1] === 'storageRevision')
 }
@@ -181,7 +182,7 @@ function inputVariablesChanged(stage, row, baseline) {
 
 // Store what the template wrote alongside the old values so abort can undo
 // its changes without reverting later writes.
-function stageTemplateInput(chat, turn, source, projected, baselineDigest) {
+function stageTemplateInput(chat, turn, source, projected, baselineDigest, templateBaseline) {
   if (chat.promptTemplateInput && chat.promptTemplateInput.turn !== turn) restoreTemplateInput(chat)
   const before = chat.promptTemplateInput?.before || { variables: clone(chat.variables ?? null), initial: clone(chat.promptTemplateInitialVariables ?? null) }
   // The template input row inherits the previous floor; a blank opening has none, so it
@@ -190,7 +191,7 @@ function stageTemplateInput(chat, turn, source, projected, baselineDigest) {
   const message = inherited === undefined ? projected.message
     : { ...projected.message, variables: (projected.message.variables || [{}]).map(value => ({ ...inherited, ...value })) }
   const after = { variables: clone(projected.scopes.local ?? null), initial: clone(projected.scopes.initial ?? null) }
-  chat.promptTemplateInput = { turn, source, message, before, after, inputVariablesDigest: baselineDigest }
+  chat.promptTemplateInput = { turn, source, message, before, after, inputVariablesDigest: baselineDigest, inputTemplateDigest: templateBaseline }
   chat.variables = projected.scopes.local
   chat.promptTemplateInitialVariables = projected.scopes.initial
 }
@@ -512,7 +513,8 @@ export function createTurnOrchestrator(options) {
       if (template) Object.assign(userFields, clone(template.message), { templateInputSource: userText })
       userFields.placeholder = true
       userFields.native = true
-      const user = { ...savedUser, ...userFields }
+      const user = mergeInputTemplateData({ ...savedUser, ...userFields }, savedUser,
+        template?.inputTemplateDigest ?? inputTemplateDigest(savedUser))
       const assistant = {
         role: 'assistant', text: '', sourceText: '', displayText: '', displayMode: 'html',
         ts: now(), native: true, turn, placeholder: true
@@ -543,6 +545,9 @@ export function createTurnOrchestrator(options) {
           if (currentRevision !== revision) {
             const concurrent = diffJson(baseline, captureChatHeader(selected.chat)).filter(change => !storageStamp(change))
             if (!concurrent.every(compatiblePreparationHeaderChange)) throw preparationConflict()
+            if (concurrent.some(change => change.path[0] === 'promptTemplateInput')
+              && !isDeepStrictEqual(preparationMessageContent(baseline.promptTemplateInput.message),
+                preparationMessageContent(selected.chat.promptTemplateInput.message))) throw preparationConflict()
             refreshNeeded = concurrent.some(change => change.path[0] !== 'rollbackUndo')
             changes = rebaseChatChanges(prepared, concurrent)
             if (!changes) throw preparationConflict()
@@ -556,24 +561,31 @@ export function createTurnOrchestrator(options) {
               const before = chat.messages[index] ?? historicalRows.get(index)
               const after = changed.chat.messages[offset]
               if (!before || !after) throw preparationConflict()
-              const { variables: _beforeVariables, messageUid: _beforeUid, displayRuntime: _beforeDisplay, ...beforeMessage } = before
-              const { variables: _afterVariables, messageUid: _afterUid, displayRuntime: _afterDisplay, ...afterMessage } = after
-              if (!sameChatMessageIdentity(before, after, index) || !isDeepStrictEqual(beforeMessage, afterMessage)) throw preparationConflict()
+              if (!sameChatMessageIdentity(before, after, index)
+                || !isDeepStrictEqual(preparationMessageContent(before), preparationMessageContent(after))) throw preparationConflict()
               changedRows.set(index, after)
-              if (!isDeepStrictEqual(before.variables, after.variables)) refreshNeeded = true
+              if (!isDeepStrictEqual(before.variables, after.variables)
+                || !isDeepStrictEqual(inputTemplateDigest(before), inputTemplateDigest(after))) refreshNeeded = true
               if (index === savedUserIndex) latestUser = after
             }
           }
-          const nextUser = { ...latestUser, ...userFields }
-          if (inputVariablesChanged(template, latestUser, savedUser)) {
-            copyInputVariables(nextUser, latestUser)
-            if (template) {
-              const staged = { ...template.message }
-              copyInputVariables(staged, latestUser)
-              changes.push(...diffJson(template.message, staged).map(change => ({
-                ...change, path: ['promptTemplateInput', 'message', ...change.path]
-              })))
-            }
+          const latestHeader = applyJsonChangesShared(captureChatHeader(selected.chat), changes)
+          const currentTemplate = template ? latestHeader.promptTemplateInput : null
+          const desiredUser = { ...latestUser, ...userFields,
+            ...(currentTemplate ? clone(currentTemplate.message) : {}) }
+          const nextUser = mergeInputTemplateData(desiredUser, latestUser,
+            currentTemplate?.inputTemplateDigest ?? inputTemplateDigest(savedUser))
+          if (inputVariablesChanged(currentTemplate, latestUser, savedUser)) copyInputVariables(nextUser, latestUser)
+          if (currentTemplate) {
+            const staged = { ...currentTemplate.message }
+            copyInputVariables(staged, nextUser)
+            if (nextUser.tavernPluginData) staged.tavernPluginData = clone(nextUser.tavernPluginData)
+            else delete staged.tavernPluginData
+            const stageChanges = diffJson(currentTemplate.message, staged)
+            if (stageChanges.length) refreshNeeded = true
+            changes.push(...stageChanges.map(change => ({
+              ...change, path: ['promptTemplateInput', 'message', ...change.path]
+            })))
           }
           if (template && withUser) changes.push({ op: 'set',
             path: ['timeline', 'operations', foregroundOperation.operationId, 'placeholder', 'inputVariablesDigest'],
@@ -604,6 +616,8 @@ export function createTurnOrchestrator(options) {
           copyInputVariables(user, savedUser)
           copyInputVariables(template.message, savedUser)
         }
+        if (user.tavernPluginData) template.message.tavernPluginData = clone(user.tavernPluginData)
+        else delete template.message.tavernPluginData
         operation.placeholder.inputVariablesDigest = inputVariablesDigest(user)
       }
       if (savedUser) chat.messages[savedUserIndex] = user
@@ -690,10 +704,12 @@ export function createTurnOrchestrator(options) {
       const promptOnly = regexScripts.filter(script => script?.promptOnly === true)
       runtimeUserText = projectBackgroundInput(runtimeUserText, regexScripts.filter(script => script?.promptOnly !== true), 1).text
       if (typeof options.projectUserTemplate === 'function' && runtimeUserText !== '') {
-        const baselineDigest = inputVariablesDigest(chat.messages[requestUserIndex(chat.messages, requestId)])
+        const inputRow = chat.messages[requestUserIndex(chat.messages, requestId)]
+        const baselineDigest = inputVariablesDigest(inputRow)
+        const templateBaseline = inputTemplateDigest(inputRow)
         const projected = await options.projectUserTemplate({ chat, card, turn, text: runtimeUserText, preview })
         runtimeUserText = projected.message.text
-        stageTemplateInput(chat, turn, userText, projected, baselineDigest)
+        stageTemplateInput(chat, turn, userText, projected, baselineDigest, templateBaseline)
       }
       const prompted = projectBackgroundInput(runtimeUserText, promptOnly, 1)
       if (prompted.changed) {
@@ -834,7 +850,11 @@ export function createTurnOrchestrator(options) {
         const current = regeneration(latest, plan.systemPromptText)
         if (isDeepStrictEqual(current.regenerationMaterials.generationState, preparedState.regenerationMaterials.generationState)
           && isDeepStrictEqual(latest.macroState?.userName, plannedUserName)
-          && isDeepStrictEqual(current.regenerationState.tavernHelperScriptVariables, preparedState.regenerationState.tavernHelperScriptVariables)) return undefined
+          && isDeepStrictEqual(current.regenerationState.tavernHelperScriptVariables, preparedState.regenerationState.tavernHelperScriptVariables)) {
+          // 仅模板标记变化时更新冻结状态，复用已生成的文本，避免重新执行随机宏。
+          return isDeepStrictEqual(current.regenerationState, preparedState.regenerationState)
+            ? undefined : buildFrame(latest, plan, current)
+        }
         const refreshed = await planBody(latest)
         return buildFrame(latest, refreshed, regeneration(latest, refreshed.systemPromptText))
       }) || frame
