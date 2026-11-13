@@ -202,7 +202,7 @@ function createStoryRenderAdapter(dependencies) {
 		}
 
 		return Object.freeze({
-			/** The floor's projection, Helper context and run policy from the Tavern view. */
+			/** 读取楼层投影、Helper 上下文和运行策略；storyTurn 参数接收楼层的消息 target。 */
 			projectFloor: async function (sessionId, storyTurn) {
 				const floor = storyTranscript.resolve(sessionId, storyTurn);
 				return floorOf(await viewOf(tavernStorySessionArgument(sessionId, "projectFloor")), floor);
@@ -218,8 +218,8 @@ function createStoryRenderAdapter(dependencies) {
 			StaticHtml: TavernFloorStaticHtml,
 			sanitizeHtml: function (html) { return sanitizeTavernFloorHtml(html, window.document); },
 			/**
-			 * Static HTML of what a floor shows now: its message frames through their bounded
-			 * snapshot channel, other parts from the page. Returns { html, truncated, frames, missed }.
+			 * 读取当前楼层的静态 HTML：消息 frame 通过有超时限制的快照通道获取，其它部分从页面读取。
+			 * 返回 { rendererVersion, html, truncated, frames, missed }。
 			 */
 			captureFloorSnapshot: async function (element, budget) {
 				if (!element || element.nodeType !== 1) throw new TypeError("captureFloorSnapshot 需要楼层容器或 iframe 元素");
