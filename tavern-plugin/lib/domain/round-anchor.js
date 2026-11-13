@@ -68,7 +68,12 @@ export function createRoundAnchorResolver({ events, nodes }) {
     if (!validAnchor(anchor)) return null
     anchor = upgradedAnchor(anchor, references)
     // 整段修复的首个替换覆盖多个旧锚点；按显式故事身份找新正文，不能用整段血缘归属。
-    const candidates = repaired.get(anchor.turn)
+    // 锚点保存的 turn 是实际原生轮次：修复把多层正文写在同一个编辑轮，各层的故事身份只在
+    // 回复事件的 source.tavernStoryTurn 上，所以锚点指向的回复自带身份时按它查；没有显式
+    // 身份的旧锚点（原生轮即故事轮）仍按原生轮次兼容。
+    const anchored = bySeq.get(anchor.reply)
+    const explicit = anchored?.type === 'assistant/message' ? Number(anchored.data?.message?.source?.tavernStoryTurn) : NaN
+    const candidates = repaired.get(Number.isSafeInteger(explicit) && explicit >= 1 ? explicit : anchor.turn)
     if (candidates) {
       if (candidates.length !== 1) return { input: null, reply: null, ambiguous: true }
       const { event, repair } = candidates[0]

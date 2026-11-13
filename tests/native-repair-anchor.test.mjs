@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { nativeRepairGame, repairEvidence } from './fixtures/native-repair-game.mjs'
-import { applyNativeSurfaceRepair, planNativeSurfaceRepair } from '../tavern-plugin/lib/domain/native-surface-repair.js'
+import { applyNativeSurfaceRepair, planNativeSurfaceRepair, recordNativeSurfaceRepair, repairNativeSurface } from '../tavern-plugin/lib/domain/native-surface-repair.js'
 import { createRoundAnchorResolver } from '../tavern-plugin/lib/domain/round-anchor.js'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import { Session } from './fixtures/dsh-session-host.mjs'
@@ -89,4 +89,56 @@ test('同一故事有多个有效修复正文时不猜测归属', () => {
     reply: null,
     ambiguous: true,
   })
+  // 修复后记下的新锚点直接指向其中一条修复正文：同一故事身份仍重复，照样报歧义。
+  assert.deepEqual(createRoundAnchorResolver({ events, nodes: [1, 2] })({ turn: 9, input: 0, reply: 1 }), {
+    input: null,
+    reply: null,
+    ambiguous: true,
+  })
+})
+
+// 故事分叉在空白 Session 上整段建立原生上下文：多层正文写在同一个编辑轮，锚点保存的是该编辑轮的
+// 原生轮次（都是 1），各层的故事身份只在回复事件的 source.tavernStoryTurn 上。
+function seededFork() {
+  const { chat } = nativeRepairGame()
+  for (const row of chat.messages) delete row.nativeAnchor
+  chat.id = 'fork-save'
+  const session = Session.create('fork-session')
+  const repaired = repairNativeSurface(session, chat, { repairId: 'seed' })
+  assert.equal(repaired.plan.status, 'full')
+  assert.equal(repaired.applied, true)
+  assert.equal(recordNativeSurfaceRepair(chat, structuredClone(chat), repaired.anchors), true)
+  return { session, chat }
+}
+
+test('空白 Session 整段修复后，各层新锚点按自己的故事身份定位，不被同一编辑轮的开场顶替', () => {
+  const { session, chat } = seededFork()
+  const anchored = chat.messages.filter((row) => row.nativeAnchor)
+  assert.deepEqual(anchored.map((row) => row.turn), [2, 3])
+  assert.deepEqual(anchored.map((row) => row.nativeAnchor.turn), [1, 1], '同一编辑轮写入，原生轮次相同')
+  const evidence = repairEvidence(session)
+  const resolve = createRoundAnchorResolver(evidence)
+  for (const row of anchored) {
+    const found = resolve(row.nativeAnchor)
+    assert.equal(found.ambiguous, undefined, `第 ${row.turn} 层身份唯一`)
+    const reply = evidence.events.find((event) => event.seq === found.reply)
+    const input = evidence.events.find((event) => event.seq === found.input)
+    assert.equal(reply?.data?.message?.source?.tavernStoryTurn, row.turn)
+    assert.equal(reply.data.message.content[0].text, row.text)
+    assert.equal(input?.data?.id, reply.data.message.id.replace(/:reply$/, ':input'))
+  }
+})
+
+test('空白 Session 整段修复后立即核对为一致，再次修复无动作；冷读后不变', () => {
+  const { session, chat } = seededFork()
+  const count = sessionEvents(session).length
+  for (let retry = 0; retry < 3; retry++) {
+    const next = planNativeSurfaceRepair({ chat, ...repairEvidence(session) })
+    assert.equal(next.status, 'intact', JSON.stringify(next))
+    assert.equal(repairNativeSurface(session, chat, { repairId: `retry-${retry}` }).applied, false)
+  }
+  assert.equal(sessionEvents(session).length, count)
+  const restored = Session.fromRestore(session.id, sessionEvents(session).map((event) => JSON.parse(JSON.stringify(event))))
+  assert.equal(planNativeSurfaceRepair({ chat, ...repairEvidence(restored) }).status, 'intact')
+  assert.equal(repairNativeSurface(restored, chat, { repairId: 'cold' }).applied, false)
 })
