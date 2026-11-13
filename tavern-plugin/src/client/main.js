@@ -12,6 +12,18 @@ window.__ModuleLoader__.load({
 			// portals the sidebar theme menu into the host logo row.
 			let ReactDOM = (function () { try { return require("react-dom"); } catch (_) { return null; } })();
 
+        const tavernShowdown = (function () { const module = { exports: {} }, exports = module.exports;
+            __TAVERN_BODY_SHOWDOWN__
+            return module.exports;
+        })();
+        // @include-domain-module body-version.cjs
+        // @include-domain-module body-markdown.cjs
+        // @include-domain-module body-render-plan.cjs
+        // @include-domain-module body-dom.cjs
+        const renderBodyMarkdown = createTavernBodyMarkdown(tavernShowdown);
+        // @include body-markdown.js
+        // @include body-group.js
+
 		// @include crypto-digest.js
 		// @include stylesheet.js
         // @include surfaces.cjs

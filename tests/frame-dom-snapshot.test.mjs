@@ -124,3 +124,14 @@ test('超宽 DOM、超长文本和中文属性受真实访问与 UTF-8 字节上
     dom.window.close()
   }
 })
+
+test('开放 shadow 显示树使用同一节点与字节预算，不读取宿主隐藏的 light DOM',async()=>{
+ const dom=await snapshotDom('<main>隐藏原文</main>')
+ try{
+  const host=dom.window.document.querySelector('main'),shadow=host.attachShadow({mode:'open'})
+  for(let i=0;i<20;i++){const p=dom.window.document.createElement('p');p.textContent='显示正文'+i;shadow.appendChild(p)}
+  const result=dom.window.capture(dom.window.document.body,{nodes:5,bytes:100})
+  assert.equal(result.truncated,true);assert.ok(result.visited<=5);assert.ok(result.bytes<=100)
+  assert.match(result.dom,/显示正文/);assert.doesNotMatch(result.dom,/隐藏原文/)
+ }finally{dom.window.close()}
+})

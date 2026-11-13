@@ -158,7 +158,14 @@ function projectStatusView(messages, projections, options, compile, summary) {
   const matchedRows=[...matchStates.values()]
   function filter(projection,id) {
     summary?.onFilter?.()
-    const parts=(projection.parts || []).filter(part=>!(part.kind==='html' && (contents.has(contentOf(part)) || (partState && partIndex.has(partState,part)) || legacyRemoved.has(part) || matchedRows.some(rows=>rows[id]?.removed.has(part)))))
+    let gap = false
+    const parts = []
+    for (const part of projection.parts || []) {
+      if (part.kind==='html' && (contents.has(contentOf(part)) || (partState && partIndex.has(partState,part)) || legacyRemoved.has(part) || matchedRows.some(rows=>rows[id]?.removed.has(part)))) { gap = true; continue }
+      // 保留抽取后的旧索引，只在副本上记录正文不可跨越的缺口。
+      parts.push(gap ? {...part,bodyBreakBefore:true} : part)
+      gap = false
+    }
     return parts.length===(projection.parts || []).length ? projection : {...projection,parts,text:parts.map(part=>part.kind==='html'?contentOf(part):part.text || '').join('')}
   }
   const contentSignature=JSON.stringify([...contents])

@@ -471,7 +471,8 @@
 
 		function renderTavernProjection(projection, options) {
 			const h = React.createElement;
-			const parts = projectionPartsOf(projection);
+			const sourceParts = Array.isArray(projection?.parts) ? projection.parts : projectionPartsOf(projection);
+            const parts = createBodyRenderPlan(projection);
 			if (options.openingPreview && options.openingPreview.runtime) {
 				const content = '<div id="chat"><div class="mes" mesid="0" is_user="false"><div class="mes_text">' + (options.openingPreview.messageHtml !== undefined ? options.openingPreview.messageHtml : parts.map(function (part) {
 					if (part.kind === "html") return String(part.content !== undefined ? part.content : part.html || "");
@@ -479,22 +480,24 @@
 				}).join("\n")) + '</div></div></div>';
 				return h(TavernMessageFrame, Object.assign({}, options, { key: "opening-runtime", content: content, partIndex: 0, eager: options.eagerFrame }));
 			}
-			return parts.map(function (part, index) {
-				if (part.kind === "markdown") {
-					const renderMarkdown = function (text, key, offset = 0) { return h(bubblePublicationType(), { key: key, sessionId: options.sessionId, voiceScope: String(options.turn) + ":" + index + (offset ? ":plugin:" + key : ""), stageSource: options.forkStageSource, stageParaBase: parts.slice(0, index).reduce((n, part) => n + (part.kind === "markdown" ? galParagraphCount(part.text) : 0), 0), stageParaOffset: pluginTextPosition(part.text, offset), interrupted: options.interrupted, voiceAuto: options.voiceAuto, text: text, streaming: options.streaming, labels: tavernMarkdownLabels(options.codeLabels), codeLabels: options.codeLabels, fileMentions: options.mentions }); };
-					const markdown = options.plugin ? options.plugin.render(String(part.text || ""), index, renderMarkdown) : renderMarkdown(String(part.text || ""), index);
-					return options.scriptLayer && !options.streaming ? h(TavernScriptLayerPart, { key: index, layer: options.scriptLayer, partIndex: index, text: String(part.text || "") }, markdown) : markdown;
-				}
+            return parts.map(function (part, position) {
+                const index = part.frameIndex;
+                if (part.kind === "body") {
+                    const prepared = prepareTavernBodyGroup(part, sourceParts, options);
+                    const body = h(TavernBodyGroup, { ...options, key: index, text: part.text, prepared, labels: tavernMarkdownLabels(options.codeLabels), fileMentions: options.mentions });
+                    return options.scriptLayer && !options.streaming
+                        ? h(TavernScriptLayerPart, { key: index, layer: options.scriptLayer, partIndex: index, text: part.text }, body) : body;
+                }
 				// Rounds past the render depth keep their prose; the card's HTML waits for one click.
 				if (typeof options.deferHtml === "function") {
-					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== index) return null;
+					if (parts.findIndex(function (item) { return item.kind === "html"; }) !== position) return null;
 					return h("button", { key: index, type: "button", className: "dsh-tavern-btn dsh-tavern-render-round", title: "只有最近几轮渲染卡片界面（手机 1 轮，电脑 3 轮），更早的轮次只显示文字；点击后渲染本轮", onClick: options.deferHtml }, "渲染此轮");
 				}
 				// Plugin markers inside card HTML cannot be split out; show them after that part.
 				const pluginHtml = options.plugin && !options.openingPreview ? options.plugin.renderHtmlMarkers(String(part.content !== undefined ? part.content : part.html || "")) : null;
 				const content = pluginHtml ? pluginHtml.html : String(part.content !== undefined ? part.content : part.html || "");
 				// Keep the original frame identity when markers are moved after its HTML.
-				const html = options.trustedCardMode === true && !options.openingPreview && parseTavernInlineFragment(content, window.document)
+				const html = part.sourceKind !== "rendered" && !part.fenced && !part.statusKey && !Number.isInteger(part.statusRule) && options.trustedCardMode === true && !options.openingPreview && parseTavernInlineFragment(content, window.document)
 					? h(TavernInlineFragment, { key: index, content: content })
 					: h(TavernMessageFrame, { key: index, content: content, sessionId: options.sessionId, turn: options.turn, partIndex: index, frameOwner: options.frameOwner, frameSizing: options.frameSizing, helperContext: options.helperContext, helperContextReader: options.helperContextReader, openingPreview: options.openingPreview, onSelectOpening: options.onSelectOpening, onSubmitOpening: options.onSubmitOpening, trustedCardMode: options.trustedCardMode, eager: options.eagerFrame, executeSlash: options.executeSlash });
 				return pluginHtml && pluginHtml.after ? h(React.Fragment, { key: index }, html, pluginHtml.after) : html;

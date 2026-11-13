@@ -1,3 +1,9 @@
+        function TavernAutomaticStatusRuntime(props) {
+            const state = useLiveTavernView(props.sessionId, "automatic-status", [["mode"], ["statusBarPlacement"], ["tavernHelper"], ["tavernStatusViews"], ["tavernRuntimePolicy"]]);
+            const view = state.view;
+            return view && view.statusBarPlacement === "body" && isPlayMode(view.mode)
+                ? React.createElement(TavernPersistentStatusRuntime, { sessionId: props.sessionId, view, executeSlash: props.executeSlash, panels: "status" }) : null;
+        }
 		function TavernDockedPanel(props) {
 			const ref = React.useRef(null);
 			React.useLayoutEffect(function () {

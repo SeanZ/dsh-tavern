@@ -387,7 +387,7 @@ function BubbleRow(props) {
                 props.enter || null)));
 }
 
-// Drop-in for TavernColoredMarkdown on assistant prose.
+// Drop-in for TavernBodyMarkdown on assistant prose.
 // freeze the entire consumer, including Markdown and voice hooks.
 function BubblePublication(props) {
     const active = React.useSyncExternalStore(galActive.subscribe, galActive.get);
@@ -515,8 +515,8 @@ function BubbleSafePublication(props) {
     for (const key of ["sessionId", "voiceScope", "stageParaBase", "stageParaOffset", "stageSource", "stageOrder", "stageSuperseded", "interrupted"]) delete plain[key];
     const staged = Boolean(enabled && stageViews);
     // @bubble lines are body text: with the stage off they still render as bubble rows (name, avatar), never raw.
-    if (!staged && String(props.text || "").indexOf("@bubble") < 0) return React.createElement(TavernColoredMarkdown, plain);
-    return tavernStageBoundary("对白气泡", React.createElement(BubblePublication, Object.assign({}, props, { staged, key: staged ? "stage" : "body" })), React.createElement(TavernColoredMarkdown, plain));
+    if (!props.bodyMounts && !staged && String(props.text || "").indexOf("@bubble") < 0) return React.createElement(TavernBodyMarkdown, plain);
+    return tavernStageBoundary("对白气泡", React.createElement(BubblePublication, Object.assign({}, props, { staged, key: staged ? "stage" : "body" })), React.createElement(TavernBodyMarkdown, plain));
 }
 let bubblePublicationMemo;
 function bubblePublicationType() {
@@ -526,11 +526,27 @@ function bubblePublicationType() {
 
 function BubbleMarkdown({ props, markdownProps, has, enter, segments, base, config, voice, turn }) {
     const h = React.createElement;
-    if (!has && !enter) return h(TavernColoredMarkdown, Object.assign({}, markdownProps, { text: bubbleProseText(markdownProps.text, markdownProps.streaming) }));
+    if (props.bodyMounts) {
+        const paragraphs = galParagraphs([{ segments }], base);
+        return h(React.Fragment, null, segments.map(function (segment, index) {
+            const units = paragraphs.filter(unit => unit.index === index);
+            if (segment.kind === "markdown") return enter ? h(StageMarkdown, {
+                key: "source:" + index, sessionId: props.sessionId, turn, base: units.length ? units[0].para - 1 : base,
+                text: segment.text, externalRoot: props.bodyRoot, sourceUnits: units, sourceKey: props.voiceScope + ":" + index
+            }) : null;
+            const target = props.bodyMounts.get(props.bodyTargets[index]);
+            if (!target) return null;
+            const para = units[0]?.para || 0;
+            const row = h(BubbleRow, { sessionId: props.sessionId, segment, config, voice: voice[index],
+                enter: enter ? h(StageEnterHere, { sessionId: props.sessionId, turn, para }) : null });
+            return ReactDOM.createPortal(enter ? h(StageParagraph, { sessionId: props.sessionId, turn, para }, row) : row, target, String(index));
+        }));
+    }
+    if (!has && !enter) return h(TavernBodyMarkdown, Object.assign({}, markdownProps, { text: bubbleProseText(markdownProps.text, markdownProps.streaming) }));
     const paragraphs = galParagraphs([{ segments }], base);
     return h("div", { className: "fork-bubbles" }, segments.map(function (segment, index) {
         if (segment.kind === "markdown") {
-            if (!enter) return h(TavernColoredMarkdown, Object.assign({}, markdownProps, { key: "m" + index, text: bubbleProseText(segment.text, markdownProps.streaming) }));
+            if (!enter) return h(TavernBodyMarkdown, Object.assign({}, markdownProps, { key: "m" + index, text: bubbleProseText(segment.text, markdownProps.streaming) }));
             const units = paragraphs.filter(unit => unit.index === index);
             return h(StageMarkdown, { key: "m" + index, sessionId: props.sessionId, turn, base: units.length ? units[0].para - 1 : base, text: segment.text,
                 markdownProps: Object.assign({}, markdownProps, { text: segment.text }) });

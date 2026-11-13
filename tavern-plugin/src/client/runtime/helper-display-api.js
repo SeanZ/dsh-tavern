@@ -1,6 +1,8 @@
 // A synchronous DSH display adapter: current message identity + local regexes
 // + the same pinned Markdown parser used by the host. Refresh affects DOM only.
-function installTavernHelperDisplayApi(window) {
+function installTavernHelperDisplayApi(window, createBodyMarkdown) {
+    // 显示依赖只在格式化时初始化；资源加载失败不能中断变量和事件 API 的安装。
+    let renderBodyMarkdown;
     function messageId(value = 'last') {
         const last = window.getLastMessageId();
         if (last < 0) throw new Error('未找到任何消息楼层');
@@ -23,8 +25,11 @@ function installTavernHelperDisplayApi(window) {
         const formatted = typeof window.formatAsTavernRegexedString === 'function'
             ? window.formatAsTavernRegexedString(input, source, 'display', { depth: window.getLastMessageId() - id })
             : typeof window.substitudeMacros === 'function' ? window.substitudeMacros(input) : input;
-        if (!window.marked || typeof window.marked.parse !== 'function') throw new Error('Markdown 显示组件尚未加载');
-        return window.marked.parse(formatted, { gfm: true, breaks: true, async: false });
+        if (!renderBodyMarkdown) {
+            if (typeof createBodyMarkdown !== 'function' || !window.showdown) throw new Error('正文显示组件尚未加载');
+            renderBodyMarkdown = createBodyMarkdown(window.showdown);
+        }
+        return renderBodyMarkdown(formatted);
     };
     window.refreshOneMessage = async function (value, elements) {
         const selected = elements === undefined ? window.retrieveDisplayedMessage(value) : elements;

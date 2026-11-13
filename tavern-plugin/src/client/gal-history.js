@@ -3,4 +3,4 @@
 function galParagraphCount(text) { return galParagraphs([{ segments: parseBubbles(String(text || ''), false) }]).length; }
 function StageEnterHere(props) { return stageViews ? React.createElement(stageViews.chatEntry.EnterHere, props) : null; }
 function StageParagraph(props) { return stageViews ? React.createElement(stageViews.chatEntry.Paragraph, props) : props.children; }
-function StageMarkdown(props) { return React.createElement(stageViews ? stageViews.chatEntry.Markdown : TavernColoredMarkdown, stageViews ? props : props.markdownProps); }
+function StageMarkdown(props) { return React.createElement(stageViews ? stageViews.chatEntry.Markdown : TavernBodyMarkdown, stageViews ? props : props.markdownProps); }

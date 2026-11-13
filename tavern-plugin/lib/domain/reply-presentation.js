@@ -210,7 +210,7 @@ export function createReplyHistoryProjector({ maxCacheBytes = 16 * 1024 * 1024, 
           }
         }
         const visible = visibleTemplateDisplay(repaired)
-        projections.push({ version: 2, turn, text: visible.html, mode: 'html', parts: Array.isArray(visible.parts) ? structuredClone(visible.parts) : [{ kind: 'html', content: visible.html }], warnings: [] })
+        projections.push({ version: 2, turn, text: visible.html, mode: 'html', parts: (Array.isArray(visible.parts) ? structuredClone(visible.parts) : [{ kind: 'html', content: visible.html }]).map(part => ({...part,sourceKind:'rendered'})), warnings: [] })
         latestSourceBacked = hasSource
         continue
       }

@@ -114,7 +114,7 @@ test('聊天正文渲染前自动分段；台词行与段落编号不受影响',
   }
   const window = { addEventListener() {}, removeEventListener() {} }
   const module = new Function('React', 'window', 'document',
-    'const TavernColoredMarkdown = "TavernColoredMarkdown";' +
+    'const TavernBodyMarkdown = "TavernBodyMarkdown";' +
     'const StageMarkdown = "StageMarkdown";' +
     'const StageParagraph = "StageParagraph";' +
     'const StageEnterHere = "StageEnterHere";' +
@@ -132,7 +132,7 @@ test('聊天正文渲染前自动分段；台词行与段落编号不受影响',
   assert.equal(module.bubbleProseText(block), laid)
 
   const plain = module.BubbleSafePublication({ text: block })
-  assert.equal(plain.type, 'TavernColoredMarkdown')
+  assert.equal(plain.type, 'TavernBodyMarkdown')
   assert.equal(plain.props.text, laid, '没有台词行的正文交给 Markdown 时已经分段')
 
   const chunks = [block.slice(0, 30), block]

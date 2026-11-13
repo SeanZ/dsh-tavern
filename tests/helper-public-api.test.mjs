@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import vm from 'node:vm'
+import { readFile } from 'node:fs/promises'
+const showdownSource = await readFile(new URL('../tavern-plugin/lib/vendor/runtime-assets/showdown/showdown.min.js', import.meta.url), 'utf8')
 
 import { helperClient, helperHostHarness } from './fixtures/helper-host-harness.mjs'
 import { stubFrameDependencyImports } from './fixtures/frame-dependency-imports.mjs'
@@ -11,6 +13,7 @@ function messageFrame(state) {
   const scope = { structuredClone, parent, console, addEventListener(name, listener) { if (name === "message") listeners.push(listener) } }
   scope.window = scope
   vm.createContext(scope)
+  vm.runInContext(showdownSource, scope)
   const html = helperClient.buildTavernFrameDocument({content: '<div>card</div>', token: 'message-token', helperContext: state, turn: 1})
   for (const script of html.matchAll(/<script data-dsh-tavern-(?:helper|interactive-helper|frame-variable-aliases)>([\s\S]*?)<\/script>/g)) {
     vm.runInContext(stubFrameDependencyImports(script[1]), scope)
@@ -23,6 +26,15 @@ const messages = [
   {message_id: 1, role: 'user', message: 'hidden', is_hidden: true, variables: {}},
   {message_id: 2, role: 'assistant', message: 'last', variables: {last: 1}}
 ]
+for (const kind of ['script', 'message']) test(kind + ' 显示资源晚到时其它 API 可用，资源就绪后可格式化', () => {
+  const run = kind === 'script' ? helperHostHarness({messages}) : messageFrame({messages})
+  const w = run.window, dependency = w.showdown
+  w.showdown = undefined
+  assert.equal(w.TavernHelper.getChatMessages(0)[0].message, 'one')
+  assert.throws(() => w.TavernHelper.formatAsDisplayedMessage('**正文**'), /正文显示组件尚未加载/)
+  w.showdown = dependency
+  assert.equal(w.TavernHelper.formatAsDisplayedMessage('**正文**'), '<p><strong>正文</strong></p>')
+})
 for (const kind of ['script', 'message']) test(kind + ' getChatMessages supports negative ranges, visibility and upstream data fields', () => {
   const state = {messages, turnMessageIds: {1: 0}, characterName: '角色', playerName: '玩家'}
   const api = (kind === 'script' ? helperHostHarness(state) : messageFrame(state)).window.TavernHelper
@@ -78,17 +90,16 @@ test('script deleteVariable rejects stale or failed writes instead of reporting 
 })
 
 for (const kind of ['script', 'message']) test(kind + ' installed display/regex/event/global APIs operate on the live frame context', async () => {
-  const {marked} = await import('marked')
   const state = {messages, character: {name: '角色'}, characterName: '角色', playerName: '玩家', turnMessageIds: {1: 0}, chatVariables: {gold: 7},
     regexScripts: {character: [{enabled: true, placement: [2], markdownOnly: true, findRegex: '/token/g', replaceString: '**{{char}}** {{getvar::gold}}'}]}}
   const run = kind === 'script' ? helperHostHarness(state) : messageFrame(state), w = run.window
-  w.marked = marked
   assert.equal(w.TavernHelper.isCharacterTavernRegexesEnabled(), true)
-  assert.equal(w.TavernHelper.formatAsDisplayedMessage('token', {message_id: 0}), '<p><strong>角色</strong> 7</p>\n')
+  assert.equal(w.TavernHelper.formatAsDisplayedMessage('token', {message_id: 0}), '<p><strong>角色</strong> 7</p>')
+  assert.match(w.TavernHelper.formatAsDisplayedMessage('<details><summary>标题</summary>**正文**</details>', {message_id: 0}), /<strong>正文<\/strong>/)
   if (kind === 'message') {
     const nextState = {...state, stateRevision: 2, regexScripts: {character: [{enabled: true, placement: [2], markdownOnly: true, findRegex: '/token/g', replaceString: 'changed'}]}}
     run.receive({type: 'dsh-tavern-helper-context-update', update: helperClient.createTavernHelperContextUpdate(state, nextState, 1, 1)})
-    assert.equal(w.formatAsDisplayedMessage('token', {message_id: 0}), '<p>changed</p>\n')
+    assert.equal(w.formatAsDisplayedMessage('token', {message_id: 0}), '<p>changed</p>')
   }
 
   const wait = w.TavernHelper.waitGlobalInitialized('PluginReady')

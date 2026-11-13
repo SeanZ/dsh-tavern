@@ -522,7 +522,7 @@ function createStoryServiceAdapter(dependencies) {
 				const turn = tavernStoryTurnArgument(floor && floor.story, "writeFloorSnapshot");
 				if (!floor.reply || typeof floor.reply.seq !== "string") throw new TypeError("writeFloorSnapshot 需要带 reply.seq 的楼层");
 				if (!snapshot || typeof snapshot.html !== "string") throw new TypeError("writeFloorSnapshot 需要 html 字符串");
-				return rpc("saveFloorSnapshot", { turn: turn, reply: String(floor.reply.seq), html: snapshot.html, truncated: snapshot.truncated === true }, sessionId);
+				return rpc("saveFloorSnapshot", { turn: turn, reply: String(floor.reply.seq), html: snapshot.html, rendererVersion: snapshot.rendererVersion, truncated: snapshot.truncated === true }, sessionId);
 			},
 			/** Stored snapshots of these floors, by story turn; one taken of another reply is left out. */
 			readFloorSnapshots: async function (sessionId, floors) {
@@ -533,7 +533,7 @@ function createStoryServiceAdapter(dependencies) {
 				const stored = result && result.snapshots || {}, snapshots = {};
 				for (const floor of wanted) {
 					const snapshot = stored[floor.story];
-					if (snapshot && snapshot.reply === String(floor.reply.seq)) snapshots[floor.story] = snapshot;
+					if (snapshot && snapshot.rendererVersion === options.render.rendererVersion && snapshot.reply === String(floor.reply.seq)) snapshots[floor.story] = snapshot;
 				}
 				return snapshots;
 			},

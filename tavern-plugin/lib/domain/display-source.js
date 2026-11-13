@@ -172,7 +172,7 @@ export function editableReplyParts(value) {
 export function projectDisplayParts(value) {
   return {
     parts:displaySourceSegments(value).filter(part=>part.kind!=='marker').map(part=>part.kind==='html'
-      ? {kind:'html',content:part.content} : {kind:'markdown',text:part.text}),
+      ? {kind:'html',content:part.content,...part.fenced ? {fenced:true} : {}} : {kind:'markdown',text:part.text}),
     warnings:[]
   }
 }

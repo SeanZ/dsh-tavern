@@ -1,3 +1,5 @@
+import bodyVersion from '../domain/body-version.cjs'
+const { BODY_RENDER_VERSION } = bodyVersion
 // Story floor snapshots (fork contract C3): the static HTML a floor showed when it left the
 // live iframe window, so an older floor or a cold open renders without running its
 // scripts. A snapshot is a regenerable display cache, like the display-runtime capture:
@@ -23,10 +25,10 @@ function storyTurn(value) {
   return turn
 }
 function meta(record) {
-  return { turn: record.turn, reply: record.reply, truncated: record.truncated === true, capturedAt: record.capturedAt }
+  return { turn: record.turn, reply: record.reply, rendererVersion: record.rendererVersion, truncated: record.truncated === true, capturedAt: record.capturedAt }
 }
 function valid(record, turn) {
-  return record && record.version === FLOOR_SNAPSHOT_VERSION && record.turn === turn && typeof record.reply === 'string' && typeof record.html === 'string'
+  return record && record.version === FLOOR_SNAPSHOT_VERSION && record.rendererVersion === BODY_RENDER_VERSION && record.turn === turn && typeof record.reply === 'string' && typeof record.html === 'string'
 }
 
 export function createFloorSnapshots({ store, chatIdFor, now = Date.now }) {
@@ -56,6 +58,11 @@ export function createFloorSnapshots({ store, chatIdFor, now = Date.now }) {
 
   /** Store one floor's snapshot; the same content again is not rewritten. */
   async function save(input = {}) {
+    if (input.rendererVersion !== BODY_RENDER_VERSION) {
+      const error = new Error('正文渲染版本已更新，请刷新页面后重试')
+      error.code = 'BODY_RENDER_VERSION_MISMATCH'
+      throw error
+    }
     const chatId = await chatOf(input.sessionId)
     const turn = storyTurn(input.turn)
     const reply = str(input.reply).trim()
@@ -69,7 +76,7 @@ export function createFloorSnapshots({ store, chatIdFor, now = Date.now }) {
       if (current && current.reply === reply && current.html === input.html && current.truncated === truncated) {
         return { saved: false, snapshot: meta(current) }
       }
-      const record = { version: FLOOR_SNAPSHOT_VERSION, turn, reply, html: input.html, truncated, capturedAt: now() }
+      const record = { version: FLOOR_SNAPSHOT_VERSION, rendererVersion: BODY_RENDER_VERSION, turn, reply, html: input.html, truncated, capturedAt: now() }
       await store.writeJson(pathOf(chatId, turn), record)
       // Only the latest floors are ever shown from a snapshot before they load; drop the oldest.
       const turns = await storedTurns(chatId)

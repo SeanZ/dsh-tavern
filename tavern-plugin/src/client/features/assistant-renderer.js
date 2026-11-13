@@ -163,12 +163,6 @@
 				return receipt ? React.createElement(React.Fragment, null, React.createElement(TavernMvuReceipt, { ...props, receipt,
 					latest: props.turn === state.view?.settlementTurn, busy: Boolean(state.view?.activity?.busy) }), polished) : polished;
 			}
-			function TavernInlineStatusRuntime(props) {
-				const state = useLiveTavernView(props.sessionId, "inline-status");
-				return state.view ? React.createElement(TavernPersistentStatusRuntime, {
-					sessionId: props.sessionId, view: state.view, executeSlash: props.executeSlash, panels: "status"
-				}) : null;
-			}
             function TavernPreparedScriptMessage(props) {
                 const [status, setStatus] = React.useState("idle");
                 const sending = React.useRef(false);
@@ -569,7 +563,7 @@
 				}, "🐾 收起") : null;
 				const mvuReceiptNode = settled && ownsTurn ? React.createElement(TavernTurnMvuReceipt, { sessionId: props.sessionId, turn: storyTurn }) : null;
                 const inlineStatus = liveState.view?.statusBarPlacement === "body" && !sessionTransitioning && storyTurn > 0 && storyTurn === latestProjectionTurn && data.finalNode && tail?.closing?.finalNode?.seq === data.finalNode.seq
-                    ? React.createElement(TavernInlineStatusRuntime, { sessionId: props.sessionId, executeSlash: props.executeSlash }) : null;
+                    ? React.createElement(TavernAutomaticStatusRuntime, { sessionId: props.sessionId, executeSlash: props.executeSlash }) : null;
                 const helper = liveState.view?.tavernHelper;
                 const greetingId = helper?.turnMessageIds?.[String(storyTurn)];
                 const openingNav = playView && settled && greetingId === 0 && helper?.openingHost

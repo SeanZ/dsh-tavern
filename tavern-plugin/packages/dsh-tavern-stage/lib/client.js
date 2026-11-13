@@ -705,9 +705,67 @@ function stageEntryButton(doc) {
     button.setAttribute('aria-label', '从这里进入舞台'); button.title = '从这里进入舞台';
     return button;
 }
+// 混排正文按旧业务段落定位。多个源段落可指向同一完整列表/表格，不拆 DOM 结构。
+function bindBodySourceEntries(props) {
+    const parent = props.externalRoot, key = String(props.sourceKey);
+    const normalize = text => galPlain(text).replace(/[^\p{L}\p{N}]/gu, '');
+    const owned = () => [...parent.querySelectorAll('[data-fork-stage-source]')].filter(node => node.getAttribute('data-fork-stage-source') === key);
+    let active = true;
+    function collect() {
+        if (!active || disposed) return;
+        const nodes = [...parent.querySelectorAll('p, h1, h2, h3, h4, h5, h6, pre, li, ul, ol, table, blockquote, div, span')]
+            .filter(node => !node.closest('[data-tavern-story-dynamic], .fork-bubble') && (node.matches('ul, ol, table') || !node.querySelector('p, pre, li, table, blockquote, div')));
+        const wanted = new Set();
+        let cursor = 0;
+        for (const unit of props.sourceUnits || []) {
+            const value = normalize(unit.block || unit.text || '');
+            if (!value) continue;
+            let index = nodes.findIndex((node, i) => i >= cursor && normalize(node.textContent).includes(value));
+            if (index < 0) {
+                // 自动排版可把一个源段落拆成多个 p；插件也可移除中间标记。
+                // 按源文字顺序归并显示片段，把唯一入口落在最后一个匹配片段。
+                let sourceOffset = 0;
+                for (let i = cursor; i < nodes.length; i++) {
+                    const text = normalize(nodes[i].textContent);
+                    if (!text) continue;
+                    const found = value.indexOf(text, sourceOffset);
+                    if (found < 0) { if (index >= 0) break; continue; }
+                    index = i; sourceOffset = found + text.length;
+                    if (sourceOffset >= value.length) break;
+                }
+            }
+            if (index < 0) continue;
+            cursor = nodes[index].matches('ul, ol, table') ? index : index + 1;
+            const container = nodes[index];
+            // 完整列表/表格参与源匹配，入口落在末项/末格，不能成为 ul/table 的非法直接子节点。
+            const node = container.matches('ul, ol') ? [...container.querySelectorAll('li')].at(-1) || container
+                : container.matches('table') ? [...container.querySelectorAll('td, th')].at(-1) || container : container;
+            let button = owned().find(button => button.getAttribute('data-fork-stage-para') === String(unit.para));
+            if (!button) { button = stageEntryButton(node.ownerDocument); button.setAttribute('data-fork-stage-source', key); button.setAttribute('data-fork-stage-para', unit.para); button.setAttribute('data-fork-stage-turn', props.turn); }
+            if (button.parentNode !== node) node.appendChild(button);
+            wanted.add(button);
+        }
+        for (const button of owned()) if (!wanted.has(button)) button.remove();
+    }
+    function click(event) {
+        const button = event.target.closest('[data-fork-stage-source]');
+        if (!button || button.getAttribute('data-fork-stage-source') !== key) return;
+        event.preventDefault(); event.stopPropagation();
+        galEnter(props.sessionId, { turn: props.turn, para: Number(button.getAttribute('data-fork-stage-para')) });
+    }
+    const observer = new MutationObserver(mutations => {
+        const own = node => node.nodeType === 1 && node.matches('.fork-stage-enter-here');
+        if (mutations.every(mutation => mutation.type === 'childList' && [...mutation.addedNodes, ...mutation.removedNodes].every(own))) return;
+        collect();
+    });
+    collect(); observer.observe(parent, { childList: true, subtree: true, characterData: true });
+    parent.addEventListener('click', click, true);
+    return own(() => { active = false; observer.disconnect(); parent.removeEventListener('click', click, true); for (const button of owned()) button.remove(); });
+}
 function StageMarkdown(props) {
     const root = React.useRef(null), timer = React.useRef(null);
     React.useLayoutEffect(function () {
+        if (props.externalRoot) return bindBodySourceEntries(props);
         const parent = root.current;
         if (!parent) return;
         let active = true;
@@ -755,7 +813,7 @@ function StageMarkdown(props) {
             for (const [node, before] of marked) restore(node, before);
             marked.clear();
         });
-    }, [props.text, props.turn, props.base]);
+    }, [props.text, props.turn, props.base, props.externalRoot, props.sourceUnits, props.sourceKey]);
     function cancel() { clearTimeout(timer.current); }
     React.useEffect(() => own(cancel), []);
     // Capture phase: like the former portalled button, the click reaches no Markdown handler in between.
@@ -766,6 +824,7 @@ function StageMarkdown(props) {
         if (disposed) return;
         galEnter(props.sessionId, { turn: props.turn, para: Number(block.getAttribute('data-fork-stage-para')) });
     }
+    if (props.externalRoot) return null;
     return React.createElement('div', { ref: root, className: 'fork-stage-markdown', onClickCapture: enter,
         onPointerDown: event => { const node = event.target.closest('[data-fork-stage-para]'); if (node && event.pointerType !== 'mouse') timer.current = setTimeout(() => node.classList.add('is-long-pressed'), 500); },
         onPointerUp: cancel, onPointerMove: cancel, onPointerCancel: cancel },

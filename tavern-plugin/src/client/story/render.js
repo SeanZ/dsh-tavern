@@ -4,6 +4,13 @@ function createStoryRenderAdapter(dependencies) {
 			window,
 		storyTranscript,
 		React,
+		BODY_RENDER_VERSION,
+		TavernAutomaticStatusRuntime,
+		createBodyRenderPlan,
+		prepareTavernBodyGroup,
+		TavernBodyGroup,
+		TavernBodyMarkdown,
+		sanitizeTavernBodyHtml,
 		liveTavernView,
 		tavernProjectionForTurn,
 		projectionPartsOf,
@@ -48,107 +55,12 @@ function createStoryRenderAdapter(dependencies) {
 	// an unknown element gives way to its text and allowed children; dangerous or foreign-
 	// namespace subtrees (svg, math) go entirely. Controls stay inert, links open elsewhere,
 	// and html/body/:root rules apply to the floor (the shadow host).
-	const TAVERN_FLOOR_TAGS = new Set(["div", "span", "p", "img", "br", "hr", "b", "strong", "i", "em", "u", "s", "small", "sub", "sup", "mark", "del", "ins", "q", "cite", "abbr", "time", "blockquote", "pre", "code", "kbd",
-		"ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col", "h1", "h2", "h3", "h4", "h5", "h6", "a",
-		"details", "summary", "section", "article", "aside", "header", "footer", "nav", "main", "figure", "figcaption", "center", "style", "button", "input", "label", "progress", "meter"]);
-	const TAVERN_FLOOR_DROPPED = new Set(["svg", "math", "script", "iframe", "frame", "frameset", "object", "embed", "applet", "template", "form", "link", "meta", "base", "noscript", "portal", "textarea", "select"]);
-	const TAVERN_FLOOR_ATTRIBUTES = new Set(["class", "id", "style", "title", "alt", "src", "href", "width", "height", "colspan", "rowspan", "span", "open", "disabled", "checked", "value", "type", "role", "lang", "dir", "align", "min", "max", "low", "high", "optimum", "datetime", "start", "reversed", "for"]);
-	const TAVERN_FLOOR_INPUT_TYPES = new Set(["text", "checkbox", "radio", "range", "number", "button"]);
-	// Fork：仅故事静态正文的纯文本 details 复用宿主 Markdown，不改原文、正则或公共 HTML 渲染。
-	// 上游提供等价支持后，复跑 story-details 回归即可删除此适配及两个故事调用点。
-	// 只检查原始片段的顶层节点一次；嵌套/混合 HTML 不处理，绝不扫描 Markdown 的输出。
-	function tavernStoryDetailsParts(html, doc) {
-		const template = doc.createElement("template");
-		template.innerHTML = String(html || "");
-		// 相邻块也可能共享作者样式或脚本；有这类内容时整段保留原渲染边界。
-		if (template.content.querySelector("style, script, iframe, object, embed")) return null;
-		const nodes = Array.from(template.content.childNodes);
-		if (nodes.some(function (node) { return node.nodeType !== 1 ? node.nodeType !== 3 || node.data.trim() : node.localName !== "details"; })) return null;
-		let changed = false;
-		const parts = nodes.map(function (node) {
-			if (node.nodeType === 3) return { text: node.data };
-			const children = Array.from(node.childNodes), summary = node.firstElementChild;
-			const split = children.indexOf(summary);
-			if (Array.from(node.attributes).some(function (attr) { return attr.name !== "open"; }) || !summary || summary.localName !== "summary" || summary.attributes.length
-				|| Array.from(summary.childNodes).some(function (child) { return child.nodeType !== 3; })
-				|| children.slice(0, split).some(function (child) { return child.nodeType !== 3 || child.data.trim(); })
-				|| children.slice(split + 1).some(function (child) { return child.nodeType !== 3; })) return { html: node.outerHTML };
-			const text = children.slice(split + 1).map(function (child) { return child.data; }).join("");
-			if (!text.trim()) return { html: node.outerHTML };
-			changed = true;
-			return { summary: summary.textContent, text: text, open: node.hasAttribute("open") };
-		});
-		return changed ? parts : null;
-	}
-
-	function TavernStoryStaticHtml(props) {
-		const parts = React.useMemo(function () { return tavernStoryDetailsParts(props.html, window.document); }, [props.html]);
-		const h = React.createElement;
-		if (!parts) return h(TavernFloorStaticHtml, props);
-		return h(React.Fragment, null, parts.map(function (part, index) {
-			if (part.summary !== undefined) return h("details", { key: index, open: part.open }, h("summary", null, part.summary),
-				h(TavernColoredMarkdown, { text: part.text, labels: tavernMarkdownLabels(tavernCodeLabels(key => key === "copy" ? "复制" : "已复制")) }));
-			return part.html !== undefined ? h(TavernFloorStaticHtml, { key: index, html: part.html }) : part.text;
-		}));
-	}
-
-	function tavernFloorUrl(value, image) {
-		const url = String(value || "").replace(/[\u0000- \u007f]/g, "");
-		if (/^https?:/i.test(url)) return true;
-		if (image && /^data:image\//i.test(url)) return true;
-		// Relative: no scheme at all (and not protocol-relative).
-		return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[\\/]{2}/.test(url);
-	}
-	// CSS that cannot load or run anything: no imports, legacy script hooks or script/non-image URLs.
-	function cleanTavernFloorCss(css) {
-		return String(css || "").replace(/<\/?style/gi, "")
-			.replace(/@import\b[^;]*;?/gi, "")
-			.replace(/expression\s*\(/gi, "(")
-			.replace(/(?:behavior|-moz-binding)\s*:[^;}]*;?/gi, "")
-			.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, function (match, _quote, value) {
-				const url = value.trim();
-				return /\\/.test(url) || /^(?:javascript|vbscript):/i.test(url) || /^data:/i.test(url) && !/^data:image\//i.test(url) ? "none" : match;
-			});
-	}
-	function tavernFloorDynamicNode(node) {
-		return node.nodeType === 1 && (node.classList.contains("dsh-tavern-plugin-media") || node.hasAttribute("data-tavern-story-dynamic"));
-	}
-	function sanitizeTavernFloorHtml(html, doc, snapshot) {
-		const template = doc.createElement("template");
-		template.innerHTML = String(html || "");
-		const output = doc.createElement("template");
-		function copy(source, target) {
-			for (const node of Array.from(source.childNodes)) {
-				if (snapshot && tavernFloorDynamicNode(node)) continue;
-				if (node.nodeType === 3) { target.appendChild(doc.createTextNode(node.data)); continue; }
-				// The truncation marker of a bounded snapshot is the only comment kept.
-				if (node.nodeType === 8) { if (node.data === " 已截断 ") target.appendChild(doc.createComment(node.data)); continue; }
-				if (node.nodeType !== 1) continue;
-				const tag = node.localName;
-				if (node.namespaceURI !== "http://www.w3.org/1999/xhtml" || TAVERN_FLOOR_DROPPED.has(tag)) continue;
-				if (!TAVERN_FLOOR_TAGS.has(tag)) { copy(node, target); continue; }
-				const element = doc.createElement(tag);
-				if (tag === "style") {
-					element.textContent = cleanTavernFloorCss(node.textContent).replace(/(^|[{},]\s*)(?:html|body|:root)(?=[\s,{.:#\[>~+]|$)/g, "$1:host");
-					target.appendChild(element);
-					continue;
-				}
-				for (const attr of Array.from(node.attributes)) {
-					const name = attr.name.toLowerCase();
-					if (!(TAVERN_FLOOR_ATTRIBUTES.has(name) || /^(?:data|aria)-[a-z0-9_.-]+$/.test(name))) continue;
-					if ((name === "src" || name === "href") && !tavernFloorUrl(attr.value, name === "src" && tag === "img")) continue;
-					if (name === "type" && tag === "input" && !TAVERN_FLOOR_INPUT_TYPES.has(attr.value.toLowerCase())) continue;
-					element.setAttribute(name, name === "style" ? cleanTavernFloorCss(attr.value) : attr.value);
-				}
-				if (tag === "a" && element.hasAttribute("href")) { element.setAttribute("target", "_blank"); element.setAttribute("rel", "noopener noreferrer"); }
-				if (tag === "button" || tag === "input") { element.setAttribute("disabled", ""); if (tag === "button") element.setAttribute("type", "button"); }
-				copy(node, element);
-				target.appendChild(element);
-			}
-		}
-		copy(template.content, output.content);
-		return output.innerHTML;
-	}
+    function tavernFloorDynamicNode(node) {
+        return node.nodeType === 1 && (node.classList.contains("dsh-tavern-plugin-media") || node.hasAttribute("data-tavern-story-dynamic"));
+    }
+    function sanitizeTavernFloorHtml(html, doc, snapshot) {
+        return sanitizeTavernBodyHtml(html, doc, { mode: "static", snapshot, controls: true });
+    }
 
 	function TavernFloorStaticHtml(props) {
 		const ref = React.useRef(null);
@@ -216,7 +128,7 @@ function createStoryRenderAdapter(dependencies) {
 		function floorOf(view, floor) {
 			const storyTurn = floor.legacyTurn;
 			const projection = floor.projection;
-			const parts = projectionPartsOf(projection);
+			const parts = createBodyRenderPlan(projection);
 			const policy = view && view.tavernRuntimePolicy || {};
 			const latestTurn = tavernLatestProjectionTurn(view);
 			return {
@@ -256,10 +168,10 @@ function createStoryRenderAdapter(dependencies) {
 			}, [live, owner]);
 			const h = React.createElement;
 			const codeLabels = tavernCodeLabels(key => key === "copy" ? "复制" : "已复制");
-			const markdown = function (text, key) { return h(TavernColoredMarkdown, { key: key, text: text, labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels }); };
+			const markdown = function (text, key) { return h(TavernBodyMarkdown, { key: key, text: text, static: true, labels: tavernMarkdownLabels(codeLabels), codeLabels: codeLabels }); };
 			const renderMarkdown = function (text, key) { return pluginText ? pluginText.render(text, key, markdown) : markdown(text, key); };
 			let body;
-			if (!live && typeof props.snapshotHtml === "string") body = h(TavernStoryStaticHtml, { html: props.snapshotHtml });
+			if (!live && typeof props.snapshotHtml === "string") body = h(TavernFloorStaticHtml, { html: props.snapshotHtml });
 			else {
 				const floor = floorOf(state.view, props.floor);
 				if (!floor.projection) body = floor.waitingForHistory ? h("div", { role: "status" }, "正在读取历史内容…")
@@ -268,10 +180,12 @@ function createStoryRenderAdapter(dependencies) {
 					helperContext: floor.helperContext, helperContextReader: function () { return liveTavernView.getSnapshot(sessionId).view?.tavernHelper; },
 					frameSizing: floor.frameSizing, trustedCardMode: floor.trustedCardMode, eagerFrame: props.eager === true, frameOwner: owner, executeSlash: executeSlash, plugin: pluginText });
 				else body = floor.parts.map(function (part, index) {
-					if (part.kind === "markdown") return renderMarkdown(String(part.text || ""), index);
+					if (part.kind === "body") return h(TavernBodyGroup, { key: part.frameIndex, text: part.text, static: true,
+                        prepared: prepareTavernBodyGroup(part, floor.projection.parts || projectionPartsOf(floor.projection), { plugin: pluginText, static: true, sessionId }),
+                        labels: tavernMarkdownLabels(codeLabels), codeLabels });
 					const html = String(part.content !== undefined ? part.content : part.html || "");
 					const marked = pluginText && pluginText.renderHtmlMarkers(html);
-					return h(React.Fragment, { key: index }, h(TavernStoryStaticHtml, { html: marked ? marked.html : html }), marked && marked.after);
+					return h(React.Fragment, { key: index }, h(TavernFloorStaticHtml, { html: marked ? marked.html : html }), marked && marked.after);
 				});
 			}
 			// 复用上游媒体索引、锚点和图片操作；未命中锚点的图片放在正文后，快照不固化动态图片。
@@ -301,6 +215,8 @@ function createStoryRenderAdapter(dependencies) {
 			loadOlderProjections: storyTranscript.older,
 
 
+			rendererVersion: BODY_RENDER_VERSION,
+			AutomaticStatus: function (props) { return React.createElement(TavernAutomaticStatusRuntime, { ...props, executeSlash }); },
 			FloorBody: FloorBody,
 			IllustrateAction: IllustrateAction,
 			StaticHtml: TavernFloorStaticHtml,
@@ -328,7 +244,7 @@ function createStoryRenderAdapter(dependencies) {
 					html += part;
 					truncated = truncated || piece.truncated === true;
 				}
-				return { html: sanitizeTavernFloorHtml(html, doc, true), truncated: truncated, frames: frames, missed: missed };
+				return { rendererVersion: BODY_RENDER_VERSION, html: sanitizeTavernFloorHtml(html, doc, true), truncated: truncated, frames: frames, missed: missed };
 			}
 		});
 	}

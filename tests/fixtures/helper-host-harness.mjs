@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from './client-vm.mjs'
 import { TAVERN_COMPATIBILITY_CAPABILITIES } from '../../tavern-plugin/lib/domain/tavern-compatibility-diagnostics.js'
+const showdownSource = await readFile(new URL('../../tavern-plugin/lib/vendor/runtime-assets/showdown/showdown.min.js', import.meta.url), 'utf8')
 
 let descriptor
 vm.runInNewContext(await readFile(new URL('../../tavern-plugin/lib/client.js', import.meta.url), 'utf8'), {
@@ -47,6 +48,7 @@ export function helperHostHarness(context = {}, options = {}) {
   window.URL = URL
   window.document = { baseURI: 'http://localhost/' }
   window.window = window
+  vm.runInNewContext(showdownSource, window)
   vm.runInNewContext(source, window)
   function receive(data) { listeners.get('message')({ source: parent, data: { token: 'host-test', ...data } }) }
   return { window, sent, receive,

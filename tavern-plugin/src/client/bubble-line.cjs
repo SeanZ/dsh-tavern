@@ -33,14 +33,48 @@ function bubbleSegment(match, streaming, open = streaming) {
     const text = projectVoiceCues(speech, {streaming:Boolean(streaming)});
     return { kind: "bubble", alias: match[1].trim().toLowerCase(), name: match[2].trim(), mood: match[3].trim(), text, ...(text !== speech ? {speech,singleVoiceText:true} : {}), thought: thought, streaming: Boolean(streaming) };
 }
+// 所有气泡消费者共用代码行边界，避免正文、舞台和配音对同一原文解释不同。
+function bubbleLiteralLines(text) {
+    const literal = new Set(), source = String(text || ''), starts = [];
+    let offset = 0;
+    let fence = null, previousBlank = true, indented = false;
+    source.split('\n').forEach((line, index) => {
+        starts.push(offset); offset += line.length + 1;
+        // 列表缩进中的围栏与段落续行的代码引用同样保护，不限顶层三个空格。
+        const marker = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+        if (fence) {
+            literal.add(index);
+            if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+        } else if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
+            fence = marker[1];
+            literal.add(index);
+        } else {
+            indented = /^(?: {4}|\t)/.test(line) && (previousBlank || indented);
+            if (indented) literal.add(index);
+        }
+        previousBlank = !line.trim();
+    });
+    // 多行行内代码与完整围栏一样是字面量；单行引号包裹的旧气泡协议仍由既有逻辑处理。
+    const inline = /(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+    let match, line = 0;
+    while ((match = inline.exec(source))) {
+        if (!match[0].includes('\n')) continue;
+        while (line + 1 < starts.length && starts[line + 1] <= match.index) line++;
+        for (let index = line; index < starts.length && starts[index] < inline.lastIndex; index++) literal.add(index);
+    }
+    return literal;
+}
 // Split prose into Markdown narration and bubble lines.
-function parseBubbles(text, streaming, {callSpeaker} = {}) {
+function parseBubbles(text, streaming, {callSpeaker, singleLine = false} = {}) {
     const lines = String(text || "").split("\n");
+    // 逐行消费者已用完整原文判定代码边界，不可把段落续行重新当作独立代码块。
+    const literal = callSpeaker || singleLine ? new Set() : bubbleLiteralLines(text);
     const segments = [];
     let buffer = [];
     function flush() { const md = buffer.join("\n"); if (md.trim() !== "") segments.push({ kind: "markdown", text: md }); buffer = []; }
     lines.forEach(function (line, index) {
         const original = line;
+        if (literal.has(index)) { buffer.push(original); return; }
         // Calls omit identity; complete the same wire line before the one shared parser reads it.
         if (callSpeaker) line = "@bubble:" + (callSpeaker.handle || "") + "|" + (callSpeaker.name || "") + "|" + line;
         line = stripBubbleCodeQuote(line);
@@ -281,4 +315,4 @@ function packSpeechInput(segment, config, character, mood) {
 function speakableText(text) {
     return Boolean(text) && /[\p{L}\p{N}]/u.test(text) && text.length <= 1500;
 }
-if (typeof window === "undefined" && typeof module !== "undefined") module.exports = { bubbleSpeechCut, createBubbleStream, projectVoiceCues, hasLeadingVoiceCue, stripBubbleCodeQuote, parseBubbles, matchBubbleMood, bubbleDisplayName, figureBubbleMoods, bubbleCharacter, stageActorCharacter, effectiveVoiceLanguage, voiceTranslates, characterVoiceLanguage, speaksGeneral, lineVoiceLanguage, voiceBackfillNeeded, voiceBackfillKey, applyVoiceBackfill, narrationVoiceKey, narrationBackfillNeeded, applyNarrationBackfill, packSpeechInput, speakableText };
+if (typeof window === "undefined" && typeof module !== "undefined") module.exports = { bubbleLiteralLines, bubbleSpeechCut, createBubbleStream, projectVoiceCues, hasLeadingVoiceCue, stripBubbleCodeQuote, parseBubbles, matchBubbleMood, bubbleDisplayName, figureBubbleMoods, bubbleCharacter, stageActorCharacter, effectiveVoiceLanguage, voiceTranslates, characterVoiceLanguage, speaksGeneral, lineVoiceLanguage, voiceBackfillNeeded, voiceBackfillKey, applyVoiceBackfill, narrationVoiceKey, narrationBackfillNeeded, applyNarrationBackfill, packSpeechInput, speakableText };

@@ -1391,6 +1391,22 @@
 			const anchors = input.streaming ? [] : anchored.map(function (item) { return { id: item.id, anchor: item.anchor }; });
 			return {
 				placed: placed,
+				prepareBody: function (text) {
+                    const result = segmentPluginText(text, { markers: markers.map(marker => marker.pattern), anchors: anchors.filter(anchor => !placed.has(anchor.id)) });
+                    result.placed.forEach(id => placed.add(id));
+                    let offset = 0;
+                    return result.segments.map(function (segment, index) {
+                        const start = offset;
+                        if (segment.kind === "text") { offset += segment.text.length; return { text: segment.text, start, end: offset }; }
+                        if (segment.kind === "marker") offset += segment.match[0].length;
+                        const node = segment.kind === "media"
+                            ? React.createElement(React.Fragment, null, segment.ids.map(id => extras.has(id)
+                                ? React.createElement(React.Fragment, { key: id }, extras.get(id).render())
+                                : React.createElement(TavernPluginMediaItem, { key: id, item: byId.get(id), sessionId: input.sessionId, turn: input.turn })))
+                            : React.createElement(TavernPluginMarker, { marker: markers[segment.marker], match: segment.match, sessionId: input.sessionId, turn: input.turn, streaming: input.streaming });
+                        return { start, end: offset, node, block: segment.kind === "media", key: index };
+                    });
+                },
 				render: function (text, key, renderText) {
 					const result = segmentPluginText(text, { markers: markers.map(function (marker) { return marker.pattern; }), anchors: anchors.filter(function (anchor) { return !placed.has(anchor.id); }) });
 					result.placed.forEach(function (id) { placed.add(id); });

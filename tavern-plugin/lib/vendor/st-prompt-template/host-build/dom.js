@@ -1,5 +1,5 @@
-import { marked } from 'marked'
-import { displaySourceSegments } from '../../../domain/display-source.js'
+import { renderBodyMarkdown } from '../../../domain/body-renderer.js'
+import { fencedSegments } from '../../../domain/html-fenced-segments.js'
 import { chat, getRegexedString, name1, name2 } from './host.js'
 
 function escapeHTML(value) {
@@ -19,16 +19,16 @@ export function formatTemplateSource(text) {
     return token
   })
   const template = document.createElement('template')
-  template.innerHTML = displaySourceSegments(protectedSource, {editing:true}).map(segment => {
-    if (segment.kind === 'marker') return segment.text
-    if (segment.kind !== 'html') return marked.parse(segment.text, {gfm:true})
-    if (!segment.fenced) return segment.content
+  // 可运行 HTML 围栏仍使用既有分类与 language-html 捕获协议；普通正文整段转换。
+  const displaySource = fencedSegments(protectedSource).map(segment => {
+    if (segment.kind !== 'html') return segment.text
     const pre = document.createElement('pre'), code = document.createElement('code')
     code.className = 'language-html'
     code.textContent = segment.content
     pre.append(code)
     return pre.outerHTML + '\n'
   }).join('')
+  template.innerHTML = renderBodyMarkdown(displaySource)
   let html = template.innerHTML
   for (const {token, text} of expressions) html = html.replaceAll(token, text)
   return html

@@ -177,3 +177,19 @@ test('消息先卸载、异步渲染后完成时，迟到浮层仍被清理；�
     dom.window.close()
   }
 })
+
+test('宿主镜像通知按消息合并，不以语法组或 partIndex 重复运行',async()=>{
+ const dom=await hostDom()
+ try{
+  const {window}=dom,{document}=window;window.eval(read('helper-host.js')+';window.mountLayer=mountTavernScriptLayer')
+  const events=[];window.addEventListener('dsh-tavern-message-rendered',event=>events.push({...event.detail}))
+  const stops=[]
+  for(const text of ['前文','后文']){
+   const native=document.createElement('div'),layer=document.createElement('div');native.textContent=text;document.body.append(native,layer)
+   stops.push(window.mountLayer({native,layer,sessionId:'synthetic',messageId:7}))
+  }
+  await new Promise(resolve=>setTimeout(resolve,120))
+  assert.deepEqual(events,[{sessionId:'synthetic',messageId:7}])
+  stops.forEach(stop=>stop())
+ }finally{dom.window.close()}
+})

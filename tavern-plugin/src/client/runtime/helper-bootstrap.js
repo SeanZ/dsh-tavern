@@ -797,7 +797,7 @@
             modules.installEventApi(window);
             modules.installMacros({window, context: () => state});
             modules.installRegexApi({window, context: () => state, createEngine: modules.createRegexEngine});
-            modules.installDisplay(window);
+            modules.installDisplay(window, modules.createBodyMarkdown);
             modules.installGeneration({window, request:call, copy});
 			let regexSaveTimer = null;
 			async function persistGlobalRegexes() {

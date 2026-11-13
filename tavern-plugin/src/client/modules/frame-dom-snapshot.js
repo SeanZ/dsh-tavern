@@ -69,7 +69,8 @@ function captureTavernBoundedDom(root, budget) {
         return { head: head + ">", close: close, bytes: cost };
     }
     var kept = { children: [] };
-    var stack = [{ next: root.firstChild, depth: 1, parent: kept }];
+    // 静态正文与快照使用开放 shadow root；沿实际显示树遍历，仍共用同一预算。
+    var stack = [{ next: (root.shadowRoot || root).firstChild, depth: 1, parent: kept }];
     while (stack.length) {
         var frame = stack[stack.length - 1],
             node = frame.next;
@@ -108,7 +109,7 @@ function captureTavernBoundedDom(root, budget) {
         nodes++;
         deepest = Math.max(deepest, frame.depth);
         if (node.nodeType === 1 && entry.close)
-            stack.push({ next: node.firstChild, depth: frame.depth + 1, parent: entry });
+            stack.push({ next: (node.shadowRoot || node).firstChild, depth: frame.depth + 1, parent: entry });
         if (node.nodeType === 3 && !text.complete) break;
     }
     function serialize(entry) {

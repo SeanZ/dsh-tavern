@@ -1,4 +1,4 @@
-import { parseBubbles, stripBubbleCodeQuote } from '../../src/client/bubble-line.cjs'
+import { parseBubbles, stripBubbleCodeQuote, bubbleLiteralLines } from '../../src/client/bubble-line.cjs'
 // Host-only paragraph authority. Preserve original dialogue spelling and speech fields.
 export function stageDisplayUnits(parts, stripCodeQuote = stripBubbleCodeQuote, parse = parseBubbles, streaming = false) {
   const units = []
@@ -15,9 +15,11 @@ export function stageDisplayUnits(parts, stripCodeQuote = stripBubbleCodeQuote, 
       buffer = []
     }
     const lines = String(part.text || '').split('\n')
+    const literal = bubbleLiteralLines(part.text)
     for (const [index, original] of lines.entries()) {
+      if (literal.has(index)) { buffer.push(original); continue }
       const line = stripCodeQuote(original)
-      const segments = parse(line, streaming && part === parts.at(-1) && index === lines.length - 1)
+      const segments = parse(line, streaming && part === parts.at(-1) && index === lines.length - 1, { singleLine: true })
       const bubble = segments.find(segment => segment.kind === 'bubble')
       if (bubble || !segments.length) {
         flush()

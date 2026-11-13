@@ -1,3 +1,4 @@
+import { createBodyRenderPlan, renderBodyMarkdown } from './domain/body-renderer.js'
 import './domain/host-punycode-request.js'
 import { tavernStContract, projectPluginBody } from './domain/st-contract-service.js'
 import {installHttpStreamPatch} from './domain/http-stream-patch.js'
@@ -1588,7 +1589,7 @@ export async function apply(ctx) {
       const openingIds = choices.map(opening => opening.id)
       for (const opening of previews.openings) if (hasHelperScripts || opening.setup || hasOpeningScript(opening)) {
         opening.openingPreview = { swipes, openingIds, selectedIndex: openingIds.indexOf(opening.id),
-          messageHtml: opening.projection.parts.map(part => part.kind === 'markdown' ? marked.parse(str(part.text), { gfm: true }) : str(part.content)).join('\n'),
+          messageHtml: createBodyRenderPlan(opening.projection).map(part => part.kind === 'body' ? renderBodyMarkdown(part.text) : str(part.content)).join(''),
           preparationId: preparation.id, characterName: card.name, playerName, ...openingPreviewPayload(preparation, previewTransport) }
       }
     }

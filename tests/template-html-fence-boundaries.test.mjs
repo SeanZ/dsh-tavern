@@ -7,6 +7,25 @@ import {projectReplyHistory} from '../tavern-plugin/lib/domain/reply-presentatio
 
 const runtime = await UpstreamTemplateRuntime.create()
 
+test('同一回复混合无语言HTML围栏和有副作用的裸EJS，两个脚本文档均保留运行边界', async () => {
+  const source = '正文标记'
+  const fenced = '<html><body><script>window.fencedProbe=1;</script></body></html>'
+  const raw = '<html><body><% setMessageVar("mixedRuns", (getMessageVar("mixedRuns") || 0) + 1) %><script>window.rawProbe=<%- 3 %>;</script></body></html>'
+  const rules = [{enabled:true,placement:[2],markdownOnly:true,findRegex:'/正文标记/g',replaceString:'```\n'+fenced+'\n```\n正文\n'+raw}]
+  const result = await runtime.lifecycle({settings:{preload_worldinfo_enabled:false,raw_message_evaluation_enabled:false,render_enabled:true,code_blocks_enabled:true},regexScripts:rules,transcript:[{role:'assistant',content:source}]})
+  const view = projectReplyHistory([{role:'assistant',turn:1,text:source,sourceText:source,tavernPluginData:result.first.chat[0]}],{regexScripts:rules})
+  const parts = view.projections.flatMap(p=>p.parts).filter(p=>p.kind==='html')
+  const dom = new JSDOM(parts.map(p=>p.content).join(''))
+  try {
+    const scripts = [...dom.window.document.querySelectorAll('script')].map(script=>script.textContent)
+    assert.equal(scripts.length,2)
+    assert.ok(scripts.includes('window.fencedProbe=1;'))
+    assert.ok(scripts.includes('window.rawProbe=3;'))
+  } finally {dom.window.close()}
+  assert.equal(result.first.chat[0].variables[0].mixedRuns,1)
+  assert.deepEqual(result.first.chat,result.second.chat)
+})
+
 for (const language of ['', 'html', 'htm', 'text']) {
   test(`template evaluation retains executable ${language || 'unlabelled'} HTML fences`, async () => {
     const source = '<scene_time>\n朝\n</scene_time>\n<now_plot>正文</now_plot>'

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { parse } from 'acorn'
 import { createStoryServiceAdapter } from '../tavern-plugin/src/client/story/service.js'
 import { createStoryRenderAdapter } from '../tavern-plugin/src/client/story/render.js'
+import { createBodyRenderPlan } from '../tavern-plugin/lib/domain/body-renderer.js'
 import { createStoryRoundsFold, foldStoryRounds, filterStoryRounds } from '../tavern-plugin/lib/story/story-rounds.js'
 
 // 保守的依赖扫描：声明、参数、属性名之外的标识符必须是语言内置值。
@@ -58,12 +59,15 @@ test('脱离 Tavern 大包运行故事服务：事件折叠与快照 RPC 使用�
 test('脱离 Tavern 大包运行故事渲染投影，复用注入的投影语义', async () => {
   const validation = createStoryServiceAdapter({})
   const projection = {parts:[{kind:'markdown',text:'保留的正文'}]}
-  const {createTavernStoryRender} = createStoryRenderAdapter({...validation,
+  const {createTavernStoryRender} = createStoryRenderAdapter({...validation, createBodyRenderPlan,
     liveTavernView:{getSnapshot:()=>({view:{mode:'story'}})},
     storyTranscript: { older: async () => false, resolve: (_sid, target) => { assert.equal(target.messageUid, 'm2'); return { legacyTurn: 2, projection } } },
     tavernProjectionForTurn:()=>projection, projectionPartsOf:p=>p.parts,tavernLatestProjectionTurn:()=>2})
   const floor = await createTavernStoryRender({}).projectFloor('s',{messageUid:'m2'})
   assert.equal(floor.projection,projection)
-  assert.equal(floor.parts,projection.parts)
+  assert.deepEqual(floor.parts,createBodyRenderPlan(projection))
+  assert.equal(floor.parts[0].kind,'body')
+  assert.equal(floor.parts[0].text,'保留的正文')
+  assert.equal(floor.parts[0].members[0].sourcePartIndex,0)
   assert.equal(floor.waitingForHistory,false)
 })

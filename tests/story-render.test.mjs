@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import * as ReactDOM from 'react-dom'
 import { JSDOM } from 'jsdom'
 
 // Fork contract C7: tavernStory.render draws a floor and captures its static snapshot.
@@ -18,10 +19,10 @@ function setup(t, { retained = false } = {}) {
   win.__ModuleLoader__ = { load(value) { descriptor = value } }
   const fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: 'not in test' }) })
   win.fetch = fetch
-  const context = vm.createContext({ TextEncoder, location: win.location, URL, Blob, window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, CustomEvent: win.CustomEvent })
+  const context = vm.createContext({ TextEncoder, location: win.location, URL, Blob, window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, setInterval: win.setInterval.bind(win), clearInterval: win.clearInterval.bind(win), AbortController, CustomEvent: win.CustomEvent })
   vm.runInContext(source, context)
   const ui = { MarkdownText: props => React.createElement('p', { className: 'markdown' }, props.text) }
-  const client = descriptor.factory(name => name === 'react' ? React : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
+  const client = descriptor.factory(name => name === 'react' ? React : name === 'react-dom' ? ReactDOM : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
   const render = client.createTavernStoryRender({ executeSlash: async () => {} })
   const root = createRoot(win.document.querySelector('main'))
   t.after(() => { act(() => root.unmount()); Object.assign(globalThis, previous); win.close() })
@@ -46,7 +47,7 @@ test('FloorBody 非 live：快照或无脚本 HTML 放进 shadow root，不建 i
   client.liveTavernView.setView('s1', view([{ kind: 'markdown', text: '正文' }, { kind: 'html', content: '<div onclick="x()" class="card">卡<script>evil()</script></div><button>继续</button>' }]))
   await act(async () => root.render(React.createElement(render.FloorBody, { sessionId: 's1', floor: floor(client) })))
   const body = win.document.querySelector('[data-tavern-floor="2"]')
-  assert.equal(body.querySelector('.markdown').textContent, '正文')
+  assert.equal(body.querySelector('.dsh-tavern-body-markdown').shadowRoot.textContent, '正文')
   const shadow = body.querySelector('.dsh-tavern-floor-static').shadowRoot
   assert.equal(shadow.querySelector('.dsh-tavern-floor-content').innerHTML, '<div class="card">卡</div><button disabled="" type="button">继续</button>', '按钮只作惰性显示')
   assert.equal(win.document.querySelectorAll('iframe').length, 0)
@@ -106,8 +107,21 @@ test('FloorBody 原文兜底保留 Markdown 与配色容器，快照不被原文
   client.liveTavernView.setView('plain', view([]))
   const props = { sessionId: 'plain', floor: { messageUid: 'm4', legacyTurn: 4, projection: null }, fallbackText: '“普通对白”与 *动作*' }
   await act(async () => root.render(React.createElement(render.FloorBody, props)))
-  assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown .markdown').textContent, props.fallbackText)
+  assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown').shadowRoot.textContent, '“普通对白”与 动作')
+  assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown').shadowRoot.querySelector('em').textContent, '动作')
   await act(async () => root.render(React.createElement(render.FloorBody, { ...props, snapshotHtml: '<p>快照</p>' })))
   assert.equal(win.document.querySelector('.dsh-tavern-colored-markdown'), null)
   assert.match(win.document.querySelector('.dsh-tavern-floor-static').shadowRoot.textContent, /快照/)
+})
+
+test('静态混排与气泡穿透 shadow 捕获并往返恢复，保留正文而不保存动态挂载',async t=>{
+ const {win,client,render,root}=setup(t)
+ client.liveTavernView.setView('s2',view([{kind:'markdown',text:'**前文**\n@bubble:guest|访客|平静|[对话内容]\n后文'}]))
+ await act(async()=>root.render(React.createElement(render.FloorBody,{sessionId:'s2',floor:floor(client)})))
+ const captured=await render.captureFloorSnapshot(win.document.querySelector('main'))
+ assert.match(captured.html,/前文/);assert.match(captured.html,/对话内容/);assert.match(captured.html,/后文/)
+ assert.doesNotMatch(captured.html,/@bubble:|data-dsh-body-slot/)
+ await act(async()=>root.render(React.createElement(render.FloorBody,{sessionId:'s2',floor:floor(client),snapshotHtml:captured.html})))
+ const shadow=win.document.querySelector('.dsh-tavern-floor-static').shadowRoot
+ assert.match(shadow.textContent,/前文.*对话内容.*后文/s)
 })

@@ -316,6 +316,7 @@
                 + 'installPromptApi:' + installTavernHelperPromptApi.toString() + ','
                 + 'installMacros:' + installTavernHelperMacroApi.toString() + ','
                 + 'installDisplay:' + installTavernHelperDisplayApi.toString() + ','
+                + 'createBodyMarkdown:' + createTavernBodyMarkdown.toString() + ','
                 + 'installGeneration:' + installTavernHelperGenerationApi.toString() + ','
                 + 'installEventApi:' + installTavernHelperEventApi.toString() + ','
                 + 'createRegexEngine:' + createTavernRegexEngine.toString() + ','
