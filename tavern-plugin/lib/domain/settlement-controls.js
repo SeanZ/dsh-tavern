@@ -1,4 +1,5 @@
 import { isOpeningAwaitingSettlement } from './background-task-coordinator.js'
+import { legacyMessageUid } from './message-uid.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -25,7 +26,9 @@ export function createSettlementControls(deps) {
     return view(stopped.chat, await readChatCard(stopped.chat))
   }
 
-  async function retrySettlement(sessionId, turn, guidance) {
+  // `messageUid`（可选）：故事视图传来的目标正文身份，每次（含 CAS 冲突后重读）都要与实际结算的
+  // 最新正文一致；同一轮号下的另一份正文或失效身份都拒绝。旧调用不带它时只按轮号核对。
+  async function retrySettlement(sessionId, turn, guidance, messageUid) {
     const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, storyTimeline, view } = deps
     for (let attempt=0;attempt<5;attempt++) {
       const recent = await readOpeningWindow(sessionId)
@@ -49,6 +52,9 @@ export function createSettlementControls(deps) {
       }
       if (target === null || Math.max(0, Number(target.message.turn) || 0) !== Math.max(0, Number(turn) || 0)) {
         throw new Error('只能重试当前最新正文的后台结算')
+      }
+      if (messageUid !== undefined && messageUid !== null && legacyMessageUid(target.message, target.messageId) !== str(messageUid)) {
+        throw new Error('目标消息已变化，请刷新故事页')
       }
       const mvuRetry = mvuSettlementEngine.prepareRetry({ chat, target, guidance, activity })
       if (mvuRetry === 'redeliver') {

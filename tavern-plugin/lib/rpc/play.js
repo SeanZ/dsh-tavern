@@ -1,4 +1,3 @@
-import { resolveStoryMessage } from '../story/message-target.js'
 import { BACKGROUND_TASK_CATALOG, describeTasks } from '../domain/background-tasks.js'
 import { STORY_EVENTS } from '../domain/story-events.js'
 import { buildRunTree } from '../domain/background-run-tree.js'
@@ -371,8 +370,8 @@ export function createPlayHandlers(deps) {
       return { view: await stopBackground(args && args.sessionId, args && args.operationId) }
     },
     async retrySettlement(args) {
-      if (args?.messageUid) resolveStoryMessage(await chatForSession(args.sessionId), args, { latest: true })
-      return { view: await retrySettlement(args && args.sessionId, args && args.turn, args && args.guidance) }
+      // 最新正文由结算方法按同一规则选取（末尾的失败输入占位不算正文）；故事视图的 UID 交给它核对。
+      return { view: await retrySettlement(args && args.sessionId, args && args.turn, args && args.guidance, args && args.messageUid) }
     },
     async retryMvuSettlement(args) {
       return { view: await retrySettlement(args && args.sessionId, args && args.turn, args && args.guidance) }

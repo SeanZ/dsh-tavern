@@ -18,6 +18,8 @@ import { createRoundHistory } from '../tavern-plugin/lib/domain/round-history.js
 import { createMvuSettlementEffect } from '../tavern-plugin/lib/domain/mvu-settlement-effect.js'
 import { POSTURE_SUBMIT_TOOL } from '../tavern-plugin/lib/domain/posture-submission.js'
 import { createPostureItem, plainSettlementPlan, runPipelineStages } from '../tavern-plugin/lib/domain/background-pipeline.js'
+import { legacyMessageUid } from '../tavern-plugin/lib/domain/message-uid.js'
+import { createPlayHandlers } from '../tavern-plugin/lib/rpc/play.js'
 
 async function harness({ beginRunning = true, mvu = true } = {}) {
   let current = { backgroundTasks: { posture: true, characterDesign: true, variables: true }, id: 'chat', sessionId: 'session', mode: 'story', messages: [], mvu: { enabled: mvu, owner: mvu ? 'official' : null } }
@@ -285,6 +287,60 @@ test('手动插件任务：登记为独占的后台任务，跑完后关闭；�
   await job
   assert.equal(h.tasks.activity(h.get()).busy, false)
   assert.equal(h.sandbox.settlementRun.pluginTaskJob('chat'), undefined)
+})
+
+// 故事视图带消息身份重新结算：最新正文由同一条规则选取（末尾的失败输入占位不算正文），UID 必须属于它。
+const round3 = (uid, text) => ({ role: 'assistant', text, turn: 3, messageUid: uid, variables: [{ stat_data: { hp: 10 } }], mvu: { pending: true } })
+test('重新结算按最新正文核对 UID：失败输入占位不挡最新正文且占位不改；旧正文、同轮另一份与失效身份拒绝', async () => {
+  const run = await harness({ beginRunning: false })
+  await run.store.updateChat('chat', chat => {
+    chat._storageRevision = 1
+    chat.messages.push({ role: 'user', text: '再走', turn: 3 }, round3('second-3', '走了'), { role: 'user', text: '失败的输入', placeholder: true })
+    return chat
+  })
+  let queued = 0
+  run.sandbox.queueSettlement = async () => { queued++ }
+  const olderUid = legacyMessageUid(run.get().messages[1], 1)
+  for (const [uid, reason] of [['first-3', '同一轮号下结果切换前的另一份正文'], [olderUid, '旧正文的身份'], ['missing-uid', '失效身份']]) {
+    await assert.rejects(run.sandbox.retrySettlement('session', 3, undefined, uid), /目标消息已变化/, reason)
+  }
+  await assert.rejects(run.sandbox.retrySettlement('session', 2, undefined, olderUid), /只能重试当前最新正文/)
+  assert.equal(queued, 0)
+  assert.equal(run.get().settleStatus, undefined)
+  await run.sandbox.retrySettlement('session', 3, undefined, 'second-3')
+  assert.equal(queued, 1)
+  assert.equal(run.get().settleStatus, 'pending')
+  assert.deepEqual(run.get().messages.at(-1), { role: 'user', text: '失败的输入', placeholder: true }, '占位行不被结算改动')
+  assert.equal(run.get().messages[3].mvu.variableRetry, true)
+})
+
+test('重新结算 UID 在 CAS 冲突重读后继续核对；正文生成中带 UID 也拒绝', async () => {
+  const run = await harness({ beginRunning: false })
+  await run.store.updateChat('chat', chat => { chat._storageRevision = 1; chat.messages.push({ role: 'user', text: '再走', turn: 3 }, round3('second-3', '走了')); return chat })
+  let queued = 0, attempts = 0
+  run.sandbox.queueSettlement = async () => { queued++ }
+  const patch = run.sandbox.patchChat
+  run.sandbox.patchChat = async (...args) => {
+    // 第一次 CAS 期间最新正文被换成同轮的另一份：重读后 UID 不再匹配，必须拒绝。
+    if (++attempts === 1) await run.store.updateChat('chat', current => { current._storageRevision++; current.messages[3] = round3('third-3', '又走了'); return current })
+    return patch(...args)
+  }
+  await assert.rejects(run.sandbox.retrySettlement('session', 3, undefined, 'second-3'), /目标消息已变化/)
+  assert.equal(attempts, 1)
+  assert.equal(queued, 0)
+  const running = await harness({ beginRunning: false })
+  await running.store.updateChat('chat', chat => running.timeline.apply({ chat, intent: { kind: 'body.begin', turn: 3, userText: '再走' } }).chat)
+  const uid = legacyMessageUid(running.get().messages[1], 1)
+  await assert.rejects(running.sandbox.retrySettlement('session', 2, undefined, uid), /正文正在生成/)
+})
+
+test('retrySettlement RPC 把故事视图的 messageUid 交给结算方法，旧入口不带身份', async () => {
+  const seen = []
+  const handlers = createPlayHandlers({ str: String, retrySettlement: async (...args) => { seen.push(args); return { mode: 'story' } } })
+  assert.deepEqual(await handlers.retrySettlement({ sessionId: 's', turn: 3, guidance: '补充', messageUid: 'm3' }), { view: { mode: 'story' } })
+  await handlers.retrySettlement({ sessionId: 's', turn: 3 })
+  await handlers.retryMvuSettlement({ sessionId: 's', turn: 3 })
+  assert.deepEqual(seen, [['s', 3, '补充', 'm3'], ['s', 3, undefined, undefined], ['s', 3, undefined]])
 })
 
 // 切换历史结果留下的「变量未重算」标记：重新结算排队和失败时保留，成功提交后才清除。
