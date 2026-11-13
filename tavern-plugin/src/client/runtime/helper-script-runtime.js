@@ -83,40 +83,7 @@
 				closedEventOrder.push(id);
 				while (closedEventOrder.length > 100) closedEventIds.delete(closedEventOrder.shift());
 			}
-			function maybeAnnounceReady() {
-				if (!readinessKey || records.size === 0 || announcedReadinessKey === readinessKey) return;
-				if (Array.from(records.values()).some(function (record) { return mvuInitializationError(record); })) return;
-				if (Array.from(records.values()).some(function (record) { return !record.loaded || record.reloading || (!record.subscriptionsReady && !record.initializationFailed); })) return;
-				announcedReadinessKey = readinessKey;
-				const readySessionId = activeSessionId;
-				const refreshAfterSuppress = suppressedCompactMutations > 0;
-				suppressedCompactMutations = 0;
-				for (const record of records.values()) record.suppressCompactViewRefresh = false;
-				Promise.resolve(onReady(readySessionId)).catch(function (error) { reportError("人物卡脚本初始化", error); });
-				if (readySessionId && refreshAfterSuppress) {
-					clearPendingMutation(readySessionId);
-					notifyMutation(readySessionId, "initialization-ready", null);
-				}
-			}
-			function settleInitialization(record, error, failurePhase) {
-				if (record.initializationTimer) hostWindow.clearTimeout(record.initializationTimer);
-				record.initializationTimer = null;
-				if (error && !record.subscriptionsReady) {
-					recordMvuLoadDiagnostic(record, { phase: failurePhase || "initialization-timeout", failureStep: record.mvuLoadState ? "initialization" : "bootstrap", message: String(error.message || error).slice(0, 2000) });
-					if (record.scripts.has("__dsh_official_mvu__")) onMvuLoadState({ phase: "error", canRetry: false, error: String(error.message || error) });
-					record.initializationFailed = true;
-					record.suppressCompactViewRefresh = false;
-					const unfinished = Array.from(record.scripts.values()).filter(function (script) { return !script.subscriptionsReady && !script.initializationFailed; });
-					for (const script of unfinished) { script.initializationFailed = true; script.initializationError = String(error && error.message || error).slice(0, 4000); }
-					const message = String(error && error.message || error || "初始化失败");
-					if (message !== record.lastRuntimeError) {
-						record.lastRuntimeError = message;
-						const source = unfinished.length === 1 ? "人物卡脚本「" + unfinished[0].name + "」" : "人物卡共享脚本沙箱";
-						reportError(source, new Error(message));
-					}
-				}
-				maybeAnnounceReady();
-			}
+			// @include runtime/helper-script-readiness.js
 			function ensureRoot() {
 				if (root && root.isConnected !== false) return root;
 				root = hostDocument.createElement("div");
@@ -125,78 +92,13 @@
 				(hostDocument.body || hostDocument.documentElement).appendChild(root);
 				return root;
 			}
-			function decorateHelperContext(value, fallback) {
-				const context = clone(value && typeof value === "object" ? value : {});
-				const previous = fallback && typeof fallback === "object" ? fallback : {};
-				for (const key of ["character", "characterResourceAccess", "characterVariables", "chatId", "playerName", "characterName", "worldbook"]) {
-					if (context[key] === undefined && previous[key] !== undefined) context[key] = clone(previous[key]);
-				}
-				if (!context.scriptVariables || typeof context.scriptVariables !== "object") context.scriptVariables = clone(previous.scriptVariables || {});
-				context.playerName = String(context.playerName || "你");
-				context.characterName = String(context.characterName || context.character && context.character.name || "角色");
-				for (const message of Array.isArray(context.messages) ? context.messages : []) {
-					message.is_user = message.role === "user";
-					message.is_system = message.role === "system";
-					if (!message.name) message.name = message.is_user ? context.playerName : context.characterName;
-					message.mes = String(message.message || "");
-				}
-                context.messages = applyTavernVariableReceipt.indexApi.from(context.messages || []);
-				return context;
-			}
-			function helperContext(view, scripts) {
-				const context = clone(view && view.tavernHelper || {});
-				if (!context.scriptVariables || typeof context.scriptVariables !== "object") context.scriptVariables = {};
-				for (const script of scripts) if (!Object.prototype.hasOwnProperty.call(context.scriptVariables, script.id)) context.scriptVariables[script.id] = clone(script.data || {});
-				const character = clone(view && view.card || null);
-				if (character && typeof character === "object" && (!character.data || typeof character.data !== "object")) character.data = clone(character);
-				context.character = character;
-                context.characterResourceAccess = view && view.cardResourceAccess || null;
-				context.chatId = String(view && view.chatId || "");
-				context.playerName = String(view && view.playerName || "你");
-				context.characterName = String(character && character.name || "角色");
-				if (!Object.prototype.hasOwnProperty.call(context, "worldbook")) context.worldbook = clone(view && view.tavernHelperWorldbook || null);
-				return decorateHelperContext(context);
-			}
+			// @include runtime/helper-script-context.js
 			function post(record, message) {
 				if (records.get(record.id) !== record || !record.loaded || record.reloading || !record.frame.contentWindow) return;
 				if (message.context && applyTavernVariableReceipt.indexApi.info(message.context.messages)) {
                     message = {...message, context:{...message.context, messages:Array.from(message.context.messages)}};
                 }
                 record.frame.contentWindow.postMessage(Object.assign({ token: record.token }, message), "*");
-			}
-			function snapshot(context) {
-				const messages = Array.isArray(context && context.messages) ? context.messages : [];
-				const latest = messages[messages.length - 1] || null;
-				return {
-					lifecycleRevision: Math.max(0, Number(context && context.lifecycleRevision) || 0),
-					count: messages.length,
-					latestId: latest ? Number(latest.message_id) : -1,
-					latestRole: latest && latest.role || "",
-					latestMessage: latest && latest.message || "",
-					latestSwipe: latest ? Number(latest.swipe_id) || 0 : 0,
-					latestVariables: JSON.stringify(latest && latest.variables || {})
-				};
-			}
-			function eventsBetween(before, after) {
-				if (!before) return [];
-				if (after.lifecycleRevision !== before.lifecycleRevision) return [];
-				if (after.count < before.count) return [{ name: "MESSAGE_DELETED", args: [before.latestId] }];
-				if (after.count > before.count) {
-					if (after.latestRole === "assistant") {
-						return [
-							{ name: "MESSAGE_RECEIVED", args: [after.latestId] },
-							{ name: "GENERATION_ENDED", args: [after.latestId] }
-						];
-					}
-					return [
-						{ name: "MESSAGE_SENT", args: [after.latestId] },
-						{ name: "GENERATION_STARTED", args: ["normal", {}, false] }
-					];
-				}
-				if (after.latestSwipe !== before.latestSwipe) return [{ name: "MESSAGE_SWIPED", args: [after.latestId] }];
-				if (after.latestMessage !== before.latestMessage) return [{ name: "MESSAGE_EDITED", args: [after.latestId] }];
-				if (after.latestVariables !== before.latestVariables) return [{ name: "mag_variable_update_ended", args: [] }];
-				return [];
 			}
 			function removeExternalCardUiArtifacts(record) {
 				if (!record || !record.trustedCardMode || !hostDocument) return;
@@ -288,33 +190,6 @@
 				container.style.cssText = "position:fixed;inset:0;z-index:2300";
 				for (const item of records.values()) item.frame.hidden = item !== record;
 				record.frame.style.cssText = "display:block;width:100%;height:100%;border:0;background:transparent";
-			}
-			function mvuInitializationError(record) {
-				const core = record && record.scripts.get("__dsh_official_mvu__");
-				return core && core.initializationFailed ? "MVU 模块加载失败：" + (core.initializationError || "初始化未完成") + "\n请刷新页面或重启酒馆后重试。" : record && record.mvuDataError || "";
-			}
-            function mvuDataReady(record) {
-                // A blank opening has no floor yet; MVU initializes it in the chat scope.
-                const initial = record.context?.chatVariables;
-                if (!record.context?.messages?.length) return initial?.stat_data !== undefined && initial?.schema !== undefined;
-                const info = applyTavernVariableReceipt.indexApi.info(record.context?.messages);
-                return info ? info.eligible > 0 : (record.context?.messages || []).some(message =>
-                    message?.variables?.stat_data !== undefined && message?.variables?.schema !== undefined);
-            }
-			function syncMvuDataReadiness(record) {
-				const core = record.scripts.get("__dsh_official_mvu__");
-				if (!core || core.initializationFailed || !record.subscriptionsReady) return;
-				const ready = mvuDataReady(record);
-				if (ready) {
-					record.mvuDataError = "";
-				}
-                // pending initialization writes are not failures merely because they are slow.
-				const phase = ready ? "ready" : record.mvuDataError ? "error" : "evaluating";
-				if (!record.mvuLoadState || record.mvuLoadState.phase !== phase) {
-					recordMvuLoadDiagnostic(record, { phase: ready ? "initialization-ready" : "initialization-waiting", failureStep: "initial-variables" });
-					record.mvuLoadState = { phase: phase, canRetry: false, error: record.mvuDataError || "" };
-					onMvuLoadState(record.mvuLoadState);
-				}
 			}
 			async function emitToRecord(record, name, args, context, diagnostics, hostEventId) {
 				const initializationError = mvuInitializationError(record);
@@ -1043,6 +918,7 @@
 					reply({ ok: true, result: result });
 					if ((data.method === "updateTavernHelperPrompts" || data.method === "updateTavernHelperVariables" || data.method === "updateTavernHelperMessages" || data.method === "createTavernHelperMessages" || data.method === "replaceTavernHelperWorldbook" || data.method === "patchTavernHelperWorldbook" || data.method === "saveTavernExtensionSettings" || data.method === "saveTavernWorldInfo" || data.method === "saveTavernChatData") && result && !result.transactional && result.updated !== false && result.stale !== true && records.get(record.id) === record) reportMutation(record.sessionId, data.method, result.contextDelta && currentDocument() ? Object.assign({}, result, { context: record.context }) : result);
 				}, function (error) {
+                    if (currentDocument()) failMvuInitializationWrite(record, data, error);
 					reply({ ok: false, error: String(error && error.message || error), errorCode: String(error && error.code || "") });
 				});
 			}

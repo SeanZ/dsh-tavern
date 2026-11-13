@@ -4,6 +4,7 @@ import { templateStateFields } from './template-window-reader.js'
 import { createScopedMessages } from './scoped-messages.js'
 import { diffJson } from './json-mutation.js'
 import { commitChatFields, rebaseChatChanges, sameChatMessageIdentity } from './chat-field-transaction.js'
+import { captureHelperMessageWrite, commitHelperMessageWrite } from './helper-message-write.js'
 import { applyOpeningVariables } from './opening-setup.js'
 import { createFullPromptTemplateSync } from './full-prompt-template-sync.js'
 import { createJsonValueProjectionCache } from './immutable-json-projection.js'
@@ -345,6 +346,9 @@ export function createTavernScriptHostAdapter(options = {}) {
     await assertScriptEnabled(chat)
     if (!mutationIsCurrent(chat, expectedLifecycleRevision)) return staleMutation(chat)
     const patches = await settlement.prepareMessages(sessionId, messages, eventId)
+    const canPatch = options.patchChat && Number.isSafeInteger(chat._storageRevision) && chat._storageRevision > 0
+      && !settlement.has(str(sessionId))
+    const baseline = canPatch ? captureHelperMessageWrite(chat, patches) : null
     const updated = replaceTavernHelperMessages(chat, patches, await replyProjection(chat))
     // (MVU's opening build writes the floor's swipes_data through here)
     for (const { messageId } of updated) if (layOpeningStartValues(chat, { type: 'message', messageId })) break
@@ -357,7 +361,18 @@ export function createTavernScriptHostAdapter(options = {}) {
     }
     const transactional = await transactionResult(sessionId, updated, true, eventId)
     if (transactional !== null) return transactional
-    try { await options.writeChat(chat, { source: 'tavern-helper.messages' }) }
+    try {
+      if (baseline) {
+        await commitHelperMessageWrite({ baseline, chat, patchChat: options.patchChat,
+          resolveChat: () => resolveChat(sessionId), assertCurrent: () => {
+            settlement.assertEvent(sessionId, eventId)
+            if (settlement.has(str(sessionId))) throw variableConflict()
+          } })
+        // 返回已持久化的当前状态，包含并发合入的模板元数据与变量。
+        return { updated: true, targets: updated, context: await fullContext(await resolveChat(sessionId)) }
+      }
+      await options.writeChat(chat, { source: 'tavern-helper.messages' })
+    }
     catch (error) {
       if (error && error.code === 'DSH_TAVERN_CHAT_CONFLICT') {
         const latest = await options.resolveChat(str(sessionId))

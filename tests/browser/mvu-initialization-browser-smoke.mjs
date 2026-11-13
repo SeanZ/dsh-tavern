@@ -99,6 +99,12 @@ function state(id) {
       states.get(id).chat.messages = []
       states.get(id).chat.mvu.openingInitialization = { version: 2, status: 'pending' }
     }
+    if (id.startsWith('opening-concurrent')) {
+      const chat = states.get(id).chat
+      const swipes = ['默认开场', '替代开场<initvar>{"hp":20,"affection":8}</initvar>']
+      chat.messages[0] = { role: 'assistant', greeting: true, text: swipes[0], swipeId: 0, swipes, variables: [{}, {}] }
+      chat.mvu.openingInitialization = { version: 2, status: 'pending' }
+    }
     if (id.startsWith('opening-setup')) {
       const chat = states.get(id).chat
       const swipes = ['Unused scene<initvar>{"hp":0}</initvar>',
@@ -122,12 +128,19 @@ function state(id) {
 const journal = process.env.MVU_SMOKE_JOURNAL === '1' ? createChatJournalStore({ dataRoot: await mkdtemp(path.join(tmpdir(), 'mvu-init-journal-')) }) : null
 const seeds = new Map()
 async function seeded(id) {
-  if (!seeds.has(id)) seeds.set(id, journal.update(id, current => current || structuredClone(state(id).chat)))
+  if (!seeds.has(id)) seeds.set(id, journal.update(id, current => current || { ...structuredClone(state(id).chat), _storageRevision: 1 }))
   await seeds.get(id)
 }
 const persistence = createChatPersistence({ store: journal ? {
   read: async id => { await seeded(id); return journal.read(id) },
+  readRevision: (...args) => journal.readRevision(...args),
   update: async (id, mutate, metadata) => { await seeded(id); const saved = await journal.update(id, mutate, metadata); state(id).chat = structuredClone(saved); return saved },
+  patch: async (id, revision, changes, metadata) => {
+    await seeded(id)
+    const saved = await journal.patch(id, revision, changes, metadata)
+    if (saved) state(id).chat = await journal.read(id)
+    return saved
+  },
   remove: id => journal.remove(id)
 } : {
   read: async id => structuredClone(state(id).chat),
@@ -135,6 +148,21 @@ const persistence = createChatPersistence({ store: journal ? {
   remove: async () => {}
 } })
 const adapter = createTavernScriptHostAdapter({ diagnostics, resolveChat: async id => (journal || id.startsWith('capture')) ? persistence.read(id) : state(id).chat,
+  ...(journal ? { patchChat: (...args) => persistence.patch(...args),
+    updateChat: (...args) => persistence.update(...args), readChatRevision: (...args) => persistence.readRevision(...args) } : {}),
+  replyRegexScripts: async chat => {
+    if (chat.id.startsWith('opening-concurrent') && !state(chat.id).templateWrites) {
+      state(chat.id).templateWrites = 1
+      // 通过模板正式保存接口插入并发写入，不直接修改存储快照。
+      const { state: templateState } = await adapter.readFullPromptTemplateState(chat.id)
+      const { chat: rows, chat_metadata, ...header } = templateState
+      await adapter.saveFullPromptTemplateState(chat.id, { ...header, changes: [
+        { op: 'set', path: ['chat', 0, 'is_ejs_processed'], value: [true] },
+        { op: 'set', path: ['chat', 0, 'template_rendered'], value: { hash: 'concurrent-template' } }
+      ] })
+    }
+    return []
+  },
   writeChat: async (chat, metadata) => {
     const s = state(chat.id)
     if (s.chat.messages[0]?.variables?.[0]?.stat_data?.hp !== chat.messages[0]?.variables?.[0]?.stat_data?.hp) s.hpWrites++
@@ -347,6 +375,22 @@ const server = createServer(async (req, res) => {
           capture: sessionId.startsWith('capture') ? s.chat.messages[0].displayRuntime : undefined, receipt: s.result?.receipt, resumeError: s.resumeError }
       }
       else if (method === 'flow-context') result = projectTavernHelperContext(state(sessionId).chat)
+      else if (method === 'concurrent-proof') {
+        assert.ok(journal)
+        const saved = await journal.read(sessionId)
+        result = { variables: saved.messages[0].variables, swipeId: saved.messages[0].swipeId,
+          metadata: saved.messages[0].tavernPluginData, initialization: saved.mvu.openingInitialization,
+          modelCalls: state(sessionId).calls, templateWrites: state(sessionId).templateWrites }
+      }
+      else if (method === 'select-opening') {
+        result = await adapter.updateMessages(sessionId, [{ message_id: 0, swipe_id: args.swipeId }])
+      }
+      else if (method === 'first-send-context') {
+        await gate.waitUntilReady(sessionId)
+        const saved = await persistence.read(sessionId)
+        assert.equal(saved.mvu.openingInitialization.status, 'complete')
+        result = lastTavernHelperVariables(saved.messages, saved.variables)
+      }
       else if (method === 'run-opening-flow') result = await runOpeningFlow(sessionId)
       else if (method === 'run-authored-settlement') {
         const s = state(sessionId)
@@ -493,6 +537,8 @@ const server = createServer(async (req, res) => {
       tavernHelperWorldbook: bookFor(id) ? projectTavernHelperWorldbook(bookFor(id).view) : null,
       tavernMvuRuntime: { owner: 'official', assetUrl: '/mvu.js?id=' + id } }
     if (id.startsWith('opening')) view.tavernHelperScripts.push({ id: 'opening-companion', name: '开场配套脚本', content: 'await updateVariablesWith(v=>({...v,enabled:true}),{type:"script"});', data: {}, enabled: true })
+    if (id.startsWith('opening-concurrent')) view.tavernHelperScripts.push({ id: 'initialization-companion', name: '候选初始化回调',
+      content: 'eventOn("mag_variable_initialized", (data, swipe) => { data.stat_data.callbackCount = (data.stat_data.callbackCount || 0) + 1; data.stat_data.callbackSwipe = swipe; });', data: {}, enabled: true })
     if (mode === 'opening-slow') view.tavernHelperScripts.unshift({ id: 'slow-companion', name: '延迟测试', content: 'await new Promise(resolve=>setTimeout(resolve,20000));', data: {}, enabled: true })
     if (id.startsWith('opening-card')) {
       assert.ok(realCard, 'set MVU_SMOKE_CARD_PATH for mode=opening-card')
