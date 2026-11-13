@@ -67,7 +67,6 @@ export function createStoryReconciliation({ agentRegistry, sessionStore, chatFor
       // The session may have received a turn while the fork save was being written.
       assertBlankStoryForkTarget(sessionId, session)
       const result = repairNativeSurface(session, chat, { repairId: randomUUID() })
-      if (result.plan.status === 'deferred') return result
       if (result.applied) await sessionStore.flush(session)
       await updateChat(chat.id, current => recordNativeSurfaceRepair(current, chat, result.anchors) ? current : undefined, { source: 'native-seed' })
       if (result.applied) console.warn('dsh-tavern: 故事分叉建原生上下文（' + reason + '），写入最近 ' + result.plan.rounds.length + ' 轮')

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { nativeRepairGame, repairEvidence } from './fixtures/native-repair-game.mjs'
+import { nativeRepairGame } from './fixtures/native-repair-game.mjs'
 import { appendSessionEvent, sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
 import {
   replaceSessionSurface,
@@ -11,11 +11,11 @@ import {
   clearFailedTurnSurface,
   replayableFailedTurn,
 } from '../tavern-plugin/lib/domain/rollback-surface.js'
-import { planNativeSurfaceRepair, applyNativeSurfaceRepair } from '../tavern-plugin/lib/domain/native-surface-repair.js'
 import { Session } from './fixtures/dsh-session-host.mjs'
 
+// 活会话上的修复已退役：失败输入旁的正文不再被在线修复改写，相关保护见
+// tests/story-reconciliation.test.mjs（seedNativeStory 只写空白 Session）。这里保留失败输入的重放与清理。
 const textInput = [{ type: 'text', text: '失败的输入' }]
-const imageInput = [{ type: 'image', attachment: { attachmentId: 'failed-photo', mediaType: 'image/png', bytes: 1 } }]
 function failed(session, turn, queued = false, content = textInput) {
   const data = {
     id: `failed-${turn}`,
@@ -90,27 +90,6 @@ test('准备阶段失败的排队输入能重放，不能丢失在 turn/start �
   assert.equal(replayableFailedTurn({ events: sessionEvents(session) })?.userText, '失败的输入')
 })
 
-for (const [label, content] of [
-  ['文字', textInput],
-  ['只有图片的', imageInput],
-])
-  test(`末尾存在${label}失败输入时修复前轮正文应延后，不能吞掉失败输入`, () => {
-    const { session, chat } = nativeRepairGame()
-    failed(session, 4, false, content)
-    chat.messages.at(-1).text = '需要修复的正文'
-    const cold = Session.fromRestore(session.id, JSON.parse(JSON.stringify(sessionEvents(session))))
-    for (const current of [session, cold]) {
-      const count = sessionEvents(current).length
-      const plan = planNativeSurfaceRepair({ chat, ...repairEvidence(current) })
-      assert.equal(plan.status, 'deferred')
-      assert.equal(applyNativeSurfaceRepair(current, chat, plan, { repairId: 'deferred' }).applied, false)
-      assert.equal(sessionEvents(current).length, count)
-      const replay = replayableFailedTurn({ events: sessionEvents(current) })
-      assert.equal(replay?.turn, 4)
-      assert.deepEqual(replay?.inputAttachments ?? [], content === imageInput ? imageInput : [])
-    }
-  })
-
 test('排队输入的失败清理覆盖输入本身，前一轮正文保持', () => {
   const { session, chat } = nativeRepairGame()
   failed(session, 4, true)
@@ -123,20 +102,4 @@ test('排队输入的失败清理覆盖输入本身，前一轮正文保持', ()
   assert.equal(clearFailedTurnSurface({ session, turn: 4 }), 0)
   assert.equal(sessionEvents(session).length, count)
   Session.fromRestore(session.id, JSON.parse(JSON.stringify(sessionEvents(session))))
-})
-
-test('打开的生成步骤中不执行多轮修复，关闭并清理后才能恢复', () => {
-  const { session, chat } = nativeRepairGame()
-  appendSessionEvent(session, 'turn/start', { turn: 4 })
-  appendSessionEvent(session, 'step/start', { turn: 4, step: 1 })
-  chat.messages.at(-1).text = '新正文'
-  const count = sessionEvents(session).length
-  const plan = planNativeSurfaceRepair({ chat, ...repairEvidence(session) })
-  assert.equal(plan.status, 'deferred')
-  assert.equal(applyNativeSurfaceRepair(session, chat, plan, { repairId: 'running' }).applied, false)
-  assert.equal(sessionEvents(session).length, count)
-  appendSessionEvent(session, 'step/end', { turn: 4, step: 1 })
-  appendSessionEvent(session, 'turn/end', { turn: 4, reason: { kind: 'completed' } })
-  const ready = planNativeSurfaceRepair({ chat, ...repairEvidence(session) })
-  assert.equal(applyNativeSurfaceRepair(session, chat, ready, { repairId: 'closed' }).applied, true)
 })

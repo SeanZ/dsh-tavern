@@ -191,7 +191,8 @@ test('一轮都对不上也不拒绝：保留前缀和开场，按 Chat 整段�
   delete g.chat.messages.at(-1).nativeAnchor
   const full = repair(g)
   assert.equal(full.plan.status, 'full')
-  assert.deepEqual(nodeTexts(g.session), ['前缀', '', '开场', '行动2', '正文2'])
+  // 遮住旧尾部的空占位节点没有业务意义（宿主版本不同时可能不出现在派生消息里），只核对有内容的节点。
+  assert.deepEqual(nodeTexts(g.session).filter(text => text !== ''), ['前缀', '开场', '行动2', '正文2'])
   assert.equal(plan(g).status, 'intact')
 })
 

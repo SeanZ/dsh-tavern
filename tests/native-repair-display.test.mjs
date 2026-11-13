@@ -7,14 +7,13 @@ import { Session } from './fixtures/dsh-session-host.mjs'
 import { hostAssistantRows } from './fixtures/host-assistant-rows.mjs'
 import { nativeRepairGame, repairEvidence } from './fixtures/native-repair-game.mjs'
 import { projectionFixture } from './fixtures/session-view-projection.mjs'
-import {
-  applyNativeSurfaceRepair,
-  repairNativeSurface,
-  recordNativeSurfaceRepair,
-} from '../tavern-plugin/lib/domain/native-surface-repair.js'
 import { createSessionSurfaceMutator } from '../tavern-plugin/lib/domain/session-surface-mutations.js'
 import { planTranscriptRows, planShowsRow, planStoryTurn } from '../tavern-plugin/lib/domain/transcript-row-plan.js'
 import { sessionEvents } from '../tavern-plugin/lib/domain/session-events.js'
+
+// 现役修复只在故事分叉的空白 Session 上建立原生上下文（story-reconciliation.seedNativeStory），其正文、
+// 冷读与幂等由 tests/story-fork.test.mjs 与 tests/native-repair-anchor.test.mjs 覆盖；这里只保留
+// 存量修复日志的显示与正则投影。
 
 function visible(session, chat, view = {}) {
   const plan = view.transcriptTurns || planTranscriptRows({ chat, events: sessionEvents(session) })
@@ -64,77 +63,6 @@ test('旧修复正文与本局预设正则覆盖在全量、缓存、增量和�
     assert.equal(JSON.stringify(sessionEvents(current)), before)
   }
   assert.equal(await readFile(file, 'utf8'), bytes)
-})
-
-test('整段修复的开场没有玩家输入时，仍写入宿主可绘制正文', () => {
-  const { session, chat } = nativeRepairGame()
-  const result = applyNativeSurfaceRepair(
-    session,
-    chat,
-    {
-      status: 'full',
-      keep: 0,
-      rounds: [
-        { turn: 1, messageIndex: 0, greeting: true, userText: null, replyText: '恢复的开场' },
-        { turn: 2, messageIndex: 2, userText: '行动2', replyText: '恢复的正文' },
-      ],
-    },
-    { repairId: 'opening' },
-  )
-  assert.equal(result.applied, true)
-  const repaired = hostAssistantRows(sessionEvents(session)).filter((row) => row.turn > 3)
-  assert.deepEqual(
-    repaired.map((row) => row.text),
-    ['恢复的开场', '恢复的正文'],
-  )
-})
-
-test('每个修复轮保留独立宿主正文，写入磁盘并冷读后仍可显示', async (t) => {
-  const { session, chat } = nativeRepairGame()
-  revise(chat)
-  const result = repairNativeSurface(session, chat, { repairId: 'separate-rounds' })
-  recordNativeSurfaceRepair(chat, chat, result.anchors)
-  assert.deepEqual(visible(session, chat), expected)
-  const replies = sessionEvents(session).filter((event) => event.data?.message?.source?.model === 'native-repair')
-  assert.equal(new Set(replies.map((event) => `${event.data.turn}:${event.data.step}`)).size, 2)
-  const directory = await mkdtemp(join(tmpdir(), 'tavern-repair-display-'))
-  t.after(() => rm(directory, { recursive: true, force: true }))
-  const file = join(directory, 'session.jsonl')
-  await writeFile(
-    file,
-    sessionEvents(session)
-      .map((event) => JSON.stringify(event))
-      .join('\n'),
-  )
-  const rows = (await readFile(file, 'utf8')).split('\n').map((line) => JSON.parse(line))
-  const restored = Session.fromRestore(session.id, rows, session.header, 0, 'detached')
-  assert.deepEqual(visible(restored, chat), expected)
-})
-
-test('没有 turn 字段的旧存档修复后，各轮仍显示修复正文，冷读后不变', () => {
-  const { session, chat } = nativeRepairGame()
-  revise(chat)
-  for (const message of chat.messages) {
-    delete message.turn
-    delete message.nativeAnchor
-  }
-  const result = repairNativeSurface(session, chat, { repairId: 'turnless' })
-  assert.equal(result.applied, true)
-  // 与行计划相同的推算：开场为 1，否则为此前玩家输入数加 1。
-  assert.deepEqual(
-    result.plan.rounds.map((round) => round.turn),
-    [2, 3],
-  )
-  assert.equal(recordNativeSurfaceRepair(chat, chat, result.anchors), true)
-  assert.ok(chat.messages.at(-1).nativeAnchor)
-  const restored = Session.fromRestore(
-    session.id,
-    JSON.parse(JSON.stringify(sessionEvents(session))),
-    session.header,
-    0,
-    'detached',
-  )
-  for (const current of [session, restored]) assert.deepEqual(visible(current, chat), expected)
 })
 
 // 按旧格式构造一个编辑步骤的多轮输出；新代码不能靠重写这些存量日志修复显示。
