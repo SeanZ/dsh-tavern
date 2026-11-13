@@ -15,6 +15,7 @@ import { projectReplyLayers } from '../../tavern-plugin/lib/domain/reply-present
 import { foldStoryRounds } from '../../tavern-plugin/lib/story/story-rounds.js'
 import { forkTurnsByMessageId } from '../../tavern-plugin/lib/domain/conversation-fork-targets.js'
 import { buildGameSave, readGameSave } from '../../tavern-plugin/lib/domain/game-save.js'
+import { BODY_RENDER_VERSION } from '../../tavern-plugin/lib/domain/body-renderer.js'
 
 const MODEL = { kind: 'model', provider: 'test', model: 'test' }
 const reply = (id, turn, text, source = MODEL) => ({ turn, step: 1, message: { id, role: 'assistant', content: [{ type: 'text', text }], source } })
@@ -183,8 +184,8 @@ try {
   const floorsA = floorsOf(sourceA)
   assert.deepEqual(floorsA.map(floor => floor.story), [1, 2, 3, 9])
   assert.equal(floorsA[2].reply.text, '重写一')
-  // 源局各层的快照（C3），来源是当前 reply seq。
-  for (const floor of floorsA) await host.rpc('saveFloorSnapshot', { sessionId: A.sessionId, turn: floor.story, reply: String(floor.reply.seq), html: '<p>快照' + floor.story + '</p>' })
+  // 源局各层的快照（C3），来源是当前 reply seq；服务端只接受当前正文渲染版本。
+  for (const floor of floorsA) await host.rpc('saveFloorSnapshot', { sessionId: A.sessionId, turn: floor.story, reply: String(floor.reply.seq), html: '<p>快照' + floor.story + '</p>', rendererVersion: BODY_RENDER_VERSION })
   // 导入后的模板渲染等后台写入先落定，之后的任何变化才归分叉。
   let settledSave = await saveState(A.sessionId)
   for (let tries = 0, quiet = 0; quiet < 6; tries++) {

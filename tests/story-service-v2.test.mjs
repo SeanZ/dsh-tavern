@@ -132,11 +132,19 @@ test('变量未重算、结算与回执映射到显示楼号；重算携带身�
 test('快照按 UID 与正文指纹失效，旧数字 seq 快照不误用', async t => {
   const f = await fixture(t, { replies: { saveFloorSnapshot: { saved: true } } })
   const floor = f.snapshot().floors[2]
-  await f.service.writeFloorSnapshot('s1', floor, { html: '<p>快照</p>', truncated: true })
+  const rendererVersion = f.render.rendererVersion
+  assert.ok(Number.isInteger(rendererVersion))
+  await f.service.writeFloorSnapshot('s1', floor, { html: '<p>快照</p>', rendererVersion, truncated: true })
   assert.equal(callsOf(f, 'saveFloorSnapshot')[0].reply, floor.reply.seq)
-  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: '11', html: '旧快照' } } }
+  assert.equal(callsOf(f, 'saveFloorSnapshot')[0].rendererVersion, rendererVersion)
+  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: '11', rendererVersion, html: '旧快照' } } }
   assert.equal(await f.service.readFloorSnapshot('s1', floor), null)
-  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: floor.reply.seq, html: '新快照' } } }
+  // 来源一致但缺少或不是当前渲染版本的快照同样不读回。
+  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: floor.reply.seq, html: '无版本快照' } } }
+  assert.equal(await f.service.readFloorSnapshot('s1', floor), null)
+  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: floor.reply.seq, rendererVersion: rendererVersion - 1, html: '旧版本快照' } } }
+  assert.equal(await f.service.readFloorSnapshot('s1', floor), null)
+  f.replies.getFloorSnapshots = { snapshots: { 3: { reply: floor.reply.seq, rendererVersion, html: '新快照' } } }
   assert.equal((await f.service.readFloorSnapshot('s1', floor)).html, '新快照')
   f.chats.get('s1').messages[5].text = '改过的正文'
   f.chats.get('s1').revision++

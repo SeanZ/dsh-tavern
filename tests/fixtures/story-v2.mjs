@@ -47,7 +47,9 @@ export async function fixture(t, { messages = rows(), replies = {}, events = [],
   vm.runInNewContext(source, context)
   const client = descriptor.factory(name => name === 'react' ? React : {})
   context.document = { body: {}, querySelectorAll: () => [], querySelector: () => null }
-  const service = client.createTavernStoryService({ sessions: { binding: id => windows[id] && { eventSource: windows[id].source } }, actions: client.playControlsFeature.storyActions })
+  // 与 bindings.js 的正式接线一致：服务依赖公开渲染器读取 rendererVersion，快照读回按它过滤。
+  const render = client.createTavernStoryRender({})
+  const service = client.createTavernStoryService({ sessions: { binding: id => windows[id] && { eventSource: windows[id].source } }, actions: client.playControlsFeature.storyActions, render })
   t.after(() => stops.forEach(stop => stop()))
   async function open(id = 's1') {
     client.liveTavernView.setView(id, views.get(id))
@@ -60,6 +62,6 @@ export async function fixture(t, { messages = rows(), replies = {}, events = [],
   const snapshot = (id = 's1') => seen.get(id)?.at(-1)
   function view(value, id = 's1') { views.set(id, value); client.liveTavernView.setView(id, value) }
   await open()
-  return { client, service, chats, views, windows, seen, calls, replies, open, snapshot, view,
+  return { client, service, render, chats, views, windows, seen, calls, replies, open, snapshot, view,
     target(number = 3, id = 's1') { return snapshot(id).floors.find(floor => floor.story === number)?.target } }
 }
