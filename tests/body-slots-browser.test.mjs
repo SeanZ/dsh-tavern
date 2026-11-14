@@ -28,7 +28,7 @@ const renderBodyMarkdown=(...args)=>{window.bodyConversions++;return convertBody
 const {sanitizeTavernBodyHtml}=bodyDom;
 const {parseBubbles,bubbleLiteralLines}=bubbleLine;
 const galParagraphCount=()=>0;
-const installTavernTextColors=()=>({dispose(){}}),findTavernQuoteRanges=()=>[],bindTavernFontZoom=()=>()=>{};
+const installTavernTextColors=()=>({dispose(){},refresh(){}}),findTavernQuoteRanges=()=>[],bindTavernFontZoom=()=>()=>{};
 ${body}
 ${group}
 const h=React.createElement;

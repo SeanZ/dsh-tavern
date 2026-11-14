@@ -423,6 +423,7 @@ window.__ModuleLoader__.load({
         // 正文只转换一次；动态媒体、代码交互与文件提及挂到本次登记的局部位置。
         function TavernBodyMarkdown(props) {
             const root = React.useRef(null);
+            const colors = React.useRef(null), colorsMounted = React.useRef(false);
             const [mounts, setMounts] = React.useState([]);
             const text = String(props.text ?? '');
             const prepared = React.useMemo(() => props.prepared || { text, slots: [] }, [props.prepared, text]);
@@ -481,10 +482,23 @@ window.__ModuleLoader__.load({
                 }
                 patchTavernBodyDom(content, template.content);
                 setMounts(next.map(item => ({ ...item, target: [...content.querySelectorAll('[data-dsh-body-mount]')].find(node => node.getAttribute('data-dsh-body-mount') === item.id) })).filter(item => item.target));
-                const colors = installTavernTextColors(content, { enabled: props.streaming !== true }, findTavernQuoteRanges);
-                const unbind = bindTavernFontZoom(host, doc.defaultView);
-                return () => { colors.dispose(); unbind(); };
             }, [html, mode, props.streaming, props.fileMentions, prepared.slots]);
+            // 配色实例属于正文容器；草稿更新产生的新 slots/提及对象不能撤掉已有高亮。
+            React.useLayoutEffect(function () {
+                const host = root.current;
+                if (!host) return;
+                const surface = props.static ? host.shadowRoot : host;
+                const content = surface?.querySelector('.dsh-tavern-body-content');
+                if (!content) return;
+                colors.current = installTavernTextColors(content, { enabled: props.streaming !== true }, findTavernQuoteRanges);
+                const unbind = bindTavernFontZoom(host, host.ownerDocument.defaultView);
+                return () => { colors.current.dispose(); colors.current = null; colorsMounted.current = false; unbind(); };
+            }, [props.static, props.streaming]);
+            React.useLayoutEffect(function () {
+                // 首次挂载沿用批量扫描；后续 DOM 更新在绘制前修复范围，不留下无高亮的一帧。
+                if (!colorsMounted.current) { colorsMounted.current = true; return; }
+                colors.current?.refresh();
+            }, [html, mode, props.streaming]);
             return React.createElement('div', { ref: root, className: 'dsh-tavern-colored-markdown dsh-tavern-body-markdown' },
                 mounts.filter(item => item.node !== null).map(item => ReactDOM.createPortal(item.node, item.target, item.id)),
                 props.renderBusiness ? props.renderBusiness(new Map(mounts.map(item => [item.id, item.target])), root.current?.querySelector('.dsh-tavern-body-content')) : null);

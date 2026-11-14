@@ -11,14 +11,14 @@ function fixture(t) {
   const dom = new JSDOM('<main></main>')
   t.after(() => dom.window.close())
   const host = dom.window.document.querySelector('main')
-  let effect
+  let effects = [], refs = 0
   const context = {
     renderBodyMarkdown, ...bodyDom, DshUi: {}, ReactDOM: {},
-    installTavernTextColors: () => ({ dispose() {} }), findTavernQuoteRanges() {}, bindTavernFontZoom: () => () => {},
-    React: { useRef: () => ({ current: host }), useState: () => [[], () => {}], useMemo: fn => fn(), useLayoutEffect: fn => { effect = fn }, createElement() {} }
+    installTavernTextColors: () => ({ dispose() {}, refresh() {} }), findTavernQuoteRanges() {}, bindTavernFontZoom: () => () => {},
+    React: { useRef: value => ({ current: refs++ === 0 ? host : value }), useState: () => [[], () => {}], useMemo: fn => fn(), useLayoutEffect: fn => { effects.push(fn) }, createElement() {} }
   }
   vm.runInNewContext(source + ';this.render = TavernBodyMarkdown;this.patch = patchTavernBodyDom', context)
-  return { host, document: dom.window.document, patch: context.patch, render(prepared) { context.render({ prepared, trustedCardMode: true }); return effect() } }
+  return { host, document: dom.window.document, patch: context.patch, render(prepared) { effects = []; refs = 0; context.render({ prepared, trustedCardMode: true }); const cleanup = effects.map(fn => fn()); return () => cleanup.forEach(fn => fn?.()) } }
 }
 function slots(ids) {
   return { text: ids.map(id => '<span data-dsh-body-slot="' + id + '"></span>').join('\n'), slots: ids.map(id => ({ id, block: true, node: null })) }
