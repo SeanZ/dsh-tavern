@@ -529,7 +529,10 @@
 					? detectedEvents.filter(function (event) { return event.name === "GENERATION_STARTED" || event.name === "GENERATION_ENDED"; })
 					: detectedEvents;
 				const fingerprint = scripts.map(function (script) { return script.id + "\n" + script.content; }).join("\n---\n") + "\ntrusted=" + String(trustedCardMode) + "\nviewer=" + String(viewer) + "\ncard=" + String(context.frameStorageScope && context.frameStorageScope.cardPath || "");
-				if (record && record.fingerprint !== fingerprint) { removeRecord("shared"); record = null; }
+				// 切换开场清空了全部候选变量，旧 MVU 缓存与在途初始化必须一起退役。
+                const openingReset = record && officialOwner && context.openingInitialization?.status === "pending"
+                    && Number(context.lifecycleRevision || 0) !== Number(record.context.lifecycleRevision || 0);
+                if (record && (record.fingerprint !== fingerprint || openingReset)) { removeRecord("shared"); record = null; }
 				if (!record) record = createRecord(nextSessionId, scripts, context, trustedCardMode, viewer);
 				else {
                     if (record.context.transaction && pendingEvents.has(record.context.transaction.eventId)

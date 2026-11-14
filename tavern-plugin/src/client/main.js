@@ -1520,6 +1520,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		exports.createTavernShellFeatureModule = createTavernShellFeatureModule;
 		exports.createTavernRuntimeGenerationMonitor = createTavernRuntimeGenerationMonitor;
 		// @include modules/reply-reveal.js
+		// @include modules/assistant-replacement.js
 		// @include modules/assistant-visibility.js
 		installTavernAssistantVisibilityPatch(require);
 		// @include modules/host-session-patch.js

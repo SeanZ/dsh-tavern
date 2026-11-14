@@ -38,6 +38,8 @@
 				return core && core.initializationFailed ? "MVU 模块加载失败：" + (core.initializationError || "初始化未完成") + "\n请刷新页面或重启酒馆后重试。" : record && record.mvuDataError || "";
 			}
             function mvuDataReady(record) {
+                // 用户楼层的默认值不能代替开场全部候选的持久初始化回执。
+                if (record.context?.openingInitialization?.status === "pending") return false;
                 // A blank opening has no floor yet; MVU initializes it in the chat scope.
                 const initial = record.context?.chatVariables;
                 if (!record.context?.messages?.length) return initial?.stat_data !== undefined && initial?.schema !== undefined;

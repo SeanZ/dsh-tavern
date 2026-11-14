@@ -72,7 +72,7 @@ test('awaitOpening waits for the card scripts only while the MVU opening is pend
   let status = 'pending', waited = 0
   const handoff = createForegroundHandoff({
     store: { async chatForSession() { return { mvu: { enabled: true, owner: 'official', openingInitialization: { status } } } } },
-    scriptDispatch: { async waitUntilReady(id) { assert.equal(id, 's'); waited++ } },
+    scriptDispatch: { async waitUntilReady(id) { assert.equal(id, 's'); waited++; status = 'complete' } },
     tasks: { activity() { return {} } }, async queueBackground() {},
     turns: { async finalize() {}, async prepare() {}, async discard() {} }
   })
@@ -100,4 +100,17 @@ test('失败已经通知时，重试仍等待旧回合占位和消息面清理',
   cleanup.resolve()
   await retry
   assert.deepEqual(order, ['discarded', 'tombstoned', 'retry'])
+})
+
+test('旧 runtime ready 不能放行尚未持久化完成的开场', async () => {
+  let prepared = 0
+  const handoff = createForegroundHandoff({
+    store: { async openingStateForSession() { return { chat: { mvu: { enabled: true, owner: 'official', openingInitialization: { status: 'pending' } } } } } },
+    scriptDispatch: { async waitUntilReady() {} },
+    tasks: { activity: () => ({}) }, queueBackground: async () => {},
+    turns: { async finalize() {}, async discard() {}, async prepare() { prepared++ } }
+  })
+  await assert.rejects(handoff.awaitOpening('s'), /开场初始化尚未完成/)
+  await assert.rejects(handoff.prepare({ sessionId: 's' }), /开场初始化尚未完成/)
+  assert.equal(prepared, 0)
 })

@@ -29,10 +29,18 @@ export function createForegroundHandoff(options = {}) {
   function openingPending(chat) {
     return Boolean(chat?.mvu?.enabled && chat.mvu.owner === 'official' && chat.mvu.openingInitialization?.status === 'pending')
   }
-  async function awaitOpening(sessionId) {
+  async function readOpeningChat(sessionId) {
     const opening = store.openingStateForSession ? await store.openingStateForSession(sessionId) : null
-    const chat = opening ? opening.chat : await store.chatForSession(sessionId)
-    if (openingPending(chat)) await options.scriptDispatch.waitUntilReady(sessionId)
+    return opening ? opening.chat : await store.chatForSession(sessionId)
+  }
+  async function awaitOpening(sessionId, initial) {
+    const chat = initial === undefined ? await readOpeningChat(sessionId) : initial
+    if (!openingPending(chat)) return chat
+    await options.scriptDispatch.waitUntilReady(sessionId)
+    // 旧页面的 ready 租约可能仍存活；发送必须以已落盘的开场状态为准。
+    const current = await readOpeningChat(sessionId)
+    if (openingPending(current)) throw new Error('MVU 开场初始化尚未完成，请等待初始化完成后重试')
+    return current
   }
 
   async function waitForDiscard(sessionId) {
@@ -48,7 +56,7 @@ export function createForegroundHandoff(options = {}) {
     await options.cancelPresentation?.(input.sessionId)
     // Task metadata and the opening check need the header and floor count only.
     const opening = store.openingStateForSession ? await store.openingStateForSession(input.sessionId) : null
-    const chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
+    let chat = opening ? opening.chat : await store.chatForSession(input.sessionId)
     // A detached regeneration already owns a frozen request frame. Running the
     // ordinary next-turn hooks would cancel settlement, sync world state or clean
     // native tails against the live story before the candidate has been validated.
@@ -56,7 +64,7 @@ export function createForegroundHandoff(options = {}) {
       const marked = await store.chatForSession(input.sessionId)
       if (marked?.regenRecovery?.candidateFrame?.kind === 'foreground') return await turns.prepare(input)
     }
-    if (openingPending(chat)) await options.scriptDispatch.waitUntilReady(input.sessionId)
+    chat = await awaitOpening(input.sessionId, chat)
     // The tasks the next turn waits for (blocksNextTurn: settlement, plugin tasks) finish first.
     if (chat !== undefined) await options.beforeNextTurn?.(chat)
     // 等待后台任务后再检查，刚完成的重新结算可能已清除变量未重算标记。

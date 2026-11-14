@@ -31255,6 +31255,8 @@ function bindTavernFontZoom(node, win) {
 							return core && core.initializationFailed ? "MVU 模块加载失败：" + (core.initializationError || "初始化未完成") + "\n请刷新页面或重启酒馆后重试。" : record && record.mvuDataError || "";
 						}
 			            function mvuDataReady(record) {
+			                // 用户楼层的默认值不能代替开场全部候选的持久初始化回执。
+			                if (record.context?.openingInitialization?.status === "pending") return false;
 			                // A blank opening has no floor yet; MVU initializes it in the chat scope.
 			                const initial = record.context?.chatVariables;
 			                if (!record.context?.messages?.length) return initial?.stat_data !== undefined && initial?.schema !== undefined;
@@ -31797,7 +31799,10 @@ function bindTavernFontZoom(node, win) {
 					? detectedEvents.filter(function (event) { return event.name === "GENERATION_STARTED" || event.name === "GENERATION_ENDED"; })
 					: detectedEvents;
 				const fingerprint = scripts.map(function (script) { return script.id + "\n" + script.content; }).join("\n---\n") + "\ntrusted=" + String(trustedCardMode) + "\nviewer=" + String(viewer) + "\ncard=" + String(context.frameStorageScope && context.frameStorageScope.cardPath || "");
-				if (record && record.fingerprint !== fingerprint) { removeRecord("shared"); record = null; }
+				// 切换开场清空了全部候选变量，旧 MVU 缓存与在途初始化必须一起退役。
+                const openingReset = record && officialOwner && context.openingInitialization?.status === "pending"
+                    && Number(context.lifecycleRevision || 0) !== Number(record.context.lifecycleRevision || 0);
+                if (record && (record.fingerprint !== fingerprint || openingReset)) { removeRecord("shared"); record = null; }
 				if (!record) record = createRecord(nextSessionId, scripts, context, trustedCardMode, viewer);
 				else {
                     if (record.context.transaction && pendingEvents.has(record.context.transaction.eventId)
@@ -62753,6 +62758,79 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 		    if (tavernReplyRunWatch) tavernReplyRunWatch.dispose();
 		    tavernReplyRunWatch = null;
 		}
+		// rc.2 的当前事件窗口保留 replace 正文，但原生助手 matcher 只接收 append。
+		// 仅补齐 Chat 的助手匹配与旧正文可见性；原始事件、来源和其它视图保持原样。
+		function installTavernAssistantReplacementPatch(conversation) {
+		    const registry = conversation?.ConversationEventRegistry?.prototype;
+		    const assembler = conversation?.ConversationNodeAssembler?.prototype;
+		    if (!registry || !assembler || typeof registry.forEvent !== "function"
+		        || typeof assembler.sortedInputs !== "function" || typeof assembler.buildNode !== "function"
+		        || assembler.__dshTavernAssistantReplacement) return;
+		    const replacement = event => event?.type === "assistant/message" && event.surfaceOp?.op === "replace";
+		    const forEvent = registry.forEvent;
+		    const routes = new WeakMap();
+		    registry.forEvent = function (type) {
+		        const source = forEvent.call(this, type);
+		        if (type !== "assistant/message" || !source) return source;
+		        if (!routes.has(source)) routes.set(source, new Set(Array.from(source, route => {
+		            if (route.definition.kind !== "assistant-step") return route;
+		            return { ...route, match(event) {
+		                const result = route.match(event);
+		                return result === null && replacement(event)
+		                    ? route.match({ ...event, surfaceOp: "append" }) : result;
+		            } };
+		        })));
+		        return routes.get(source);
+		    };
+		    const ranges = new WeakMap();
+		    function replaced(owner, seq) {
+		        if (!Number.isFinite(seq)) return false;
+		        let intervals = ranges.get(owner);
+		        if (!intervals) {
+		            const raw = Array.from(owner.inputs.values(), entry => entry.event).filter(replacement)
+		                .map(event => [event.surfaceOp.startSeq, event.surfaceOp.endSeq])
+		                .filter(([start, end]) => Number.isSafeInteger(start) && end >= start)
+		                .sort((a, b) => a[0] - b[0]);
+		            intervals = [];
+		            for (const range of raw) {
+		                const last = intervals.at(-1);
+		                if (last && range[0] <= last[1] + 1) last[1] = Math.max(last[1], range[1]);
+		                else intervals.push(range);
+		            }
+		            ranges.set(owner, intervals);
+		        }
+		        let lo = 0, hi = intervals.length;
+		        while (lo < hi) {
+		            const mid = (lo + hi) >>> 1;
+		            if (intervals[mid][0] <= seq) lo = mid + 1;
+		            else hi = mid;
+		        }
+		        return lo > 0 && seq <= intervals[lo - 1][1];
+		    }
+		    const buildNode = assembler.buildNode;
+		    assembler.buildNode = function (context, target) {
+		        const node = buildNode.call(this, context, target);
+		        return target === "chat" && context.kind === "assistant-step"
+		            && replaced(this, node?.data?.finalNode?.seq)
+		            ? { ...node, visibility: "hidden" } : node;
+		    };
+		    const replaceWindow = assembler.replaceWindow;
+		    assembler.replaceWindow = function (...args) {
+		        ranges.delete(this);
+		        return replaceWindow.apply(this, args);
+		    };
+		    // 替换会改变既有楼层的可见性，需要让所有受影响节点一起重新投影。
+		    for (const method of ["append", "prepend"]) {
+		        const original = assembler[method];
+		        assembler[method] = function (input, ...args) {
+		            const changed = method === "append" ? replacement(input.event) : input.some(entry => replacement(entry.event));
+		            if (changed) ranges.delete(this);
+		            const publication = original.call(this, input, ...args);
+		            return changed ? this.replaceWindow(this.sortedInputs(), this.hasMore) : publication;
+		        };
+		    }
+		    Object.defineProperty(assembler, "__dshTavernAssistantReplacement", { value: true });
+		}
 		// DSH 0.1.5 Definitions may withdraw an already materialized node: an assistant
 		// whose stream block becomes empty, or a turn-process whose only evidence was a
 		// live stream that failed into an assistant/attempt (its match() ignores attempts).
@@ -62763,6 +62841,7 @@ cardLibraryFeature.register({ ctx: ctx, appendMention: appendMention });
 			let conversation;
 			try { conversation = require("@deepseek-ai/dsh-client-ui-conversation/client"); }
 			catch (_) { return; }
+			installTavernAssistantReplacementPatch(conversation);
 			const proto = conversation && conversation.ConversationNodeAssembler && conversation.ConversationNodeAssembler.prototype;
 			if (!proto || typeof proto.buildNode !== "function" || proto.__dshTavernAssistantVisibility) return;
 			const buildNode = proto.buildNode;

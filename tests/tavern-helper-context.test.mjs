@@ -40,3 +40,12 @@ test('Helper 创建的新楼层只进入脚本历史，不冒充剧情回合', (
 
   assert.throws(() => appendTavernHelperMessages(chat, [{ role: 'assistant', message: '插入' }], { insert_before: 0 }), /只支持追加/)
 })
+
+test('Helper 上下文包含独立复制的开场初始化状态，完成回执可供运行时核验', () => {
+  const chat = macroOpeningChat()
+  chat.mvu = { enabled: true, owner: 'official', openingInitialization: { version: 2, status: 'pending' } }
+  const pending = projectTavernHelperContext(chat)
+  chat.mvu.openingInitialization.status = 'complete'
+  assert.equal(pending.openingInitialization.status, 'pending')
+  assert.equal(projectTavernHelperContext(chat).openingInitialization.status, 'complete')
+})

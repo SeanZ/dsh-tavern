@@ -8,6 +8,7 @@ function installTavernAssistantVisibilityPatch(require) {
 	let conversation;
 	try { conversation = require("@deepseek-ai/dsh-client-ui-conversation/client"); }
 	catch (_) { return; }
+	installTavernAssistantReplacementPatch(conversation);
 	const proto = conversation && conversation.ConversationNodeAssembler && conversation.ConversationNodeAssembler.prototype;
 	if (!proto || typeof proto.buildNode !== "function" || proto.__dshTavernAssistantVisibility) return;
 	const buildNode = proto.buildNode;

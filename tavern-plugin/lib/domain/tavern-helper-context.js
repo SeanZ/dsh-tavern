@@ -173,6 +173,7 @@ export function projectTavernHelperContext(chat, options = {}) {
     scriptPrompts: clone(chat && chat.tavernScriptPrompts || []),
     chatMetadata: clone(chat && chat.tavernPluginMetadata || {}),
     mvuEnabled: chat?.mvu?.enabled === true,
+    openingInitialization: clone(chat?.mvu?.openingInitialization || null),
     // The background agent submits official MVU updates; card-side MVU must not parse again.
     mvuSettlement: chat?.mvu?.enabled === true && chat.mvu.owner === 'official' ? 'host' : 'script',
     stateRevision: Math.max(0, Number(chat && chat._storageRevision) || 0),
