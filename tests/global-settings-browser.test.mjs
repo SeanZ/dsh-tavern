@@ -39,6 +39,19 @@ test('状态栏位置是全局显示偏好，保存后通知现有对局刷新',
   assert.equal(await page.evaluate(() => window.__statusSettingsChanged), 1)
 })
 
+// 对话气泡 / 舞台模式 are switched only in 舞台设置 › 基础设置 (four-state); the generation templates and their cost
+// are not shown in the app.
+test('设置 › 舞台：没有基础设置和素材生图两组', async t => {
+  const { page, calls } = await openTavernSettings(t, { section: 'dsh-tavern: stage settings section', stageClient: true, respond(method) {
+    if (method === 'getStageRuntimeStatus') return { enabled: true, status: 'ready' }
+    if (method === 'getTavernSettings') return { settings: {}, modelCatalog: [], modModelSlots: [] }
+  } })
+  await page.locator('section[aria-label="舞台模型"]').waitFor()
+  assert.equal(await page.locator('section[aria-label="基础设置"], section[aria-label="素材生图"]').count(), 0)
+  assert.equal(await page.getByRole('switch', { name: '对话气泡' }).count(), 0)
+  assert.equal(calls.some(call => call.method === 'getAssetEngineSettings'), false)
+})
+
 test('皮肤：配色与 CSS 皮肤在同一排，一次只选一套', async t => {
   let index = { active: null, skins: [{ id: 'builtin:paper', name: '纸感', builtin: true }] }, css = ''
   const { page, calls } = await openInterfaceSkins(t, {
@@ -128,13 +141,15 @@ test('酒馆插件恢复为独立设置页，加载原有插件列表', async t 
   assert.ok(calls.some(call=>call.method==='listUserPlugins'))
 })
 
-test('舞台模型只在舞台设置展示，保存沿用原有模型槽', async t => {
+// The stage's slots and its mods' (手机 › 通话模型) are on 设置 › 舞台; 设置 › DSH Tavern shows the core's own.
+test('舞台模型与模组的模型只在舞台设置展示，保存沿用原有模型槽', async t => {
   let settings = {defaultPlaySettings:{playerName:'你',backgroundTasks:{}},modModels:{'dsh.stage':{director:{provider:'p',model:'saved'}}}}
+  const slots = [{modId:'dsh.stage',modName:'舞台',id:'director',label:'导演模型',fallback:'foreground',owner:'dsh-tavern-stage'},
+    {modId:'dsh.phone',modName:'手机',id:'call',label:'通话模型',fallback:'foreground',owner:'dsh-tavern-stage-mods'}]
   const respond = (method,args) => {
     if (method === 'getBackgroundModelReasoning') return {reasoning:{efforts:[]}}
     if (method === 'getStageRuntimeStatus') return {enabled:true,status:'ready'}
-    if (method === 'getAssetGenPrompts') return {data:{kinds:[],revision:'fixture'}}
-    if (method === 'getTavernSettings') return {settings, modelCatalog:[{provider:'p',models:[{id:'saved'},{id:'next'}]}], modModelSlots:[{modId:'dsh.stage',modName:'舞台',id:'director',label:'导演模型',fallback:'foreground'}]}
+    if (method === 'getTavernSettings') return {settings, modelCatalog:[{provider:'p',models:[{id:'saved'},{id:'next'}]}], modModelSlots:slots}
     if (method === 'updateTavernSettings') {
       const value=args.patch.modModelSelection
       settings={modModels:{'dsh.stage':{director:value.selection}}}
@@ -143,10 +158,11 @@ test('舞台模型只在舞台设置展示，保存沿用原有模型槽', async
   }
   const general = await openTavernSettings(t,{respond})
   await general.page.locator('button[aria-label^="默认前台模型："]').waitFor()
-  assert.equal(await general.page.locator('button[aria-label^="导演模型："]').count(),0)
+  assert.equal(await general.page.locator('button[aria-label^="导演模型："], button[aria-label^="通话模型："]').count(),0)
   // 设置 › 舞台 is the stage package's page, loaded by the page's hold (stage-client-loader.cjs)
   const stage = await openTavernSettings(t,{respond,section:'dsh-tavern: stage settings section',stageClient:true})
   await stage.page.locator('button[aria-label^="导演模型："]').waitFor()
+  await stage.page.locator('section[aria-label="舞台模型"] button[aria-label="通话模型：跟随前台"]').waitFor()
   assert.equal(await stage.page.getByRole('button',{name:'停用',exact:true}).count(),0)
   assert.equal(await stage.page.getByRole('heading',{name:'舞台插件',exact:true}).count(),0)
   const picker=stage.page.locator('button[aria-label^="导演模型："]')
@@ -174,7 +190,9 @@ test('舞台设置可以只加载本次运行而不改启动偏好', async t => 
     [['setStageLoadOnStartup', false], ['setStageEnabled', true]])
 })
 
-test('插件列表隐藏内置配图与模组，保留用户安装的插件', async t => {
+// 内置插件（随酒馆发行、装在 plugins/ 里的那几个）照样列出来：可停用、随酒馆更新、不可删除。
+// 只有内置舞台模组不进这个列表——它们在「管理模组」里。
+test('插件列表列出内置插件，内置舞台模组留给「管理模组」', async t => {
   const {page}=await openTavernSettings(t,{section:'dsh-tavern: plugins settings section',respond(method){
     if(method==='listUserPlugins')return {plugins:[
       {folder:'dice',name:'dsh-tavern-mod-dice',state:'loaded',enabled:true,source:{kind:'managed',builtin:true,modId:'dsh.dice'}},
@@ -182,9 +200,39 @@ test('插件列表隐藏内置配图与模组，保留用户安装的插件', as
       {folder:'custom',name:'custom-plugin',state:'loaded',enabled:true,source:{kind:'folder'}}]}
   }})
   await page.locator('.dsh-tavern-user-plugin').filter({hasText:'custom-plugin'}).waitFor()
-  assert.equal(await page.locator('.dsh-tavern-user-plugin').count(),1)
-  assert.equal(await page.getByText('dsh-tavern-stage',{exact:true}).count(),0)
-  await page.getByRole('button',{name:'删除',exact:true}).waitFor()
+  assert.equal(await page.locator('.dsh-tavern-user-plugin').count(),2)
+  assert.equal(await page.getByText('dsh-tavern-mod-dice',{exact:true}).count(),0)
+  const builtin = page.locator('.dsh-tavern-user-plugin').filter({hasText:'dsh-tavern-image'})
+  assert.match(await builtin.innerText(), /内置插件 · 默认启用，随酒馆更新，不可删除/)
+  assert.equal(await builtin.getByRole('button',{name:'删除',exact:true}).count(),0)
+  await builtin.getByRole('button',{name:'停用',exact:true}).waitFor()
+  // 用户自己装的插件照旧能删除。
+  await page.locator('.dsh-tavern-user-plugin').filter({hasText:'custom-plugin'}).getByRole('button',{name:'删除',exact:true}).waitFor()
+})
+
+test('开局默认功能区包含“后台任务附加预设”开关，默认关闭且保存进 defaultPlaySettings', async t => {
+  const backend = fixture()
+  const { page, calls } = await openTavernSettings(t, { respond: backend.respond })
+  const toggle = page.getByRole('switch', { name: '后台任务附加预设', exact: true })
+  await toggle.waitFor()
+  assert.equal(await toggle.isChecked(), false)
+  await toggle.press('Space')
+  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="后台任务附加预设"]')?.checked === true)
+  assert.deepEqual(
+    calls.filter(call => call.method === 'updateTavernSettings').at(-1).args.patch,
+    { defaultPlaySettings: { backgroundTasks: { preset: true } } }
+  )
+})
+
+test('候选多角色 / 全局 Tab 在高级里默认关闭，打开后只保存这一项', async t => {
+  const backend = fixture()
+  const {page, calls} = await openTavernSettings(t, {respond:backend.respond})
+  const toggle = page.getByRole('switch', {name:'候选多角色 / 全局 Tab', exact:true})
+  await toggle.waitFor()
+  assert.equal(await toggle.isChecked(), false, '出厂默认关闭')
+  await toggle.press('Space')
+  await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="候选多角色 / 全局 Tab"]')?.checked === true)
+  assert.deepEqual(calls.filter(call=>call.method==='updateTavernSettings').at(-1).args.patch, {candidateTabs:true})
 })
 
 

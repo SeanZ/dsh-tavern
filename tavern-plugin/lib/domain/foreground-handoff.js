@@ -2,6 +2,10 @@ function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
 }
 
+function failureMessage(error) {
+  return '这一轮没有生成正文：' + (str(error.message).trim() || '模型请求失败')
+}
+
 /** Pull a persistent background cycle only when the foreground needs its result. */
 export function createForegroundHandoff(options = {}) {
   const turns = options.turns
@@ -20,6 +24,12 @@ export function createForegroundHandoff(options = {}) {
 
   async function finalize(input) {
     return await turns.finalize(input)
+  }
+
+  async function syncCandidateMessageId(sessionId, requestId, messageId) {
+    if (typeof options.syncCandidateMessageId === 'function') {
+      await options.syncCandidateMessageId(sessionId, requestId, messageId)
+    }
   }
 
   // MVU's greeting/initvar path runs while floor 0 is still the latest floor, or on
@@ -75,7 +85,21 @@ export function createForegroundHandoff(options = {}) {
     // The stable prefix is rebuilt after this, so a world book edit received by
     // the previous turn must be adopted now rather than one turn later.
     if (chat !== undefined) await options.syncWorldBook?.(chat)
-    return await turns.prepare(input)
+    try {
+      return await turns.prepare(input)
+    } catch (error) {
+      if (error?.code === 'TAVERN_PREPARE_CONFLICT') {
+        const { sessionId, turn, requestId } = input
+        logger.warn('dsh-tavern: 正文准备冲突 ' + JSON.stringify({ sessionId, turn, code: error.code, ...error.conflict }))
+        // DSH may report this hook error as UNKNOWN in turn/end.
+        try {
+          await turns.recordFailure({ sessionId, turn, requestId, code: error.code, message: failureMessage(error) })
+        } catch (recordError) {
+          logger.error('dsh-tavern: 记录正文准备冲突失败', recordError?.message || recordError)
+        }
+      }
+      throw error
+    }
   }
 
   function later(work, label) {
@@ -113,7 +137,7 @@ export function createForegroundHandoff(options = {}) {
       if (reason === 'error' && input.edit !== true) {
         const failure = input.error || {}
         await turns.recordFailure({ ...target, code: str(failure.code).trim() || 'turn-error',
-          message: '这一轮没有生成正文：' + (str(failure.message).trim() || '模型请求失败') })
+          message: failureMessage(failure) })
       }
       await turns.discard(target)
       if (cleanupFailedTurn !== null) await cleanupFailedTurn(target)
@@ -137,5 +161,5 @@ export function createForegroundHandoff(options = {}) {
     }
   }
 
-  return Object.freeze({ awaitOpening, waitForDiscard, prepare, finalize, end, recover })
+  return Object.freeze({ awaitOpening, waitForDiscard, prepare, finalize, syncCandidateMessageId, end, recover })
 }

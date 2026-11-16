@@ -1,5 +1,74 @@
 # DSH Tavern Image
 
+## 3.17.3 插图操作
+
+从悬浮窗或侧栏放大正文插图后，可直接打开该图的改图或重画操作。
+
+## 3.17.2 ComfyUI 多图输入修复
+
+多图工作流的可选图片分支在本次未提供图片时自动断开；缺少必填图片时在提交前提示节点，避免空路径交给 ComfyUI。
+
+## 3.17.1 角色与服装设计资料
+
+Agent 角色工具支持选择卡片世界书、游玩卡片设定、最近 1–20 轮及补充资料；可以为选中的角色生成新服装并加入角色服装库。原来的世界书角色导入与预览也集中在这里。
+
+图片生成后保存失败时显示简明提示，重试会复用已有图片。
+
+
+## 3.17.0 画风目录与人物宏
+
+支持按次指定画风、`no-style` 原样风格预设、插件注册的分用途模板，以及三套内置 Galgame 画风。Galgame 和插件模板可直接选择使用，内置模板可复制后编辑；新增模板不会自动加入已有随机范围。独立插件预设保留自己的正负面词，模板声明的提示词格式和异步模块结果在世界书、工作台与 SDK 调用间保持一致。
+
+卡片工具默认返回人物宏和画风清单，完整外貌与单套画风词按需读取。人物宏带出默认服装，换装只需调整该角色的 `outfit`。
+
+## 3.16.0 卡片工作台异步生图
+
+支持异步提交与查询，并保留原有同步生图工具。任务按会话隔离，保留重启后取图信息。
+
+## 3.15.7 世界书格式保存修复
+
+切换世界书编辑格式后自动保存，重新进入页面时保留选择。
+
+## 3.15.6 大图片解码修复
+
+修复渠道返回较大 Base64 图片时解码失败。
+
+## 3.15.5 Atlas Cloud 尺寸修复
+
+保留手动填写的尺寸格式，支持各模型要求的分隔符。
+
+## 3.15.4 参考图提示词与自动配图修复
+
+未配置可用出图渠道时跳过自动配图规划。自然语言与结构化提示词共用精简参考图绑定，统一人物称呼、镜头裁切和重画时的角色块。旧版自然语言默认规则仅在与原发行版完全匹配时升级，自定义世界书保留。
+
+## 3.15.3 宿主等待按画面里的人
+
+规划没写 `<subjects>`、只用角色宏点名时，出图前问宿主「这张图有谁」也会带上出图时认出的人，宿主（如自动素材）能先备好他们的参考图再放行；以前这时宿主收到空列表，图会先按没有参考图画出来。写了 `<subjects>` 的规划不受影响。
+
+## 3.15.2 ComfyUI 工作流导入修复
+
+导入时可命名工作流。无内置名称的 JSON 默认使用文件名，同名工作流自动编号并分别保存，保留当前默认工作流及模板绑定。
+
+## 3.15.1 画廊回收站修复
+
+回收站支持单张、批量彻底删除和清空全部图片，删除前在面板中确认。删除会清理图片缓存、作业记录与插图计划引用，刷新或重启后不再出现。
+
+## 3.15.0 生图扩展接口
+
+- 人物库支持按快照删除、解除素材人物关联，以及读取库中参考图。
+- 同名或相同触发词指向不同人物时，避免把多个人的外貌混入同一张图。
+- 外部插件可登记只读画风预设，在设置中选择，或通过 `promptPreset` 为单次生图指定；在线渠道和 ComfyUI 共用选择规则。
+- 宿主可在规划前、每张图提交前等待资料就绪；每张图独立等待，放行后读取最新资料，支持跳过和取消。
+- 保留现有 ComfyUI 素材任务引擎和用量返回，并补充组合回归检查。
+
+## 3.14.0 本机界面与模式更新
+
+- 首次使用默认进入世界书模式；生图工作台作为高级模式手动切换，已有模板和资料保留。
+- 图片删除、重画、改提示词和插件改图按钮共用一行，窄屏支持横向滚动。
+- 正文宽度预览同步到侧栏与悬浮窗；悬浮窗滑块平滑调节宽度，松手自动保存；大图下滑块保持可见。
+- 词条库可保存 1000 条，每轮匹配最多 32 条、16000 字符。64 条可选内置词条按镜头、光线、环境等分组添加。支持自然语言、标签串、混合内容；词条可用于模型参考或直接加入正面／负面提示词。
+- 模板的「场景模式」支持关键词规则、固定选择和后台模型判断；内置普通与 NSFW 两种起始模式，可继续添加。每个模块可勾选适用模式。模型判断在规划前执行，同批图片沿用结果；不改写保存的模板。
+- 独立组合接口支持固定和关键词模式；异步接口可传 `chooseScenario` 完成模型判断。模式设置保存在 `structure.scenarios`，模块的适用模式保存在 `block.modes`。
 
 ## 生图工作台与升级兼容
 
@@ -277,6 +346,7 @@ OpenAI Images 协议的渠道（含选择该协议的自定义 API）可以设�
 
 - **画风预设**保存画师串、固定风格词和负面词，可以调整放在提示词前面还是后面。
 - **提示词预设**给规划和出图提供构图、光线、材质、色彩与画面重点的指导。内置杂志人像、电影叙事、动漫角色、东方幻想和氛围场景，也可以自己新增。
+- **Galgame 画风**（干净低细节、动画截图、精美插画）是内置模板，出现在生图工作台的模板库里。画风文字按用途分段：一段用于所有请求，空背景（`background`）、透明底人物（`figure`，立绘和头像）、人物设定图（`sheet`）各有一段只用于该用途的补充。内置模板只读，点「复制并编辑」得到自己的副本；插件升级只更新内置版本，不动副本。其他插件可以用 `promptPreset: 'galgame-clean'` 等标识加 `usage` 按次指定。
 
 提示词表达可选择自动、标签、自然语言、混合或**结构化自然语言**。自动模式会按生图渠道选择实际表达方式：例如 NovelAI 更适合标签，OpenAI Images、Gemini 等渠道使用自然语言描述；「自动」不是第五套独立规则。
 
@@ -401,13 +471,15 @@ NovelAI 原生协议支持分角色提示词；启用世界书第 **11 条「分
 
 ## 卡片工作台生图
 
-内置配图插件 3.9.0 起，卡片工作台提供 `gen_image`、`read_character`、`read_outfit`、`read_image_config`、`find_prompt` 五个工具。设置中的「启用工作台生图」独立控制这组工具；它们只在卡片模式出现。人物、服装、画风、渠道和 ComfyUI 工作流与剧情配图共用，修改后立即生效。
+3.16.0 起，卡片工作台保留同步工具 `gen_image`，并提供 `gen_image_submit`、`gen_image_status` 异步生图工具，以及 `read_character`、`read_outfit`、`read_image_config`、`find_prompt`。设置中的「启用工作台生图」独立控制这组工具；它们只在卡片模式出现。人物、服装、画风、渠道和 ComfyUI 工作流与剧情配图共用，修改后立即生效。
 
-3.10.1 修复工作台对话图片地址与画廊混入问题。`gen_image` 返回完整 HTTP(S) 图片地址和可原样使用的 `markdown`，从宿主 Web 服务读取当次端口；没有可用地址时在提交生图前停止。图片读取支持对话跨来源嵌入，管理接口仍保留同源限制。设置 → 配图 → 画廊中，游玩画廊只显示游玩来源，卡片图片在「卡片画廊」查看；共用队列不会把两边的图片混排。任务历史仍保留所有记录，`GET /history?source=play|card` 可按来源读取；旧工作台记录继续识别，图片不删除、不重新生成。
+`gen_image_submit` 提交后返回任务号，不等待出图，参数与原来的同步工具一致（含 `count`）；`gen_image_status` 按任务号取图，一次可查多个，已经完成的先交出来，仍在生成或失败的分别报告状态、原因和能否重新提交，并在可用时带回真实种子。多个渠道或多个任务可以连续提交、并行推进，先完成的先取回。任务仍由现有的作业队列、并发上限（设置里的生图并发数）和落盘记录管理：提交后的任务不随发起它的那次工具调用取消，插件重启后按原规则标为待确认。只有 `atlascloud`、`qwen` 渠道保存了平台任务号，可以对断线任务续查；其余协议一旦连接断开只能标记结果未知。
+
+3.10.1 修复工作台对话图片地址与画廊混入问题。`gen_image_status` 返回完整 HTTP(S) 图片地址和可原样使用的 `markdown`，从宿主 Web 服务读取当次端口；没有可用地址时在提交生图前停止。图片读取支持对话跨来源嵌入，管理接口仍保留同源限制。设置 → 配图 → 画廊中，游玩画廊只显示游玩来源，卡片图片在「卡片画廊」查看；共用队列不会把两边的图片混排。任务历史仍保留所有记录，`GET /history?source=play|card` 可按来源读取；旧工作台记录继续识别，图片不删除、不重新生成。
 
 卡片画廊删除遇到文件占用时会保留失败项供重试；批量清空只移除真正删除成功的记录，不把仍在磁盘上的图片误报为空。
 
-`read_image_config` 返回已保存渠道、精确 ID、实际提示词格式及参考图/种子能力，不联网探测。`gen_image` 的 `channel` 可临时指定任一已保存渠道，或填 `comfyui` 使用现有本地工作流，不改变默认设置。现有 NovelAI（含聊天中转）、OpenAI、Gemini 原生及聊天兼容、Grok、Seedream、Qwen、AtlasCloud、SD WebUI/Forge、自定义协议均复用同一份渠道适配器。标签模型使用标签；自然语言模型可使用中文或英文句子；结构化模式保留分节。
+`read_image_config` 返回已保存渠道、精确 ID、实际提示词格式及参考图/种子能力，不联网探测。`gen_image_submit` 的 `channel` 可临时指定任一已保存渠道，或填 `comfyui` 使用现有本地工作流，不改变默认设置。现有 NovelAI（含聊天中转）、OpenAI、Gemini 原生及聊天兼容、Grok、Seedream、Qwen、AtlasCloud、SD WebUI/Forge、自定义协议均复用同一份渠道适配器。标签模型使用标签；自然语言模型可使用中文或英文句子；结构化模式保留分节。
 
 参考图用 `generation_mode: reference` 和 `subjects: [{characterId, outfitId}]`，精确 ID 从查询工具取得，角色×服装成套图沿用共用引擎的优先级。多人物可传 `characters: [{prompt, centers, uc}]`，NovelAI 使用原生分角色输入，其他渠道由引擎合成。接口不支持的参考图、种子或采样器会在提交前报错；只传该渠道实际支持的参数。
 
@@ -454,7 +526,7 @@ export function createDrawingFeature(getConfig) {
 }
 ~~~
 
-`getConfig()` 返回调用方自己的 `imageBackend/activeImageChannel/imageChannels/maxImageBytes`，渠道可先用 `normalizeChannels` 规范化。`draw` 接受 `prompt/modelId/references/width/height/background/quality/signal`，返回 `{ data: Uint8Array, mediaType, usage?, seed? }`。出图前快照选中渠道，不修改全局默认；模型目录不读取凭据。`generation`、`library`、`modules` 和 `client/transport` 附带 TypeScript 类型定义，旧 `stageImageProvider/imageLibraryProvider` 名称继续兼容。
+`getConfig()` 返回调用方自己的 `imageBackend/activeImageChannel/imageChannels/maxImageBytes`，渠道可先用 `normalizeChannels` 规范化。`draw` 接受 `prompt/modelId/promptPreset/references/width/height/background/quality/signal`，返回 `{ data: Uint8Array, mediaType, usage?, seed? }`。出图前快照选中渠道，不修改全局默认；模型目录不读取凭据。`generation`、`library`、`modules` 和 `client/transport` 附带 TypeScript 类型定义，旧 `stageImageProvider/imageLibraryProvider` 名称继续兼容。
 
 独立适配器不登记工具、剧情钩子、HTTP 路由、图库或后台定时器，也不替调用方管理配置、并发、图片持久化和付费任务状态。ComfyUI 的工作流、排队与恢复继续由完整插件的任务引擎管理。需要现成队列和任务记录时复用运行中的插件；自己调用底层适配器时应保留取消信号和 `requestMayHaveSucceeded`，不自动重试结果不确定的付费请求。
 
@@ -496,6 +568,29 @@ export function apply(ctx) {
 
 直接组合提示词时，异步模块使用 `composePluginImagePromptAsync`；直接解析模板使用 `materializeTemplateModulesAsync`。同步入口遇到异步模块时会提示改用异步入口。解析结果中的参数、节点覆盖和 trace 供调用方处理；需要现成队列、任务记录和图片保存时，使用 Tavern 的生图接口。
 
+
+### 登记画风预设
+
+调用方已经写好完整提示词、只想换一套画风时，可从 `dsh-tavern-image/modules` 登记只读预设，并在生成时用 `promptPreset` 指定：
+
+~~~js
+import { registerPromptPreset } from 'dsh-tavern-image/modules'
+
+export function apply(ctx) {
+  ctx.effect(() => registerPromptPreset({
+    id: 'example.flat-sheet',
+    name: '平涂设定',
+    positive: 'flat colors, clean lineart, plain white background',
+    negative: 'busy background',
+  }))
+}
+
+// 之后：images.generate({ prompt, promptPreset: 'example.flat-sheet' })
+~~~
+
+预设标识采用 `插件名.预设名`，不会与内置或用户保存的预设重名；可选 `tagPositive/naturalPositive/mixedPositive/structuredPositive/structuredNegative` 按渠道类型细化。也可以传 `structure`，写法与模板相同：给画风模块加 `usage`，这段文字只用于这种用途的请求（例如空背景和透明底立绘各写一段），不带 `usage` 的文字用于所有请求；`independent: true` 不叠加用户画风库和手动补充；`status: 'experimental'` 在列表里标「实验」。登记的预设出现在模板列表里，标注来源，用户可以选择、不能编辑，也不写入用户设置。注册函数返回卸载函数，插件卸载时应调用。提示词已经写全、不要任何画风时，按次指定内置的 `no-style`（「不加画风」）。生成器的 `presets()` 返回所有可以按次指定的预设（只读）：`{ id, name, origin: 'builtin' | 'registered' | 'saved', source?, status: 'stable' | 'experimental', usages }`，`usages` 是有自己画风文字的用途。
+
+`promptPreset` 只影响这一次生成，可填内置、用户保存或登记的预设标识，优先于当前选中的预设和工作台默认模板（显式的 `templateId`/`modelId` 模板仍按模板生成）；标识不存在、已卸载或已停用时直接报错，不退回当前预设。指定的预设按原样使用：用户画风库里选中的画风、默认画师串和手动补充的正负面词不再叠加上去；世界书提示词系统下也照样使用指定的模板。不传时行为与以前相同。
 ### 前后端维护边界
 
 浏览器源码在 `src/client/`：`main.js` 负责宿主注册，`media.js` 负责图片与提示词编辑，`settings-fields.js/settings.js` 负责设置，`card-worldbook.js/card-gallery.js` 负责工作台。`lib/client/transport.js` 只处理请求与取消；协议和参考图能力与后端共用 `lib/image-provider-capabilities.js`。前端通过 HTTP 交换数据，不直接引用服务端配置、凭据、文件存储或任务实现。
@@ -510,15 +605,20 @@ Tavern 内置配图插件 3.8.0 支持素材库「人物 → 生图 → 配图�
 
 共用接口通过 `registerImageLibrary` 注册 `schemaVersion: 4` 与 `getCharacter/patchCharacter/createCharacter/putReferenceImage`。读取返回 `{version: 4, character}`。修改带上完整的 `expected` 人物快照，`traits` 按字段合并，`outfits` 按 ID 合并；未修改的字段与未列出的服装保留。允许编辑名字、别名、一致性文字、外貌、服装及参考图，不能修改人物卡绑定等插件专有字段。
 
+可选接口 `deleteCharacter({characterId, expected})` 删除一条记录（`expected` 与当前记录不一致时报 `REVISION_CONFLICT`），返回 `{deleted: characterId}`。`patchCharacter` 把 `figureId` 与 `figurePackId` 同时设为 `null` 即断开与素材库人物的关联；只设其一报 `INVALID_ARGUMENT`，记录本身保留。
+
+
 关联存为 `figurePackId + figureId`，人物图存为 `referenceImage`，穿指定服装的成套图存为服装的 `characterOutfitImage`。成套图优先于角色图与独立服装图；使用本地模型或 LoRA 时仍可不上传成套图。
 
 所有编辑、导入和重载共用保存队列，磁盘写入成功后才更新内存。人物库整页保存须原样携带 `GET /state` 返回的 `definitions.revision`；旧页面、旧脚本缺少版本或资料已改变时返回 HTTP 409 与 `REVISION_CONFLICT`，不会覆盖新内容。界面保留当前草稿，提供「重新载入最新人物库」；放弃未保存修改前会确认。外部脚本也应重新读取、由用户核对修改后再提交。素材库生图只在准备生成时读取已关联人物的正面外貌与服装文字，普通剧情和进度轮询不增加此查询。
 
 ## 兼容与许可
 
-当前 Tavern 内置生图插件版本为 **3.13.1**。插件清单声明的 DSH 兼容范围为 `>=0.1.0-rc.8 <0.3.0`，覆盖 DSH 0.1.5 与 0.2.x（含 DeepSeek Harness 0.2.1-rc.2 / Tavern 3.0）；角色历史另外需要 Tavern 插件接口 v2。
+当前 Tavern 内置生图插件版本为 **3.17.3**。插件清单声明的 DSH 兼容范围为 `>=0.1.0-rc.8 <0.3.0`，覆盖 DSH 0.1.5 与 0.2.x（含 DeepSeek Harness 0.2.1-rc.2 / Tavern 3.0）；角色历史另外需要 Tavern 插件接口 v2。
 
 在 DSH 0.2.1-rc.2 + Tavern 3.0.0 上核对过：插件 bundle 正常加载（宿主加载器返回 0 个被跳过的包），本插件调用的 14 个 Tavern 接口（`attach`、`update`、`remove`、`list`、`getTurn`、`readTurnData`、`saveTurnData`、`promptSection`、`onTurnSettled`、`onGameRemoved`、`onTimelineChanged`、`getCardContext`、`backgroundModel`、`apiVersion`）在 Tavern 3.0 中全部保留，3.0 相对 2.7 的接口变化是纯新增（例如 `versionSignal`）。
+
+另有两个可选的宿主放行口子，宿主没有提供时插件照旧：`tavern.beforeImagePlan({gameId, turn, manual, signal})` 在规划某一轮的配图之前调用，插件等它返回后重读这一轮再规划；`tavern.beforeImageGenerate({gameId, turn, anchor, subjects, manual, signal})` 在出每一张图之前调用（`subjects` 是这张图规划出的人物），返回 `{skip: true, reason}` 时不出这张，`reason` 写进这一轮的提示；返回 `{outfits: {人物 id: 服装 id}}` 时，规划省略这个人的 outfitId 时，这张图就用挂载句 anchor 所在段落的这套服装，参考图和服装文字随之切换；明确填空字符串则不选图库服装。宿主用它告诉插件人物此刻穿哪套。宿主用它们让配图等自己准备好的东西（例如刚出场人物的人物库记录和参考图），什么时候放行由宿主决定。
 
 新包名、浏览器模块加载键、bundle 名称和插件 ID 统一为 `dsh-tavern-image`。旧包名 `dsh-tavern-comfy` 仅用于兼容读取和迁移现有 Profile 注册。
 

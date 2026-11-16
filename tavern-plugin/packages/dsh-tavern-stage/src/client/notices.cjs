@@ -1,5 +1,5 @@
 'use strict';
-function createStageNotices({React, document, foreground, displayPreferences, getSelection, StageWaitStop, Spinner, Icon, providerRefusal:tavernProviderRefusalNotice, errorText:stageRuntimeErrorText, diagnosticText:stageDiagnosticText, shortcuts:galShortcuts, live2d:live2dRuntime = null}) {
+function createStageNotices({React, document, foreground, displayPreferences, getSelection, StageWaitStop, Spinner, Icon, providerRefusal:tavernProviderRefusalNotice, errorText:stageRuntimeErrorText, diagnosticText:stageDiagnosticText, shortcuts:galShortcuts, live2d:live2dRuntime = null, nameConflicts:nameConflictSource = null}) {
 let disposed = false;
 const notifiedSessions = new Set(), pendingNotices = new Set();
 function useCapabilityNotice(sessionId, live, rows) {
@@ -24,7 +24,7 @@ function useCapabilityNotice(sessionId, live, rows) {
     }, [sessionId, notice]);
     return live && notice?.sessionId === sessionId ? notice.message : null;
 }
-// The voice line of the stack: source = {key, state:'loading'|'error'|'text', failed} from the
+// The voice line of the stack (owner 11-08 「配音状态」): source = {key, state:'loading'|'error'|'text', failed} from the
 // line on screen (its voice player state) or her reply on a phone call (phone-call.js state.voice); null: nothing to say.
 // A voice that keeps up shows nothing: synthesizing becomes a quiet line only after VOICE_QUIET_MS and 「配音较慢…」
 // after VOICE_SLOW_MS; a failure or a reply gone to text shows for VOICE_RESULT_MS. Local timers only, no voice polling.
@@ -46,6 +46,21 @@ function useVoiceStatus(source) {
     const elapsed = Date.now() - since.current.at;
     if (state === 'loading') return elapsed < VOICE_QUIET_MS ? null : elapsed < VOICE_SLOW_MS ? 'working' : 'slow';
     return elapsed >= VOICE_RESULT_MS ? null : state === 'text' ? source.failed ? 'text-failed' : 'text-slow' : 'failed';
+}
+// 「人物重名」 (owner 11-12): figure names that several figures of the card's packs, so the stage shows none of
+// them. read(sessionId) → {conflicts:[{name, figures:[{packId, figureId, name, packName}]}]} (getStageNameConflicts, the
+// resolver's verdict). Read again when `key` changes (the card's figures or their pack revisions); a failed read shows nothing.
+function useNameConflicts(sessionId, key) {
+    const [value, setValue] = React.useState({sessionId:null, conflicts:[]});
+    React.useEffect(() => {
+        if (disposed || !sessionId || !nameConflictSource) return;
+        let live = true;
+        const stop = () => { live = false; pendingNotices.delete(stop); };
+        pendingNotices.add(stop);
+        Promise.resolve(nameConflictSource.read(sessionId)).then(result => { if (live && !disposed) setValue({sessionId, conflicts:result?.conflicts || []}); }, () => {});
+        return stop;
+    }, [sessionId, key]);
+    return value.sessionId === sessionId ? value.conflicts : [];
 }
 const GAL_VOICE_TEXT = { working: '配音中…', slow: '配音较慢…', failed: '配音失败，已跳过', 'text-slow': '配音太慢，已转文字', 'text-failed': '配音失败，已转文字' };
 function useAlive() {
@@ -192,9 +207,10 @@ function GalCubismNotice({ icon, request }) {
 // pictureReady: one finished after its page was read ({onView} opens its insert page where the reader is).
 // voice: useVoiceStatus's phase (GAL_VOICE_TEXT): synthesizing is a quiet line, slow a busy one, a reply gone to text a hint,
 // a failure the ⚠ line. overSheet: the stack stands over a reading sheet (the handheld phone call) rather than under the top bar.
-function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = null, overSheet = false, onStop, stopping, hints, pages = [], error, bodyFailure = false, onRetry = null, diagnostics, sceneError, onReloadScene = null, cgNotice, spriteFallbacks = [], live2dRequest = null, nameOf, scope, picture = null, pictureReady = null }) {
+// nameConflicts: useNameConflicts's list; each row names the figures, and a figure opens in 素材库 (onOpenFigure).
+function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = null, overSheet = false, onStop, stopping, hints, pages = [], error, bodyFailure = false, onRetry = null, diagnostics, sceneError, onReloadScene = null, cgNotice, spriteFallbacks = [], live2dRequest = null, nameOf, scope, picture = null, pictureReady = null, nameConflicts = [], onOpenFigure = null }) {
     const h = React.createElement;
-    const notes = diagnostics || [], cancelled = error === 'cancelled';
+    const cancelled = error === 'cancelled';
     const icon = h('svg', { className: 'fork-gal-runtime-icon', width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
         h('path', { d: 'M12 4.5 20.5 19h-17L12 4.5zM12 10v4.2M12 16.8v.2', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' }));
     // one flat notice — the title line, then directly one list (a single
@@ -206,6 +222,7 @@ function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = n
     const debugView = typeof document !== 'undefined' && !!document.body && document.body.classList.contains('dsh-fork-debug');
     const prefs = GAL_DEBUG_PREFS();
     const debugOn = prefs ? galDebugHidden(prefs.snapshot()) === false : debugView;
+    const notes = [...(diagnostics || []), ...(debugOn && !bodyFailure && error ? [{message: stageRuntimeErrorText(error)}] : [])];
     const rawOf = row => !row.raw ? null : row.always || (!prefs && debugView) ? h(GalRawText, { text: row.raw }) : prefs ? h(GalRawLine, { text: row.raw }) : null;
     const opened = galNoticeOpen(scope);
     const keys = event => { if ([' ', 'Enter'].includes(event.key) && event.target.closest?.('summary, button')) event.stopPropagation(); };
@@ -217,7 +234,7 @@ function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = n
             h('div', { className: 'fork-gal-runtime-text' }, !rows.length ? action ? h('div', { className: 'fork-gal-runtime-head' }, h('strong', null, title), ' · ', action) : h(React.Fragment, null, title ? h('strong', null, title) : null, after) : h('details', { open: opened.get(key) === true, onToggle: event => opened.set(key, event.currentTarget.open) },
                 h('summary', null, h('strong', null, title), action ? ' · ' : null, action, rows.length > 1 ? h('span', { className: 'fork-gal-runtime-count' }, rows.length) : null),
                 h('ul', { className: 'fork-gal-runtime-rows' }, rows.map((row, index) => h('li', { key: index, 'data-at': row.at ? '' : undefined },
-                    row.at ? h('span', { className: 'fork-gal-runtime-at' }, '第 ' + row.at + ' 段') : null, h('span', { className: 'fork-gal-runtime-reason' }, row.text), rawOf(row))),
+                    row.at ? h('span', { className: 'fork-gal-runtime-at' }, '第 ' + row.at + ' 段') : null, h('span', { className: 'fork-gal-runtime-reason' }, row.text), row.links || null, rawOf(row))),
                     hiddenRaw ? prefs ? h(GalDebugLine, { key: 'debug' }) : debugView ? null : h('li', { key: 'debug', className: 'fork-gal-runtime-howto' }, GAL_DEBUG_HOWTO) : null))));
     };
     // The round line: one quiet line under the page layer (or alone, page staged); while the round works it is the stage's
@@ -254,12 +271,17 @@ function GalRuntimeStatus({ interopNotice, page = false, round = null, voice = n
             text: GAL_DIAGNOSTIC_TEXT[typeof note === 'string' ? note.split(':')[0] : note?.code] || stageDiagnosticText(note), raw: stageDiagnosticText(note, true), always: true }))) : null,
         spriteFallbacks.length ? notice('sprite-fallback', 'error', icon, galSpriteFallbackTitle(spriteFallbacks),
             spriteFallbacks.map(row => ({ text: galSpriteFallbackLine(row, nameOf) }))) : null,
+        nameConflicts.length ? notice('name-conflict', 'error', icon, '人物重名', nameConflicts.map(conflict => ({ text: '「' + conflict.name + '」',
+            links: h('span', { className: 'fork-gal-runtime-links' }, conflict.figures.map(figure => onOpenFigure
+                ? h('button', { key: figure.packId + '/' + figure.figureId, type: 'button', className: 'fork-gal-runtime-action', 'data-action': 'open-figure',
+                    title: '在素材库中打开', onClick: event => { event.preventDefault(); event.stopPropagation(); onOpenFigure(figure); } }, figure.name + ' · ' + figure.packName)
+                : h('span', { key: figure.packId + '/' + figure.figureId }, figure.name + ' · ' + figure.packName))) }))) : null,
         cgNotice ? notice('cg-gallery', 'error', icon, cgNotice) : null,
         sceneError ? notice('scene', 'error', icon, '画面载入失败', [{ text: galSceneFailureText(sceneError), raw: String(sceneError) }],
             onReloadScene ? h(GalSceneReload, { onReload: onReloadScene }) : null) : null);
 }
 
-return {useCapabilityNotice, useVoiceStatus, Status:GalRuntimeStatus, Retry:GalRetryBody, useSpriteFallbacks:useGalSpriteFallbacks, dispose() {
+return {useCapabilityNotice, useVoiceStatus, useNameConflicts, openLibrary:nameConflictSource?.openLibrary || null, Status:GalRuntimeStatus, Retry:GalRetryBody, useSpriteFallbacks:useGalSpriteFallbacks, dispose() {
     if (disposed) return;
     disposed = true; galNoticeFolds.open.clear(); notifiedSessions.clear();
     const errors = [];

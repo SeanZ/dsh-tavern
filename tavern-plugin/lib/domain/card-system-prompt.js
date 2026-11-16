@@ -1,7 +1,7 @@
-import { promptSection, promptSectionBody } from './prompt-section.js'
+import { promptSection } from './prompt-section.js'
 import { createHash } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
-import { sessionStablePrefixSections } from './session-stable-prefix.js'
+import { sessionStablePrefixSections, stableSectionBody } from './session-stable-prefix.js'
 import { isProducerSource } from './message-source.js'
 
 // Prompt prose source. Keys are stable; interpolation arguments are data.
@@ -12,7 +12,6 @@ export const PROMPT_PROSE = Object.freeze({
 
 
 export const CARD_SYSTEM_PROMPT_SECTION = 'tavern:card-system-prompt'
-const MARKER = '【人物卡系统提示】'
 
 export function cardSystemPromptText(text) {
   text = String(text || '').trim()
@@ -41,8 +40,7 @@ export function liveContextUpdate(session, field, pendingMessages = []) {
 export function cardSystemPromptSnapshot(session, text, pendingMessages = [], openingText = '') {
   text = String(text || '').trim()
   const fixed = sessionStablePrefixSections(session, openingText).find(section => section.name === CARD_SYSTEM_PROMPT_SECTION)
-  const fixedText = promptSectionBody('card_system', fixed?.text || '')
-  let previousText = fixed?.text.startsWith('<card_system>\n') ? fixedText.trim() : fixedText.startsWith(MARKER + '\n') ? fixedText.slice(MARKER.length + 1).trim() : ''
+  let previousText = (fixed ? stableSectionBody(CARD_SYSTEM_PROMPT_SECTION, fixed.text) ?? '' : '').trim()
   const live = liveContextUpdate(session, 'cardSystemPromptSnapshot', pendingMessages)
   if (live) previousText = live.text
   if (previousText === text) return null

@@ -31,7 +31,7 @@
 		})();
 
 		// the one shared large view (image-viewer.js openSceneImage).
-		function openSceneImagePreview(url, opener, version, onEditPrompt, gallery, label) { return openSceneImage(url, opener, version, onEditPrompt, gallery, label); }
+		function openSceneImagePreview(url, opener, onEditPrompt, gallery, label) { return openSceneImage(url, opener, onEditPrompt, gallery, label); }
 
 		function createTavernAssistantRendererFeatureModule() {
 			// The row plan hides rolled-back and superseded turns, but the host keeps their
@@ -355,13 +355,237 @@
 				return reserve;
 			}
 
+			function tavernAssistantStepNode(step) {
+				const data = step && step.data;
+				return data && typeof data.get === "function" ? data.get("assistant-step") : data;
+			}
+
+			function tavernStepReasoningTailLive(blocks) {
+				const list = Array.isArray(blocks) ? blocks : [];
+				let hasReasoning = false;
+				let lastMeaningfulKind = "";
+				for (let index = 0; index < list.length; index += 1) {
+					const block = list[index];
+					if (!block || typeof block !== "object") continue;
+					if (block.kind === "reasoning") {
+						if (String(block.text || "").trim() !== "") {
+							hasReasoning = true;
+							lastMeaningfulKind = "reasoning";
+						}
+					} else if (block.kind === "text") {
+						if (String(block.text || "").trim() !== "") lastMeaningfulKind = "text";
+					} else {
+						lastMeaningfulKind = String(block.kind || "other");
+					}
+				}
+				return hasReasoning && lastMeaningfulKind === "reasoning";
+			}
+
+			function tavernAssistantBlocksHaveReply(blocks) {
+				const list = Array.isArray(blocks) ? blocks : [];
+				for (let index = 0; index < list.length; index += 1) {
+					const block = list[index];
+					if (!block || block.kind === "reasoning" || block.kind === "tool-call") continue;
+					if (block.kind !== "text" || String(block.text || "").trim() !== "") return true;
+				}
+				return false;
+			}
+
+			function tavernTurnHasReply(turn) {
+				const steps = turn && Array.isArray(turn.steps) ? turn.steps : [];
+				for (let index = 0; index < steps.length; index += 1) {
+					const node = tavernAssistantStepNode(steps[index]);
+					if (tavernAssistantBlocksHaveReply(node && node.blocks)) return true;
+				}
+				return false;
+			}
+
+			function tavernTurnReasoningIsLive(turn, fallbackBlocks, fallbackStreaming) {
+				const steps = turn && Array.isArray(turn.steps) ? turn.steps : [];
+				if (steps.length > 0) {
+					let sawStatus = false;
+					let lastStepNode = null;
+					for (let index = 0; index < steps.length; index += 1) {
+						const node = tavernAssistantStepNode(steps[index]);
+						if (!node) continue;
+						lastStepNode = node;
+						if (typeof node.status === "string" && node.status !== "") sawStatus = true;
+						if (node.status === "running" && tavernStepReasoningTailLive(node.blocks)) return true;
+					}
+					if (!sawStatus && fallbackStreaming === true && lastStepNode) {
+						return tavernStepReasoningTailLive(lastStepNode.blocks);
+					}
+					return false;
+				}
+				return fallbackStreaming === true && tavernStepReasoningTailLive(fallbackBlocks);
+			}
+
+			// 设置 › 高级 › 流式显示思维链：DSH 的「工作步骤展示」在酒馆里是简洁档，整个过程区被收起，
+			// 思考又落在工具步上，正文座位拿不到任何 reasoning。这里按整轮汇总，画在正文上方：
+			// 生成中展开，这一轮结束就收起（读者仍可点开）。数据来自每一轮的 assistant-step 节点。
+			function tavernTurnReasoningBlocks(turn) {
+				const steps = turn && Array.isArray(turn.steps) ? turn.steps : [];
+				const collected = [];
+				for (let index = 0; index < steps.length; index += 1) {
+					const data = steps[index] && steps[index].data;
+					const node = data && typeof data.get === "function" ? data.get("assistant-step") : data;
+					const blocks = node && Array.isArray(node.blocks) ? node.blocks : [];
+					for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+						const block = blocks[blockIndex];
+						if (block && block.kind === "reasoning" && String(block.text || "").trim() !== "") collected.push(block);
+					}
+				}
+				return collected;
+			}
+
+			function tavernReasoningAutoScroll(active, text) {
+				if (typeof React.useRef !== "function") return null;
+				const detailsRef = React.useRef(null);
+				const preRef = React.useRef(null);
+				const stateRef = React.useRef({
+					pinned: true,
+					prevActive: Boolean(active),
+					lastTop: 0,
+					programmaticTop: null
+				});
+				const useEffectHook = typeof React.useLayoutEffect === "function" ? React.useLayoutEffect : React.useEffect;
+				const syncToBottom = React.useCallback(function () {
+					const pre = preRef.current;
+					const details = detailsRef.current;
+					if (!pre || !active || !stateRef.current.pinned) return;
+					if (details && details.open === false) return;
+					const floor = Math.max(0, pre.scrollHeight - pre.clientHeight);
+					if (floor <= 0) {
+						stateRef.current.lastTop = pre.scrollTop;
+						return;
+					}
+					if (floor - pre.scrollTop > 1) {
+						pre.scrollTop = pre.scrollHeight;
+						stateRef.current.programmaticTop = pre.scrollTop;
+						stateRef.current.lastTop = pre.scrollTop;
+					}
+				}, [active]);
+				useEffectHook(function () {
+					const state = stateRef.current;
+					if (active && !state.prevActive) state.pinned = true;
+					state.prevActive = Boolean(active);
+					if (!text) return;
+					syncToBottom();
+				}, [active, text, syncToBottom]);
+				const onScroll = React.useCallback(function (event) {
+					const el = event && event.currentTarget;
+					if (!el) return;
+					const state = stateRef.current;
+					const top = el.scrollTop;
+					const floor = Math.max(0, el.scrollHeight - el.clientHeight);
+					if (floor - top <= 16) {
+						state.pinned = true;
+					} else if (state.programmaticTop !== null && Math.abs(top - state.programmaticTop) <= 1) {
+						// Ignore async scroll event emitted by syncToBottom when newer chunks grew scrollHeight.
+					} else if (top < state.lastTop - 1 || state.programmaticTop === null) {
+						state.pinned = false;
+					}
+					state.programmaticTop = null;
+					state.lastTop = top;
+				}, []);
+				const onToggle = React.useCallback(function (event) {
+					if (event && event.currentTarget && event.currentTarget.open && active && stateRef.current.pinned) {
+						syncToBottom();
+					}
+				}, [active, syncToBottom]);
+				return { detailsRef: detailsRef, preRef: preRef, onScroll: onScroll, onToggle: onToggle };
+			}
+
+			function TavernTurnReasoning(props) {
+				let blocks = tavernTurnReasoningBlocks(props.turn);
+				if (!blocks.length && Array.isArray(props.fallbackBlocks)) {
+					blocks = props.fallbackBlocks.filter(function (block) {
+						return block && block.kind === "reasoning" && String(block.text || "").trim() !== "";
+					});
+				}
+				const live = blocks.length > 0 && tavernTurnReasoningIsLive(props.turn, props.fallbackBlocks, props.streaming === true);
+				const text = blocks.map(function (block) { return String(block.text || ""); }).join("\n\n");
+				const scroll = tavernReasoningAutoScroll(live, text);
+				if (!blocks.length) return null;
+				return React.createElement("details", {
+					ref: scroll ? scroll.detailsRef : undefined,
+					className: "dsh-tavern-assistant-reasoning dsh-tavern-stream-reasoning",
+					open: live,
+					onToggle: scroll ? scroll.onToggle : undefined
+				},
+					React.createElement("summary", null, live ? "思考中…" : "思考过程"),
+					React.createElement("pre", {
+						ref: scroll ? scroll.preRef : undefined,
+						onScroll: scroll ? scroll.onScroll : undefined
+					}, text));
+			}
+
+			function tavernIsLastReasoningStep(turn, nodeData) {
+				const steps = turn && Array.isArray(turn.steps) ? turn.steps : [];
+				if (!steps.length) return true;
+				let lastData = null;
+				for (let index = 0; index < steps.length; index += 1) {
+					const candidate = tavernAssistantStepNode(steps[index]);
+					const blocks = candidate && Array.isArray(candidate.blocks) ? candidate.blocks : [];
+					if (blocks.some(function (block) { return block && block.kind === "reasoning" && String(block.text || "").trim() !== ""; })) {
+						lastData = candidate;
+					}
+				}
+				if (!lastData) return true;
+				if (lastData === nodeData) return true;
+				const lastSeq = lastData.finalNode && lastData.finalNode.seq;
+				const curSeq = nodeData && nodeData.finalNode && nodeData.finalNode.seq;
+				return lastSeq !== undefined && curSeq !== undefined && lastSeq === curSeq;
+			}
+
+			function TavernAssistantReasoningSlot(props) {
+				const streamReasoning = typeof useTavernReasoningStreamEnabled === "function"
+					? useTavernReasoningStreamEnabled()
+					: (typeof tavernReasoningStreamEnabled === "function" && tavernReasoningStreamEnabled());
+				if (!streamReasoning) {
+					return React.createElement(TavernReasoningSeat, {
+						blocks: props.node.data.blocks,
+						streaming: props.node.data.status === "running"
+					});
+				}
+				const turnRef = props.node && props.node.location && (props.node.location.kind === "turn" || props.node.location.kind === "step")
+					? props.node.location.turn
+					: null;
+				if (tavernTurnHasReply(turnRef) || tavernAssistantBlocksHaveReply(props.node.data.blocks)) return null;
+				if (!tavernIsLastReasoningStep(turnRef, props.node.data)) return null;
+				const streaming = props.node.data.status === "running" || Boolean(turnRef && turnRef.status !== "closed");
+				if (!streaming) return null;
+				return React.createElement(TavernTurnReasoning, {
+					turn: turnRef,
+					fallbackBlocks: props.node.data.blocks,
+					streaming: streaming
+				});
+			}
+
+			function TavernReasoningBlock(props) {
+				const live = Boolean(props && props.live);
+				const text = String(props && props.text || "");
+				const scroll = tavernReasoningAutoScroll(live, text);
+				return React.createElement("details", {
+					ref: scroll ? scroll.detailsRef : undefined,
+					className: "dsh-tavern-assistant-reasoning",
+					open: live,
+					onToggle: scroll ? scroll.onToggle : undefined
+				},
+					React.createElement("summary", null, live ? "思考中…" : "思考过程"),
+					React.createElement("pre", {
+						ref: scroll ? scroll.preRef : undefined,
+						onScroll: scroll ? scroll.onScroll : undefined
+					}, text));
+			}
+
 			// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
 			function TavernReasoningSeat(props) {
 				const blocks = (Array.isArray(props.blocks) ? props.blocks : []).filter(function (block) { return block && block.kind === "reasoning"; });
 				if (!blocks.length) return null;
 				return React.createElement("div", { className: "dsh-tavern-assistant" }, blocks.map(function (block, index) {
 					const live = props.streaming && index === blocks.length - 1;
-					return React.createElement("details", { key: index, className: "dsh-tavern-assistant-reasoning", open: live }, React.createElement("summary", null, live ? "思考中…" : "思考过程"), React.createElement("pre", null, String(block.text || "")));
+					return React.createElement(TavernReasoningBlock, { key: index, live: live, text: String(block.text || "") });
 				}));
 			}
 			// Card-workbench replies a plugin asked to fold (tavernUi.registerReplyPresenter):
@@ -390,6 +614,9 @@
 			function TavernAssistantNodeView(props) {
 				useTavernUiExtensions();
 				useTavernProseLayoutRevision();
+				const streamReasoningEnabled = typeof useTavernReasoningStreamEnabled === "function"
+					? useTavernReasoningStreamEnabled()
+					: (typeof tavernReasoningStreamEnabled === "function" && tavernReasoningStreamEnabled());
 				const data = props.node.data;
                 const historyNode = React.useRef(null);
 				const turnRef = props.node.location.kind === "turn" || props.node.location.kind === "step" ? props.node.location.turn : null;
@@ -494,7 +721,8 @@
                     item.setAttribute(attribute, "");
                     return function () { item.removeAttribute(attribute); };
                 }, [recentFloor, eagerFloor, floorShown]);
-                const rendered = sessionTransitioning ? [React.createElement("div", { key: "switching", className: "dsh-tavern-session-switching", role: "status" }, "正在完成游戏初始化…")] : waitingForHistory ? [React.createElement("div", {key:"history",role:"status"}, "正在读取历史内容…")] : deferredFloor ? [] : renderTavernAssistantBlocks({
+                const rendered = sessionTransitioning ? [React.createElement("div", { key: "switching", className: "dsh-tavern-session-switching", role: "status" },
+                    React.createElement("span", { className: "dsh-tavern-loading-line" }, React.createElement(Spinner, {}), React.createElement("span", null, "正在完成游戏初始化…")))] : waitingForHistory ? [React.createElement("div", {key:"history",role:"status"}, "正在读取历史内容…")] : deferredFloor ? [] : renderTavernAssistantBlocks({
 					// Publish native identity and this node's regeneration decision, not the whole view.
 					forkStageSource,
 					codeLabels,
@@ -595,7 +823,11 @@
 				const modFloorNodes = typeof props.useChat === "function" ? tavernModClients.slot("floor").map(part => tavernStageBoundary(part.label, React.createElement(part.value, { key: part.modId, useChat: props.useChat, nativeTurn: turn, nodeKey: props.node.key }))) : null;
 				const illustrationDraft = playView && settled ? React.createElement(TavernIllustrationDraft, { sessionId: props.sessionId, turn: storyTurn, items: pluginMedia.items }) : null;
 				const gameSurface = playView && settled && storyTurn === latestProjectionTurn ? React.createElement(tavernReplyObserverFeature.GameModeSurface, { key: props.sessionId, sessionId: props.sessionId }) : null;
-				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, deletionNode, foldBack, modFloorNodes, body, openingNav, stageEntry, gameSurface, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
+				// 思考只在收尾行画一次（工具步会有好几行，逐行画会重复）；开关关掉时交还宿主。
+				const turnReasoningNode = ownsTurn && streamReasoningEnabled
+					? React.createElement(TavernTurnReasoning, { key: "turn-reasoning", turn: turnRef, fallbackBlocks: data.blocks, streaming: data.status === "running" || Boolean(turnRef && turnRef.status !== "closed") })
+					: null;
+				return React.createElement("div", { ref:historyNode, className: "dsh-tavern-assistant", "data-streaming": data.status === "running" || undefined }, deletionNode, foldBack, modFloorNodes, turnReasoningNode, body, openingNav, stageEntry, gameSurface, refusalNode, pendingMessage, pluginMediaNode, illustrationDraft, pluginActions, mvuReceiptNode, inlineStatus);
 			}
 			function TavernForkAssistantAction(props) {
 				const liveState = useScopedLiveTavernView(props.sessionId, String(props.messageId || ""), [["mode"], ["forkTurnsByMessageId", String(props.messageId || "")]]);
@@ -764,7 +996,8 @@
 						if (props.node.data.finalNode && /^tavern-seed-trajectory:v1:.+:2$/.test(String(props.node.data.finalNode.messageId || ""))) return null;
 						// The process panel's copy of the answer step holds only its thinking; the story,
 						// pictures and receipts belong to the reply seat. Otherwise the body shows twice.
-						if (props.groupPart === "reasoning") return React.createElement(TavernReasoningSeat, { blocks: props.node.data.blocks, streaming: props.node.data.status === "running" });
+						// 「流式显示思维链」开启时，已有正文后交给回复座位统一渲染；尚未出现正文前借宿步骤区先流式展示，不重不漏。
+						if (props.groupPart === "reasoning") return React.createElement(TavernAssistantReasoningSlot, { node: props.node });
 						if (String(props.node.data.finalNode?.messageId || '').startsWith('tavern-game-mode:')) {
 							return React.createElement('section', { className: 'dsh-tavern-game-foreground', 'aria-label': 'DM 前台记录' },
 								React.createElement('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8 } }, (props.node.data.blocks || []).filter(block => block.kind === 'text').map(block => block.text).join('\n')),

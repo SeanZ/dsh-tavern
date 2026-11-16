@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
-import { imageCharacterFromFigure, linkPatchFromFigure, findFigureImageCharacter } from '../domain/image-character-appearance.js'
+import { figureOutfitReference } from '../domain/figure-sprite-reference.js'
+import { imageCharacterFromFigure, linkPatchFromFigure, findFigureImageCharacter, putPackReference, packReferenceName, referencePatch } from '../domain/image-character-appearance.js'
 
 // The image plugin owns these records. Asset-pack edits never store a second copy.
 export function createImageCharacterHandlers({ ctx, pluginApi }) {
@@ -52,6 +53,11 @@ export function createImageCharacterHandlers({ ctx, pluginApi }) {
       run.finally(() => { if (links.get(key) === run) links.delete(key) }).catch(() => {})
       return run
     },
+    // 删除人物时「一起删除」生图外貌: the linked record goes first, then the client removes the figure.
+    async deleteFigureImageCharacter(args) {
+      await linkedRecord(args)
+      return records('deleteCharacter', { providerId: args.providerId, characterId: args.characterId, expected: args.expected })
+    },
     async patchImageCharacter(args) {
       await linkedRecord(args)
       if (args.patch && (Object.hasOwn(args.patch, 'figureId') || Object.hasOwn(args.patch, 'figurePackId'))) throw fail('INVALID_ARGUMENT', '请通过关联操作选择人物')
@@ -61,14 +67,14 @@ export function createImageCharacterHandlers({ ctx, pluginApi }) {
       const { library, pack, figure, character } = await linkedRecord(args)
       const outfit = args.outfitKey ? figure.outfits.find(item => item.key === args.outfitKey) : null
       if (args.outfitKey && !outfit) throw fail('NOT_FOUND', '服装已删除，请重新载入')
-      const hash = outfit ? outfit.settei : figure.identitySettei?.board
+      const spriteFallback = args.spriteFallback === true
+      if (spriteFallback && (!outfit || outfit.settei || character.outfits.some(item => item.id === outfit.key && item.characterOutfitImage))) throw fail('INVALID_ARGUMENT', '已有参考图或设定图，不可覆盖')
+      const fallback = spriteFallback ? figureOutfitReference(pack, figure, outfit) : null
+      const hash = spriteFallback ? fallback?.hash : outfit ? outfit.settei : figure.identitySettei?.board
       if (!hash) throw fail('INVALID_ARGUMENT', '还没有设定图')
-      const { bytes, descriptor } = await library.readMedia({ packId: args.packId, expectedRevision: pack.revision, hash })
-      const { referenceImage } = await records('putReferenceImage', { providerId: args.providerId, data: new Uint8Array(bytes), mediaType: descriptor.mime,
-        name: figure.name + (outfit ? '／' + outfit.label : '') + ' 设定图' })
-      const patch = !outfit ? { referenceImage } : { outfits: [{ id: outfit.key, characterOutfitImage: referenceImage,
-        ...(character.outfits.some(item => item.id === outfit.key) ? {} : { name: outfit.label }) }] }
-      return records('patchCharacter', { providerId: args.providerId, characterId: args.characterId, expected: args.expected, patch })
+      const referenceImage = await putPackReference(pluginApi, library, { providerId: args.providerId, packId: args.packId, revision: pack.revision, hash,
+        name: packReferenceName(figure, outfit, spriteFallback ? {sprite:' 立绘参考', emotion:' 差分参考', avatar:' 头像参考'}[fallback.kind] : undefined) })
+      return records('patchCharacter', { providerId: args.providerId, characterId: args.characterId, expected: args.expected, patch: referencePatch(character, outfit, referenceImage) })
     },
   }
 }

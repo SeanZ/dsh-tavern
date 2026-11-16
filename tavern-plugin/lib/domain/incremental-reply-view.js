@@ -1,3 +1,4 @@
+import { stageReadScope, stageReadIdentityOnly } from './stage-read-projection.js'
 import { createHash } from 'node:crypto'
 import { replyBody } from './round-body.js'
 import { createIndexedArrayApi } from './indexed-array.js'
@@ -29,9 +30,10 @@ function depthBound(options) {
 }
 
 // Derived, disposable state only. The journal remains the authority for changed indices.
-export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 1024, maxEntries = 4, onIndexVisit = () => {}, onStatusMatch = () => {}, onStatusFilter = () => {}, onStatusFallback = () => {} } = {}) {
-  const cache = new Map()
-  const inFlight = new Map()
+// maxBytes is the JSON estimate of the cached rows; a long story's history (dozens of rounds of dialogue) runs to tens of
+// megabytes of it, and a history over the bound is projected again on every read.
+export function createIncrementalReplyView({ readChanges, maxBytes = 96 * 1024 * 1024, maxEntries = 12, onIndexVisit = () => {}, onStatusMatch = () => {}, onStatusFilter = () => {}, onStatusFallback = () => {} } = {}) {
+  const cache = new Map(), pending = new Map(), inFlight = new Map()
   const sourceIndex = createIndexedArrayApi({measure:value=>48+String(value).length*2})
   const rowIndex = createIndexedArrayApi({eligible:value=>Boolean(value),measure:value=>JSON.stringify(value).length*2,visit:onIndexVisit})
   const metadataIndex = createIndexedArrayApi({visit:onIndexVisit})
@@ -45,29 +47,45 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
   function output(result, shared) { return shared ? {...result} : structuredClone({...result,projections:Array.from(result.projections)}) }
   let bytes = 0
   const stats = { rebuilt: 0, incremental: 0, reused: 0, projectedMessages: 0 }
-  async function project(chat, options = {}, statusOptions = options, outputOptions = {}) {
+  function invalidate(chatId) {
+    for (const [key, value] of cache) {
+      if (JSON.parse(key)[0] === chatId) { bytes -= value.size; cache.delete(key) }
+    }
+    for (const key of pending.keys()) if (JSON.parse(key)[0] === chatId) pending.delete(key)
+    const work = inFlight.get(chatId)
+    if (work) work.token = {}
+  }
+  // polling and director reads of one persisted revision share the in-flight projection.
+  async function project(chat, options = {}, statusOptions = options, {shared = false} = {}) {
+    const signature = createHash('sha256').update(JSON.stringify([displayDependencies(options), displayDependencies(statusOptions), chat.timeline?.branchId, stageReadScope(chat)])).digest('hex')
+    if (!Number.isSafeInteger(chat._storageRevision)) return calculate(chat,options,statusOptions,signature,shared)
+    const key = JSON.stringify([chat.id,chat._storageRevision,signature])
+    let load = pending.get(key)
+    if (!load) {
+      load = calculate(chat,options,statusOptions,signature,true)
+      pending.set(key,load)
+    }
+    try { return output(await load,shared) }
+    finally { if (pending.get(key) === load) pending.delete(key) }
+  }
+  async function calculate(chat, options, statusOptions, signature, shared) {
     let work = inFlight.get(chat.id)
     if (!work) { work = { token: {}, count: 0 }; inFlight.set(chat.id, work) }
     const token = work.token
     work.count++
-    try { return await projectCurrent(chat, options, statusOptions, outputOptions, () => work.token === token) }
+    try { return await calculateCurrent(chat, options, statusOptions, signature, shared, () => work.token === token) }
     finally { if (--work.count === 0) inFlight.delete(chat.id) }
   }
-  function invalidate(chatId) {
-    const previous = cache.get(chatId)
-    if (previous) { bytes -= previous.size; cache.delete(chatId) }
-    // 刷新前已开始的投影可以返回给旧调用方，但不能再写入新缓存。
-    const work = inFlight.get(chatId)
-    if (work) work.token = {}
-  }
-  async function projectCurrent(chat, options, statusOptions, {shared = false}, isCurrent) {
-    const signature = createHash('sha256').update(JSON.stringify([displayDependencies(options), displayDependencies(statusOptions), chat.timeline?.branchId])).digest('hex')
-    const previous = cache.get(chat.id)
+  async function calculateCurrent(chat, options, statusOptions, signature, shared, isCurrent) {
+    // One entry per chat and signature: a stage round view and the session view of the same chat project different floors
+    // (stageReadScope) and must not evict each other.
+    const entry = JSON.stringify([chat.id, signature]), previous = cache.get(entry)
     const revision = chat._storageRevision
     const messages = Array.isArray(chat.messages) ? chat.messages : []
     let changes
     if (previous?.signature === signature && Number.isSafeInteger(revision)) {
-      if (previous.revision === revision) { stats.reused++; return output(previous.result,shared) }
+      // Least recently used goes first: a reader paging the stage through many rounds does not push out the session view.
+      if (previous.revision === revision) { stats.reused++; cache.delete(entry); cache.set(entry, previous); return output(previous.result,shared) }
       if (previous.revision < revision) {
         try { changes = await readChanges?.(chat.id, previous.revision) }
         catch { changes = undefined } // The full Chat was already read successfully.
@@ -80,7 +98,7 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
     // Check only the declared dirty sources, then retain the immutable result.
     if (compatible && messages.length === previous.roles.length
       && changes.indices.every(id => sourceKey(messages[id]) === previous.sources[id])) {
-      if (isCurrent() && cache.get(chat.id) === previous) previous.revision = revision
+      if (isCurrent() && cache.get(entry) === previous) previous.revision = revision
       stats.reused++
       return output(previous.result,shared)
     }
@@ -122,7 +140,9 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
       beforeEdits.set(index, index === 0 ? 1 : at(beforeEdits,before,index-1) + (at(roleEdits,roles,index-1) === 'user' ? 1 : 0))
       roleEdits.set(index,message?.role)
       targetEdits.push([index,message?.role === 'assistant' ? Number(message.turn) || beforeEdits.get(index) : undefined])
-      if (message?.role !== 'assistant') { rowEdits.set(index,null); projectionEdits.push([index,undefined]); continue }
+      // A stage round view carries only the rounds it names in full; its other floors are identity rows without prose,
+      // so their projections would be empty work that every page read of a long chat repeats.
+      if (message?.role !== 'assistant' || stageReadIdentityOnly(chat,index)) { rowEdits.set(index,null); projectionEdits.push([index,undefined]); continue }
       const turn = Math.max(0, Number(message.turn) || (message.greeting === true ? 1 : beforeEdits.get(index)))
       if (turn === 0) { rowEdits.set(index,null); projectionEdits.push([index,undefined]); continue }
       const row = projectMessages([{...message, turn}], index)
@@ -148,12 +168,12 @@ export function createIncrementalReplyView({ readChanges, maxBytes = 8 * 1024 * 
       : sourceIndex.from(messages.map(sourceKey))
     const resultSize = hasStatusRules ? statusSummary.filteredBytes + JSON.stringify(result.statusViews).length*2 : projectionIndex.info(projections).bytes + 256
     const size = targetIndex.info(targets).bytes + rowIndex.info(rows).bytes + metadataIndex.info(roles).bytes + metadataIndex.info(before).bytes + resultSize + 512 + sourceIndex.info(sources).bytes
-    if (isCurrent() && Number.isSafeInteger(revision) && size <= maxBytes && maxEntries > 0 && !(cache.get(chat.id)?.revision > revision)) {
-      if (cache.has(chat.id)) { bytes -= cache.get(chat.id).size; cache.delete(chat.id) }
+    if (isCurrent() && Number.isSafeInteger(revision) && size <= maxBytes && maxEntries > 0 && !(cache.get(entry)?.revision > revision)) {
+      if (cache.has(entry)) { bytes -= cache.get(entry).size; cache.delete(entry) }
       while (cache.size && (bytes + size > maxBytes || cache.size >= maxEntries)) {
         const oldest = cache.keys().next().value; bytes -= cache.get(oldest).size; cache.delete(oldest)
       }
-      cache.set(chat.id, {revision, signature, rows, roles, before, result, size, sources, projections, targets, statusState:statusSummary.next}); bytes += size
+      cache.set(entry, {revision, signature, rows, roles, before, result, size, sources, projections, targets, statusState:statusSummary.next}); bytes += size
     }
     return output(result,shared)
   }

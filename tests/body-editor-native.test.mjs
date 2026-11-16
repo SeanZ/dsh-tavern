@@ -1,3 +1,4 @@
+import bodyVersion from '../tavern-plugin/lib/domain/body-version.cjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createInitializationNative } from './fixtures/conversation-initialization-native.mjs'
@@ -56,7 +57,7 @@ test('真实 Session 自动精修不推进故事版本，但替换回复身份�
   })
   const revision = chat.timeline.revision
   const openSnapshots = () => createFloorSnapshots({ store: createProfileDataStore({ dataRoot: root }), chatIdFor: async () => chat.id })
-  await openSnapshots().save({ sessionId: h.input.sessionId, turn: before.story, reply: String(oldSeq), html: '<p>原正文：抵达花店</p>' })
+  await openSnapshots().save({ sessionId: h.input.sessionId, turn: before.story, reply: String(oldSeq), rendererVersion: bodyVersion.BODY_RENDER_VERSION, html: '<p>原正文：抵达花店</p>' })
   const editor = createBodyEditor({
     chats: { forSession: () => h.persistence.read(chat.id), update: h.persistence.update },
     sessions: { get: () => h.target.agent, flush: () => h.checkpoint() },

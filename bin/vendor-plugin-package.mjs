@@ -23,7 +23,7 @@ const target = path.join(root, 'tavern-plugin/packages/dsh-better-sidebar')
 mkdirSync(path.join(target, 'lib'), { recursive: true })
 for (const name of ['index.js', 'client.js', 'client-registry.js', 'client-terminal.js', 'client-editor.js', 'client-mermaid.js', 'client-locale.js']) {
   const source = patchSidebarTeams(readFileSync(path.join(sidebar, 'lib', name), 'utf8'), name)
-  writeFileSync(path.join(target, 'lib', name), name === 'client.js' || name === 'client-registry.js' ? patchSidebarTitle(source) : source)
+  writeFileSync(path.join(target, 'lib', name), source)
 }
 copyFileSync(path.join(sidebar, 'LICENSE'), path.join(target, 'LICENSE'))
 const manifest = Object.fromEntries(['name', 'version', 'type', 'main', 'dsh'].map(key => [key, pkg[key]]))
@@ -31,12 +31,3 @@ manifest.private = true
 manifest.exports = { '.': './lib/index.js', './client': './lib/client.js', './package.json': './package.json' }
 writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest, null, 2) + '\n')
 await import('./build-plugin-package.mjs')
-
-// 固定侧栏包的单页标题始终跟随注册表，旧安装目录也按同一补丁生成。
-function patchSidebarTitle(source) {
-  const original = '\t\t\tconst title = record?.tab.title ?? nativeTab.title;\n\t\t\tconst descriptor = service.getTab(descriptorId) ?? service.getTab(record?.tab.type ?? nativeTab.kind);'
-  const patched = '\t\t\tconst descriptor = service.getTab(descriptorId) ?? service.getTab(record?.tab.type ?? nativeTab.kind);\n\t\t\tconst title = descriptor?.single === true ? titleOf(descriptor) : record?.tab.title ?? nativeTab.title;'
-  if (source.includes(patched)) return source
-  if (!source.includes(original)) throw new Error('侧栏标题补丁锚点已变化')
-  return source.replace(original, patched)
-}

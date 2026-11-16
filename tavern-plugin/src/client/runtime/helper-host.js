@@ -93,15 +93,33 @@
             let takenOver = false, disposed = false;
             layer.hidden = true;
             native.hidden = false;
+            const slots = "[data-dsh-script-media]";
+            // The copy gives scripts the prose and the media positions. Move each
+            // live portal only after takeover, preserving its React state and handlers.
+            function placeMedia() {
+                const destinations = takenOver ? new Map(Array.from(layer.querySelectorAll(slots), function (slot) {
+                    return [slot.getAttribute("data-dsh-script-media"), slot];
+                })) : null;
+                for (const slot of native.querySelectorAll(slots)) {
+                    const host = slot.tavernMediaHost;
+                    const target = destinations ? destinations.get(slot.getAttribute("data-dsh-script-media")) || layer : slot;
+                    if (host && host.parentNode !== target) target.append(host);
+                }
+            }
             const layerObserver = new Observer(function () {
-                if (takenOver || disposed) return;
-                takenOver = true;
-                layer.hidden = false;
-                native.hidden = true;
+                if (disposed) return;
+                if (!takenOver) {
+                    takenOver = true;
+                    layer.hidden = false;
+                    native.hidden = true;
+                }
+                placeMedia();
             });
             function rebuild() {
-                if (takenOver || disposed) return;
+                if (disposed) return;
+                if (takenOver) { placeMedia(); return; }
                 layer.replaceChildren.apply(layer, Array.from(native.childNodes).map(function (node) { return node.cloneNode(true); }));
+                for (const slot of layer.querySelectorAll(slots)) slot.replaceChildren();
                 // Our own copy is not a script edit.
                 layerObserver.takeRecords();
             }
@@ -118,6 +136,8 @@
                 // 脚本用宿主 jQuery 绑在消息副本上的事件随副本一起清掉，与 jQuery.remove 一致。
                 const jq = view.jQuery;
                 if (jq && typeof jq.cleanData === "function") jq.cleanData(Array.from(layer.getElementsByTagName("*")));
+                takenOver = false;
+                placeMedia();
                 layer.replaceChildren();
                 layer.hidden = true;
                 native.hidden = false;

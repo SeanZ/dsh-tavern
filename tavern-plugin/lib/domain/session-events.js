@@ -69,6 +69,23 @@ export function releaseOpeningTurn(session, agent) {
 // Turns Tavern opened for its own writes (withSurfaceEditTurn, a surface mutation's edit
 // step), per session: not the player's.
 const surfaceEditTurns = new WeakMap()
+const reservingTurns = new WeakSet()
+
+// Released V4 refuses a turn that opens or closes while a between-turns compaction is
+// still summarizing ("turn/start crosses an open compaction"), and the live Session
+// does not: the write succeeds and the next resume finds the whole log unreadable. A
+// compaction a restart cut short is closed by the session/end-seed the next resume
+// writes. Tavern therefore opens no turn of its own until the compaction has ended.
+export function compactionOpen(events) {
+  let open = false
+  for (const event of events) {
+    if (event.type === 'compaction/start') open = true
+    else if (event.type === 'compaction/end' || event.type === 'session/end-seed') open = false
+  }
+  return open
+}
+
+export const COMPACTION_OPEN_MESSAGE = '上下文正在压缩，请等压缩完成后再试'
 
 /** Note a turn Tavern opens only to carry its own write; call before its turn/start. */
 export function markSurfaceEditTurn(session, turn) {
@@ -81,12 +98,37 @@ export function isSurfaceEditTurn(session, turn) {
   return Boolean(session && surfaceEditTurns.get(session)?.has(Number(turn)))
 }
 
+export function isReservingStoryTurns(session) {
+  return reservingTurns.has(session)
+}
+
+// A story fork replays multiple saved replies in one edit turn. New player
+// turns use native numbers as story IDs, so reserve the inherited range with
+// empty boundaries. DSH's persisted log requires consecutive native turns.
+export function reserveStoryTurns(session, lastStoryTurn, agent) {
+  const lastNativeTurn = sessionEvents(session).findLast(event => event.type === 'turn/end')?.data?.turn || 0
+  if (lastNativeTurn >= lastStoryTurn) return
+  reservingTurns.add(session)
+  try {
+    for (let turn = lastNativeTurn + 1; turn <= lastStoryTurn; turn++) {
+      appendSessionEvent(session, 'turn/start', { turn })
+      appendSessionEvent(session, 'turn/end', { turn, reason: { kind: 'completed' } })
+    }
+  } finally {
+    reservingTurns.delete(session)
+  }
+  if (agent?.phase?.kind === 'idle') {
+    agent.phase.lastTurn = Math.max(Number(agent.phase.lastTurn) || 0, lastStoryTurn)
+  }
+}
+
 export function withSurfaceEditTurn(session, agent, write) {
   const current = openTurnStep(sessionEvents(session))
   const opened = current.turn === null || current.step === null
   let turn = current.turn
   let step = current.step
   if (opened) {
+    if (compactionOpen(sessionEvents(session))) throw new Error(COMPACTION_OPEN_MESSAGE)
     turn = sessionEvents(session).reduce((highest, event) =>
       event.type === 'turn/start' ? Math.max(highest, Number(event.data?.turn) || 0) : highest, 0) + 1
     step = 1
@@ -138,7 +180,23 @@ export function appendSessionEvent(session, type, data, intent) {
     }
   }
   data = sessionEventData(session, type, data)
-  return intent === undefined ? session.append(type, data) : session.append(type, data, intent)
+  try {
+    return intent === undefined ? session.append(type, data) : session.append(type, data, intent)
+  } catch (error) {
+    // DSH 0.2.2 起 session.append 只接受 KNOWN_SESSION_EVENT_TYPES 里的 core 类型，
+    // 插件自己的记录要走 session.commitPluginRecord，而且类型必须以 `plugin:` 开头。
+    // 0.2.1 不会抛这个错，所以这里只在新宿主上生效，旧宿主的行为一个字都没变。
+    if (typeof session.commitPluginRecord === 'function' && /only accepts known core event types/.test(String(error?.message))) {
+      return session.commitPluginRecord('plugin:' + type, data)
+    }
+    throw error
+  }
+}
+
+// 插件记录在 0.2.2 上带 `plugin:` 前缀写进去；读的时候两种名字都要认，
+// 否则升级后读不到自己以前写的记录。
+export function matchesEventType(event, type) {
+  return event?.type === type || event?.type === 'plugin:' + type
 }
 
 export function surfaceReplacementRange(op) {

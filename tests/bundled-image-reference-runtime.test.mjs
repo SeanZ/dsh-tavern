@@ -125,7 +125,7 @@ test('规划只收文字及清单，结构化subjects到实际图片编号绑定
   const prompts = [], calls = []
   let output = '<images><image><regex>林月站在窗边。</regex><prompts>【人物】\n林月\n\n【动作】\n站在窗边。</prompts><subjects>[{"characterId":"lin","outfitId":""}]</subjects></image></images>'
   globalThis.fetch = atlasMock(calls)
-  const { runtime } = await prepare(t, { llm: { async *stream(input) { prompts.push(input); yield { type: 'text-delta', text: output } } } })
+  const { runtime } = await prepare(t, { config: { promptSystem: 'workbench' }, llm: { async *stream(input) { prompts.push(input); yield { type: 'text-delta', text: output } } } })
   const result = await runtime.request('plan', { text: '林月站在窗边。', messageId: 'turn-1', count: 1, manual: true })
   assert.equal(result.status, 200, JSON.stringify(result.body))
   assert.equal(result.body.plans.length, 1, JSON.stringify(result.body))
@@ -146,6 +146,22 @@ test('规划只收文字及清单，结构化subjects到实际图片编号绑定
   const invalid = await runtime.request('plan', { text: '林月站在窗边。', messageId: 'turn-2', count: 1, manual: true })
   assert.ok(invalid.status === 400 || invalid.body.error, JSON.stringify(invalid.body))
   assert.equal(calls.length, count)
+})
+
+test('提示词开头的 JSON 主体清单用于参考图，提交给模型的提示词只含画面描述', async t => {
+  const calls = []
+  globalThis.fetch = atlasMock(calls)
+  const output = '<image><regex>她站在窗边。</regex><prompts>{"subjects":[{"characterId":"lin","outfitId":""}]} A woman stands by the window.</prompts></image>'
+  const { runtime } = await prepare(t, { config: { promptSystem: 'workbench' }, llm: {
+    async *stream() { yield { type: 'text-delta', text: output } },
+  } })
+  const result = await runtime.request('plan', { text: '她站在窗边。', messageId: 'turn-embedded-roster', count: 1, manual: true })
+  assert.equal(result.status, 200, JSON.stringify(result.body))
+  const job = await runtime.terminal(result.body.plans[0].jobId)
+  assert.equal(job.generationMode, 'reference')
+  assert.equal(job.references[0].characterId, 'lin')
+  assert.match(job.submittedPrompt, /stands by the window/)
+  assert.doesNotMatch(job.submittedPrompt, /"subjects"|"characterId"/)
 })
 
 test('多人含无图人物与未知人物时保留文字，明确更新快照可按新提示词重新选人', async t => {
@@ -234,4 +250,160 @@ test('自动规划在不支持接图的渠道仍记录自动选择，按文生�
   assert.deepEqual([job.generationMode, job.requestedGenerationMode, job.generationModeReason], ['text', 'auto', 'unsupported-input'])
   assert.match(job.submittedPrompt, /red hair/)
   assert.equal(calls.length, 1)
+})
+
+test('beforeImageGenerate: the host releases each picture with its subjects, or skips it with a reason', async t => {
+  for (const skip of [false, true]) await t.test(skip ? 'skipped' : 'released', async t => {
+    const calls = [], asked = []
+    const output = '<images><image><regex>林月站在窗边。</regex><prompts>【人物】\n林月\n\n【动作】\n站在窗边。</prompts><subjects>[{"characterId":"lin","outfitId":""}]</subjects></image></images>'
+    globalThis.fetch = atlasMock(calls)
+    const tavern = { async beforeImageGenerate(input) { asked.push(input); return skip ? { skip: true, reason: 'not ready yet' } : {} } }
+    const fixture = await imagePluginFixture(t, { tavern, config: { generationMode: 'reference', promptMode: 'structured' }, llm: { async *stream() { yield { type: 'text-delta', text: output } } } })
+    const runtime = await fixture.start()
+    const referenceImage = (await runtime.request('reference-image', { data: IMAGE_PNG.toString('base64'), mediaType: 'image/png', name: '角色.png' })).body.referenceImage
+    assert.equal((await runtime.request('definitions', { definitions: { characters: [{ ...structuredClone(character), referenceImage }], outfits: [], settings: [], props: [] } })).status, 200)
+    const result = await runtime.request('plan', { text: '林月站在窗边。', messageId: 'turn-gate', count: 1, manual: true, sessionId: 'game-1' })
+    assert.equal(result.status, 200, JSON.stringify(result.body))
+    assert.deepEqual(asked.map(input => [input.gameId, input.subjects, input.manual, input.signal instanceof AbortSignal]), [['game-1', [{ characterId: 'lin', outfitId: '' }], true, true]])
+    assert.equal(result.body.plans.length, skip ? 0 : 1, JSON.stringify(result.body))
+    if (skip) assert.ok(JSON.stringify(result.body).includes('not ready yet'), 'the reason reaches the turn warnings')
+  })
+})
+test('beforeImageGenerate: inherit omitted outfits at the picture anchor, preserving explicit empty and selected outfits', async t => {
+  for (const mode of ['inherit', 'empty', 'explicit', 'legacy']) await t.test(mode, async t => {
+    const calls = [], asked = []
+    const subject = { characterId: 'lin', ...(mode === 'empty' ? { outfitId: '' } : mode === 'explicit' ? { outfitId: 'shirt' } : {}) }
+    const output = '<images><image><regex>林月坐在桥边。</regex><prompts>【人物】\n林月\n\n【动作】\n坐在桥边。</prompts>' + (mode === 'legacy' ? '' : '<subjects>' + JSON.stringify([subject]) + '</subjects>') + '</image></images>'
+    globalThis.fetch = atlasMock(calls)
+    const tavern = { async beforeImageGenerate(input) { asked.push(input); return { outfits: { lin: 'kimono' } } } }
+    const fixture = await imagePluginFixture(t, { tavern, config: { generationMode: 'reference', promptMode: 'structured' }, llm: { async *stream() { yield { type: 'text-delta', text: output } } } })
+    const runtime = await fixture.start()
+    const upload = async name => (await runtime.request('reference-image', { data: IMAGE_PNG.toString('base64'), mediaType: 'image/png', name })).body.referenceImage
+    const identity = await upload('设定图.png'), kimono = await upload('和服设定图.png')
+    const dressed = { ...structuredClone(character), referenceImage: identity, outfits: [...character.outfits, { id: 'kimono', name: '红和服', upper: 'red kimono', characterOutfitImage: kimono }] }
+    assert.equal((await runtime.request('definitions', { definitions: { characters: [dressed], outfits: [], settings: [], props: [] } })).status, 200)
+    const result = await runtime.request('plan', { text: '林月坐在桥边。', messageId: 'turn-worn', count: 1, manual: true, sessionId: 'game-1', turn: 2 })
+    assert.equal(result.status, 200, JSON.stringify(result.body))
+    const job = await runtime.terminal(result.body.plans[0].jobId)
+    assert.equal(job.state, 'done', job.error)
+    const inherited = mode === 'inherit' || mode === 'legacy'
+    assert.deepEqual(job.references.map(reference => reference.image.id), [inherited ? kimono.id : identity.id])
+    if (inherited) assert.match(job.submittedPrompt, /林月／红和服/)
+    else assert.doesNotMatch(job.submittedPrompt, /红和服|red kimono/)
+    assert.equal(asked[0].anchor, '林月坐在桥边。')
+    assert.equal(asked[0].turn, 2)
+  })
+})
+test('beforeImageGenerate: a plan that names its people only by roster macro, without <subjects>, still waits for them', async t => {
+  const calls = [], asked = []
+  let runtime, referenceImage
+  // As planners often write it: the person is named only by macro, the <subjects> block is left out.
+  const output = '<images><image><regex>林月站在窗边。</regex><prompts>${"name":"林月","angle":"from front"}$ standing by the window.</prompts></image></images>'
+  globalThis.fetch = atlasMock(calls)
+  const tavern = { async beforeImageGenerate({ subjects }) {
+    asked.push(subjects.map(subject => subject.characterId))
+    // The host prepares the reference of whoever the picture is drawn with before releasing it.
+    if (subjects.some(subject => subject.characterId === 'lin')) {
+      referenceImage = (await runtime.request('reference-image', { data: IMAGE_PNG.toString('base64'), mediaType: 'image/png', name: 'new-reference.png' })).body.referenceImage
+      assert.equal((await runtime.request('definitions', { definitions: { characters: [{ ...structuredClone(character), referenceImage }] } })).status, 200)
+    }
+    return {}
+  } }
+  const fixture = await imagePluginFixture(t, { tavern, definitions: { characters: [character] }, config: { generationMode: 'auto', promptMode: 'structured' }, llm: { async *stream() { yield { type: 'text-delta', text: output } } } })
+  runtime = await fixture.start()
+  const result = await runtime.request('plan', { text: '林月站在窗边。', messageId: 'turn-macro-only', count: 1, manual: true, sessionId: 'game-1' })
+  assert.equal(result.status, 200, JSON.stringify(result.body))
+  assert.deepEqual(asked, [['lin']], 'the host is told the person the picture will be drawn with')
+  const job = await runtime.terminal(result.body.plans[0].jobId)
+  assert.equal(job.state, 'done', job.error)
+  assert.equal(job.references?.[0]?.image.id, referenceImage.id, 'the picture is drawn with the reference the host prepared')
+})
+test('a waiting picture uses the reference added by the host while other pictures can proceed', async t => {
+  let release, entered = false
+  const ready = new Promise(resolve => { release = resolve })
+  const calls = []; globalThis.fetch = atlasMock(calls)
+  const output = '<images><image><regex>林月站在窗边。</regex><prompts>林月站在窗边。</prompts><subjects>[{"characterId":"lin"}]</subjects></image><image><regex>花园里开着白花。</regex><prompts>花园里开着白花。</prompts><subjects>[]</subjects></image></images>'
+  const tavern = { async beforeImageGenerate({ subjects }) { if (subjects.some(item => item.characterId === 'lin')) { entered = true; await ready } } }
+  const fixture = await imagePluginFixture(t, { tavern, definitions: { characters: [character] }, config: { generationMode: 'auto', promptMode: 'structured' }, llm: { async *stream() { yield { type: 'text-delta', text: output } } } })
+  const runtime = await fixture.start()
+  const drawing = runtime.request('plan', { text: '林月站在窗边。花园里开着白花。', messageId: 'independent-gates', count: 2, manual: true, sessionId: 'game-1' })
+  try {
+    for (let i = 0; i < 200 && !entered; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.ok(entered)
+    for (let i = 0; i < 200 && !calls.some(item => item.url.endsWith('/generateImage')); i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.ok(calls.some(item => item.url.endsWith('/generateImage')), 'the garden picture proceeds while the character reference waits')
+    const referenceImage = (await runtime.request('reference-image', { data: IMAGE_PNG.toString('base64'), mediaType: 'image/png', name: 'new-reference.png' })).body.referenceImage
+    const update = await runtime.request('definitions', { definitions: { characters: [{ ...structuredClone(character), referenceImage }] } })
+    assert.equal(update.status, 200)
+    release()
+    const result = await drawing
+    assert.equal(result.status, 200, JSON.stringify(result.body))
+    assert.equal(result.body.plans.length, 2)
+    const person = result.body.plans.find(item => item.subjects?.some(subject => subject.characterId === 'lin'))
+    const job = await runtime.terminal(person.jobId)
+    assert.equal(job.state, 'done', job.error)
+    assert.equal(job.references[0].image.id, referenceImage.id)
+  } finally { release(); await drawing }
+})
+
+test('natural reference submission and redraw bind one concise reference block before the scene', async t => {
+  const calls = []; globalThis.fetch = atlasMock(calls)
+  const { runtime, defs } = await prepare(t, { config: { promptSystem: 'worldbook', promptMode: 'natural' } })
+  defs.characters[0].outfits[0] = { id: 'shirt', name: '白衬衫', upper: 'white collar', lower: 'black trousers', shoes: 'white sneakers', full: 'complete uniform' }
+  assert.equal((await runtime.request('definitions', { definitions: defs })).status, 200)
+  const tag = '${"name":"lin","outfit":"白衬衫","expression":"眉头微蹙","angle":"from side"}$。A close-up from the side.'
+  const start = await runtime.request('jobs', { tag, subjects: [{ characterId: 'lin', outfitId: 'shirt' }] })
+  assert.equal(start.status, 200, JSON.stringify(start.body))
+  const original = await runtime.terminal(start.body.id)
+  assert.equal(original.state, 'done', original.error)
+  const redraw = await runtime.request('redraw', { jobId: original.id, prompt: original.submittedPrompt + '\nThe background is softly blurred.' })
+  assert.equal(redraw.status, 200, JSON.stringify(redraw.body))
+  assert.equal((await runtime.terminal(redraw.body.jobId)).state, 'done')
+  for (const call of calls.filter(call => call.url.endsWith('/generateImage'))) {
+    const { prompt } = JSON.parse(call.init.body)
+    assert.match(prompt, /^【参考图对应与一致性】/)
+    assert.equal((prompt.match(/参考图1 →/g) || []).length, 1)
+    assert.match(prompt, /保留眼角的小痣/)
+    assert.match(prompt, /white collar/)
+    assert.match(prompt, /眉头微蹙/)
+    assert.doesNotMatch(prompt, /characterId|outfitId|身份参照图|red hair|black trousers|white sneakers|complete uniform|镜头从侧面/)
+  }
+})
+
+test('structured reference submission shares identities across prose and character blocks, and replacement clears removed blocks', async t => {
+  const calls = []; globalThis.fetch = atlasMock(calls)
+  const { runtime, defs } = await prepare(t, { config: { promptSystem: 'worldbook', promptMode: 'structured' } })
+  defs.characters.push({ id: 'other', name: '林月', traits: { face: '短棕发' } })
+  defs.characters[0].outfits[0] = { id: 'shirt', name: '白衬衫', upper: '白色衣领', lower: '黑色长裤', shoes: '运动鞋', full: '整套制服' }
+  assert.equal((await runtime.request('definitions', { definitions: defs })).status, 200)
+  const a = 'c1700000000000aaa', b = 'c1700000000000bbb'
+  const tag = [
+    '【镜头】\n林月的面部特写，下半身不入镜。',
+    '${"name":"lin","expression":"眉头微蹙"}$拿着书。',
+    '${"name":"other"}$端着杯子。',
+    a + '递伞。',
+  ].join('\n')
+  const start = await runtime.request('jobs', { tag, subjects: [{ characterId: 'lin', outfitId: 'shirt' }, { characterId: 'other' }],
+    characters: [{ prompt: b + '坐在身后。' + a + '正在递伞。', uc: '不要遮住' + b + '。' }] })
+  assert.equal(start.status, 200, JSON.stringify(start.body))
+  const original = await runtime.terminal(start.body.id)
+  assert.equal(original.state, 'done', original.error)
+  const originalPrompt = original.submittedPrompt
+  assert.match(originalPrompt, /参考图1 → 林月（对象1）/)
+  assert.match(originalPrompt, /林月（对象2）端着杯子/)
+  assert.match(originalPrompt, /短棕发/)
+  assert.match(originalPrompt, /眉头微蹙/)
+  assert.match(originalPrompt, /白色衣领/)
+  assert.doesNotMatch(originalPrompt, /黑色长裤|运动鞋|整套制服|characterId|outfitId/)
+  assert.match(originalPrompt, /未匹配人物1递伞/)
+  assert.match(originalPrompt, /未匹配人物2坐在身后。未匹配人物1正在递伞/)
+  assert.match(originalPrompt, /不要遮住未匹配人物2/)
+  const detail = (await runtime.request('job-detail?id=' + original.id)).body.job
+  assert.deepEqual(detail.promptAssembly.unresolvedCharacterIds, [a, b])
+  const redraw = await runtime.request('redraw', { jobId: original.id, prompt: '【动作】\n林月撑着伞。' })
+  assert.equal(redraw.status, 200, JSON.stringify(redraw.body))
+  const replaced = await runtime.terminal(redraw.body.jobId)
+  assert.equal(replaced.state, 'done', replaced.error)
+  assert.match(replaced.submittedPrompt, /撑着伞/)
+  assert.doesNotMatch(replaced.submittedPrompt, /坐在身后|正在递伞|未匹配人物/)
 })

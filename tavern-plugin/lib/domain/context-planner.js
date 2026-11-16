@@ -7,25 +7,16 @@ import { variableUpdateText } from './variable-update.js'
 
 // Prompt prose source. Keys are stable; interpolation arguments are data.
 export const PROMPT_PROSE = Object.freeze({
-  p001: "Worldbook context for this turn",
-  p002: "User Guide (takes priority):\n",
+  p002: "High priority:\n",
   p003: "Main characters' current state (settled every turn; stay consistent with it):\n",
-  p004: "Name: ",
-  p005: "Description: ",
   p006: "{{user}} is the player.",
-  p007: "Personality: ",
-  p008: "Opening scenario: ",
-  p009: "Style examples:\n",
-  p010: "Card instructions:\n",
   p011: " · chunk ",
-  p012: "",
   p013: "Script reference for this turn",
   p014: "Script reference for staging (unplayed content is not a story fact)",
   p015: "Script reference for choices",
   p016: " · cursor ",
   p017: "The script has ended. Stage only from the finished story text.",
   p018: "The script has ended. Wrap up naturally from the recent story, or offer a choice opening a new scene.",
-  p019: "Card instructions:\n",
   p020: "Material for this turn: chunks ",
   p021: " of ",
   p022: "\n"
@@ -62,7 +53,7 @@ export function createContextPlanner(options = {}) {
     // Rendered worldbook entries have already crossed the runtime projection seam.
     const entries = input.worldBookEntries?.filter(entry => entry.location === 'foreground')
     const projectedWorldBook = entries ? entries.map(entry => entry.text).join('\n\n') : projectText(input.worldBookContext)
-    const worldBookSection = projectedWorldBook === '' ? null : { kind: 'world-book', required: false, text: promptSection(input.stableFirst ? 'constant_worldbook' : 'worldbook_context', projectedWorldBook), ...(entries ? { entries } : {}) }
+    const worldBookSection = projectedWorldBook === '' ? null : { kind: 'world-book', required: false, text: promptSection(input.stableFirst ? 'lorebook_constant' : 'lorebook_activated', projectedWorldBook), ...(entries ? { entries } : {}) }
     const guides = Array.isArray(input.chat.guides) ? input.chat.guides.filter(function (item) { return item !== null && typeof item === 'object' && str(item.text).trim() !== '' }) : []
     const projectedGuides = guides.map(function (item) { return projectText(str(item.text).trim()) }).filter(Boolean)
     const guideSection = input.includeGuides === false || projectedGuides.length === 0 ? null : { kind: 'guide', required: true, text: promptSection('user_guide', PROMPT_PROSE.p002 + projectedGuides.map(function (text, index) { return (index + 1) + '. ' + text }).join('\n')) }
@@ -70,15 +61,15 @@ export function createContextPlanner(options = {}) {
     const postureSection = input.includePosture === false || projectedPosture === '' ? null : { kind: 'posture', required: true, text: promptSection('character_state', PROMPT_PROSE.p003 + projectedPosture) }
     const cardInfoSections = []
     const instructionSections = []
-    if (input.includeName !== false) cardInfoSections.push({ kind: 'card', required: true, text: promptSection('character_card', PROMPT_PROSE.p004 + str(input.card.name)) })
+    if (input.includeName !== false) cardInfoSections.push({ kind: 'card', required: true, text: promptSection('character_card_name', str(input.card.name)) })
     if (input.includeDetails === true) {
-      if (input.includeDescription !== false) cardInfoSections.push({ kind: 'card', required: false, text: promptSection('character_description', PROMPT_PROSE.p005 + projectText([str(input.card.description), PROMPT_PROSE.p006].filter(Boolean).join('\n'))) })
-      if (input.includePersonality !== false && str(input.card.personality) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('character_personality', PROMPT_PROSE.p007 + projectText(input.card.personality)) })
-      if (input.includeScenario !== false && str(input.card.scenario) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('opening_scenario', PROMPT_PROSE.p008 + projectText(input.card.scenario)) })
-      if (input.includeStyleExample !== false && str(input.card.mes_example) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('style_examples', PROMPT_PROSE.p009 + projectText(input.card.mes_example)) })
+      if (input.includeDescription !== false) cardInfoSections.push({ kind: 'card', required: false, text: promptSection('character_description', projectText([str(input.card.description), PROMPT_PROSE.p006].filter(Boolean).join('\n'))) })
+      if (input.includePersonality !== false && str(input.card.personality) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('character_personality', projectText(input.card.personality)) })
+      if (input.includeScenario !== false && str(input.card.scenario) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('opening_scenario', projectText(input.card.scenario)) })
+      if (input.includeStyleExample !== false && str(input.card.mes_example) !== '') cardInfoSections.push({ kind: 'card', required: false, text: promptSection('style_examples', projectText(input.card.mes_example)) })
     }
     if (input.includeInstructions !== false) {
-      if (input.includePostHistory !== false && str(input.card.post_history_instructions) !== '') instructionSections.push({ kind: 'card-instruction', required: true, text: promptSection('post_history', PROMPT_PROSE.p010 + projectText(input.card.post_history_instructions)) })
+      if (input.includePostHistory !== false && str(input.card.post_history_instructions) !== '') instructionSections.push({ kind: 'card-instruction', required: true, text: promptSection('post_history', projectText(input.card.post_history_instructions)) })
       if (input.includeSystemPrompt !== false && str(input.card.system_prompt) !== '') instructionSections.push({ kind: 'card-system-prompt', required: true, text: cardSystemPromptText(projectText(input.card.system_prompt)) })
     }
     if (input.stableFirst === true) {
@@ -157,7 +148,7 @@ export function createContextPlanner(options = {}) {
       const systemPromptText = projectText(input.card.system_prompt)
       if (input.scriptReference !== null && input.scriptReference !== undefined && str(input.scriptReference.text) !== '') {
         const order = Number(input.scriptReference.order)
-        const position = Number.isInteger(order) && order >= 0 ? PROMPT_PROSE.p011 + (order + 1) + PROMPT_PROSE.p012 : ''
+        const position = Number.isInteger(order) && order >= 0 ? PROMPT_PROSE.p011 + (order + 1) : ''
         sections.push({ kind: 'script', required: true, text: promptSection('script_reference', PROMPT_PROSE.p013 + position + '\n' + projectText(input.scriptReference.text)) })
         sections.push({ kind: 'script', required: true, text: prompt('script-story') })
       }
@@ -210,7 +201,7 @@ export function createContextPlanner(options = {}) {
       if (systemPromptText.trim()) stableSections.push({ kind: 'card-system-prompt', required: true, text: cardSystemPromptText(systemPromptText) })
       const postHistoryText = projectText(input.card.post_history_instructions)
       const instructionSections = [
-        ...(postHistoryText ? [{ kind: 'card-post-history', required: true, text: promptSection('post_history', PROMPT_PROSE.p019 + postHistoryText) }] : [])
+        ...(postHistoryText ? [{ kind: 'card-post-history', required: true, text: promptSection('post_history', postHistoryText) }] : [])
       ]
       const result = resultOf([taskSection].concat(stableSections, instructionSections, dynamicSections), warnings)
       result.stableText = stableSections.map(function (section) { return str(section.text) }).filter(Boolean).join('\n\n')

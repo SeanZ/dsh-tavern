@@ -4,14 +4,16 @@ const packUi = createAssetPackUI(React,{VoicePicker:BubbleLibraryPicker,AvatarIm
     live2d:typeof LIVE2D_PREVIEW_KIT==='object'?LIVE2D_PREVIEW_KIT:undefined,
     // the Spine importer's reader and live preview (spine-preview.js).
     spine:typeof forkSpineKit==='function'?forkSpineKit():undefined,
-    // 舞台设置 › 基础设置 「自动生成选项」 reads/writes through the one preference hook.
-    autoChoices:typeof useAutoChoicesPreference==='function'?useAutoChoicesPreference:undefined,
     // 开场画面 previews the stage's compensating background grade (same math as the live stage).
     timeGrade:projection=>{const grade=createPackSceneLayers()(projection).backgroundGrade;return galMatrix.isIdentity(grade)?null:grade;},
     emotions:{moods:BUBBLE_MOODS,max:CUSTOM_MOOD_MAX,colors:customMoodColors,upsert:(list,value)=>emotionUpsert(list,value)}});
 const packListeners = new Set();
 let packRevision = 0;
-function notifyPackChange(event) { packRevision++; for (const fn of packListeners) fn(event); }
+function notifyPackChange(event) {
+    packRevision++; for (const fn of packListeners) fn(event);
+    // a pack's new revision changes who its names and aliases name: open chats' speakers re-resolve (bubbles.js watch).
+    if (event?.packId && event.revision !== undefined) notifyTavernDataChanged(['asset-packs'], 'asset-library');
+}
 function usePackRevision(select) { return React.useSyncExternalStore(fn => { packListeners.add(fn); return () => packListeners.delete(fn); }, select || (() => packRevision)); }
 function packClient() { return packTransport?.available() ? packTransport.service : undefined; }
 // 舞台设置 ↔ 素材库 deep links. The target waits here until the library tab consumes it.
@@ -73,7 +75,7 @@ function PackWorkbench({sessionId,cardPath,cardName,cardStamp,loading,page = 'li
         onUnavailable:fn => transport.onUnavailable(fn)
     }) : {rpc:workbenchRpc(sessionId),engineRpc:engineRpc,download:result=>transport.download(result),tts}, [transport,service,sessionId,tts]);
     const nav = React.useMemo(() => stageNav(sessionId), [sessionId]);
-    // the library's deep links (packNav) plus the sidebar tabs its pages open (the voice page's 「配音后端 ›」).
+    // the library's deep links (packNav) plus the sidebar tabs its pages open (the voice page's 「语音后端 ›」).
     const libraryNav = React.useMemo(() => ({ take: packNav.take, subscribe: packNav.subscribe, openTab: nav.openTab }), [nav]);
     React.useEffect(() => () => binding?.dispose?.(),[binding]);
     // the Tavern 舞台 tab is one card-centric page.
@@ -112,6 +114,14 @@ function TavernStageTab(props) {
     const sessionId=props.scope?.sessionId || '',data=useBubbles(sessionId,true),prompts=React.useMemo(() => stagePrompts(sessionId),[sessionId]);
     return React.createElement(PackWorkbench,{key:sessionId,sessionId,page:'stage',cardPath:data?.cardPath,cardName:data?.cardName,loading:!data,prompts});
 }
+// One provider for the library tab body: client apply offers it at startup (so `dsh-asset-library`
+// never waits for a play session), and the launcher below offers it again when the host starts there.
+let assetPackWorkbenchProvided = false;
+function provideAssetPackWorkbench(ctx) {
+    if (assetPackWorkbenchProvided) return;
+    assetPackWorkbenchProvided = true;
+    ctx.provide('assetPackWorkbench',{render:props=>React.createElement(AssetLibraryTab,props)});
+}
 function installTavernAssetLaunchers(ctx, slots) {
     if (ctx.betterSidebar) { const sidebar = ctx.betterSidebar; stageSidebar = sidebar; ctx.effect(() => () => { if (stageSidebar === sidebar) stageSidebar = undefined; }); }
     ctx.inject(['ttsClient'], child => {
@@ -125,7 +135,7 @@ function installTavernAssetLaunchers(ctx, slots) {
             // also made the 配音 ⚠ blink.
             if (event?.type === 'modelValidationChanged') return;
             // another reading preset (or an edit to it) changes each line's
-            // identity in dsh-tts; drop decoded clips so a replay asks again (re-synthesised there only when replayed).
+            // identity in dsh-tavern-tts; drop decoded clips so a replay asks again (re-synthesised there only when replayed).
             if (event?.type === 'readingsChanged') { voicePlayer.invalidate(); return; }
             notifyPackChange(event);
         });
@@ -138,8 +148,10 @@ function installTavernAssetLaunchers(ctx, slots) {
         transport.start();
         return () => { stop(); transport.dispose(); if (packTransport === transport) packTransport = undefined; notifyPackChange(); };
     });
-    ctx.provide('assetPackWorkbench',{render:props=>React.createElement(AssetLibraryTab,props)});
+    provideAssetPackWorkbench(ctx);
     // the global 读音词典 drawn with the shared panel components; the 配音
-    // page (dsh-tts) places it and supplies its control RPC.
+    // page (dsh-tavern-tts) places it and supplies its control RPC.
     ctx.provide('ttsReadingsEditor',{render:props=>React.createElement(StagePackView,{view:ui=>ui.ReadingsEditor,...props})});
+    // 语音后端 › 语音识别 (speech-recognition-ui.js), drawn with the page's own parts.
+    ctx.inject(['ttsPanelSections'], child => child.effect(() => child.get('ttsPanelSections').register('tavern:speech-recognition', RecognitionSection)));
 }

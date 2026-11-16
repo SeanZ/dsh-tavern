@@ -577,25 +577,26 @@ function structuredIdentityNames(items) {
   }))
 }
 
-function structuredReferenceLabels(items) {
+function structuredReferenceLabels(items, definitions) {
   const identities = items.filter(item => item.kind !== 'outfit')
   const names = structuredIdentityNames(items)
+  for (const person of arr(definitions?.characters)) if (person.promptLabel) names.set(idOf(person), person.promptLabel)
   const labels = items.map(item => {
     if (item.kind === 'character') return names.get(item.characterId)
     let label = cleanText(item.label)
     const owner = identities.find(person => person.characterId === item.characterId)
-    const ownerLabel = owner && identityLabel(owner)
-    if (ownerLabel && label.startsWith(ownerLabel + '／')) label = names.get(owner.characterId) + label.slice(ownerLabel.length)
+    const ownerLabel = owner ? identityLabel(owner) : arr(definitions?.characters).find(person => idOf(person) === item.characterId)?.name
+    if (ownerLabel && names.has(item.characterId) && label.startsWith(ownerLabel + '／')) label = names.get(item.characterId) + label.slice(ownerLabel.length)
     // Shared costumes may belong to several wearers, not to their library owner.
     for (const person of identities) label = label.replaceAll(identityLabel(person) + ' [characterId=' + person.characterId + ']', names.get(person.characterId))
-    return cleanReferenceLabel(label)
+    return cleanReferenceLabel(label.replace(/([^（：、]+) \[characterId=([^\]\r\n]+)\]/g, (match, name, id) => names.get(id) || name))
   })
   return labels.map((label, index) => items[index].kind !== 'character' && items.some((other, at) => at !== index && other.kind === items[index].kind && labels[at] === label)
     ? label + '（对象' + (index + 1) + '）' : label)
 }
 
 /** Render trusted bindings once; IDs stay in the job metadata, not visual prose. */
-export function buildStructuredReferenceText(references) {
+export function buildStructuredReferenceText(references, definitions) {
   const items = checkedReferences(references)
   if (!items.length) return ''
   const lines = []
@@ -603,7 +604,7 @@ export function buildStructuredReferenceText(references) {
   if (items.some(item => item.kind === 'outfit')) lines.push('服装图仅约束服饰设计，不继承模特身份、面部、发型、体型、姿势或背景。')
   if (items.some(item => item.kind === 'character-outfit')) lines.push('角色×服装设定图同时约束人物身份与该套服饰，不继承姿势、表情或背景。')
   lines.push('')
-  const labels = structuredReferenceLabels(items)
+  const labels = structuredReferenceLabels(items, definitions)
   for (const [index, item] of items.entries()) {
     const label = labels[index]
     const purpose = item.kind === 'character' ? '身份参考' : item.kind === 'character-outfit' ? '角色×服装参考' : '服装参考'
@@ -619,7 +620,7 @@ export function referencePlannerGuidance(definitions = {}, { structured = false 
   const lines = ['【参考图模式规划规则】',
     '只为当前这张 image 中实际出现的人物选择参考图，不得把整个图库或仅在正文被提及但不出镜的人物传入。',
     '每个 <image> 内必须输出一次 <subjects>JSON数组</subjects>，例如 <subjects>[{"characterId":"精确角色ID","outfitId":"当刻精确服装ID或空字符串"}]</subjects>。ID 必须从下列清单原样复制，不使用姓名代替 ID，不猜测 ID。无人时输出 []。',
-    '同一角色仅列一次。outfitId 必须对应该角色在这一张画面、这一时刻实际穿的服装；未指定图库服装、裸露、衣物不可见或用纯文字描述衣物时填 ""，不要因此补常穿。未知或未建库人物保留在画面描述中，可在 subjects 中写 {"name":"该人物名称"}，不要编造 characterId；若穿通用服装，可另外填写该通用服装的 outfitId。',
+    '同一角色仅列一次。outfitId 必须对应该角色在这一张画面、这一时刻实际穿的服装；需要沿用舞台当刻服装时省略 outfitId。明确不选图库服装、裸露、衣物不可见或用纯文字描述衣物时填 ""，不要因此补常穿。未知或未建库人物保留在画面描述中，可在 subjects 中写 {"name":"该人物名称"}，不要编造 characterId；若穿通用服装，可另外填写该通用服装的 outfitId。',
     '服装可以只用文字描述，不必从图库挑一套；当前剧情明确的衣着、状态变化优先，脱下、拿在手中或放在一旁的衣服不作为正在穿着的服装。',
     '有图对象以图片及其一致性补充约束固定外观，不再完整堆叠它的固定 traits 或服装标签；缺图对象继续使用完整文字描述。角色图不继承服装、姿势或背景，服装图不继承模特身份；动作和场景依据当前剧情。',
     '取图顺序由插件决定，照常填写 characterId 与 outfitId 即可：服装标有 characterOutfitImage（角色×服装设定图）时只用这一张同时约束身份与服装；否则用角色图加服装图；服装没有图时保留服装文字。',
@@ -658,7 +659,7 @@ export function referencePlannerGuidance(definitions = {}, { structured = false 
 /**
  * Clone, never mutate the library. Supplying resolved subjects also restricts
  * automatic outfit injection to the exact per-image choice ('' means none).
- * Legacy tag/natural callers retain face/upper markers. Structured callers use
+ * Legacy tag callers retain face/upper markers. Natural-language callers use
  * markers:false: identity and reference numbering travel as separate metadata,
  * never as fake visual traits. Re-scoping also upgrades old frozen definitions.
  */
@@ -723,6 +724,21 @@ export function referenceScopedDefinitions(definitions = {}, references = [], { 
         const entry = original.outfits.find(item => !item.owner && idOf(item.item) === reference.outfitId)
         if (entry) result.outfits.push(entry.item)
       }
+    }
+  }
+  if (!markers) {
+    const people = arr(result.characters).filter(enabled)
+    const counts = new Map()
+    for (const person of people) {
+      const name = displayName(person)
+      counts.set(name, (counts.get(name) || 0) + 1)
+    }
+    let next = checked.length + 1
+    for (const person of people) {
+      const name = displayName(person)
+      if (counts.get(name) > 1) {
+        person.promptLabel = name + '（对象' + (characterRefs.get(idOf(person))?.index ?? next++) + '）'
+      } else if (characterRefs.has(idOf(person))) person.promptLabel = name
     }
   }
   return result

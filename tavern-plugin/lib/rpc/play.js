@@ -12,11 +12,11 @@ import { randomUUID } from 'node:crypto'
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createPlayHandlers(deps) {
   const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow, pluginApi, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, cardUpdates,
-    candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationGuides, ctx,
+    candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationBackgroundSettings, conversationGuides, ctx,
     ledgerEditor, manualCharacterDesign, manualLedger, messageDeletion, notifyPluginTimeline, phoneChat,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
     reconcileStory, reconcileWhenIdle, regenBody, requestPerformance, retrySettlement,
-    retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, sessionActivity, sessionOperation,
+    retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, sessionActivity, sessionOperation, sessionSignals,
     sessionStateForSession, sessionStore, sessionView, sessionViews, setPlayerName, stopBackground, str, waitForDiscard,
     templateHistoryFrom, turnOrchestrator, undoRollbackTurn, updateChat, view, withCompactionSession } = deps
   // 发送键只认宿主的运行状态。重新生成要先把存档读出来、挑出要替换的正文、拼好这一轮的
@@ -35,6 +35,24 @@ export function createPlayHandlers(deps) {
     if (before !== 0 && after !== 0) return
     try { ctx.emit('api-session/status', sessionId, after > 0) }
     catch (error) { console.warn('dsh-tavern: 重新生成的运行状态没有送到页面', str(error?.message || error)) }
+  }
+  // A phone switching to a game sends the same sync three or four times in the same
+  // second (page mount, tab focus, pending-task wake-up), and each one used to walk the
+  // same save again — hundreds of milliseconds, once nearly three seconds. Identical
+  // calls in flight share one run; the newer duplicates only wait for its result. A
+  // different kind/requestId is a different question and still runs on its own.
+  const syncRuns = new Map()
+  function runSessionSync(sessionId, args) {
+    const key = JSON.stringify([sessionId, str(args && args.kind), str(args && args.requestId)])
+    const running = syncRuns.get(key)
+    if (running !== undefined) return running
+    const work = (async () => {
+      const sync = await requestPerformance.stage('candidateSync', () => candidateTasks.sync(sessionId, { requestId: args && args.requestId, kind: args && args.kind }))
+      requestPerformance.state({ foregroundRunning: agentRegistry.get(sessionId)?.phase?.kind === 'running', backgroundBusy: sync.activity?.busy, backgroundRole: sync.activity?.role })
+      return { sync }
+    })().finally(() => { if (syncRuns.get(key) === work) syncRuns.delete(key) })
+    syncRuns.set(key, work)
+    return work
   }
   return {
     async appendPlayerInput(args) {
@@ -107,9 +125,7 @@ export function createPlayHandlers(deps) {
       return { state: (await sessionStateForSession(args && args.sessionId))?.contextCompaction || null }
     },
     async syncSession(args) {
-      const sync = await requestPerformance.stage('candidateSync', () => candidateTasks.sync(args && args.sessionId, { requestId: args && args.requestId, kind: args && args.kind }))
-      requestPerformance.state({ foregroundRunning: agentRegistry.get(str(args?.sessionId))?.phase?.kind === 'running', backgroundBusy: sync.activity?.busy, backgroundRole: sync.activity?.role })
-      return { sync }
+      return await runSessionSync(str(args?.sessionId), args)
     },
     async submitTask(args) {
       // A manual request supersedes the automatic one still waiting for this game.
@@ -128,7 +144,9 @@ export function createPlayHandlers(deps) {
       return { playerName: await setPlayerName(args && args.sessionId, args && args.userName) }
     },
     async getChoices(args) {
-      return { candidates: await candidateGenerator.find({ sessionId: args && args.sessionId, messageId: args && args.messageId }) }
+      // 页面手里只有宿主给的消息 id，前台候选项存的是这一局最近一轮的那一份，
+      // 所以页面要多带 latest；同样的消息 id 核对留给后台任务的读取方。
+      return { candidates: await candidateGenerator.find({ sessionId: args && args.sessionId, messageId: args && args.messageId, latest: args && args.latest === true }) }
     },
     async startChoices(args) {
       return await candidateTasks.startLegacy(args)
@@ -262,9 +280,13 @@ export function createPlayHandlers(deps) {
           await waitForDiscard(sessionId)
         } else await requestPerformance.stage('regen.reconcile', () => reconcileStory(sessionId))
         polishPrereview.cancel(sessionId)
-        const view = await regenBody(args && args.chatId, args && args.guidance, sessionId, args?.target, retryFailedTurn)
-        notifyPluginTimeline(sessionId, 'regenerate')
-        void polishPrereview.start(sessionId).catch(() => {})
+        // fresh：长按发送键 1 秒的直接重生成，跳过「正文被改过就带着它改写」的判断，
+        // 这一轮从头重新采样；正文编辑面板与指导面板的重新生成不传这个标记。
+        const view = await regenBody(args && args.chatId, args && args.guidance, sessionId, { fresh: args?.fresh === true, target: args?.target, retryFailedTurn })
+        if (!view?.aborted) {
+          notifyPluginTimeline(sessionId, 'regenerate')
+          void polishPrereview.start(sessionId).catch(() => {})
+        }
         return { view }
       } finally {
         announceRegenerating(sessionId, false)

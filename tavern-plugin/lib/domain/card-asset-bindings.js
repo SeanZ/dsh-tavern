@@ -11,7 +11,7 @@ export function validateCardAssetExtension(value, path = '$.dsh_tavern') {
   check(!Object.hasOwn(value, 'emotions'), path + '.emotions', 'Emotions belong to figures', 'UNKNOWN_FIELD')
   // Other Card Preparation fields are opaque and must survive export unchanged.
   check(!Object.hasOwn(value, 'characters'), path + '.characters', 'Card cast is removed; migrate explicitly', 'UNKNOWN_FIELD')
-  // the per-card 读音词典 is removed; readings are global presets (dsh-tts).
+  // the per-card 读音词典 is removed; readings are global presets (dsh-tavern-tts).
   check(!Object.hasOwn(value, 'readings'), path + '.readings', 'Card readings are removed; migrate explicitly', 'UNKNOWN_FIELD')
   const bindings = value.assetBindings
   shape(bindings, ['boundPackIds'], ['boundPackIds'], path + '.assetBindings')
@@ -25,14 +25,15 @@ export function validateCardAssetExtension(value, path = '$.dsh_tavern') {
   return value
 }
 export function cardAssetExtensionPointer(raw) { return (rawData(raw) === raw ? '' : '/data') + '/extensions/dsh_tavern' }
+// A read of stored card data: the raw was checked when it was written or imported, so it is not walked again here (a
+// long chat's projections read it per figure, per request).
 export function readCardAssetExtension(raw) {
-  assertJson(raw)
   const data = rawData(raw)
   if (data.extensions === undefined) return undefined
   check(object(data.extensions), '$.extensions')
   if (!Object.hasOwn(data.extensions, 'dsh_tavern')) return undefined
   // The stage was checked when it was written or imported; a read keeps fields this version does not know.
-  return cloneJson(data.extensions.dsh_tavern)
+  return structuredClone(data.extensions.dsh_tavern)
 }
 export function cardAssetRawOperations(raw, patch) {
   assertJson(raw); assertJson(patch)

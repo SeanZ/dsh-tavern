@@ -16,10 +16,11 @@ import { browserReactScript } from '../fixtures/browser-react.mjs'
 const executablePath = [process.env.DSH_BROWSER_EXECUTABLE, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'].find(path => path && existsSync(path)) || chromium.executablePath()
 const screenshotPath = join(tmpdir(), 'dsh-tavern-pr421-image-settings.png')
 const clientSource = await readFile(new URL('../../tavern-plugin/packages/dsh-tavern-image-bundled/client.js', import.meta.url), 'utf8')
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jdbsAAAAASUVORK5CYII=', 'base64')
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg==', 'base64')
 const clone = value => JSON.parse(JSON.stringify(value))
 const calls = [], errors = []
 let uploads = 0, libraryRevision = 1, promptRevision = 1, cardEnabled = false
+let playDeleted = false, failGalleryDelete = false
 let cardBook = { version: 3, revision: 'card-1', buckets: ['rules', 'examples'].map(id => ({ id, label: id, entries: [{ id: 'shared-entry', title: id + ' title', content: id + ' original', enabled: true, mode: 'always' }] })) }
 let cardRevision = 1
 let failCardWrites = 0
@@ -44,7 +45,7 @@ const workflowDetail = { file: 'workflow-a.json', outputNode: '25', nodeSchemas:
 const books = format => [{ key: 'main', name: format + '规则', count: 1, entries: [{ index: 0, comment: format + '条目', content: format + ' content', enabled: true, activation: 'always', backends: [] }] }, { key: 'outfits', name: format + '服装规则', count: 0, entries: [] }]
 const worldbooks = Object.fromEntries(['tags', 'natural', 'mixed', 'structured'].map(format => [format, books(format)]))
 const state = {
-  referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
+  referenceSupported: true, configurationWarning: '旧版 ComfyUI 简易模式已停用；原配置和数据已保留。', imageProvider: 'openai', config: { promptSystem: 'workbench', imageEnabled: true, imageBackend: 'openai', comfyMode: 'simple', comfySimple: { checkpoint: 'keep-legacy-checkpoint' }, generationMode: 'text', promptMode: 'tags', promptEffectiveFormat: 'tags', activeImageChannel: 'openai-channel',
     designPromptMode: 'auto', characterDesignRequirements: '', outfitDesignRequirements: '', libraryPromptEditing: true, libraryDetailsEditing: true, promptDefaultEditable: true, promptWorkbench: true, promptWorkbenchDraw: true, promptEntries: [], promptModuleTypes: listTemplateModules(), promptPresetLibrary: [STRUCTURED_PROMPT_TEMPLATE], promptEntryLimit: 200, promptPresetLimit: 200, promptRevision: 'prompt-1', promptDefaultSections: ['人物与表情', '服装', '动作', '环境', '镜头与光线', '风格', '约束'],
     imageChannels: [{ id: 'openai-channel', provider: 'openai', name: 'OpenAI 渠道', baseUrl: 'https://openai.mock.invalid/v1', model: 'keep-exact-model', options: {} }], stylePresets: [{ id: 'preset-fold', name: '折叠测试套', artist: 'artist:fold_test', negative: 'lowres', position: 'prefix', enabled: true }], promptPresets: [{ id: 'legacy-entry', name: '旧提示词条目', positive: 'legacy positive', negative: 'legacy negative', enabled: true,
       structure: { format: 'auto', blocks: [], targets: [], generationRules: '优先写当前画面的主体。' } }] },
@@ -177,23 +178,34 @@ try {
       }
       response = { ok: true, workflow: clone(workflowDetail), fields: comfyWorkflowFields(workflowDetail), revision: 'workflow-1' }
     }
-    else if (path === '/workflow-import') response = body.preview ? { ok: true, name: '预检工作流', nodes: 5,
-      bindings: { positive: [{ node: '1', input: 'text' }] }, outputs: [{ id: '10', label: 'SaveImage' }], outputNode: '10' } : { ok: true, name: '预检工作流' }
+    else if (path === '/workflow-import') {
+      if (body.preview) response = { ok: true, name: body.filename?.replace(/\.json$/i, '') || '预检工作流', nodes: 5,
+        bindings: { positive: [] }, hasImageInput: true, outputs: [{ id: '10', label: 'SaveImage' }], outputNode: '10' }
+      else {
+        const file = 'imported-workflow.json'
+        state.workflows.push({ id: 'imported-workflow', label: body.name, file, enabled: true, current: false })
+        response = { ok: true, name: body.name, file }
+      }
+    }
     else if (path === '/workflow-series') response = { ok: true, jobs: body.weights.map((_, index) => ({ id: 'series-' + index, state: 'pending' })) }
     else if (path === '/workflow-values') response = { ok: true, values: { positive: '', negative: '' } }
     else if (path === '/loras-available') response = { ok: true, loras: [] }
     else if (path === '/history') {
       const mode = url.searchParams.get('gallery')
-      response = { ok: true, jobs: [playGalleryJob].filter(job => mode === 'trash' ? job.trashedAt : !job.trashedAt && (mode !== 'favorite' || job.favorite)) }
+      response = { ok: true, jobs: (playDeleted ? [] : [playGalleryJob]).filter(job => mode === 'trash' ? job.trashedAt : !job.trashedAt && (mode !== 'favorite' || job.favorite)) }
     }
     else if (path === '/gallery-item') {
       if (body.operation === 'favorite' || body.operation === 'unfavorite') playGalleryJob.favorite = body.operation === 'favorite'
       else playGalleryJob.trashedAt = body.operation === 'trash' ? 1 : null
       response = { ok: true, job: clone(playGalleryJob) }
     }
+    else if (path === '/gallery-delete') {
+      if (failGalleryDelete) response = { ok: true, deleted: [], failed: [{ id: playGalleryJob.id, error: '测试文件被占用' }] }
+      else { playDeleted = true; response = { ok: true, deleted: [playGalleryJob.id], failed: [] } }
+    }
     else if (path === '/jobs') response = { ok: true, job: url.searchParams.get('id') === 'tryout-image' ? { id: 'tryout-image', state: 'done' } : url.searchParams.get('id') === 'play-only' ? { ...clone(playGalleryJob), positive: '完整测试正面提示词：茶室门口的成年旅人', negative: '' } : {} }
     else if (path === '/tasks') response = { tasks: [] }
-    else if (path === '/cards') response = { ok: true, cards: [
+    else if (path === '/cards') response = { ok: true, games: [{ id: 'game-a', title: '测试游玩', cardName: '林月故事' }], cards: [
       { path: 'cards/story.json', name: '林月故事' }, { path: 'cards/other.json', name: '另一张卡' },
     ] }
     else if (path === '/import-characters') {
@@ -201,6 +213,7 @@ try {
       response = body.dryRun ? { ok: true, cardName: '另一张卡', candidates: [{ action: 'add', person }] }
         : { ok: true, added: [person.name], state: publicState() }
     }
+    else if (path === '/design') response = { ok: true, people: [{ name: '林月', outfits: [{ name: '新雨衣', upper: '蓝色雨衣' }, { name: '新雨衣', upper: '蓝色雨衣' }] }] }
     else if (path === '/providers' || path === '/llm-models') response = { ok: true, providers: [], models: [] }
     else if (path === '/report') response = { ok: true }
     else { errors.push('unexpected HTTP ' + method + ' ' + path); response = { ok: false, error: 'unexpected request' } }
@@ -464,7 +477,10 @@ try {
 
   await page.getByRole('button', { name: '返回概览', exact: true }).click()
   await characterTile.locator('img').waitFor()
-  assert.ok(await characterTile.locator('img').evaluate(img => img.decode().then(() => img.naturalWidth)))
+  // The tile is loading=lazy: decode() on a lazy image whose load has not started rejects with EncodingError, so wait for it.
+  assert.ok(await characterTile.locator('img').evaluate(img => (img.complete ? Promise.resolve() : new Promise((resolve, reject) => {
+    img.addEventListener('load', resolve, { once: true }); img.addEventListener('error', reject, { once: true })
+  })).then(() => img.decode()).then(() => img.naturalWidth)))
   const bounds = await characterTile.boundingBox()
   assert.ok(bounds && bounds.width <= 92 && Math.abs(bounds.width - bounds.height) <= 1, 'character thumbnail stays compact and square')
   await page.getByLabel('人物概览').screenshot({ path: join(tmpdir(), 'dsh-image-character-grid.png') })
@@ -592,11 +608,18 @@ try {
   assert.equal(await editImages.getByRole('button', { name: 'image1', exact: true }).count(), 1)
   await editImages.getByRole('button', { name: '返回画廊', exact: true }).click()
   await page.getByRole('button', { name: '📥 导入工作流', exact: true }).click()
-  await page.getByPlaceholder('粘贴 ComfyUI 的 API 格式 JSON…').fill(JSON.stringify({ '1': { class_type: 'CLIPTextEncode', inputs: { text: 'test' } } }))
-  await page.getByRole('button', { name: '解析预览', exact: true }).click()
-  await page.getByLabel('工作流导入预检', { exact: true }).waitFor()
+  const importGraph = { '1': { class_type: 'LoadImage', inputs: { image: 'test.png' } } }
+  await page.getByLabel('选 JSON 文件').setInputFiles({ name: '放大用.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(importGraph)) })
+  const preview = page.getByLabel('工作流导入预检', { exact: true })
+  await preview.waitFor()
+  const importName = preview.getByLabel('工作流名称', { exact: true })
+  assert.equal(await importName.inputValue(), '放大用')
   assert.equal(calls.some(call => call.path === '/workflow-import' && call.body.preview !== true), false)
-  await page.getByRole('button', { name: '✖ 收起导入', exact: true }).click()
+  await importName.fill('局部放大')
+  await preview.getByRole('button', { name: '确认导入', exact: true }).click()
+  await page.getByText('局部放大', { exact: true }).waitFor()
+  await page.getByText('Reference workflow', { exact: true }).waitFor()
+  assert.deepEqual(calls.filter(call => call.path === '/workflow-import').at(-1).body, { workflow: importGraph, name: '局部放大', outputNode: '10' })
   await page.getByRole('button', { name: '启用选定的完整工作流' }).click()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('[aria-label="生图提供商"]')?.value === 'comfyui')
@@ -928,6 +951,13 @@ try {
   assert.equal(await page.getByRole('button', { name: '生图工作台', exact: true }).count(), 0)
   await page.getByLabel('世界书格式', { exact: true }).selectOption('structured')
   await page.getByText('structured条目', { exact: true }).waitFor()
+  await page.waitForFunction(() => !document.querySelector('[aria-label="世界书格式"]')?.disabled)
+  assert.equal(state.config.worldbookEditorFormat, 'structured')
+  assert.equal(state.config.promptMode, 'tags', 'editing a worldbook format does not alter generation format')
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('button', { name: '世界书', exact: true }).click()
+  assert.equal(await page.getByLabel('世界书格式', { exact: true }).inputValue(), 'structured')
+  await page.getByText('structured条目', { exact: true }).waitFor()
   const legacyEditor = page.getByRole('region', { name: '生图世界书', exact: true })
   await legacyEditor.getByText('structured条目', { exact: true }).click()
   await legacyEditor.getByLabel('世界书条目内容', { exact: true }).fill('用户自己的生图规则')
@@ -1005,13 +1035,33 @@ try {
   await page.getByLabel('生图系统模式', { exact: true }).selectOption('workbench')
   await page.getByRole('button', { name: '生图工作台', exact: true }).click()
   await page.getByRole('button', { name: '人物库', exact: true }).click()
-  await openDisclosure('从世界书生成角色')
+  if (await page.getByRole('button', { name: 'Agent 角色工具', exact: true }).getAttribute('aria-expanded') !== 'true') await page.getByRole('button', { name: 'Agent 角色工具', exact: true }).click()
+  await page.getByRole('button', { name: '世界书导入', exact: true }).click()
   await page.getByLabel('选择要导入的卡').selectOption('cards/other.json')
   await page.getByRole('button', { name: '读取世界书并生成', exact: true }).click()
   await page.getByRole('button', { name: '确认导入 1 位', exact: true }).click()
   await page.getByLabel('导入预览', { exact: true }).waitFor({ state: 'hidden' })
   assert.deepEqual(calls.filter(call => call.path === '/import-characters').map(call => [call.body.card, call.body.dryRun || call.body.apply[0].name]),
     [['cards/other.json', true], ['cards/other.json', '车站管理员']])
+  if (await page.getByRole('button', { name: '返回概览', exact: true }).count()) await page.getByRole('button', { name: '返回概览', exact: true }).click()
+  await page.getByLabel('按卡筛选人物').selectOption('all')
+  await page.getByRole('button', { name: '查看角色 林月', exact: true }).click()
+  await page.getByRole('button', { name: 'Agent 角色工具', exact: true }).click()
+  await page.getByRole('button', { name: '生成新服装', exact: true }).click()
+  await page.getByLabel('卡片世界书', { exact: true }).check()
+  await page.getByLabel('最近正文', { exact: true }).check()
+  await page.getByLabel('最近轮数（1–20）', { exact: true }).fill('2')
+  await page.getByRole('region', { name: 'Agent 角色工具', exact: true }).screenshot({ path: join(tmpdir(), 'dsh-image-agent-design.png') })
+  await page.getByRole('button', { name: '生成并加入服装库', exact: true }).click()
+  await page.getByText('已加入 1 套新服装', { exact: true }).waitFor()
+  const design = calls.filter(call => call.path === '/design').at(-1).body
+  assert.equal(design.sessionId, 'game-a')
+  assert.equal(design.designType, 'outfit')
+  assert.equal(design.sources.worldbookCard, 'cards/other.json')
+  assert.equal(design.sources.recentTurns, 2)
+  assert.ok(state.definitions.characters.find(person => person.id === 'person-a').outfits.some(outfit => outfit.name === '新雨衣'))
+  assert.equal(state.definitions.characters.find(person => person.id === 'person-a').outfits.filter(outfit => outfit.name === '新雨衣').length, 1)
+  assert.ok(state.definitions.characters.find(person => person.id === 'person-a').outfits.some(outfit => outfit.id === 'outfit-a'))
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await Promise.all([page.waitForResponse(response => response.url().endsWith('/dsh-tavern-gen/api/tools-enabled') && response.request().method() === 'POST'), page.getByLabel('启用卡片生图', { exact: true }).click()])
   await page.waitForFunction(() => !document.querySelector('[aria-label="启用卡片生图"]').disabled)
@@ -1049,6 +1099,41 @@ try {
   await viewer.waitFor()
   await page.keyboard.press('Escape')
   await viewer.waitFor({ state: 'hidden' })
+  // Permanent deletion works even when the host disables native confirmation dialogs.
+  await page.evaluate(() => { window.confirm = () => false })
+  await page.getByLabel('回收 剧情配图', { exact: true }).click()
+  await page.getByRole('button', { name: '回收站', exact: true }).click()
+  await page.getByLabel('彻底删除 剧情配图', { exact: true }).click()
+  const galleryDeletion = page.getByRole('group', { name: '确认彻底删除图片', exact: true })
+  await galleryDeletion.getByRole('button', { name: '取消', exact: true }).click()
+  assert.equal(calls.filter(call => call.path === '/gallery-delete').length, 0)
+  await page.getByLabel('恢复 剧情配图', { exact: true }).waitFor()
+  failGalleryDelete = true
+  await page.getByLabel('彻底删除 剧情配图', { exact: true }).click()
+  await galleryDeletion.getByRole('button', { name: '确认彻底删除', exact: true }).click()
+  await page.getByText('已彻底删除 0 张图，1 张删除失败：测试文件被占用', { exact: true }).waitFor()
+  await page.getByLabel('恢复 剧情配图', { exact: true }).waitFor()
+  failGalleryDelete = false
+  await page.getByRole('button', { name: '☑ 批量选择', exact: true }).click()
+  await page.getByRole('button', { name: '全选', exact: true }).click()
+  await page.getByRole('button', { name: '彻底删除（1）', exact: true }).click()
+  await galleryDeletion.getByRole('button', { name: '确认彻底删除', exact: true }).click()
+  await page.getByText('回收站是空的', { exact: true }).waitFor()
+  assert.deepEqual(calls.filter(call => call.path === '/gallery-delete').at(-1).body, { ids: ['play-only'], all: false })
+  // Refill only the stubbed gallery to exercise single delete and clearing all.
+  for (const clearAll of [false, true]) {
+    playDeleted = false
+    await page.getByRole('button', { name: '🔄 刷新', exact: true }).click()
+    await page.getByRole('img', { name: '剧情配图', exact: true }).waitFor()
+    if (await page.getByRole('button', { name: '✖ 退出批量', exact: true }).count()) await page.getByRole('button', { name: '✖ 退出批量', exact: true }).click()
+    if (clearAll) await page.getByRole('button', { name: '清空回收站', exact: true }).click()
+    else await page.getByLabel('彻底删除 剧情配图', { exact: true }).click()
+    await galleryDeletion.getByRole('button', { name: '确认彻底删除', exact: true }).click()
+    await page.getByText('回收站是空的', { exact: true }).waitFor()
+    assert.equal(calls.filter(call => call.path === '/gallery-delete').at(-1).body.all, clearAll)
+  }
+  await page.getByRole('button', { name: '🔄 刷新', exact: true }).click()
+  await page.getByText('回收站是空的', { exact: true }).waitFor()
   await page.getByRole('button', { name: '卡片画廊', exact: true }).click()
   await page.getByRole('img', { name: '卡片专用图片', exact: true }).waitFor()
   assert.equal(await page.getByRole('img', { name: '剧情配图', exact: true }).count(), 0)

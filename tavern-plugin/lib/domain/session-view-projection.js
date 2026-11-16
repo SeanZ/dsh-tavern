@@ -32,7 +32,7 @@ export const sessionViewMessageFields = Object.freeze([
   'sourceText', 'projectionText', 'text', 'displayText', 'displayMode', 'projectionVersion', 'projectionWarnings',
   // Sidebar origin uses frame receipts, not the external DOM/console capture.
   'displayRuntime.frames',
-  'stagePageVersion', 'openingChoiceId', 'openingSelectionRevision', 'swipeId', 'swipes', 'variables', 'tavernPluginData', 'mvu',
+  'stagePageVersion', 'openingChoiceId', 'openingSelectionRevision', 'swipeId', 'swipes', 'variables', 'tavernPluginData', 'mvu', 'narrativeDamper', 'damperState',
   'storyResults', 'storyResultId', 'variablesStale', 'incomplete', 'incompleteReason',
   'source', 'native', 'nativeAnchor', 'placeholder', 'bodyEdit', 'bodyRegenerationProcessed', 'bodyHostRegexApplied', 'bodyPluginProjection', 'importSource', 'templateHistoryEdit', 'templateInputSource'
 ])
@@ -51,8 +51,16 @@ export function createSessionViewProjection({
 }) {
   const inputFieldsProjection = createInputFieldsProjection()
   const incrementalReplyView = createIncrementalReplyView({ readChanges })
+  const mvuVisibilityByCardPath = new Map()
+  function rememberCardMvuVisibility(cardPath, visibility) {
+    const key = str(cardPath)
+    if (!key) return
+    if (visibility && typeof visibility === 'object' && Object.keys(visibility).length) mvuVisibilityByCardPath.set(key, visibility)
+    else mvuVisibilityByCardPath.delete(key)
+  }
   async function replyExtensions(chat, settings) {
     const extensions = await requestPerformance.stage('cardExtensions', () => readCardExtensions(chat.cardPath, chat, settings)) || {regexScripts:[],helperScripts:[]}
+    rememberCardMvuVisibility(chat.cardPath, extensions.mvuVisibility)
     const pinned = await requestPerformance.stage('remoteAssets', () => tavernRemoteAssets.pinExtensions(extensions))
     return {...extensions, helperScripts:pinned.helperScripts, regexScripts:pinned.regexScripts,
       remoteAssetDiagnostics:pinned.diagnostics, remoteAssetPins:pinned.pins}
@@ -94,6 +102,25 @@ export function createSessionViewProjection({
       return projection.body ? projection : {...projection, body:replyBody(projection,chat)}
     })
     return display
+  }
+  function streamingDamperOutcomeOf(chat) {
+    if (chat?.regenInProgress !== true) return null
+    const outcome = chat.regenRecovery?.candidateFrame?.source?.narrativeDamperOutcome ?? chat.regenRecovery?.damperOutcome
+    return outcome && typeof outcome === 'object' ? structuredClone(outcome) : null
+  }
+  function streamingRegenerationFields(chat) {
+    const regen = chat?.regenInProgress === true
+    const uid = regen && typeof chat.regenRecovery?.targetMessageUid === 'string' && chat.regenRecovery.targetMessageUid !== ''
+      ? chat.regenRecovery.targetMessageUid : null
+    const storyTurn = regen && chat.regenRecovery?.unansweredTail === true
+      && Number.isSafeInteger(Number(chat.regenRecovery?.storyTurn)) && Number(chat.regenRecovery.storyTurn) > 0
+      ? Number(chat.regenRecovery.storyTurn) : null
+    return {
+      storageRevision: Number(chat?._storageRevision ?? chat?.windowRevision) || 0,
+      streamingMessageUid: uid,
+      streamingStoryTurn: storyTurn,
+      streamingDamperOutcome: regen ? streamingDamperOutcomeOf(chat) : null
+    }
   }
   async function view(chat, card, persistedProjection = false, options = {}) {
     const resourceRevision = options.resourceRevision ?? chat._storageRevision
@@ -220,13 +247,7 @@ export function createSessionViewProjection({
       latestAssistantTurn: latestStoryTurn,
       // While a body is being replaced, stream text belongs to the story row
       // named by the save, never to the temporary native turn.
-      streamingMessageUid: chat.regenInProgress === true && typeof chat.regenRecovery?.targetMessageUid === 'string'
-        && chat.regenRecovery.targetMessageUid !== '' ? chat.regenRecovery.targetMessageUid : null,
-      // An unanswered failed tail has no old story row (and therefore no UID).
-      // Its reserved story turn lets the transcript mount a view-only streaming row.
-      streamingStoryTurn: chat.regenInProgress === true && chat.regenRecovery?.unansweredTail === true
-        && Number.isSafeInteger(Number(chat.regenRecovery?.storyTurn)) && Number(chat.regenRecovery.storyTurn) > 0
-        ? Number(chat.regenRecovery.storyTurn) : null,
+      ...streamingRegenerationFields(chat),
       inputSources,
       inputTemplateDisplays,
       userInputEdits: userInputEditsOf(chat),
@@ -241,13 +262,14 @@ export function createSessionViewProjection({
       tavernStatusViews: replyDisplay.statusViews || [],
       cardStage,
       stage: {dialogue: stageMode.dialogue === true, stage: stageMode.stage === true},
+      mvuVisibility: cardExtensions.mvuVisibility || null,
       mvuReceipts: mvuReceiptsOf(chat),
       staleVariables: staleVariablesOf(chat),
       // Replies whose text is a 精修 (manual or automatic), by turn, for the small mark under them;
       // automatic ones (body.polish, they keep polishedFrom) are told apart in its title.
       polishedTurns: (Array.isArray(chat.messages) ? chat.messages : []).filter(message => message?.role === 'assistant' && (message.polished || message.polishedFrom)).map(message => Number(message.turn) || 0),
       autoPolishedTurns: (Array.isArray(chat.messages) ? chat.messages : []).filter(message => message?.role === 'assistant' && message.polishedFrom).map(message => Number(message.turn) || 0),
-      tavernHelper: helperContext ? { ...helperContext, frameStorageScope: { cardPath: chat.cardPath, sessionId: chat.sessionId }, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost, worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: applyRegexOverrides(activePresetSnapshot?.regexScripts || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), character: cardExtensions.characterRegexScripts || [] } } : null,
+      tavernHelper: helperContext ? { ...helperContext, mvuVisibility: cardExtensions.mvuVisibility || null, frameStorageScope: { cardPath: chat.cardPath, sessionId: chat.sessionId }, playerName: str(chat.macroState?.userName).trim() || '你', characterName: str(card?.name || chat.cardName), character: {name:str(card?.name || chat.cardName), path:str(chat.cardPath)}, openingHost, worldbook: helperWorldbook, globalVariables: await readPromptTemplateGlobalVariables(), characterVariables: cardExtensions.variables || {}, compatibilityCapabilities: TAVERN_COMPATIBILITY_CAPABILITIES, extensionSettings, regexScripts: { global: cardExtensions.globalRegexScripts || [], preset: applyRegexOverrides(activePresetSnapshot?.regexScripts || [], chat.regexOverrides && chat.regexOverrides.preset, 'preset'), character: cardExtensions.characterRegexScripts || [] } } : null,
       tavernMvuRuntime: chat.mvu && chat.mvu.enabled === true ? {
         owner: chat.mvu.owner === 'official' ? 'official' : 'legacy',
         commit: OFFICIAL_MVU_VERSION.commit,
@@ -357,7 +379,8 @@ export function createSessionViewProjection({
   const sessionStateView = createSessionStateView({
     sharedReceipts: true, sharedMappings: true,
     activity: chat => activityOf(chat),
-    evidence: sessionId => sessionDebugEvidence(sessionId, true)
+    evidence: sessionId => sessionDebugEvidence(sessionId, true),
+    visibility: chat => mvuVisibilityByCardPath.get(str(chat?.cardPath)) || chat?.mvuVisibility || chat?.mvu?.visibility || null
   })
   function mvuReceiptsOf(chat, changes) { return sessionStateView.receipts(chat, changes) }
   function rollbackViewFields(chat, evidence, changes) { return sessionStateView.rollback(chat, evidence, changes) }
@@ -449,7 +472,7 @@ export function createSessionViewProjection({
   async function volatileSessionViewFields(chat, activity, changes) {
     const fields = sessionStateView.volatile(chat, activity, changes)
     const plan = transcriptPlanFields(chat, sessionDebugEvidence(chat.sessionId), fields.replacingDshTurns, fields.keptInputTurns)
-    return { ...fields, statusBarPlacement: (await readTavernSettings()).defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar', forkTurnsByMessageId: forkTurnsForChat(chat, plan), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat), cardSave: cardSaveViewOf(chat), ...plan }
+    return { ...fields, ...streamingRegenerationFields(chat), statusBarPlacement: (await readTavernSettings()).defaultPlaySettings?.statusBarPlacement === 'body' ? 'body' : 'sidebar', forkTurnsByMessageId: forkTurnsForChat(chat, plan), userInputEdits: userInputEditsOf(chat), editableUserInputTurns: editableUserInputTurnsForChat(chat), latestCommittedUserTurn: latestCommittedUserTurnForChat(chat), failedUserInputTurns: failedUserInputTurnsForChat(chat), cardSave: cardSaveViewOf(chat), ...plan }
   }
 
   // The card the workbench wrote in a native turn, as a plain read-only fact.
@@ -550,7 +573,7 @@ export function createSessionViewProjection({
   async function projectFullSessionView(chat, { windowHelperMessages = false, inputChanges, deferResources, displayOnly = false } = {}) {
     const mode = chat.mode || 'story', isCard = mode === 'card', cardPath = str(chat.cardPath)
     let card = null, cardReadError = null
-    try { card = isCard && cardPath === '' ? null : await requestPerformance.stage('readCard', () => readChatCard(chat)) }
+    try { card = await requestPerformance.stage('readCard', () => readChatCard(chat)) }
     catch (error) {
       if (!isCard) throw error
       cardReadError = '人物卡暂时无法读取，请在工作台校验并修复：' + chat.cardPath

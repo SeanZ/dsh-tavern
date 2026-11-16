@@ -79,6 +79,8 @@ function ImageViewer(props) {
         try { if (!node.matches(":popover-open")) node.showPopover(); } catch (_) {}
         return () => { try { if (node.matches(":popover-open")) node.hidePopover(); } catch (_) {} };
     }, []);
+    // The viewer covers the whole window: in full screen on the Windows Desktop, closed when full screen is left.
+    useWindowFullscreen(true, { onLost: close, topLayer: () => root.current });
     React.useEffect(function () {
         const previous = typeof document === "undefined" ? null : document.activeElement;
         if (root.current && root.current.focus) root.current.focus({ preventScroll: true });
@@ -235,10 +237,10 @@ function openImageViewer(options) {
     render();
     return { close, update(next) { if (!open) return; current = Object.assign({}, current, next); render(); } };
 }
-// Scene illustrations (the chat's upstream openSceneImagePreview call sites, same arguments): a gallery {urls, index} steps
+// Scene illustrations: a gallery {urls, index} steps
 // with ‹ › and ←→ (no wrap); 改提示词重画 (onEditPrompt) closes the view and opens the prompt editor. Focus returns to the
 // opener when it closes. `label` (upstream 3.0: an avatar, 「X的头像」) names the picture instead of 场景插画.
-function openSceneImage(url, opener, version, onEditPrompt, gallery, label) {
+function openSceneImage(url, opener, onEditPrompt, gallery, label) {
     const urls = gallery && gallery.urls && gallery.urls.length > 1 ? gallery.urls : [url];
     let at = urls.length > 1 ? Math.max(0, Math.min(urls.length - 1, Number(gallery.index) || 0)) : 0, viewer = null;
     const step = delta => { if (urls[at + delta]) { at += delta; viewer.update(view()); } };
@@ -248,7 +250,7 @@ function openSceneImage(url, opener, version, onEditPrompt, gallery, label) {
         actions: [
             urls.length > 1 && { key: "prev", label: "上一张", icon: viewerGlyph("prev"), disabled: at === 0, onClick: () => step(-1) },
             urls.length > 1 && { key: "next", label: "下一张", icon: viewerGlyph("next"), disabled: at === urls.length - 1, onClick: () => step(1) },
-            onEditPrompt && version && version.planPrompt && { key: "edit", label: "改提示词重画", icon: viewerGlyph("edit"), onClick: () => { viewer.close(); onEditPrompt(); } }]
+            onEditPrompt && { key: "edit", label: "改提示词重画", icon: viewerGlyph("edit"), onClick: () => { viewer.close(); onEditPrompt(); } }]
     });
     viewer = openImageViewer(Object.assign(view(), { onClose: () => { if (opener && opener.isConnected && opener.focus) opener.focus(); } }));
     return viewer;

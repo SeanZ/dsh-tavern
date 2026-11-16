@@ -28,6 +28,17 @@ const HTML_ELEMENTS = new Set(('html head body title base link meta style script
   'area audio img map track video embed iframe object picture source canvas svg math portal ' +
   'del ins caption col colgroup table tbody td tfoot th thead tr button datalist fieldset form input label legend meter optgroup option output progress select textarea ' +
   'details dialog summary acronym applet big center dir font frame frameset marquee noframes param strike tt xmp').split(' '))
+const HIDDEN_PROTOCOL_TAGS = new Set([
+  'think', 'thinking', 'analysis', 'reasoning',
+  'updatevariable', 'updatevariables', 'update_variable', 'update_variables', 'update-variable', 'update-variables',
+  'initvar',
+  'variable-update', 'variables-update', 'variable_update', 'variables_update', 'variables', 'variable',
+  'jsonpatch', 'json_patch', 'json-patch',
+  'mvu', 'mvu_update', 'mvu-update',
+  'story_choices',
+  'ta_hub', 'tw_hub'
+])
+
 function isNarrativeTag(tag, token) {
   return tag && !HTML_ELEMENTS.has(tag) && !/[-:]/.test(tag) && /^<\/?[a-z][\w]*\s*\/?\s*>$/i.test(token)
 }
@@ -55,7 +66,7 @@ function splitHtmlBoundaries(source, editing = false) {
     // complete block in editable/source history, but omit it from display.
     // Author HTML/script interiors and Markdown code examples stay opaque.
     // hidden reasoning/status protocols must not become stage prose.
-    if (!editing && start < 0 && ['think', 'thinking', 'analysis', 'reasoning', 'updatevariable', 'initvar', 'variable-update'].includes(tag)) {
+    if (!editing && start < 0 && HIDDEN_PROTOCOL_TAGS.has(tag)) {
       append('text', source.slice(cursor, token.index))
       if (!closing && !/\/\s*>$/.test(token[0])) {
         const boundary = new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi')
@@ -65,7 +76,10 @@ function splitHtmlBoundaries(source, editing = false) {
           if (/^<\//.test(next[0])) depth--
           else if (!/\/\s*>$/.test(next[0])) depth++
         }
-        tokens.lastIndex = depth ? source.length : boundary.lastIndex
+        // An unterminated block hides only its own tag. Swallowing the rest of
+        // the reply hid a whole round: a stripping regex ate `</thinking>`, the
+        // story text stayed in the reply, and the fold took it for protocol data.
+        tokens.lastIndex = depth ? tokens.lastIndex : boundary.lastIndex
       }
       append('marker', source.slice(token.index, tokens.lastIndex))
       cursor = tokens.lastIndex

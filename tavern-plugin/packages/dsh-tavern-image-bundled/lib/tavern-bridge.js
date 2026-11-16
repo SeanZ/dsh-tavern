@@ -13,6 +13,7 @@
  *                                以前那套注入其实一直是空的）
  *     tavern.onTurnSettled     每轮结算完成或失败后通知；当前 API 没有正文生成中的提前事件
  *     tavern.getTurn           手动按钮配图时，用来取这一轮的 textVersion 与正文
+ *     tavern.beforeImagePlan   （可选）规划这一轮之前，由宿主放行
  *     tavern.attach / update   图片按 anchor 挂进正文；与 textVersion 绑定，
  *                              回退或切版本时 Tavern 自己隐藏，切回来又出现
  *     attachments.saveImage    图片交给 DSH 附件服务，不再自建取图路由
@@ -257,8 +258,18 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
       const api2 = Number(tavern.apiVersion) >= 2
       const historyEnabled = api2 && config.characterAutoUpdate !== false
       const saveHistory = historyEnabled && !task.instruction
-      const shouldGenerate = config.imageEnabled !== false && (task.manual || config.plannerEnabled !== false)
+      // 自动配图只在能出图时规划；手动请求照常规划，出图时报出缺什么。
+      const ready = task.manual || engine.imageReady?.() !== false
+      const shouldGenerate = config.imageEnabled !== false && (task.manual || config.plannerEnabled !== false && ready)
       const planAndSave = async () => {
+        // 可选的宿主口子：宿主这一轮还要先准备好东西（例如刚出场人物的人物库记录）时，规划前等它放行；没有这个口子就照旧。
+        // 等完重读这一轮：等待期间宿主可能改了卡。
+        if (shouldGenerate && typeof tavern.beforeImagePlan === 'function') {
+          await tavern.beforeImagePlan({ gameId, turn, manual: task.manual, signal: task.controller.signal })
+          const current = await tavern.getTurn?.({ gameId, turn })
+          if (current?.card) onTurn?.({ gameId, turn, card: current.card })
+          await assertCurrent(task)
+        }
         let historySnapshot = null
         if (api2 && typeof tavern.readTurnData === 'function') {
           try {
@@ -271,7 +282,7 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
           messageId: (messageId || ('turn-' + gameId + '-' + turn)) + '|' + textVersion,
           turn, textVersion, sessionId: gameId, manual: task.manual, force: task.manual, count: task.count,
           smartSelection: !task.manual && config.smartImageSelection !== false,
-          imageGeneration: shouldGenerate, characterUpdates: historyEnabled && !task.instruction, historySnapshot,
+          imageGeneration: shouldGenerate, automaticTurn: !task.manual, characterUpdates: historyEnabled && !task.instruction, historySnapshot,
           reusePlan: shouldGenerate && !task.manual && config.smartImageSelection === false,
           instruction: task.instruction,
           signal: task.controller.signal, onPlan: beginImage,
@@ -307,7 +318,7 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
         }
       }
       const successfulEmpty = result.total === 0 && !result.error && (result.skipped || !shouldGenerate)
-      if (!task.manual && (successfulEmpty || (result.total > 0 && result.attached === result.total)) && !result.error) {
+      if (!task.manual && (ready || config.imageEnabled === false || config.plannerEnabled === false) && (successfulEmpty || (result.total > 0 && result.attached === result.total)) && !result.error) {
         completed.set(versionKey(task), { result, jobIds: plans.map(item => String(item.jobId ?? '')) })
         if (completed.size > 200) completed.delete(completed.keys().next().value)
       }
@@ -351,8 +362,9 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
 
       if (!jobId) { await tavern.update(attached.id, { status: 'failed', error: '没有拿到作业号' }).catch(() => {}); return 0 }
 
+      let job
       try {
-        const job = await waitJob(jobId, task, progress => tavern.update(attached.id, { progress }))
+        job = await waitJob(jobId, task, progress => tavern.update(attached.id, { progress }))
         if (!job) { await tavern.update(attached.id, { status: 'failed', error: '等待出图超时' }); return 0 }
         if (job.state !== 'done' || !job.file) {
           await tavern.update(attached.id, { status: 'failed', error: String(job.error || '出图失败').slice(0, 200), actions: [{ id: 'retry', label: '重试' }] })
@@ -390,7 +402,10 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
         return 1
       } catch (error) {
         if (!task.controller.signal.aborted && !disposed) {
-          await tavern.update(attached.id, { status: 'failed', error: String(error?.message ?? error).slice(0, 200) }).catch(() => {})
+          // 原始异常（可能带本机路径、库名）只进日志，玩家看到的是一句平常话。
+          warn('配图收尾失败：' + String(error?.message ?? error).slice(0, 500))
+          const error_ = job?.state === 'done' ? '图片已生成，但保存失败，请点重试' : '出图中断了，请点重试'
+          await tavern.update(attached.id, { status: 'failed', error: error_, actions: [{ id: 'retry', label: '重试' }] }).catch(() => {})
         }
         return 0
       }
@@ -444,6 +459,7 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
   }
 
   // ── ② 每轮结算 → 自动配图 ───────────────────────────────────────
+  let unreadyNoted = false
   try {
     const off = tavern.onTurnSettled(turn => {
       if (disposed) return
@@ -457,7 +473,11 @@ export function installTavernBridge({ tavern, attachments, engine, getConfig, lo
       }
       const config = getConfig() ?? {}
       const canUpdate = Number(tavern.apiVersion) >= 2 && config.characterAutoUpdate !== false
-      if ((config.imageEnabled === false || config.plannerEnabled === false) && !canUpdate) return
+      // 没有可用的生图渠道或工作流（例如刚装好、还没配）：不规划配图，也就不会每轮出一张「生成失败」；只提示一次。
+      const ready = engine.imageReady?.() !== false
+      if (ready) unreadyNoted = false
+      else if (config.imageEnabled !== false && config.plannerEnabled !== false && !unreadyNoted) { unreadyNoted = true; warn('还没有可用的生图渠道或工作流，自动配图先不规划；在 配图 设置里添加并选中渠道后自动恢复') }
+      if ((config.imageEnabled === false || config.plannerEnabled === false || !ready) && !canUpdate) return
       // 不返回配图 Promise，宿主结算通知无需等待模型和 GPU。
       void attachTurn({
         gameId: turn.gameId, turn: turn.turn, textVersion: turn.textVersion, text: turn.text,

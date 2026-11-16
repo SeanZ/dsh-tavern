@@ -12,6 +12,26 @@ export function retainVoiceEmotionPointers(figure,manifest) {
   for(const row of figure.emotions || [])if(row.voiceEmotion && !Object.hasOwn(options,row.voiceEmotion))delete row.voiceEmotion;
 }
 
+// Removing voices from a pack's library also removes the reference audio only they used (nothing else in the pack — an
+// asset or another voice — refers to it). The one cleanup for a voice delete and for an automatic write's undo.
+export function dropVoices(manifest, files, voiceIds) {
+  const library = manifest.voiceLibrary, media = new Set()
+  for (const id of voiceIds) {
+    for (const ref of voiceReferences(library.voices[id])) media.add(ref.media)
+    delete library.voices[id]
+  }
+  const used = new Set()
+  const visit = value => {
+    if (typeof value === 'string' && media.has(value)) used.add(value)
+    else if (value && typeof value === 'object') Object.values(value).forEach(visit)
+  }
+  visit(manifest.assets); visit(library)
+  for (const hash of media) if (!used.has(hash) && manifest.blobs[hash]) {
+    files.delete(`media/${hash}.${manifest.blobs[hash].ext}`)
+    delete manifest.blobs[hash]
+  }
+}
+
 // The pack owner's root gate serializes template index CAS with pack publication.
 // Blobs are immutable; publish the index last. Deleting a template never deletes pack data.
 export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits}) {
@@ -46,11 +66,13 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
       return {affectedFigures:users.map(f => ({id:f.id,name:f.name}))}
     })
   }
-  // A stored voice (a template, or a legacy reading voice) becomes a new voice of the pack, assigned to the figure with its
-  // binding; its reference clips are copied into the pack.
-  function assignStored(input, item, missing) {
+  // A stored voice (a template, a legacy reading voice, or another pack's voice) becomes a new voice of the pack, assigned
+  // to the figure with its binding; its reference clips are copied into the pack. `item(index)` → {voiceSpec, binding,
+  // blobs: {hash: descriptor}, read(relative)} (the bytes of 'media/<hash>.<ext>' where the voice is kept).
+  // ownName: the copy is named after the figure it now belongs to (a reading voice kept the name of the voice it was copied from).
+  function assignStored(input, item, missing, ownName = false) {
     return edit(input,async (manifest,files) => {
-      const stored = item(await index())
+      const stored = await item(await index())
       check(stored,missing[0],missing[1],'VOICE_NOT_FOUND')
       check(manifest.figures.includes(input.figureId),'$.figureId','Figure missing','ASSET_UNAVAILABLE')
       const voiceId = 'v-' + randomUUID(), voiceSpec = structuredClone(stored.voiceSpec)
@@ -61,7 +83,7 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
         if (manifest.blobs[hash]) check(manifest.blobs[hash].ext === descriptor.ext && manifest.blobs[hash].size === descriptor.size,'$.media','Blob conflict','INVALID_INPUT')
         // Reuse installed bytes; new copies receive their write-time identity in sealPack.
         if (!files.has(relative)) {
-          const bytes = await storage.read('voice-templates/' + relative)
+          const bytes = await (stored.read ? stored.read(relative) : storage.read('voice-templates/' + relative))
           check(bytes,'$.media','Missing reference','MISSING_REFERENCE')
           files.set(relative,bytes)
         }
@@ -69,6 +91,7 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
       }
       ;(manifest.voiceLibrary ||= {version:1,voices:{}}).voices[voiceId] = voiceSpec
       const name = 'figures/' + input.figureId + '.json', figure = readDocument(files.get(name))
+      if (ownName) voiceSpec.name = figure.name
       figure.voice = {...structuredClone(stored.binding),voice:voiceId}; retainVoiceEmotionPointers(figure,manifest); files.set(name,jsonBytes(figure))
       return {voiceId}
     })
@@ -77,7 +100,7 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
     // One-time (dsh-tavern-stage reading-voice-migration.js): 通用声音 / 旁白's voices kept here before they became pointers
     // at figures (tts.reading general / narrator .figure). Listed, each own voice assigned to a figure, then dropped.
     legacyReadingVoices() { return run([],async () => Object.values((await index()).readings || {}).map(item => structuredClone(item.link ? {id:item.id,link:item.link} : {id:item.id,voiceSpec:item.voiceSpec,binding:item.binding}))) },
-    assignLegacyReadingVoice(input) { return assignStored(input,data => data.readings?.[input.readingId]?.voiceSpec && data.readings[input.readingId],['$.readingId','Reading voice missing']) },
+    assignLegacyReadingVoice(input) { return assignStored(input,data => data.readings?.[input.readingId]?.voiceSpec && data.readings[input.readingId],['$.readingId','Reading voice missing'],true) },
     dropLegacyReadingVoices() {
       return run([],async () => {
         const data = await index(), dropped = Object.keys(data.readings || {}).length
@@ -136,6 +159,33 @@ export function createVoiceAuthoring({assetRoot,storage,run,load,edit,cas,limits
     assignVoiceTemplate(input) {
       validateUuid(input.templateId)
       return assignStored(input,data => { const item = data.templates[input.templateId]; if (item) templateCas(item,input.templateRevision); return item },['$.templateId','Template missing'])
+    },
+    // 声音 page › 已有声音 › 使用 on another pack's voice: a copy of it (reference audio included) becomes this pack's voice
+    // for the figure. A pointer never crosses packs.
+    assignPackVoiceCopy(input) {
+      validateUuid(input.sourcePackId); validateShortId(input.voiceId,'$.voiceId')
+      return assignStored(input,async () => {
+        const source = await load(input.sourcePackId), voiceSpec = source?.manifest.voiceLibrary?.voices[input.voiceId]
+        return voiceSpec && {voiceSpec,binding:{voice:input.voiceId},blobs:source.manifest.blobs,read:relative => source.files.get(relative)}
+      },['$.voiceId','Voice missing'])
+    },
+    // ⋯ › 删除声音…: the voice leaves the pack, the figures that spoke with it go back to the 通用声音 (no voice), and the
+    // reference audio only it used goes too. → {affectedFigures}
+    deletePackVoice(input) {
+      validateShortId(input.voiceId,'$.voiceId')
+      return edit(input,async (manifest,files) => {
+        check(manifest.voiceLibrary?.voices[input.voiceId],'$.voiceId','Voice missing','VOICE_NOT_FOUND')
+        const affected = []
+        for (const id of manifest.figures) {
+          const name = 'figures/' + id + '.json', figure = readDocument(files.get(name))
+          if (figure.voice?.voice !== input.voiceId) continue
+          // a figure with 配音 off stays silent on the 通用声音 ({source:null}).
+          if (figure.voice.source === null) figure.voice = {source:null}; else delete figure.voice
+          retainVoiceEmotionPointers(figure,manifest); files.set(name,jsonBytes(figure)); affected.push({id,name:figure.name})
+        }
+        dropVoices(manifest,files,[input.voiceId])
+        return {affectedFigures:affected}
+      })
     },
   }
 }

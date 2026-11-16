@@ -1,14 +1,17 @@
 import { stageEntranceChoices } from './domain/stage-entrance.js'
 import { widgetSourceRounds } from './domain/widget-window-projection.js'
+import { transcriptOutfitSpans } from './domain/transcript-outfits.js'
 import {projectStageLease} from './domain/stage-lease-projection.js'
 import {cardGreetings, messageOpeningId, resolveOpeningScene} from './domain/stage-opening-scene.js'
 import { NARRATOR_VOICE, GENERAL_VOICE } from '../../../lib/domain/asset-pack-speech.js'
+import figureResolution from '../../dsh-presentation-protocol/src/figure-resolution.cjs'
 // The stage's requests: director, asset packs, figures and voices, widgets, mods, phone, CG gallery.
 // They run on the same authenticated dispatcher as every other area; core requests live in the other rpc/ files.
 // A source mod's mark (modService.sources, mod-source-views.js): the phone reads in full only the earlier rounds whose record
 // binds its view and marks one.
 export function createStageHandlers(deps) {
   const { ctx } = deps
+  let resyncBubbles = Promise.resolve()
   return {
     async readWidgetVariables(args, method, serverTemplate, authority) {
       const { widgetVariables } = deps
@@ -105,6 +108,10 @@ return cgGallery.list(args,authority?.origin)
     // 回想 › 删除这张 CG: a 场景生图 entry leaves the card's pack, the gallery and its turn (scene-cg.js).
     async removeSceneCg(args) {
       return deps.sceneCg.remove({sessionId:args.sessionId, ref:args.ref})
+    },
+    // relocate: this card's earlier 场景生图 CG into its 自动素材 pack (scene-cg.js); dryRun unless false.
+    async relocateSceneCg(args) {
+      return deps.sceneCg.relocate({cardPath:args.path, dryRun:args.dryRun !== false})
     },
     async ackCgPlayed(args, method, serverTemplate, authority) {
       const { cgGallery } = deps
@@ -261,6 +268,17 @@ return cgGallery.ack(args,authority?.origin)
         return {backgrounds:consumer ? await requestPerformance.stage('backgrounds.list', () => consumer.presentation.backgrounds()) : []}
 
     },
+    async getStageNameConflicts(args, method, serverTemplate, authority) {
+      const { assetRuntime, readStageChat } = deps
+
+        // the stage notice 「人物重名」: figure names several figures of the card's packs share, so the stage
+        // shows none of them (figureNameConflicts, the resolver's own verdict).
+        const chat = await readStageChat.view(args?.sessionId,{configOnly:true})
+        const consumer = chat?.cardPath && await assetRuntime.consumer(chat,authority?.origin)
+        return {conflicts:consumer ? figureResolution.figureNameConflicts(await consumer.presentation.figureRows()).map(conflict => ({name:conflict.name,
+          figures:conflict.rows.map(row => ({packId:row.ref.packId, figureId:row.ref.figureId, name:row.name, packName:row.packName}))})) : []}
+
+    },
     async getCardVariableBindings(args, method, serverTemplate, authority) {
       const { cardAssetBindings } = deps
 return cardAssetBindings.readVariables(args || {})
@@ -362,10 +380,14 @@ return assetEngineSettings.read()
       const { assetEngineSettings, dialogueBubbles, fileResources, hasCardAssetBindings, readCardWorkspace, worldBooks } = deps
 
         const result = await assetEngineSettings.save(args || {})
-        // P6 dialogue settings are global; refresh every opted-in card, not just the open chat.
-        for (const path of await fileResources.list('card')) {
-          if (hasCardAssetBindings((await readCardWorkspace(path))?.raw)) await dialogueBubbles.sync(worldBooks, path)
-        }
+        // P6 dialogue settings are global: every opted-in card's bubble entry is refreshed, one card at a time behind the
+        // save (reading each card and its packs takes seconds on a big library; the switch must not wait for it).
+        resyncBubbles = resyncBubbles.then(async () => {
+          for (const path of await fileResources.list('card')) {
+            try { if (hasCardAssetBindings((await readCardWorkspace(path))?.raw)) await dialogueBubbles.sync(worldBooks, path) }
+            catch (error) { ctx.logger.warn('BUBBLE_RESYNC_FAILED %s %s', path, error.message) }
+          }
+        })
         return result
 
     },
@@ -405,6 +427,16 @@ return assetEngineSettings.exportPreset(args || {})
         if (!chat) return args?.readOnly === true ? {status:'off',phase:'off',revision:0,token:null,generation:0} : {status:'off'}
         // The director owns its frozen binding; its unused config argument must not hydrate today's catalogue.
         return await requestPerformance.stage('direction.get', () => stageDirector.get(chat, Number(args && args.turn), null, args?.readOnly === true ? {readOnly:true, sinceRevision:args.sinceRevision} : {}))
+
+    },
+    // Transcript bubbles wear the round's stage outfits: per display unit, figure ref → outfit key (transcript-outfits.js).
+    async getTranscriptOutfits(args, method, serverTemplate, authority) {
+      const { readRoundView, stageDirector } = deps
+
+        const chat = await readRoundView(args?.sessionId,args?.turn)
+        if (!chat) return {spans:[]}
+        const direction = await stageDirector.get(chat, Number(args.turn), null, {readOnly:true})
+        return {spans:transcriptOutfitSpans(direction.record || direction.preview)}
 
     },
     async generateStageDirection(args, method, serverTemplate, authority) {
@@ -522,13 +554,9 @@ return assetGenerationResult(() => assetGeneration.retrySave(args))
       const { assetGeneration, assetGenerationResult } = deps
 return assetGenerationResult(() => assetGeneration.accept(args))
     },
-    async getAssetGenPrompts(args, method, serverTemplate, authority) {
+    async listAssetGenStyles(args, method, serverTemplate, authority) {
       const { assetGeneration, assetGenerationResult } = deps
-return assetGenerationResult(() => assetGeneration.prompts())
-    },
-    async setAssetGenPrompt(args, method, serverTemplate, authority) {
-      const { assetGeneration, assetGenerationResult } = deps
-return assetGenerationResult(() => assetGeneration.setPrompt(args))
+return assetGenerationResult(() => assetGeneration.styles(args))
     },
   }
 }

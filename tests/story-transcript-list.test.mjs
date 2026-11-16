@@ -142,8 +142,8 @@ test('楼层操作用故事正文和稳定轮次，回退提交确认过的消�
 	) + '\nTavernRollbackToTurnButton', page.context)
 	const feature = page.context.createTavernStoryTranscriptFeature({
 		replyActions: {
-			useReadAloudState: () => ({ auto: false }),
-			ReadAloud: props => button('朗读', props.source),
+			useSpeechVoiced: () => true,
+			Speech: props => props.voiced ? button('朗读', props.source) : null,
 			Illustrate: props => button('配图', props.turn),
 			Receipt: props => button('变量结算', props.storyTurn),
 			Latest: () => button('更多'),
@@ -206,7 +206,10 @@ test('首轮占位、流式正文和最终 HTML 始终复用同一逻辑行', as
 	assert.strictEqual(rows[1], assistant, '流式更新不得替换 article DOM')
 	assert.equal(rows[1].getAttribute('data-row-key'), key)
 	assert.ok(rows[1].textContent.includes('流式正文'))
-	assert.ok(!rows[1].textContent.includes('思考'))
+	assert.ok(!rows[1].querySelector('[data-projection-mode]').textContent.includes('思考'))
+	const streamReasoning = rows[1].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.ok(streamReasoning && streamReasoning.textContent.includes('思考'), '流式思维链应独立显示在折叠框中')
+	assert.equal(streamReasoning.open, false, '正文出现后本次思考应立即收起')
 	assert.equal(rows[1].querySelector('[data-projection-mode]').getAttribute('data-projection-mode'), 'markdown')
 	assert.equal(JSON.stringify(pending), snapshot, '流式覆盖不得修改持久投影')
 
@@ -232,6 +235,58 @@ test('首轮占位、流式正文和最终 HTML 始终复用同一逻辑行', as
 	assert.ok(!rows[1].textContent.includes('正在生成'))
 	assert.equal(projections.at(-1).projection.mode, 'html')
 	assert.equal(dom.window.document.querySelectorAll('[data-story-draft]').length, 0)
+
+	// 无正文首步流式思考 -> 增量更新 -> 调工具写完收起 -> 第二步续写再展开 -> 正文到达收起 -> 提交保留
+	const round2Pending = story([
+		...finalMessages,
+		{ role: 'user', text: '第二句行动' },
+		{ role: 'assistant', turn: 1, placeholder: true, text: '' }
+	], 3)
+	await act(async () => root.render(element(round2Pending, null, true)))
+	await act(async () => root.render(element(round2Pending, { turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一步思考' }] }, true)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	assert.equal(rows.length, 4)
+	let r2Box = rows[3].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.ok(r2Box, '尚未出现正文时首步思考应先流式显示')
+	assert.equal(r2Box.open, true, '流式思考中应保持展开')
+	assert.equal(r2Box.querySelector('summary')?.textContent, '思考中…')
+	assert.ok(r2Box.textContent.includes('第一步思考'))
+
+	await act(async () => root.render(element(round2Pending, { turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一步思考增量' }] }, true)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	r2Box = rows[3].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.equal(r2Box.open, true)
+	assert.ok(r2Box.textContent.includes('第一步思考增量'), '仅思考增量增长且正文仍空时必须刷新内容')
+
+	await act(async () => root.render(element(round2Pending, { turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一步思考增量' }, { kind: 'tool-call', name: 'tavern_state' }] }, true)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	r2Box = rows[3].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.equal(r2Box.open, false, '调工具结束本次思考后应立即收起')
+	assert.equal(r2Box.querySelector('summary')?.textContent, '思考过程')
+
+	await act(async () => root.render(element(round2Pending, { turn: 1, step: 1, blocks: [{ kind: 'reasoning', text: '第二步分析' }] }, true)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	r2Box = rows[3].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.equal(r2Box.open, true, '多步进入下一步思考时应重新展开')
+	assert.equal(r2Box.querySelector('summary')?.textContent, '思考中…')
+	assert.ok(r2Box.textContent.includes('第一步思考增量') && r2Box.textContent.includes('第二步分析'), '多步思维链应按整轮拼接展示')
+
+	await act(async () => root.render(element(round2Pending, { turn: 1, step: 1, blocks: [{ kind: 'reasoning', text: '第二步分析' }, { kind: 'text', text: '第二轮正文' }] }, true)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	r2Box = rows[3].querySelector('details.dsh-tavern-stream-reasoning')
+	assert.equal(r2Box.open, false, '正文开始输出后本次思考应立即收起')
+	assert.ok(r2Box.textContent.includes('第一步思考增量') && r2Box.textContent.includes('第二步分析'), '正文阶段折叠框内仍保留整轮两步思考')
+	assert.ok(rows[3].querySelector('[data-projection-mode]')?.textContent.includes('第二轮正文'))
+
+	const round2Committed = story([
+		...finalMessages,
+		{ role: 'user', text: '第二句行动' },
+		{ role: 'assistant', turn: 1, text: '第二轮正式正文' }
+	], 4)
+	await act(async () => root.render(element(round2Committed, null, false)))
+	rows = [...dom.window.document.querySelectorAll('[data-story-row]')]
+	assert.ok(rows[3].querySelector('[data-projection-mode]')?.textContent.includes('第二轮正式正文'))
+	assert.equal(rows[3].querySelector('details.dsh-tavern-stream-reasoning[open]'), null, '提交结束后不得遗留未收起的流式思考中状态')
 })
 
 
@@ -263,4 +318,301 @@ test('a failed round shows its reason under the kept input, and only while that 
 	// A retry is running: the reason leaves with the failure.
 	await act(async () => root.render(React.createElement(feature.StoryTranscriptList, { transcript: failed, view, sessionId: 's', running: true })))
 	assert.equal(page.dom.window.document.querySelector('[role="alert"]'), null)
+})
+
+test('故事楼层保留受信任脚本层、开场脚本挂载、正文下方状态栏与长历史旧楼层投影回退', async t => {
+	const receivedOptions = []
+	let legacyMounted = 0
+	const page = createPage(t, {
+		isPlayMode: mode => mode === 'story',
+		useLiveTavernView: () => ({ view: liveWindowView }),
+		mountTavernLegacyMessage: ({ node }) => {
+			legacyMounted++
+			node.textContent = 'legacy-mounted'
+			return () => {}
+		},
+		TavernPersistentStatusRuntime: props => React.createElement('div', { 'data-inline-status': props.panels }, props.sessionId),
+		TavernMessageFrame: props => React.createElement('div', { 'data-user-template': props.partIndex }, props.content)
+	})
+	const saved = story([
+		{ role: 'assistant', greeting: true, turn: 1, text: '开场原文' },
+		{ role: 'user', text: '原始输入' },
+		{ role: 'assistant', turn: 2, text: '第二楼原文' },
+		{ role: 'assistant', turn: 50, text: '最新楼原文' }
+	], 10)
+	// storyView 覆盖当前读取的旧楼层 turn 2；liveWindowView 只包含最近窗口 turn 50。
+	const storyView = {
+		mode: 'story',
+		statusBarPlacement: 'body',
+		tavernRuntimePolicy: { trustedCardMode: true },
+		tavernHelper: { stateRevision: 10, messages: [{ message_id: 0, role: 'assistant', message: '开场完整脚本源' }] },
+		inputTemplateDisplays: { '2': '<b>模板化玩家输入</b>' },
+		replyProjections: [
+			{ version: 2, turn: 1, mode: 'markdown', text: '开场正则投影' },
+			{ version: 2, turn: 2, mode: 'html', text: '<div>旧楼层人物卡面板</div>' },
+			{ version: 2, turn: 50, mode: 'markdown', text: '最新楼投影' }
+		]
+	}
+	const liveWindowView = {
+		mode: 'story',
+		statusBarPlacement: 'body',
+		historyWindow: { onDemand: true, from: 40, to: 50, messageCount: 51, revision: 10 },
+		tavernRuntimePolicy: { trustedCardMode: true },
+		tavernHelper: { stateRevision: 10, messages: [{ message_id: 0, role: 'assistant', message: '开场完整脚本源' }] },
+		replyProjections: [
+			{ version: 2, turn: 50, mode: 'markdown', text: '最新楼窗口投影' }
+		]
+	}
+	const feature = page.context.createTavernStoryTranscriptFeature({
+		renderProjection: (projection, options) => {
+			receivedOptions.push({ turn: options.turn, mode: projection.mode, text: projection.text, scriptLayer: options.scriptLayer, eagerFrame: options.eagerFrame })
+			return React.createElement('div', { 'data-rendered-turn': String(options.turn), 'data-mode': projection.mode }, projection.text)
+		}
+	})
+	await mount(page, React.createElement(feature.StoryTranscriptList, {
+		transcript: saved, view: storyView, sessionId: 's-switch'
+	}))
+	const doc = page.dom.window.document
+	assert.equal(legacyMounted, 1, '受信任模式开场楼层应挂载 legacy greeting 容器')
+	assert.equal(doc.querySelector('[data-user-template="user-template"]')?.textContent, '<b>模板化玩家输入</b>', '玩家输入模板应渲染')
+	assert.equal(doc.querySelector('[data-rendered-turn="2"]')?.getAttribute('data-mode'), 'html', '超出 liveView 窗口的旧楼层应回退使用 storyView 的完整 HTML 投影而非退回纯文本')
+	assert.equal(doc.querySelector('[data-rendered-turn="50"]')?.textContent, '最新楼窗口投影')
+	assert.equal(JSON.stringify(receivedOptions.map(item => item.scriptLayer)), JSON.stringify([
+		{ sessionId: 's-switch', messageId: 0 },
+		{ sessionId: 's-switch', messageId: 2 },
+		{ sessionId: 's-switch', messageId: 3 }
+	]), '每层正文应传递绝对 messageId 供 retrieveDisplayedMessage 脚本改写')
+	const inlineStatuses = doc.querySelectorAll('[data-inline-status="status"]')
+	assert.equal(inlineStatuses.length, 1, 'statusBarPlacement=body 时仅在最新楼层下方渲染状态栏')
+	assert.equal(inlineStatuses[0].closest('article')?.getAttribute('data-row-key'), 'turn:50')
+})
+
+
+test('流式显示思维链在已提交楼层随 useChat 恢复多步思维链', async t => {
+	const page = createPage(t)
+	page.context.useTavernReasoningStreamEnabled = () => true
+	const turnSteps = [
+		{ data: { get: key => (key === 'assistant-step' ? { blocks: [{ kind: 'reasoning', text: '第一段推理' }, { kind: 'tool-call', name: 'tavern_state' }] } : null) } },
+		{ data: { get: key => (key === 'assistant-step' ? { blocks: [{ kind: 'reasoning', text: '第二段推理' }, { kind: 'text', text: '已提交正文' }] } : null) } }
+	]
+	const host = {
+		useChat: selector => selector({
+			timeline: { turns: new Map([[11, { status: 'closed', steps: turnSteps }]]) }
+		})
+	}
+	const React = page.context.React
+	const feature = page.context.createTavernStoryTranscriptFeature({
+		renderProjection: projection => React.createElement('div', { className: 'test-proj' }, projection.text)
+	})
+	const committed = story([
+		{ role: 'user', text: '玩家发言' },
+		{ role: 'assistant', turn: 1, text: '已提交正文' }
+	], 2)
+	committed.messages[1].nativeTurn = 11
+	await mount(page, React.createElement(feature.StoryTranscriptList, {
+		transcript: committed, view: { mode: 'story' }, sessionId: 's-reasoning-toggle-on', host
+	}))
+	const doc = page.dom.window.document
+	const box = doc.querySelector('details.dsh-tavern-stream-reasoning')
+	assert.ok(box, '已提交楼层应通过 nativeTurn 汇总展示思维链')
+	assert.equal(box.open, false, '已提交楼层默认收起')
+	assert.ok(box.textContent.includes('第一段推理') && box.textContent.includes('第二段推理'))
+})
+
+test('关闭流式显示思维链后游玩模式不显示已提交与流式思维链', async t => {
+	const page = createPage(t)
+	page.context.useTavernReasoningStreamEnabled = () => false
+	const turnSteps = [
+		{ data: { get: key => (key === 'assistant-step' ? { blocks: [{ kind: 'reasoning', text: '隐藏推理' }] } : null) } }
+	]
+	const host = {
+		useChat: selector => selector({
+			legacy: { partial: { turn: 12, blocks: [{ kind: 'reasoning', text: '关闭时不得显示的流式推理' }] } },
+			timeline: { turns: new Map([[11, { status: 'closed', steps: turnSteps }]]) }
+		})
+	}
+	const React = page.context.React
+	const feature = page.context.createTavernStoryTranscriptFeature({
+		renderProjection: projection => React.createElement('div', { className: 'test-proj' }, projection.text)
+	})
+	const transcript = story([
+		{ role: 'user', text: '第一句' },
+		{ role: 'assistant', turn: 1, text: '已有回复' },
+		{ role: 'user', text: '第二句' },
+		{ role: 'assistant', turn: 2, placeholder: true, text: '' }
+	], 3)
+	transcript.messages[1].nativeTurn = 11
+	await mount(page, React.createElement(feature.StoryTranscriptList, {
+		transcript, view: { mode: 'story' }, sessionId: 's-reasoning-toggle-off', host
+	}))
+	const doc = page.dom.window.document
+	assert.equal(doc.querySelector('details.dsh-tavern-stream-reasoning'), null, '关闭开关后游玩模式不应显示流式或历史思维链')
+})
+
+test('流式思考超过折叠框高度时自动滚到底部，上翻阅读时暂停跟随、回到底部后恢复', async t => {
+	const page = createPage(t)
+	page.context.useTavernReasoningStreamEnabled = () => true
+	const feature = page.context.createTavernStoryTranscriptFeature({
+		renderProjection: projection => React.createElement('div', { className: 'test-proj' }, projection.text)
+	})
+	const pending = story([
+		{ role: 'user', text: '玩家行动' },
+		{ role: 'assistant', turn: 1, placeholder: true, text: '' }
+	], 1)
+	const element = (partial, running = true) => React.createElement(feature.StoryTranscriptList, {
+		transcript: pending, partial, running, view: { mode: 'story' }, sessionId: 's-reasoning-scroll'
+	})
+	const root = await mount(page, element({ turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一段' }] }))
+	const pre = page.dom.window.document.querySelector('details.dsh-tavern-stream-reasoning pre')
+	assert.ok(pre)
+	let scrollHeight = 520
+	const clientHeight = 200
+	let scrollTop = 0
+	Object.defineProperty(pre, 'clientHeight', { configurable: true, get: () => clientHeight })
+	Object.defineProperty(pre, 'scrollHeight', { configurable: true, get: () => scrollHeight })
+	Object.defineProperty(pre, 'scrollTop', {
+		configurable: true,
+		get: () => scrollTop,
+		set(value) { scrollTop = Math.max(0, Math.min(Math.max(0, scrollHeight - clientHeight), Number(value) || 0)) }
+	})
+
+	await act(async () => root.render(element({ turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一段\n第二段' }] })))
+	assert.equal(scrollTop, 320, '流式新增思考内容时应自动滚到底部')
+
+	// 模拟用户手动向上滚动查看前文
+	scrollTop = 60
+	await act(async () => {
+		pre.dispatchEvent(new page.dom.window.Event('scroll'))
+	})
+	scrollHeight = 680
+	await act(async () => root.render(element({ turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一段\n第二段\n第三段' }] })))
+	assert.equal(scrollTop, 60, '用户手动上翻后不得强制拉回底部')
+
+	// 模拟用户拉回底部后恢复自动跟随
+	scrollTop = 475
+	await act(async () => {
+		pre.dispatchEvent(new page.dom.window.Event('scroll'))
+	})
+	scrollHeight = 820
+	await act(async () => root.render(element({ turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一段\n第二段\n第三段\n第四段' }] })))
+	assert.equal(scrollTop, 620, '用户回到底部后应恢复自动滚动')
+
+	// 未回到底部时进入工具步收起，再进入下一步思考应重新恢复自动跟随
+	scrollTop = 100
+	await act(async () => {
+		pre.dispatchEvent(new page.dom.window.Event('scroll'))
+	})
+	await act(async () => root.render(element({ turn: 1, step: 0, blocks: [{ kind: 'reasoning', text: '第一段\n第二段\n第三段\n第四段' }, { kind: 'tool-call', name: 'tavern_state' }] })))
+	scrollHeight = 960
+	await act(async () => root.render(element({ turn: 1, step: 1, blocks: [{ kind: 'reasoning', text: '第二步继续思考' }] })))
+	assert.equal(scrollTop, 760, '新一步思考重新展开时应自动滚到最新位置')
+})
+
+test('长故事只挂读者附近的楼层，其余楼层留同样标记的空楼层，舞台盖住时全部收起', async t => {
+	const observed = new Map()
+	class FakeIntersectionObserver {
+		constructor(callback) { this.callback = callback; this.targets = new Set() }
+		observe(target) { this.targets.add(target); observed.set(target.getAttribute('data-row-key'), this) }
+		unobserve(target) { this.targets.delete(target) }
+		disconnect() { this.targets.clear() }
+	}
+	class FakeResizeObserver { observe() {} unobserve() {} disconnect() {} }
+	let active = ''
+	const listeners = new Set()
+	const galActive = { get: () => active, subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) } }
+	const page = createPage(t, { IntersectionObserver: FakeIntersectionObserver, ResizeObserver: FakeResizeObserver, CSS: { escape: value => value }, galActive })
+	const messages = []
+	for (let turn = 1; turn <= 8; turn++) messages.push({ role: 'user', text: '行动' + turn }, { role: 'assistant', turn, text: '第 ' + turn + ' 轮正文' })
+	const feature = page.context.createTavernStoryTranscriptFeature()
+	await mount(page, React.createElement('div', { 'data-conversation-scroll': '' },
+		React.createElement(feature.StoryTranscriptList, { transcript: story(messages), sessionId: 'game' })))
+	const doc = page.dom.window.document
+	const held = () => [...doc.querySelectorAll('[data-story-held]')].map(row => row.getAttribute('data-floor'))
+	const floor = n => doc.querySelector('[data-story-row][data-floor="' + n + '"]')
+	// 最新两层挂着，更早的楼层收起，但仍是带楼层号和锚点的故事行（楼层跳转与宿主滚动锚点照旧认得）。
+	assert.deepEqual(held(), ['1', '2', '3', '4', '5', '6'])
+	assert.equal(floor(3).getAttribute('data-chat-anchor-key'), floor(3).getAttribute('data-row-key'))
+	assert.match(floor(3).style.height, /px$/)
+	assert.match(floor(8).textContent, /第 8 轮正文/)
+	// 滚到第 3 层附近才挂回正文。
+	const target = floor(3)
+	await act(async () => { observed.get(target.getAttribute('data-row-key')).callback([{ target, isIntersecting: true }]); await Promise.resolve() })
+	assert.deepEqual(held(), ['1', '2', '4', '5', '6'])
+	assert.match(floor(3).textContent, /第 3 轮正文/)
+	// 舞台盖住这一局：读者附近的楼层也收起；离开舞台后挂回。
+	await act(async () => { active = 'game'; for (const fn of listeners) fn() })
+	assert.deepEqual(held(), ['1', '2', '3', '4', '5', '6'])
+	await act(async () => { active = ''; for (const fn of listeners) fn() })
+	assert.deepEqual(held(), ['1', '2', '4', '5', '6'])
+
+	// 楼层跳转期间若跳转前已有挂起的旧锚点（jumpToken 已推进），restore() 不得把 scrollTop 拉回旧楼层。
+	const scroller = doc.querySelector('[data-conversation-scroll]')
+	scroller.scrollTop = 2400
+	scroller.getBoundingClientRect = () => ({ top: 40, bottom: 640, left: 0, right: 390, width: 390, height: 600 })
+	floor(7).getBoundingClientRect = () => ({ top: 50, bottom: 350, left: 0, right: 390, width: 390, height: 300 })
+	const floor2 = floor(2)
+	await act(async () => {
+		const io = observed.get(floor2.getAttribute('data-row-key'))
+		// 先在 jumpToken 变化前触发一次收起/挂回捕获旧锚点（第 7 层），紧接着发生楼层跳转改写 data-story-jump-token。
+		io.callback([{ target: floor2, isIntersecting: true }])
+		scroller.setAttribute('data-story-jump-token', '1')
+		scroller.scrollTop = 180
+		await Promise.resolve()
+	})
+	assert.equal(scroller.scrollTop, 180, '跨楼层跳转推进 jumpToken 后，旧视口锚点不得把滚动条拉回底部')
+})
+
+test('切回后台生成新楼层的会话时，旧 liveTavernView 快照不得覆盖新楼层的 Helper 上下文', async t => {
+	const staleHelper = { stateRevision: 1, messages: [{ message_id: 0, role: 'assistant', message: '旧楼层' }] }
+	const freshHelper = {
+		stateRevision: 3,
+		messages: [
+			{ message_id: 0, role: 'assistant', message: '旧楼层' },
+			{ message_id: 1, role: 'user', message: '行动' },
+			{ message_id: 2, role: 'assistant', message: '后台新楼层 HTML' }
+		],
+		turnMessageIds: { '1': 0, '2': 2 }
+	}
+	const staleLiveView = {
+		mode: 'story',
+		storageRevision: 1,
+		tavernRuntimePolicy: { trustedCardMode: true },
+		tavernHelper: staleHelper
+	}
+	let capturedHelper = null
+	let capturedReaderHelper = null
+	const page = createPage(t, {
+		isPlayMode: mode => mode === 'story',
+		useLiveTavernView: () => ({ view: staleLiveView }),
+		liveTavernView: { getSnapshot: () => ({ view: staleLiveView }) }
+	})
+	const saved = story([
+		{ role: 'assistant', greeting: true, turn: 1, text: '旧楼层' },
+		{ role: 'user', text: '行动' },
+		{ role: 'assistant', turn: 2, text: '<div>后台新楼层 HTML</div>', displayMode: 'html', displayParts: [{ kind: 'html', content: '<div>后台新楼层 HTML</div>' }] }
+	], 3)
+	const freshStoryView = {
+		mode: 'story',
+		storageRevision: 3,
+		tavernRuntimePolicy: { trustedCardMode: true },
+		tavernHelper: freshHelper,
+		replyProjections: [
+			{ version: 2, turn: 1, mode: 'markdown', text: '旧楼层' },
+			{ version: 2, turn: 2, mode: 'html', parts: [{ kind: 'html', content: '<div>后台新楼层 HTML</div>' }] }
+		]
+	}
+	const feature = page.context.createTavernStoryTranscriptFeature({
+		renderProjection: (projection, options) => {
+			if (options.turn === 2) {
+				capturedHelper = options.helperContext
+				capturedReaderHelper = options.helperContextReader()
+			}
+			return React.createElement('div', { 'data-turn': String(options.turn) }, 'card-frame')
+		}
+	})
+	await mount(page, React.createElement(feature.StoryTranscriptList, {
+		transcript: saved, view: freshStoryView, sessionId: 's-bg-card'
+	}))
+	assert.equal(capturedHelper, freshHelper, '新楼层首次渲染必须直接拿到包含最新楼层的 storyView.tavernHelper')
+	assert.equal(capturedReaderHelper, freshHelper, '卡片挂载读取器不得回退到滞后的 liveTavernView 快照')
 })

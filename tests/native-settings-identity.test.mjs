@@ -20,11 +20,11 @@ test('设置所有者支持旧 Fiber 和 alpha.3 上下文身份，不能串到�
   assert.throws(() => nativeSettingsEntryId({ fiber, get: () => ({ entries: () => [] }) }), /not a profile entry/)
 })
 
-test('真实宿主门控接受素材库 alpha.3，无需版本豁免', { skip: !process.env.DSH_BOOT_MODULE }, async () => {
+test('真实宿主按素材库声明接受 0.2 系列并拒绝 0.3', { skip: !process.env.DSH_BOOT_MODULE }, async () => {
   const { evaluatePluginCompatibility } = await import(pathToFileURL(process.env.DSH_BOOT_MODULE))
   const manifest = JSON.parse(await readFile(new URL('../tavern-plugin/packages/dsh-asset-library/package.json', import.meta.url)))
-  for (const version of ['0.2.2-alpha.2', '0.2.2-alpha.3']) assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined)
-  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.2.2-alpha.4'), '未验证的新版本不自动放行')
+  for (const version of ['0.2.2-alpha.2', '0.2.2-alpha.3', '0.2.2-rc.2', '0.2.2-rc.3']) assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined)
+  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.3.0'), '超出声明的宿主版本不自动放行')
 })
 
 test('真实设置读写、通知、禁用及重载继续归属原插件', { skip: !process.env.DSH_BOOT_MODULE }, async t => {

@@ -37,9 +37,11 @@
 			const compacting = Boolean(rollbackViewState.view && rollbackViewState.view.contextCompaction && rollbackViewState.view.contextCompaction.operation && rollbackViewState.view.contextCompaction.operation.status === "running");
 			React.useEffect(function () {
 				if (!compacting) return;
-				const timer = window.setInterval(function () { liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); }, 2000);
+				const refresh = function () { liveTavernView.invalidate(props.sessionId); tavernCoordination.invalidate(props.sessionId); };
+				const stopWatch = watchTavernState(props.sessionId, refresh);
+				const stopPoll = pollTaskWhile(refresh);
 				return function () {
-					window.clearInterval(timer);
+					stopWatch(); stopPoll();
 					const panel = interactions.candidates.getSnapshot();
 					if (panel && panel.sessionId === props.sessionId && panel.phase === "error" && /压缩/.test(String(panel.error || ""))) setCandidatePanel(null);
 				};
@@ -71,6 +73,11 @@
 			}, [canRollback, frontRunning, compacting, regenBusy, activity.busy, props.sessionId, latestMessageId]);
 			const [withdrawBusy, setWithdrawBusy] = React.useState(false);
 			const draft = props.useInput(snapshot => snapshot.draft);
+			// 前台候选项随正文一起存好，没有任务送到页面：这一轮落地后按消息读一次。
+			React.useEffect(function () {
+				if (!props.sessionId || taskForMessage) return;
+				loadSavedCandidates(props.sessionId, props.messageId || null).catch(function () {});
+			}, [props.sessionId, props.messageId, taskForMessage && taskForMessage.taskId]);
 			const projectedTaskRef = React.useRef("");
 			React.useEffect(function () {
 				if (!taskForMessage) return;
@@ -134,10 +141,17 @@
 			}
 			const h = React.createElement;
 			const isScript = sessionMode === "script";
-			const hasReadyPanel = candidatePanelState !== null && candidatePanelState.sessionId === props.sessionId && candidatePanelState.messageId === props.messageId && candidatePanelState.phase === "ready";
+			// 这一局最近一轮的候选项：页面拿不到宿主消息 id 时也照样算数（服务端只留最近一轮）。
+			const hasReadyPanel = candidatePanelState !== null && candidatePanelState.sessionId === props.sessionId && candidatePanelState.phase === "ready";
 			if (!isPlayMode(sessionMode)) return null;
+			// 收起的「接下来的行动」在手机上不再单占一行：它的入口并进这一行操作，
+			// 点开还是同一个候选抽屉（候选卡自己在手机上隐藏收起态，见 tavern.css）。
+			const openablePanel = !props.only && candidatePanelState && candidatePanelState.sessionId === props.sessionId
+				&& candidatePanelState.expanded !== true && Array.isArray(candidatePanelState.choices) && candidatePanelState.choices.length > 0
+				? candidatePanelState : null;
 			// only="choices" in the composer, only="regen" under the latest reply.
 			return h(React.Fragment, null,
+				openablePanel ? h("button", { className: "dsh-tavern-choice-trigger dsh-tavern-candidate-entry", "data-fork-action": "open-choices", title: "展开接下来可以做的 " + openablePanel.choices.length + " 个行动", "aria-label": "展开接下来的行动（" + openablePanel.choices.length + " 个）", onClick: function () { setCandidatePanel(Object.assign({}, openablePanel, { expanded: true })); } }, "行动 " + openablePanel.choices.length + " ⌃") : null,
 				props.only === "regen" ? null : h("button", { className: "dsh-tavern-choice-trigger", "data-fork-action": hasReadyPanel ? "choices-again" : "choices", "data-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, "aria-busy": (busy || taskBusy || activity.busy || settlementActive) || undefined, disabled: busy || taskBusy || activity.busy || settlementActive || regenBusy || compacting, title: compacting ? "正在压缩上下文，完成后可生成候选项" : (busy || taskBusy) ? "正在生成候选项…" : settlementActive ? "当前正文正在后台结算，请等待完成" : (activity.busy ? activity.blockReason : (hasReadyPanel ? "重新生成候选项（可先填写意见）" : (isScript ? "手动生成候选项；由于跟随剧本，只有一个推荐候选项" : "手动生成候选项"))), onClick: function () {
 					setRegenPanel(null);
 					if (hasReadyPanel) {
@@ -426,8 +440,10 @@
             React.useEffect(function () { void load(); }, [load, running]);
             React.useEffect(function () {
                 if (!running) return;
-                const timer = setInterval(() => { liveTavernView.invalidate(props.sessionId); void load(); }, 2000);
-                return () => clearInterval(timer);
+                const refresh = () => { liveTavernView.invalidate(props.sessionId); void load(); };
+                const stopWatch = watchTavernState(props.sessionId, refresh);
+                const stopPoll = pollTaskWhile(refresh);
+                return () => { stopWatch(); stopPoll(); };
             }, [props.sessionId, running, load]);
             if (!tasks || !tasks.manual.length) return null;
             async function start(task, input) {

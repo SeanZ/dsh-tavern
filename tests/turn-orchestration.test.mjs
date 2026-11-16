@@ -92,7 +92,8 @@ function harness(mode, options = {}) {
       card.path = path
       createdCards.push({ path, card: clone(card) })
       return { path, card: clone(card) }
-    }
+    },
+    ...(options.storeExtras ? options.storeExtras({ getChat: () => chat, setChat: next => { chat = clone(next) } }) : {})
   }
   const orchestrator = createTurnOrchestrator({
     bodyGeneration: async () => options.bodyGeneration || { mode: 'host' },
@@ -143,6 +144,7 @@ function harness(mode, options = {}) {
     resolvePresetRegexScripts: options.resolvePresetRegexScripts,
     projectUserTemplate: options.projectUserTemplate,
     pluginTurnContext: options.pluginTurnContext,
+    activeDamperRuling: options.activeDamperRuling,
     projectReply: projectReplyLayers,
     projectWorldBookTemplates: options.projectWorldBookTemplates,
     projectForegroundWorldbook: options.projectForegroundWorldbook,
@@ -415,3 +417,108 @@ test('plugin projection uses durable rules and freezes distinct prompt/display c
   assert.equal(row.displayText, 'display')
   assert.equal(row.bodyPluginProjection, true)
 })
+
+test('前台正文结尾包含 <story_choices> 时，落盘自动剥离标签并写入 chat.candidates', async () => {
+  const h = harness('story', { autoSettle: false, macros: true })
+  await h.orchestrator.prepare({ sessionId: 'session', turn: 2, userText: '继续', requestId: 'req-fg' })
+  const assistantText = [
+    '阿芙拉收起短剑，靠在窗边。',
+    '<story_choices>',
+    JSON.stringify({
+      actions: [
+        '{{user}}顺势贴近{{char}}，继续深入刚才的话题',
+        '主动牵起{{char}}的手，改变现场僵持的节奏',
+        '停下动作低声调侃{{char}}，观察她的细微神态',
+        '伸手替{{char}}整理被雨水打湿的斗篷领口'
+      ],
+      scene: '雨停后离开旅店前往黎明的集市'
+    }),
+    '</story_choices>'
+  ].join('\n')
+  const saved = await h.orchestrator.finalize({
+    sessionId: 'session',
+    turn: 2,
+    userText: '继续',
+    requestId: 'req-fg',
+    assistantText,
+    replyMessageId: 'msg-projected-1'
+  })
+  assert.equal(saved.reply.sessionText, '阿芙拉收起短剑，靠在窗边。')
+  const chat = h.chat()
+  assert.equal(chat.messages.at(-1).text, '阿芙拉收起短剑，靠在窗边。')
+  assert.equal(chat.messages.at(-1).sourceText, '阿芙拉收起短剑，靠在窗边。')
+  assert.ok(chat.candidates)
+  assert.equal(chat.candidates.messageId, 'msg-projected-1')
+  assert.equal(chat.candidates.choices.length, 5)
+  assert.equal(chat.candidates.choices[0].text, 'User顺势贴近阿芙拉，继续深入刚才的话题')
+  assert.equal(chat.candidates.choices[4].type, 'scene')
+  // 下一轮正文没有候选项：上一轮留下的选项不能继续挂在新正文下面。
+  await h.orchestrator.prepare({ sessionId: 'session', turn: 3, userText: '继续', requestId: 'req-fg-2' })
+  await h.orchestrator.finalize({ sessionId: 'session', turn: 3, userText: '继续', requestId: 'req-fg-2',
+    assistantText: '窗外的雨停了。', replyMessageId: 'msg-projected-2' })
+  assert.ok(h.chat().candidates == null, '这一轮没有候选项就清掉上一轮的那一份')
+})
+
+test('故事准备首次落盘与重复 prepare 均把最新阻尼裁定写入占位助手行', async () => {
+  const firstOutcome = { mode: 'balanced', judgeMode: 'author', rulingTier: 'partial_clamp', leverageScore: 0.7, clampedCount: 1, clampedKeys: [], evaluatedAt: 10 }
+  const updatedOutcome = { mode: 'balanced', judgeMode: 'author', rulingTier: 'full_accept', leverageScore: 1.5, clampedCount: 0, clampedKeys: [], evaluatedAt: 20 }
+  let active = firstOutcome
+  const h = harness('story', {
+    activeDamperRuling: () => ({ outcome: active })
+  })
+
+  await h.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '推开门', requestId: 'req-damper-1' })
+  const placeholderAfterFirst = h.chat().messages.at(-1)
+  assert.equal(placeholderAfterFirst.role, 'assistant')
+  assert.equal(placeholderAfterFirst.placeholder, true)
+  assert.deepEqual(placeholderAfterFirst.narrativeDamper, [firstOutcome])
+
+  // 同轮重复 prepare 拿到最新决策裁定后，必须同步刷新现有 placeholder 上的 narrativeDamper
+  active = updatedOutcome
+  await h.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '推开门', requestId: 'req-damper-1' })
+  const placeholderAfterRetry = h.chat().messages.at(-1)
+  assert.equal(h.chat().messages.filter(m => m.role === 'assistant').length, 1)
+  assert.equal(placeholderAfterRetry.placeholder, true)
+  assert.deepEqual(placeholderAfterRetry.narrativeDamper, [updatedOutcome])
+
+  // 若 store 提供 readChatSlice / patchChat，重复 prepare 走按路径局部 patch 同样生效
+  const patchedCalls = []
+  let active2 = firstOutcome
+  const hPatch = harness('story', {
+    activeDamperRuling: () => ({ outcome: active2 }),
+    storeExtras: ({ getChat, setChat }) => ({
+      async readChatSlice(_sessionId, indices) {
+        const current = getChat()
+        return {
+          denseMessages: false,
+          chat: {
+            id: current.id,
+            _storageRevision: current._storageRevision,
+            messages: current.messages.map((m, i) => (indices.includes(i) ? clone(m) : undefined))
+          }
+        }
+      },
+      async patchChat(chatId, baseRevision, ops, metadata) {
+        const current = getChat()
+        assert.equal(chatId, current.id)
+        assert.equal(baseRevision, current._storageRevision)
+        patchedCalls.push({ ops: clone(ops), source: metadata?.source })
+        for (const op of ops) {
+          if (op.op === 'set' && op.path[0] === 'messages') {
+            current.messages[op.path[1]][op.path[2]] = clone(op.value)
+          }
+        }
+        current._storageRevision += 1
+        setChat(current)
+        return true
+      }
+    })
+  })
+  await hPatch.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '再试', requestId: 'req-damper-2' })
+  active2 = updatedOutcome
+  await hPatch.orchestrator.prepare({ sessionId: 'session-1', turn: 2, userText: '再试', requestId: 'req-damper-2' })
+  assert.equal(patchedCalls.length, 1)
+  assert.equal(patchedCalls[0].source, 'foreground.prepare-damper')
+  assert.deepEqual(hPatch.chat().messages.at(-1).narrativeDamper, [updatedOutcome])
+})
+

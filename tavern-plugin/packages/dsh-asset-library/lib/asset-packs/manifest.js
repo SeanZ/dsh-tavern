@@ -23,10 +23,27 @@ export function validateBlob(value, path = '$') {
   check(Object.hasOwn(BLOB_MIME_TYPES, value.ext) && value.mime === BLOB_MIME_TYPES[value.ext], path, 'Noncanonical blob ext/MIME')
   integer(value.size, path + '.size', 1); return value
 }
-export function validateRecall(value, path = '$', minKeywordLength = 2) {
+// 出现条件: a director-recalled entry is offered only while the card's settled variables meet `when` -
+// one `{path, equals | atLeast | atMost}` or up to eight of them, all holding (mvuConditionHolds reads it).
+export function validateRecallWhen(value, path) {
+  const rows = Array.isArray(value) ? value : [value]
+  check(rows.length >= 1 && rows.length <= 8, path, 'Use one to eight conditions', 'LIMIT_EXCEEDED')
+  rows.forEach((row, index) => {
+    const p = Array.isArray(value) ? `${path}[${index}]` : path
+    shape(row, ['path', 'equals', 'atLeast', 'atMost'], ['path'], p)
+    text(row.path, p + '.path', 200); check(/^\/./.test(row.path), p + '.path', 'Write a variable path such as /好感/某人')
+    const ops = ['equals', 'atLeast', 'atMost'].filter(key => Object.hasOwn(row, key))
+    check(ops.length === 1, p, 'Give exactly one of equals, atLeast, atMost')
+    if (ops[0] === 'equals') check(typeof row.equals === 'boolean' || Number.isFinite(row.equals) || typeof row.equals === 'string' && [...row.equals].length <= 200, p + '.equals', 'Compare with text, a number or true/false')
+    else check(Number.isFinite(row[ops[0]]), p + '.' + ops[0], 'Compare with a number')
+  })
+}
+const UNRECALLED_KINDS = ['directions', 'skins', 'entrances', 'videos', 'items']
+export function validateRecall(value, path = '$', minKeywordLength = 2, {when = false} = {}) {
   assertJson(value)
   // 优先级 is gone; an old `priority` is UNKNOWN_FIELD (ingress strips it once, recall-priority.js).
-  shape(value, ['mode', 'keywords', 'synonyms'], ['mode', 'keywords'], path)
+  shape(value, ['mode', 'keywords', 'synonyms', ...(when ? ['when'] : [])], ['mode', 'keywords'], path)
+  if (value.when !== undefined) validateRecallWhen(value.when, path + '.when')
   oneOf(value.mode, ['constant', 'keyword'], path + '.mode'); array(value.keywords, path + '.keywords', 16)
   for (const word of value.keywords) text(word, path + '.keywords', 40, minKeywordLength)
   unique(value.keywords, path + '.keywords')
@@ -66,7 +83,7 @@ export function validateAsset(value, path = '$') {
   validateShortId(value.id, path + '.id'); text(value.name, path + '.name'); if (value.kind !== 'skins') bool(value.enabled, path + '.enabled')
   if (value.remark !== undefined) check(typeof value.remark === 'string', path + '.remark')
   validateCopiedFrom(value.extensions,value.kind,path + '.extensions')
-  validateRecall(value.recall, path + '.recall'); text(value.directorNote, path + '.directorNote', 300, 0); validateMetadata(value, path)
+  validateRecall(value.recall, path + '.recall', 2, {when: !UNRECALLED_KINDS.includes(value.kind)}); text(value.directorNote, path + '.directorNote', 300, 0); validateMetadata(value, path)
   if (value.kind === 'directions') {
     check(value.recall.mode === 'constant' && value.recall.keywords.length === 0 && value.recall.synonyms === undefined, path + '.recall')
     check(value.directorNote === '', path + '.directorNote')
@@ -154,14 +171,21 @@ export function validateAssetContent(kind, content, path = '$') {
   }
   return content
 }
-// the pack's default style preset for generated pictures.
-// These ids are the one list; each preset's prompt text is asset-production-contract.js, its name the client's.
-export const PACK_GEN_STYLES = Object.freeze(['clean', 'anime', 'polished', 'none'])
+// the pack's default style for generated pictures: the id of a style preset of the image plugin (its text and name live
+// there). Packs written before that store one of the four former ids; they read as the plugin presets that replaced them.
+const LEGACY_GEN_STYLES = Object.freeze({clean:'galgame-clean', anime:'galgame-anime', polished:'galgame-polished', none:'no-style'})
+export const PACK_GEN_STYLE_DEFAULT = 'galgame-clean'
+export function packGenStyle(value) {
+  return value === undefined ? PACK_GEN_STYLE_DEFAULT : LEGACY_GEN_STYLES[value] ?? value
+}
+export function validGenStyle(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/.test(value) && value.length <= 80
+}
 export function validatePackManifest(value, path = '$') {
   assertJson(value)
   const required = ['format', 'schemaVersion', 'id', 'name', 'contentHash', 'assets', 'figures', 'sprites', 'bundles', 'blobs', 'files']
   shape(value, [...required, ...metadata, 'voiceLibrary', 'tagIcons', 'genStyle', 'backgroundStyle', 'stageSkin'], required, path)
-  if (value.genStyle !== undefined) oneOf(value.genStyle, PACK_GEN_STYLES, path + '.genStyle')
+  if (value.genStyle !== undefined) check(validGenStyle(value.genStyle), path + '.genStyle', 'Unknown style id')
   // `stageSkin` is the retired pack default skin: a card's skin is its own value, then the global default, then classic
   // (card-stage-settings.js cardStageSkin). An older pack keeps it as stored and it is still shape-checked, but nothing reads it.
   if (value.stageSkin !== undefined) validateShortId(value.stageSkin, path + '.stageSkin')

@@ -274,7 +274,11 @@
 			const debugTurns = view && Array.isArray(view.debugTurns) ? view.debugTurns : [];
 			const latestDebugTurn = Number(debugTurns[0] && debugTurns[0].turn) || 0;
 			React.useEffect(function () {
-				setError(missingCard ? "" : (liveState.error || ""));
+				// no-session / no-chat / empty-view 是「这个对话还没有游戏」，不是读取失败：
+				// live view 重试耗尽后把原因留在 error 上，面板应显示空态提示，
+				// 不能把「出错了，请稍后再试」推进错误中心。
+				const emptyView = ["no-session", "no-chat", "empty-view"].includes(liveState.error);
+				setError(missingCard || emptyView ? "" : (liveState.error || ""));
 			}, [liveState.error, missingCard]);
             const [resourceLinkBusy, setResourceLinkBusy] = React.useState(false);
             const [resourceLinkError, setResourceLinkError] = React.useState("");
@@ -388,8 +392,10 @@
             }
             React.useEffect(function () {
                 if (!["running", "queued"].includes(view?.characterDesignTask?.status)) return;
-                const timer = setInterval(() => liveTavernView.invalidate(props.sessionId), 2000);
-                return () => clearInterval(timer);
+                const refresh = () => liveTavernView.invalidate(props.sessionId);
+                const stopWatch = watchTavernState(props.sessionId, refresh);
+                const stopPoll = pollTaskWhile(refresh);
+                return () => { stopWatch(); stopPoll(); };
             }, [props.sessionId, view?.characterDesignTask?.status]);
 			function characterDesignTime(ts) {
 				if (!ts) return "";
@@ -510,7 +516,7 @@
         const setCandidatePanel = interactions.candidates.set;
         const setCandidateGuidePanel = interactions.guide.set;
         const setRegenPanel = interactions.regeneration.set;
-        const { readyCandidatePanel, submitCandidateTask, submitBodyRegeneration } = interactions;
+        const { readyCandidatePanel, submitCandidateTask, submitBodyRegeneration, loadSavedCandidates } = interactions;
         function useInteractionPanel(store) { return React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot); }
         function useCandidatePanel() { return useInteractionPanel(interactions.candidates); }
         function useCandidateGuidePanel() { return useInteractionPanel(interactions.guide); }
@@ -699,19 +705,11 @@
 			React.useEffect(function () {
 				if (!chatShown) return;
 				// input.dock 在会话还没就绪时可能整棵卸载，marker 一时还没进滚动容器：
-				// 退回页面里当前的会话滚动容器，别把刻度列一起丢掉。
+				// 退回页面里当前的会话滚动容器。
 				const root = (marker.current && marker.current.closest("[data-conversation-scroll]"))
 					|| document.querySelector("[data-conversation-scroll]");
 				if (!root) return;
 				const projection = createSupersededErrorProjection(root);
-				// 宿主重挂会话视图时，marker 跟着换进新的滚动容器；刻度列每次同步都按 marker
-				// 重新找容器，不会跟着旧节点一起「消失」。
-				const rail = createStoryFloorRail(root, {
-					resolveScope: function () {
-						const live = marker.current && marker.current.closest("[data-conversation-scroll]");
-						return live || null;
-					}
-				});
 				const controls = createTurnErrorControls(root, {
                     sessionId: props.sessionId, storage: window.localStorage, hiddenTurns: hiddenTurns, failedTailTurn: failedTailTurn,
                     onVisible: function (turn) { tavernPlayEvents.emitOnce(props.sessionId + ":" + turn, "native_error", props.sessionId, { nativeTurn: turn }); },
@@ -747,12 +745,30 @@
 				// The live round keeps its
 				// progress, and the error row below owns the one control that brings them back.
 				const stepFold = createStepFoldControls(root, { running: running === true, play: hideProcess });
-				const apply = function () { projection.apply(turns); controls.apply(); stepFold.apply(); rail.apply(); };
+				const apply = function () { projection.apply(turns); controls.apply(); stepFold.apply(); };
 				apply();
 				const observer = observeTurnErrorProjection(root, apply);
-				return function () { observer.disconnect(); controls.dispose(); stepFold.dispose(); projection.dispose(); rail.dispose(); };
+				return function () { observer.disconnect(); controls.dispose(); stepFold.dispose(); projection.dispose(); };
 			}, [props.sessionId, revision, running, hideProcess, chatShown]);
 			return React.createElement("span", { ref: marker, hidden: true, "data-tavern-error-projection": props.sessionId });
+		}
+		// 楼层刻度列挂载在常驻会话层：不受 input.dock 卸载或 running/revision 变化影响，
+		// 并按 sessionId 绑定到所属会话容器，与故事流列表共享同一租约，避免跨会话错绑或重复挂载。
+		function StoryFloorRailHost(props) {
+			React.useEffect(function () {
+				const sessionId = String(props.sessionId || "");
+				if (!sessionId) return undefined;
+				if (typeof acquireStoryFloorRail === "function") {
+					const lease = acquireStoryFloorRail(sessionId);
+					return function () { lease.release(); };
+				}
+				if (typeof createStoryFloorRail !== "function") return undefined;
+				const root = document.querySelector("[data-conversation-scroll]") || null;
+				const rail = createStoryFloorRail(root, { sessionId: sessionId });
+				rail.apply();
+				return function () { rail.dispose(); };
+			}, [props.sessionId]);
+			return null;
 		}
 		// @include background-suppression.js
 		const pollBackgroundSuppression = createBackgroundSuppressionPoller(rpc);
@@ -822,6 +838,15 @@
 			const ctx = input.ctx;
 			const slots = input.slots;
 			installTavernAssetLaunchers(ctx, slots);
+			ctx.effect(function () {
+				return tavernUiExtensions.attachCandidateRunner(async function (sessionId, guidance) {
+					const snap = liveTavernView.snapshot(sessionId);
+					const msgId = String((snap && snap.view && snap.view.latestAssistantMessageId) || "");
+					await submitCandidateTask(sessionId, msgId, String(guidance || ""));
+					liveTavernView.invalidate(sessionId);
+					tavernCoordination.invalidate(sessionId);
+				});
+			}, "dsh-tavern: plugin candidate runner");
 			const uiConversation = ctx.get("uiConversation") || ctx.get("conversation");
 			const executeSlash = createTavernFrameSlashExecutor(ctx);
             ctx.effect(() => registerTab(ctx.betterSidebar, {
@@ -929,7 +954,9 @@
 				function (props) { return React.createElement(React.Fragment, null,
 					React.createElement(SupersededTurnErrors, Object.assign({}, props, { key: props.sessionId })),
 					React.createElement(TurnHistoryProjection, Object.assign({}, props, { key: "history:" + props.sessionId })),
-					React.createElement(CandidateQuestion, Object.assign({}, props, { sessions: ctx.sessions }))
+					React.createElement(CandidateQuestion, Object.assign({}, props, {
+						sessions: ctx.sessions
+					}))
 				); }
 			)), ctx.sessions), "dsh-tavern: candidate question panel");
 			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.input.dock", () => slots.register(
@@ -941,6 +968,13 @@
 				{ name: "conversation.session.header.utilities", id: "dsh-tavern-send-hold", order: -105, label: "长按发送键重新生成" },
 				function (props) { return React.createElement(TavernSendLongPress, { sessionId: props.sessionId }); }
 			)), ctx.sessions), "dsh-tavern: long press send key");
+			ctx.effect(whileTavernDrawsChat(() => slots.inject("conversation.session.header.utilities", () => slots.register(
+				{ name: "conversation.session.header.utilities", id: "dsh-tavern-story-floor-rail", order: -104, label: "楼层跳转刻度列" },
+				function (props) {
+					if (ctx.sessions && typeof ctx.sessions.subagentAddress === "function" && ctx.sessions.subagentAddress(props.sessionId)) return null;
+					return React.createElement(StoryFloorRailHost, { sessionId: props.sessionId });
+				}
+			)), ctx.sessions), "dsh-tavern: story floor rail");
 			ctx.effect(() => slots.inject("conversation.input.dock", () => slots.register(
 				{ name: "conversation.input.dock", id: "dsh-fork-session-shell", order: -200, label: "会话外壳" },
 				function (props) { return React.createElement(React.Fragment, null,

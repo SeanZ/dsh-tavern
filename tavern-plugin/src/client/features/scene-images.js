@@ -92,10 +92,9 @@
 						h("h4", null, row.provider ? "本局生图 · " + row.provider : row.turn > 0 ? "第 " + row.turn + " 轮" : "开场", h("span", null, row.shots.length + " 张")),
 						h("div", { className: "dsh-tavern-gallery-row" }, row.shots.map(function (shot) {
 							return h("figure", { key: shot.id, className: "dsh-tavern-gallery-shot" + (picked[shot.id] ? " is-picked" : ""), title: shot.version.description },
-									h("a", { href: shot.url, "aria-label": shot.item.provider ? "放大「" + shot.item.provider + "」图库图片" : "放大第 " + shot.item.turn + " 轮插图", onClick: function (event) {
-									event.preventDefault();
+									h("button", { type: "button", className: "dsh-tavern-image-preview", "aria-label": shot.item.provider ? "放大「" + shot.item.provider + "」图库图片" : "放大第 " + shot.item.turn + " 轮插图", onClick: function (event) {
 									if (picking) toggle(shot, !picked[shot.id]);
-									else openSceneImagePreview(shot.url, event.currentTarget, null, null, { urls: urls, index: urls.indexOf(shot.url) });
+									else openSceneImagePreview(shot.url, event.currentTarget, null, { urls: urls, index: urls.indexOf(shot.url) });
 								} }, h("img", { src: shot.url, alt: shot.version.description || "插图", loading: "lazy" })),
 								picking ? h("label", { className: "dsh-tavern-gallery-pick" }, h("input", { type: "checkbox", "aria-label": "选择第 " + shot.item.turn + " 轮插图", checked: Boolean(picked[shot.id]), disabled: busy, onChange: function (event) { toggle(shot, event.target.checked); } }))
 									: h("button", { type: "button", className: "dsh-tavern-gallery-delete", "aria-label": "删除这张图片", title: "删除这张图片", disabled: busy, onClick: function () { void remove([shot]); } }, h(DshUi.IconTrashOutlineRegular, null)));

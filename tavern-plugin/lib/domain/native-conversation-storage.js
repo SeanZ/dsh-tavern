@@ -1,3 +1,4 @@
+import {STORY_ROW_FIELDS} from './chat-field-transaction.js'
 import {createHash} from 'node:crypto'
 import {ScenePrefixHash} from './scene-prefix-hash.js'
 import {projectTavernHelperContext,projectTavernHelperMessage} from './tavern-helper-context.js'
@@ -87,8 +88,10 @@ export function createNativeConversationStorage({dataRoot,onIO}){
    }
    onIO?.({kind:'phase',name:'chat.native.summary-scan',chatId:id,durationMs:performance.now()-started})
    const value={messages,pending,bytes}
+   // 手机在 12 个会话之间来回切：只留 4 份时刚切一圈就全部落空，每次都要重扫全历史
+   // page。上限提到 12 份（与视图/故事窗口缓存同档），字节上限相应放宽。
    if(bytes<=8*1024*1024){
-    while(summaryCache.size && (summaryCache.size>=4 || summaryBytes+bytes>16*1024*1024)){
+    while(summaryCache.size && (summaryCache.size>=12 || summaryBytes+bytes>24*1024*1024)){
      const oldest=summaryCache.keys().next().value;summaryBytes-=summaryCache.get(oldest).bytes;summaryCache.delete(oldest)
     }
     summaryCache.set(key,value);summaryBytes+=bytes
@@ -528,7 +531,7 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   const view=await head(id)
   if(!view)return null
   const chat=await selectedHeader(id,view,['id','sessionId','_storageRevision','mode','cardPath','cardContextRevision',
-   'backgroundConfigVersion','conversationFeaturesVersion','disabledWritingSkills','contextCompaction','updatedAt','timeline','candidateAgent',
+   'backgroundConfigVersion','conversationFeaturesVersion','backgroundTasks','disabledWritingSkills','contextCompaction','updatedAt','timeline','candidateAgent',
    'cardName','requestMode','statusBarPlacement','statusSections','webSearchEnabled','candidates','taskMailbox','regenInProgress','settleError','scriptState',
    'hiddenDshErrorTurns','suppressedDshTurns','replacingDshTurns','failedRegenerationTarget','regeneratedDshTurns','tavernHelperLifecycleRevision','importHistory','rollbackUndo','pendingMvuSettlement'])
   if(Object.values(chat.timeline?.operations??{}).some(op=>op?.kind==='body'&&op.status==='foreground-completed'))return projectChatSessionState((await read(id)).chat,{detach:false})
@@ -759,7 +762,7 @@ export function createNativeConversationStorage({dataRoot,onIO}){
   for(let position=retained;position<next.messages.length;position++)append.push(await encode(id,next.messages[position],undefined,undefined,t))
   const changedMessageIndices=edits.map(edit=>edit.position)
   let sceneFrom=from
-  for(const [position,mutations] of grouped)if(mutations.some(change=>!change.path.length||['role','turn','greeting','text','sourceText','swipeId','swipes'].includes(change.path[0])))sceneFrom=Math.min(sceneFrom,position)
+  for(const [position,mutations] of grouped)if(mutations.some(change=>!change.path.length||STORY_ROW_FIELDS.includes(change.path[0])))sceneFrom=Math.min(sceneFrom,position)
   let sceneIndexRef=view.state.sceneIndexRef
   // Older writers know image keys but not display metadata. Never bless their
   // retained display state on a variable-only write; a body rebuild repairs it.

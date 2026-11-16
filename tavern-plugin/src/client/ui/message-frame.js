@@ -389,12 +389,12 @@
 					receipt.summary ? h("div", { className: "dsh-tavern-mvu-receipt-reason" }, "原因：" + String(receipt.summary)) : null,
 					changes.map(function (change, index) { return h("div", { key: "change:" + index, className: "dsh-tavern-mvu-change" },
 						h("div", { className: "dsh-tavern-mvu-change-path" }, (operationLabels[change.operation] || "更新") + " " + String(change.path || "/")),
-						h("div", { className: "dsh-tavern-mvu-change-values" }, String(change.before) + " → " + String(change.after))
+						h("div", { className: "dsh-tavern-mvu-change-values" }, change && change.hidden && change.hidden.text ? String(change.hidden.text) : (String(change.before) + " → " + String(change.after)))
 					); }),
 					sideEffects.length > 0 ? h("div", { className: "dsh-tavern-mvu-side-effect-title" }, "人物卡脚本联动") : null,
 					sideEffects.map(function (change, index) { return h("div", { key: "side-effect:" + index, className: "dsh-tavern-mvu-change", "data-origin": "card-script" },
 						h("div", { className: "dsh-tavern-mvu-change-path" }, (operationLabels[change.operation] || "更新") + " " + String(change.path || "/")),
-						h("div", { className: "dsh-tavern-mvu-change-values" }, String(change.before) + " → " + String(change.after))
+						h("div", { className: "dsh-tavern-mvu-change-values" }, change && change.hidden && change.hidden.text ? String(change.hidden.text) : (String(change.before) + " → " + String(change.after)))
 					); }),
 					failures.map(function (failure, index) {
 						const operation = operationLabels[failure.operation] || String(failure.operation || "操作");
@@ -504,6 +504,16 @@
 			});
 		}
 
+		function TavernScriptLayerMedia(props) {
+			const [host] = React.useState(function () { return document.createElement("div"); });
+			const attach = React.useCallback(function (slot) {
+				if (!slot) { host.remove(); return; }
+				slot.tavernMediaHost = host;
+				slot.append(host);
+			}, [host]);
+			return React.createElement("div", { ref: attach, "data-dsh-script-media": props.id }, ReactDOM.createPortal(props.children, host));
+		}
+
 		function TavernScriptLayerPart(props) {
 			const native = React.useRef(null), layer = React.useRef(null);
 			React.useLayoutEffect(function () {
@@ -519,11 +529,81 @@
 				React.createElement("div", { ref: layer, className: "mes_text dsh-tavern-script-layer", "data-dsh-script-layer": "", "data-session": props.layer.sessionId, "data-mesid": String(props.layer.messageId) }));
 		}
 
+		function TavernAssistantReasoningBox(props) {
+			const h = React.createElement;
+			const live = Boolean(props && props.live);
+			const text = String(props && props.text || "");
+			const canHook = typeof React.useRef === "function";
+			const detailsRef = canHook ? React.useRef(null) : null;
+			const preRef = canHook ? React.useRef(null) : null;
+			const scrollStateRef = canHook ? React.useRef({
+				pinned: true,
+				prevActive: live,
+				lastTop: 0,
+				programmaticTop: null
+			}) : null;
+			const useEffectHook = canHook ? (typeof React.useLayoutEffect === "function" ? React.useLayoutEffect : React.useEffect) : null;
+			const syncToBottom = canHook ? React.useCallback(function () {
+				const pre = preRef.current;
+				const details = detailsRef.current;
+				if (!pre || !live || !scrollStateRef.current.pinned) return;
+				if (details && details.open === false) return;
+				const floor = Math.max(0, pre.scrollHeight - pre.clientHeight);
+				if (floor <= 0) {
+					scrollStateRef.current.lastTop = pre.scrollTop;
+					return;
+				}
+				if (floor - pre.scrollTop > 1) {
+					pre.scrollTop = pre.scrollHeight;
+					scrollStateRef.current.programmaticTop = pre.scrollTop;
+					scrollStateRef.current.lastTop = pre.scrollTop;
+				}
+			}, [live]) : null;
+			if (canHook) {
+				useEffectHook(function () {
+					const state = scrollStateRef.current;
+					if (live && !state.prevActive) state.pinned = true;
+					state.prevActive = live;
+					if (!text) return;
+					syncToBottom();
+				}, [live, text, syncToBottom]);
+			}
+			const onScroll = canHook ? React.useCallback(function (event) {
+				const el = event && event.currentTarget;
+				if (!el) return;
+				const state = scrollStateRef.current;
+				const top = el.scrollTop;
+				const floor = Math.max(0, el.scrollHeight - el.clientHeight);
+				if (floor - top <= 16) {
+					state.pinned = true;
+				} else if (state.programmaticTop !== null && Math.abs(top - state.programmaticTop) <= 1) {
+					// Ignore async scroll event emitted by syncToBottom when newer chunks grew scrollHeight.
+				} else if (top < state.lastTop - 1 || state.programmaticTop === null) {
+					state.pinned = false;
+				}
+				state.programmaticTop = null;
+				state.lastTop = top;
+			}, []) : undefined;
+			const onToggle = canHook ? React.useCallback(function (event) {
+				if (event && event.currentTarget && event.currentTarget.open && live && scrollStateRef.current.pinned) {
+					syncToBottom();
+				}
+			}, [live, syncToBottom]) : undefined;
+			return h("details", {
+				ref: detailsRef || undefined,
+				className: "dsh-tavern-assistant-reasoning",
+				open: live,
+				onToggle: onToggle
+			}, h("summary", null, live ? "思考中…" : "思考过程"), h("pre", { ref: preRef || undefined, onScroll: onScroll }, text));
+		}
+
 		// Third-party plugins: use the public tavernUi API (docs/plugin-api.md), never patch this file; its structure changes freely.
 		function renderTavernAssistantBlocks(input) {
 			const h = React.createElement;
 			// The answer step is drawn twice by DSH: its thinking in the process panel ("reasoning"),
 			// the reply below it ("response"). Each seat shows only its own blocks, as DSH's own view does.
+			// 思考由 assistant-renderer 按整轮汇总到正文上方（设置 › 高级 › 流式显示思维链），
+			// 这里不再把 reasoning 塞进回复座位：玩法回合的思考落在工具步上，逐步行会画很多遍。
 			const blocks = (Array.isArray(input.blocks) ? input.blocks : []).filter(function (block) {
 				return !block || input.groupPart !== "response" || block.kind !== "reasoning";
 			});
@@ -556,7 +636,7 @@
 					continue;
 				}
 				if (block.kind === "reasoning") {
-					rendered.push(h("details", { key: index, className: "dsh-tavern-assistant-reasoning", open: input.streaming && index === blocks.length - 1 }, h("summary", null, input.streaming && index === blocks.length - 1 ? "思考中…" : "思考过程"), h("pre", null, String(block.text || ""))));
+					rendered.push(h(TavernAssistantReasoningBox, { key: index, live: Boolean(input.streaming && index === blocks.length - 1), text: String(block.text || "") }));
 					continue;
 				}
 				if (block.kind === "image") {

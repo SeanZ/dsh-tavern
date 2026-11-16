@@ -320,7 +320,7 @@ function PackGetSheet({binding,packs,catalogueReady:ready,onClose,onSources,onIn
     onDragEnter:e=>{if(!catDragFiles(e))return;e.preventDefault();depth.current++;setOver(true);},
     onDragOver:e=>{if(!catDragFiles(e))return;e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect=zip.busy?'none':'copy';},
     onDragLeave:e=>{if(!catDragFiles(e))return;depth.current=Math.max(0,depth.current-1);if(!depth.current)setOver(false);},
-    onDrop:e=>{if(!e.dataTransfer?.files?.length&&!catDragFiles(e))return;e.preventDefault();depth.current=0;setOver(false);if(!zip.busy)pick(e.dataTransfer?.files);}};
+    onDrop:e=>{if(!e.dataTransfer?.files?.length&&!catDragFiles(e))return;e.preventDefault();depth.current=0;setOver(false);if(!zip.busy&&!modelDragFromPage(e.dataTransfer))pick(e.dataTransfer?.files);}};
   const choose=()=>picker.current?.click?.();
   const bar=h('div',{className:'ap-get-bar'},
     ready&&h('input',{id:'ap-cat-url',className:'ap-get-url',type:'url',inputMode:'url',autoComplete:'off',spellCheck:false,'aria-label':'素材包链接',placeholder:'粘贴素材包链接','data-autofocus':true,
@@ -505,12 +505,30 @@ function PackSetInstall({binding,set,origin,onDone,onClose}) {
   if(!preview)return null;
   return h(ConflictDialog,{key:preview.inspectionId,binding,preview,origin,step:members.length>1?{index,count:members.length}:null,onDone:next,onClose:()=>next(null)});
 }
+// An update keeps each figure's local 外貌 (配图 人物库); a figure whose imported 外貌 differs gets one row: its name, the
+// two answers (保留本机的 by default / 用导入的) and both texts in words, then its 参考图 by name. Confirming sends the
+// adopted ids (adoptLooks).
+const CAT_LOOK_PARTS=['upper','lower','shoes','accessory','full','back'];
+function catLookText(look) {
+  const words=[...Object.values(look?.traits||{}),...(look?.outfits||[]).map(o=>{const text=CAT_LOOK_PARTS.map(k=>o[k]).filter(Boolean).join('，');return text&&(o.name?o.name+'：':'')+text;})].filter(Boolean).join('；');
+  const pictures=[look?.referenceImage,...(look?.outfits||[]).map(o=>o.characterOutfitImage)].filter(Boolean).map(image=>image.name||'未命名');
+  const text=words.length>100?words.slice(0,100)+'…':words;
+  return pictures.length?(text?text+'；':'')+'参考图：'+pictures.join('、').slice(0,60):text;
+}
+function CatLookChoice({row,adopted,disabled,onChange}) {
+  return h('div',{className:'ap-card-pack ap-cat-look'},
+    h('div',{className:'ap-card-pack-head'},h('strong',null,row.name),
+      h(Segmented,{className:'ap-cat-segment',label:row.name+' 外貌',value:adopted?'incoming':'local',disabled,onChange:value=>onChange(value==='incoming'),options:[['local','保留本机的'],['incoming','用导入的']]})),
+    h('p',{className:'ap-card-pack-line','data-chosen':!adopted||undefined},'本机：'+catLookText(row.local)),
+    h('p',{className:'ap-card-pack-line','data-chosen':adopted||undefined},'导入：'+catLookText(row.incoming)));
+}
 function PackInstallSheet({preview,origin,step,busy,error,stale,onClose,onInstall,onRetry}) {
   const choices=preview.choices||[],incoming=preview.incoming||{},manifest=incoming.manifest||{assets:[],figures:[]},name=manifest.name||'素材包';
   const d=preview.distribution||null,remote=!!d,merge=preview.merge||null,current=preview.current||null,currentName=current?.manifest?.name||name;
   const kind=choices.includes('noop')?'same':choices.includes('update')?'update':choices.includes('install')?'install':'copy';
   const [keep,setKeep]=React.useState(false);
   const decision={same:'noop',install:'install',copy:'keep-both',update:keep?'keep-both':'update'}[kind],replacing=decision==='update';
+  const looks=replacing?(preview.figureLooks||[]):[],[adopt,setAdopt]=React.useState([]);
   const fromVersion=current?.distribution?.version,toVersion=d?.version;
   const title=(replacing?'更新素材包':kind==='same'?'已经安装过了':'安装素材包')+(step?' '+(step.index+1)+'/'+step.count:'');
   const action=kind==='same'?'完成':replacing?(remote?'更新':'替换'):keep?'另存一份':'安装';
@@ -535,7 +553,7 @@ function PackInstallSheet({preview,origin,step,busy,error,stale,onClose,onInstal
     remote&&!!d.sourceId&&!(d.official&&d.integrity==='sha256')&&h(CatFact,{key:'sha',label:'文件指纹'},d.integrity==='sha256'?'已核对，文件完整':CAT_TEXT.noFingerprint),
     ...catContentRows(manifest,incoming.figures).map(([k,names])=>h(CatFact,{key:k,label:kinds[k]},names))].filter(Boolean);
   const foot=h(React.Fragment,null,h(Button,{disabled:busy,onClick:onClose},'取消'),
-    h(Button,{primary:true,disabled:busy||stale,onClick:()=>onInstall(decision)},catBusyLabel(busy,busy?(replacing?'正在更新…':'正在安装…'):action)));
+    h(Button,{primary:true,disabled:busy||stale,onClick:()=>onInstall(decision,looks.length?adopt:[])},catBusyLabel(busy,busy?(replacing?'正在更新…':'正在安装…'):action)));
   return h(CatSheet,{title,className:'ap-cat-install-sheet',onClose,busy,foot,initialFocus:'dialog'},
     h(CatHero,{name:replacing?currentName:name,kind:catLeadKind(manifest)},sub,
       remote&&d.official&&h(CatNote,null,'官方素材'+(d.integrity==='sha256'?' · 文件完整':''))),
@@ -543,6 +561,8 @@ function PackInstallSheet({preview,origin,step,busy,error,stale,onClose,onInstal
     lead&&h('p',{className:'ap-cat-lead'},lead),
     // The list is the content (no count of it); the sentence only says what happens to it.
     losses.length>0&&h(CatBand,{list:h(CatItems,{items:losses})},merge&&!merge.withoutBaseline?'更新后，下面这些你改过的内容会消失：':merge?'更新后，下面这些会被删除：':'替换后，下面这些会被删除：'),
+    looks.length>0&&h('div',{className:'ap-card-packs ap-cat-looks'},h('p',{className:'ap-cat-lead'},'这些人物的外貌和本机的不同：'),
+      looks.map(row=>h(CatLookChoice,{key:row.figureId,row,adopted:adopt.includes(row.figureId),disabled:busy,onChange:on=>setAdopt(list=>on?[...list,row.figureId]:list.filter(id=>id!==row.figureId))}))),
     kind==='update'&&!stale&&h('p',{className:'ap-cat-switch'},h(Button,{className:'ap-link',disabled:busy,onClick:()=>setKeep(!keep)},keep?(remote?'改回更新原来的':'改回替换原来的'):'改为另存一份')),
     // Program files outside a 模组: the 非官方来源 band already says 「请只安装…」, so the note only stands alone.
     scripts&&(widgets.length?h(CatNote,{kind:'widgets'},'含模组'+widgets.map(w=>'「'+w+'」').join('')+'。'+CAT_TEXT.widgetRisk):!unofficial&&h(CatNote,{icon:'note'},'含程序文件。第三方程序可能有安全风险，请只安装你信任的素材包。')),

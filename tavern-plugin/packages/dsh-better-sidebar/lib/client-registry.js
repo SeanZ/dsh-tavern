@@ -29918,6 +29918,7 @@ function taskCatalogReads(projections, rootId) {
 			(0, react.useSyncExternalStore)((listener) => records.subscribe(listener), () => records.versionOf(sessionId, nativeTab.id));
 			const record = records.get(sessionId, nativeTab.id);
 			const descriptor = service.getTab(descriptorId) ?? service.getTab(record?.tab.type ?? nativeTab.kind);
+			// A single page's title is its type's, read from the registry at render time: an open tab follows a renamed panel.
 			const title = descriptor?.single === true ? titleOf(descriptor) : record?.tab.title ?? nativeTab.title;
 			const path = record?.tab.path ?? paramsOf?.(info)?.path;
 			const glyph = (path !== void 0 && descriptorId === EDITOR_KIND$1 ? service.fileIcon(path, CHIP_ICON_SIZE) : void 0) ?? (typeof descriptor?.icon === "function" ? descriptor.icon(CHIP_ICON_SIZE) : descriptor?.icon);

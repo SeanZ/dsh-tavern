@@ -88,7 +88,14 @@ test('准备正文时改写历史正文：拒绝旧帧，即使楼层数量不�
       { op: 'set', path: ['messages', 1, 'text'], value: '改写过的正文' }
     ], { source: 'tavern-helper.messages' })
   })
-  await assert.rejects(scoped.turns.prepare({ sessionId: 's', turn: 13, userText: '继续' }), { code: 'TAVERN_PREPARE_CONFLICT' })
+  await assert.rejects(scoped.turns.prepare({ sessionId: 's', turn: 13, userText: '继续' }), error => {
+    assert.equal(error.code, 'TAVERN_PREPARE_CONFLICT')
+    assert.equal(error.conflict.reason, 'message-changed')
+    assert.equal(error.conflict.index, 1)
+    assert.ok(error.conflict.currentRevision > error.conflict.revision)
+    assert.deepEqual(error.conflict.writers.map(writer => writer.source), ['tavern-helper.messages'], '写明期间写入的来源')
+    return true
+  })
   const saved = await scoped.stored()
   assert.equal(saved.messages[1].text, '改写过的正文')
   assert.equal(saved.messages.length, 24)
@@ -140,6 +147,41 @@ test('上一楼层的显示捕获和回退记录版本戳不作废正文准备',
   const saved = await scoped.stored()
   assert.deepEqual(saved.messages[23].displayRuntime, receipt)
   assert.equal(saved.messages.length, 26)
+})
+
+test('准备正文期间其他部分写入的字段与准备合并，本轮照常进行', async t => {
+  const scoped = await app(t, base(history(12, () => true)), true)
+  await scoped.play(13)
+  const others = [
+    { op: 'set', path: ['candidates'], value: { messageId: 'm', choices: [{ text: '去天台' }] } },
+    { op: 'set', path: ['taskMailbox'], value: { tasks: { c1: { kind: 'candidate', status: 'running' } } } },
+    { op: 'set', path: ['timeline', 'updatedAt'], value: 999999 },
+    { op: 'set', path: ['tavernScriptPrompts'], value: [{ id: 'p1', content: '提示', position: 'in_chat', depth: 0, role: 'system', should_scan: false }] },
+    { op: 'set', path: ['messages', 25, 'tavernPluginData'], value: { is_ejs_processed: [true] } },
+    { op: 'set', path: ['messages', 25, 'stageDirectionRunning'], value: true }
+  ]
+  scoped.beforePatch(async () => {
+    const { _storageRevision } = (await scoped.persistence.readSlice('chat-1')).chat
+    assert.ok(await scoped.persistence.patch('chat-1', _storageRevision, others, { source: 'test.concurrent-others' }))
+  })
+  assert.equal((await scoped.turns.prepare({ sessionId: 's', turn: 14, userText: '再继续' })).ready, true)
+  const saved = await scoped.stored()
+  assert.equal(saved.messages.length, 28)
+  assert.equal(saved.messages[27].placeholder, true)
+  for (const change of others) assert.deepEqual(change.path.reduce((value, key) => value[key], saved), change.value, change.path.join('.'))
+})
+
+test('准备正文期间另一轮提交或回退：拒绝旧帧', async t => {
+  const scoped = await app(t, base(history(12, () => true)), true)
+  await scoped.play(13)
+  scoped.beforePatch(async () => {
+    const { _storageRevision, timeline } = (await scoped.persistence.readSlice('chat-1')).chat
+    assert.ok(await scoped.persistence.patch('chat-1', _storageRevision, [
+      { op: 'set', path: ['timeline', 'revision'], value: timeline.revision + 1 }
+    ], { source: 'rollback' }))
+  })
+  await assert.rejects(scoped.turns.prepare({ sessionId: 's', turn: 14, userText: '再继续' }), { code: 'TAVERN_PREPARE_CONFLICT' })
+  assert.equal((await scoped.stored()).messages.length, 26)
 })
 
 test('Helper 写入时保留其他楼层的并发变量变更', async t => {
@@ -210,3 +252,27 @@ for (const [kind, path, value] of [
     }
   })
 }
+
+test('丢弃过的回合补写正文时，存档里那条玩家输入不再写第二遍', async t => {
+  const scoped = await app(t, base(history(4, () => true)), true)
+  const input = { sessionId: 's', turn: 5, requestId: 'input-5', userText: '继续' }
+  await scoped.turns.appendUser(input)
+  await scoped.turns.prepare(input)
+  // 模拟这次生成失败被丢弃：助手占位退掉，玩家的输入行留在存档里，operation 也不再带占位。
+  await scoped.persistence.update('chat-1', chat => {
+    chat.messages = chat.messages.filter(row => row.role === 'user' || !row.placeholder)
+      .map(row => { if (row.role !== 'user' || !row.placeholder) return row; const next = { ...row }; delete next.placeholder; return next })
+    for (const operation of Object.values(chat.timeline.operations)) delete operation.placeholder
+    return chat
+  }, { source: 'test.discard' })
+  const discarded = await scoped.stored()
+  assert.deepEqual(discarded.messages.slice(-1).map(row => [row.role, row.source?.rpcId]), [['user', 'input-5']])
+
+  await scoped.turns.finalize({ ...input, assistantText: '补写的正文' })
+  const saved = await scoped.stored()
+  assert.deepEqual(saved.messages.slice(-2).map(row => [row.role, row.text]), [
+    ['user', '继续'], ['assistant', '补写的正文']
+  ])
+  assert.equal(saved.messages.filter(row => row.role === 'user' && row.text === '继续').length, 1,
+    '同一请求号只留一条玩家输入')
+})

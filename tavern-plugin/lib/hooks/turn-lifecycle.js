@@ -1,4 +1,5 @@
 import { createHostToolPolicy } from '../host/tools.js'
+import { randomUUID } from 'node:crypto'
 import { assistantResultForTurn } from '../domain/session-turn-result.js'
 import { inputEventForTurn } from '../domain/session-turn-input.js'
 import { roundAnchor } from '../domain/round-anchor.js'
@@ -10,9 +11,50 @@ import { variableDirectoryOpen } from '../domain/session-variable-directory.js'
 import { synchronizeBodyEdits } from '../domain/body-editor.js'
 import { synchronizeTemplateHistory } from '../domain/template-history.js'
 import { turnRepliedByModel } from '../domain/story-alignment.js'
-import { isSurfaceEditTurn, sessionEvents } from '../domain/session-events.js'
+import { isReservingStoryTurns, isSurfaceEditTurn, sessionEvents } from '../domain/session-events.js'
+import { agentForSession } from '../domain/agent-lookup.js'
 import { VIRTUAL_WORLDBOOK_SECTION, withVirtualWorldbook } from '../domain/worldbook-virtual-surface.js'
-import { appendStorySubmissionReminder } from '../domain/story-tool-submission.js'
+import { appendStorySubmissionReminder, STORY_SUBMIT_TOOL_NAME } from '../domain/story-tool-submission.js'
+import { extractStreamedToolReplyContent, parsePartialToolReplyJson } from '../domain/tool-reply-stream-parser.js'
+
+// A provider can stop mid-stream (SAFETY, an idle timeout) and DSH then keeps only the
+// attempt's stream, never an assistant/message: the turn looks empty even though the
+// player watched the body arrive. The prose is still inside that stream — a finished
+// submit_story document, its cut argument text, or a text block — so the round is kept
+// as an incomplete body instead of rolling back to the previous one.
+function contentOfArguments(raw) {
+  if (typeof raw !== 'string' || raw === '') return ''
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed?.content === 'string') return parsed.content
+  } catch (_error) { /* cut mid-document */ }
+  return parsePartialToolReplyJson(raw).content
+}
+
+export function recoveredSubmissionBody(session, turn) {
+  let best = ''
+  const consider = text => {
+    if (typeof text === 'string' && text.length > best.length) best = text
+  }
+  for (const event of sessionEvents(session)) {
+    if (Number(event?.data?.turn) !== Number(turn)) continue
+    if (event.type === 'assistant/message') {
+      for (const block of event.data.message?.content || []) {
+        if (block?.type === 'tool-call' && block.name === STORY_SUBMIT_TOOL_NAME) consider(contentOfArguments(block.arguments))
+        else if (block?.type === 'text') consider(block.text)
+      }
+      if (Array.isArray(event.data.stream)) consider(extractStreamedToolReplyContent(event.data.stream, STORY_SUBMIT_TOOL_NAME))
+    } else if (event.type === 'assistant/attempt') {
+      consider(extractStreamedToolReplyContent(event.data.stream, STORY_SUBMIT_TOOL_NAME))
+      for (const entry of event.data.stream || []) {
+        if (entry?.type === 'chunk' && entry.chunk?.type === 'block-end' && entry.chunk.block?.type === 'text') {
+          consider(entry.chunk.block.text)
+        }
+      }
+    }
+  }
+  return best.trim()
+}
 
 function reachedOutputLimit(assistant) {
   const stream = Array.isArray(assistant?.event?.data?.stream) ? assistant.event.data.stream : []
@@ -54,6 +96,14 @@ export function registerTurnLifecycleHooks({
 }) {
   const hostTools = createHostToolPolicy(ctx)
 
+  // Reply rewrites that reached the save while a turn ran wait for the Agent to go
+  // idle (template-history.js); this writes them once it has.
+  async function synchronizeTemplateHistoryWhenIdle(session) {
+    await agentForSession(session)?.whenIdle()
+    const chat = await hookChatForSession(session.id)
+    if (chat) await synchronizeTemplateHistory(session, chat, value => sessionStore.flush(value))
+  }
+
   ctx.on('agent/turn-stopping', async function (payload) {
     const session = payload.agent && payload.agent.session
     if (session === undefined) return
@@ -68,26 +118,43 @@ export function registerTurnLifecycleHooks({
     const userContent = userMessage?.content || []
     if (userText === '' && !inputAttachments(userContent).length) return
     const requestId = requestIdForTurn(session, payload.turn)
-    const assistant = assistantResultForTurn(session, payload.turn)
+    let assistant = assistantResultForTurn(session, payload.turn)
+    let interrupted = false
     try { await pluginBodyGeneration?.validateResult(session, payload.turn, assistant) }
     catch (error) {
       await turnOrchestrator.recordFailure({ sessionId, turn: payload.turn, requestId, code: 'plugin-generation', message: error.message, failure: error.failure })
       throw error
     }
     if (assistant === null || assistant.text === '') {
-      const reasoningOnly = assistant !== null && assistant.reasoningOnly === true
-      const message = reasoningOnly
-        ? '模型本轮只返回了思考过程，没有返回正文；请重新生成本轮正文。'
-        : '模型本轮没有返回正文；请重新生成本轮正文。'
-      await turnOrchestrator.recordFailure({
-        sessionId,
-        turn: payload.turn,
-        requestId,
-        code: reasoningOnly ? 'reasoning-only' : 'empty-response',
-        message
-      })
-      throw new Error(message)
+      // A stream that stopped at the output limit is not an empty answer: the model
+      // wrote a body (or a submit_story argument) that never completed. Reporting it
+      // as empty-response hid the real cause, and a cut submission looks exactly like
+      // a model that returned nothing.
+      const rescued = recoveredSubmissionBody(session, payload.turn)
+      if (rescued !== '') {
+        // Half a round beats no round: the player already read this text.
+        assistant = { ...(assistant || {}), text: rescued, reasoningText: '', reasoningOnly: false }
+        interrupted = true
+      } else {
+        const truncated = assistant !== null && reachedOutputLimit(assistant)
+        const reasoningOnly = !truncated && assistant !== null && assistant.reasoningOnly === true
+        const message = truncated
+          ? '本轮输出达到上限被截断，正文没有完整提交；请重新生成本轮正文。'
+          : reasoningOnly
+            ? '模型本轮只返回了思考过程，没有返回正文；请重新生成本轮正文。'
+            : '模型本轮没有返回正文；请重新生成本轮正文。'
+        await turnOrchestrator.recordFailure({
+          sessionId,
+          turn: payload.turn,
+          requestId,
+          code: truncated ? 'output-limit' : (reasoningOnly ? 'reasoning-only' : 'empty-response'),
+          message
+        })
+        throw new Error(message)
+      }
     }
+    const projectedMessageId = assistant.storyToolSubmission ? 'tavern-tool-reply:' + randomUUID() : randomUUID()
+    let replyMessageId = String(assistant.event?.data?.message?.id || '')
     const finalize = () => foregroundHandoff.finalize({
       sessionId,
       turn: payload.turn,
@@ -96,15 +163,24 @@ export function registerTurnLifecycleHooks({
       userContent,
       pluginBodyGeneration: assistant?.pluginBodyGeneration === true,
       assistantText: assistant === null ? '' : assistant.text,
-      incomplete: reachedOutputLimit(assistant),
+      replyMessageId: projectedMessageId,
+      incomplete: interrupted || reachedOutputLimit(assistant),
       incompleteReason: '这次生成达到输出上限或被中断，保留了已生成的部分正文',
       nativeAnchor: roundAnchor(payload.turn, inputEventForTurn(session, payload.turn), assistant.event)
     })
     const saved = requestPerformance ? await requestPerformance.run('generateCommit', sessionId, finalize) : await finalize()
     // A submit_story call and its receipt both carry the body; fold them into one
     // plain reply so context, regeneration and rollback see an ordinary round.
-    if (assistant.storyToolSubmission) replaceAssistantReply(session, assistant, saved.reply ? saved.reply.sessionText : assistant.content)
-    else if (saved.reply) replaceAssistantReply(session, assistant, saved.reply.sessionText)
+    if (assistant.storyToolSubmission) {
+      replaceAssistantReply(session, assistant, saved.reply ? saved.reply.sessionText : assistant.content, projectedMessageId)
+      replyMessageId = projectedMessageId
+    } else if (saved.reply) {
+      if (assistant.text !== saved.reply.sessionText) replyMessageId = projectedMessageId
+      replaceAssistantReply(session, assistant, saved.reply.sessionText, projectedMessageId)
+    }
+    if (saved?.candidates && saved.candidates.messageId !== replyMessageId && replyMessageId !== '') {
+      await foregroundHandoff.syncCandidateMessageId?.(sessionId, saved.candidates.requestId, replyMessageId)
+    }
   })
 
   ctx.on('agent/error', function (payload) {
@@ -112,6 +188,7 @@ export function registerTurnLifecycleHooks({
   })
 
   ctx.on('session/event', function (session, event) {
+    if (isReservingStoryTurns(session)) return
     // A new foreground request drops the previous reply's waiting automatic candidates.
     // A Tavern edit (精修 write-back, body edit) opens a turn of its own: not 玩家发送.
     const edit = isSurfaceEditTurn(session, event?.data?.turn)
@@ -126,6 +203,9 @@ export function registerTurnLifecycleHooks({
     // Edits submitted while this turn ran are replayed now that the round cannot
     // move any more; a target that changed in between drops its text instead.
     if (typeof flushQueuedBodyEdits === 'function') void flushQueuedBodyEdits(session.id)
+    if (!edit) setTimeout(() => {
+      synchronizeTemplateHistoryWhenIdle(session).catch(error => console.warn('dsh-tavern: 模板改写同步失败', session.id, error?.message || error))
+    }, 0)
     const reply = assistantResultForTurn(session, event.data && event.data.turn)
     void autoChoices.completed({ sessionId: session.id, turn: event.data && event.data.turn, messageId: String(reply?.event?.data?.message?.id || ''), reason })
     // A turn whose record went missing (#196) is adopted before the player's next

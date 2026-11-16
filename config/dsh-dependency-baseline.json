@@ -2,6 +2,12 @@
   "bin/chat-answer-step-patch.mjs": [
     "@deepseek-ai/dsh-client-ui-chat"
   ],
+  "bin/chat-reasoning-fold-patch.mjs": [
+    "@deepseek-ai/dsh-client-ui-chat"
+  ],
+  "bin/chat-tool-reply-stream-patch.mjs": [
+    "@deepseek-ai/dsh-client-ui-chat"
+  ],
   "bin/cli-runtime.mjs": [
     "@deepseek-ai/dsh"
   ],
@@ -37,6 +43,9 @@
     "@deepseek-ai/dsh-llm-deepseek",
     "@deepseek-ai/dsh-llm-pi-ai"
   ],
+  "bin/service-lifecycle.mjs": [
+    "@deepseek-ai/dsh-client-ui-chat"
+  ],
   "bin/test-runtime.mjs": [
     "@deepseek-ai/dsh-app-boot",
     "@deepseek-ai/dsh-app-boot/package.json",
@@ -66,6 +75,9 @@
     "@deepseek-ai/schemastery"
   ],
   "tavern-plugin/lib/domain/chat-answer-boot-patch.js": [
+    "@deepseek-ai/dsh-client-ui-chat"
+  ],
+  "tavern-plugin/lib/domain/chat-tool-reply-stream.js": [
     "@deepseek-ai/dsh-client-ui-chat"
   ],
   "tavern-plugin/lib/domain/host-compatibility.js": [
@@ -98,6 +110,9 @@
     "@deepseek-ai/dsh-web-frontend/package.json"
   ],
   "tavern-plugin/lib/domain/message-source.js": [
+    "@deepseek-ai/dsh-system-prompt"
+  ],
+  "tavern-plugin/lib/domain/native-surface-repair.js": [
     "@deepseek-ai/dsh-system-prompt"
   ],
   "tavern-plugin/lib/domain/model-calls.js": [
@@ -305,5 +320,11 @@
   ],
   "tavern-plugin/src/client/modules/story-external-history.js": [
     "@deepseek-ai/dsh-client-ui-conversation/client"
+  ],
+  "bin/repair-session-log.mjs": [
+    "@deepseek-ai/dsh-session-format-catalog"
+  ],
+  "tavern-plugin/lib/domain/session-log-repair.js": [
+    "@deepseek-ai/dsh-system-prompt"
   ]
 }

@@ -1,9 +1,10 @@
-import { inputTemplateDigest, preparationMessageContent, preparationTemplateHeaderChange, mergeInputTemplateData } from './foreground-template-state.js'
+import { inputTemplateDigest, preparationMessageContent, mergeInputTemplateData } from './foreground-template-state.js'
 import { bodyGenerationFailure } from './body-generation-failure.js'
+import { extractForegroundStoryChoices } from './candidate-generation.js'
 import { createScopedMessages, isScopedMessages } from './scoped-messages.js'
 import { promptSection } from './prompt-section.js'
-import { captureChatHeader } from './chat-persistence.js'
-import { commitChatFields, rebaseChatChanges, sameChatMessageIdentity } from './chat-field-transaction.js'
+import { captureChatHeader, chatStampPath } from './chat-persistence.js'
+import { commitChatFields, rebaseChatChanges, sameChatMessageIdentity, sameChatMessageStory } from './chat-field-transaction.js'
 import { validAnchor } from './round-anchor.js'
 import { CARD_MEMORY_TOOLS } from '../../packages/dsh-tavern-card-memory/index.js'
 import { inputAttachments } from './player-input-content.js'
@@ -17,12 +18,13 @@ import { normalizeResourcePath } from './file-resources.js'
 import { applyJsonChangesShared, diffJson } from './json-mutation.js'
 import { hasTavernCredit, withTavernCredit } from './card-credit.js'
 import { projectPluginBody } from './st-contract-service.js'
-import { STORY_GENERATE_TOOL_NAME, STORY_SUBMIT_TOOL_NAME, storyToolCallEnabled } from './story-tool-submission.js'
+import { STORY_CONTEXT_TOOL_NAME, STORY_GENERATE_TOOL_NAME, STORY_SUBMIT_TOOL_NAME, storyToolCallEnabled } from './story-tool-submission.js'
 import { normalizeDisabledForegroundTools } from './foreground-tools.js'
 import { variableUpdateFor } from './variable-update.js'
 import { replyProse } from './reply-prose.js'
 import { captureBodyRegenerationSource } from './body-regeneration-materials.js'
 import { frameUserInput } from './agent-input-frame.js'
+import { nextPlainDamperState, readDamperStateSnapshot, summarizeDamperRulingOutcome } from './narrative-damper.js'
 import { readRowsAt } from './bounded-history.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
@@ -63,19 +65,19 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
 
-function preparationConflict() {
-  return Object.assign(new Error('存档在准备正文期间发生冲突，本轮已停止'), { code: 'TAVERN_PREPARE_CONFLICT' })
+// reason: what moved under the preparation; details for the host log (the player sees only the message),
+// with writers: who committed meanwhile.
+function preparationConflict(reason, details) {
+  return Object.assign(new Error('存档在准备正文期间发生冲突，本轮已停止'), {
+    code: 'TAVERN_PREPARE_CONFLICT', conflict: { reason, ...details }
+  })
 }
 
 function storageStamp(change) {
   return change.path[0] === '_storageRevision' || change.path[0] === 'updatedAt'
 }
 
-function compatiblePreparationHeaderChange({ path }) {
-  return preparationTemplateHeaderChange({ path }) || path[0] === 'variables' || path[0] === 'tavernHelperScriptVariables'
-    || (path[0] === 'macroState' && path[1] === 'userName')
-    || (path[0] === 'rollbackUndo' && path[1] === 'storageRevision')
-}
+const changedPaths = changes => [...new Set(changes.map(change => change.path.slice(0, 2).join('.')))].join(', ')
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -306,7 +308,7 @@ export function foregroundFrameInputs(plan, sourceText, projectedText, presetSna
   }
   // A speaker recalled after the frozen roster: this turn's tail only.
   if (rosterAddendum) inputs.push({ kind: 'foreground.current-state', text: rosterAddendum, required: true, source: { stage: 'speaker-roster-addendum' } })
-  for (const section of plugins.filter(item => item.position !== 'before')) inputs.push(pluginInput(section))
+  for (const section of plugins.filter(item => item.position !== 'before' && item.position !== 'last')) inputs.push(pluginInput(section))
   if (usesOfficialMvu(chat)) {
     inputs.push({
       kind: 'foreground.writing-rules',
@@ -315,7 +317,11 @@ export function foregroundFrameInputs(plan, sourceText, projectedText, presetSna
       source: { stage: 'mvu-background-owner' }
     })
   }
-  return inputs.concat(ledgerFrameInputs(chat), presetMiddleInstructions(presetSnapshot), scriptPromptFrameInputs(chat))
+  // position:'last' 的段落排到全段最后：它必须比预设 middle、脚本提示、账本晚被读到，否则会被后置规则块整段盖过
+  //（叙事阻尼器的单轮裁定就是这一档：排在预设规则之前时，模型实际服从的是更晚、更大的规则）。
+  const tail = inputs.concat(ledgerFrameInputs(chat), presetMiddleInstructions(presetSnapshot), scriptPromptFrameInputs(chat))
+  for (const section of plugins.filter(item => item.position === 'last')) tail.push(pluginInput(section))
+  return tail
 }
 
 function frameSource(chat, card, operation) {
@@ -493,13 +499,38 @@ export function createTurnOrchestrator(options) {
         preparationBase = captureChatHeader(chat)
       }
     }
+    async function syncPlaceholderDamper(assistantIndex, outcome) {
+      if (preview || !outcome || !Number.isInteger(assistantIndex) || assistantIndex < 0) return
+      const matches = existing => Array.isArray(existing) && existing.length === 1 && JSON.stringify(existing[0]) === JSON.stringify(outcome)
+      if (typeof store.readChatSlice === 'function' && typeof store.patchChat === 'function') {
+        const head = await store.readChatSlice(input.sessionId, [assistantIndex], ['id', '_storageRevision']).catch(() => null)
+        const row = head?.denseMessages ? head.chat?.messages?.[0] : head?.chat?.messages?.[assistantIndex]
+        if (head?.chat?.id === chat.id && row?.placeholder === true && !matches(row.narrativeDamper)) {
+          await store.patchChat(chat.id, head.chat._storageRevision, [
+            { op: 'set', path: ['messages', assistantIndex, 'narrativeDamper'], value: [clone(outcome)] }
+          ], { source: 'foreground.prepare-damper' }).catch(() => false)
+        }
+      } else if (typeof store.updateChat === 'function') {
+        await store.updateChat(chat.id, current => {
+          const row = current.messages?.[assistantIndex]
+          if (row?.placeholder !== true || matches(row.narrativeDamper)) return undefined
+          const next = clone(current)
+          next.messages[assistantIndex].narrativeDamper = [clone(outcome)]
+          return next
+        }, { source: 'foreground.prepare-damper' }).catch(() => null)
+      }
+    }
     async function saveStoryPreparation(refreshFrame) {
       if (preview) return
       const operation = foregroundOperation && chat.timeline?.operations?.[foregroundOperation.operationId]
       if (!operation) return savePreparation({ source: 'foreground.prepare' })
       // A repeated prepare reuses both its frame and the rows created by the
       // first one. Header-only retries never append a second logical turn.
-      if (operation.placeholder) return savePreparation({ source: 'foreground.prepare' })
+      if (operation.placeholder) {
+        const result = await savePreparation({ source: 'foreground.prepare' })
+        await syncPlaceholderDamper(operation.placeholder.assistantIndex, preparedDamperOutcome)
+        return result
+      }
       const attachments = inputAttachments(input.userContent)
       const withUser = userText !== '' || attachments.length > 0
       const savedUserIndex = withUser ? requestUserIndex(chat.messages, requestId) : -1
@@ -517,7 +548,8 @@ export function createTurnOrchestrator(options) {
         template?.inputTemplateDigest ?? inputTemplateDigest(savedUser))
       const assistant = {
         role: 'assistant', text: '', sourceText: '', displayText: '', displayMode: 'html',
-        ts: now(), native: true, turn, placeholder: true
+        ts: now(), native: true, turn, placeholder: true,
+        ...(preparedDamperOutcome ? { narrativeDamper: [clone(preparedDamperOutcome)] } : {})
       }
       // An already saved player row is updated in place; only the assistant is appended.
       const rows = savedUser ? [assistant] : withUser ? [user, assistant] : [assistant]
@@ -526,7 +558,8 @@ export function createTurnOrchestrator(options) {
         const baseline = preparationBase
         const revision = Number(baseline?._storageRevision)
         const count = chat.messages.length
-        if (!Number.isSafeInteger(revision)) throw preparationConflict()
+        if (!Number.isSafeInteger(revision)) throw preparationConflict('invalid-base-revision')
+        const conflict = (reason, details) => preparationConflict(reason, { ...details, writers: store.writersSince?.(chat.id, revision) })
         const userIndex = savedUserIndex >= 0 ? savedUserIndex : withUser ? count : null
         const assistantIndex = count + rows.length - 1
         operation.placeholder = { userIndex, assistantIndex }
@@ -535,24 +568,32 @@ export function createTurnOrchestrator(options) {
         let refreshedFrame
         const receipt = await commitChatFields(store.patchChat, chat.id, { source: 'foreground.prepare' }, async attempt => {
           if (attempt > 0) selected = await store.readChatSlice(input.sessionId, [])
-          if (!selected?.denseMessages || selected.chat.id !== chat.id || selected.messageCount !== count) throw preparationConflict()
+          if (!selected?.denseMessages || selected.chat.id !== chat.id || selected.messageCount !== count) {
+            throw conflict('message-layout-changed', { revision, count, currentCount: selected?.messageCount })
+          }
           const currentRevision = selected.chat._storageRevision
+          const versions = { revision, currentRevision }
           let latestUser = savedUser
           let changes = [...prepared]
           const changedRows = new Map()
           let refreshNeeded = false
           refreshedFrame = undefined
           if (currentRevision !== revision) {
-            const concurrent = diffJson(baseline, captureChatHeader(selected.chat)).filter(change => !storageStamp(change))
-            if (!concurrent.every(compatiblePreparationHeaderChange)) throw preparationConflict()
-            if (concurrent.some(change => change.path[0] === 'promptTemplateInput')
-              && !isDeepStrictEqual(preparationMessageContent(baseline.promptTemplateInput.message),
-                preparationMessageContent(selected.chat.promptTemplateInput.message))) throw preparationConflict()
+            // Other parts of Tavern keep writing while a turn is prepared (settlement, candidates, template
+            // display, stage direction, card scripts). Like any header write, their fields merge with the
+            // preparation's own; only an edit of the same field, or a story that moved, stops the turn.
+            const concurrent = diffJson(baseline, captureChatHeader(selected.chat)).filter(change => !chatStampPath(change.path))
+            if (concurrent.some(({ path }) => path[0] === 'tavernHelperLifecycleRevision' || path[0] === 'timeline' && (path.length === 1 || path[1] === 'branchId' || path[1] === 'revision'))) {
+              throw conflict('timeline-moved', versions)
+            }
             refreshNeeded = concurrent.some(change => change.path[0] !== 'rollbackUndo')
             changes = rebaseChatChanges(prepared, concurrent)
-            if (!changes) throw preparationConflict()
+            if (!changes) throw conflict('overlapping-header-changes', { ...versions, fields: changedPaths(concurrent) })
             const changed = await store.readChangedSlice?.(chat.id, revision)
-            if (!changed?.denseMessages || changed.layoutChanged || changed.messageCount !== count) throw preparationConflict()
+            if (!changed?.denseMessages) throw conflict('missing-change-history', versions)
+            if (changed.layoutChanged || changed.messageCount !== count) {
+              throw conflict('message-layout-changed', { ...versions, count, currentCount: changed.messageCount })
+            }
             if (changed.chat._storageRevision !== currentRevision) return undefined
             const unloaded = changed.indices.filter(index => !chat.messages[index])
             const historical = unloaded.length && store.readWindow ? await readRowsAt(store.readWindow, chat.id, revision, unloaded) : null
@@ -560,9 +601,13 @@ export function createTurnOrchestrator(options) {
             for (const [offset, index] of changed.indices.entries()) {
               const before = chat.messages[index] ?? historicalRows.get(index)
               const after = changed.chat.messages[offset]
-              if (!before || !after) throw preparationConflict()
-              if (!sameChatMessageIdentity(before, after, index)
-                || !isDeepStrictEqual(preparationMessageContent(before), preparationMessageContent(after))) throw preparationConflict()
+              if (!before || !after) throw conflict('missing-message', { ...versions, index })
+              // A floor's own story must stay; what others write beside it (variables, template display,
+              // stage direction, settlement checkpoints, display captures) does not change this turn.
+              if (!sameChatMessageIdentity(before, after, index) || !sameChatMessageStory(before, after)
+                || index === savedUserIndex && !isDeepStrictEqual(preparationMessageContent(before), preparationMessageContent(after))) {
+                throw conflict('message-changed', { ...versions, index })
+              }
               changedRows.set(index, after)
               if (!isDeepStrictEqual(before.variables, after.variables)
                 || !isDeepStrictEqual(inputTemplateDigest(before), inputTemplateDigest(after))) refreshNeeded = true
@@ -605,7 +650,7 @@ export function createTurnOrchestrator(options) {
           changes.push({ op: 'splice', path: ['messages'], index: count, deleteCount: 0, items: rows })
           return { revision: currentRevision, changes }
         })
-        if (!receipt) throw preparationConflict()
+        if (!receipt) throw conflict('revision-retries-exhausted', { revision, currentRevision: selected?.chat._storageRevision })
         return refreshedFrame
       }
       // Legacy/flat saves use the same identity rule as the scoped patch path.
@@ -640,6 +685,7 @@ export function createTurnOrchestrator(options) {
     let runtimeUserText = userText
     let reusedRuntimeInput = false
     let foregroundOperation = null
+    let preparedDamperOutcome = null
     const mode = chat.mode || 'story'
     // Native composer submissions arrive here without the page's pre-generate RPC.
     // Persist their input before planning too; an existing RPC row is a no-op.
@@ -667,6 +713,13 @@ export function createTurnOrchestrator(options) {
       const cachedFrame = preview ? null : rememberedFrame(chat, foregroundOperation.operationId)
       if (cachedFrame !== null) {
         if (chatChanged) await savePreparation({ source: 'foreground.prepare' })
+        const activeDamper = typeof options.activeDamperRuling === 'function' ? options.activeDamperRuling(chat.id, turn) : null
+        const resolvedOutcome = activeDamper?.outcome || (activeDamper?.ruling ? summarizeDamperRulingOutcome(activeDamper.ruling) : null)
+        const operation = chat.timeline?.operations?.[foregroundOperation.operationId]
+        const cachedOutcome = cachedFrame.source?.narrativeDamperOutcome ?? null
+        if (resolvedOutcome && operation?.placeholder && JSON.stringify(resolvedOutcome) !== JSON.stringify(cachedOutcome)) {
+          await syncPlaceholderDamper(operation.placeholder.assistantIndex, resolvedOutcome)
+        }
         return {
           ready: true,
           mode,
@@ -760,13 +813,16 @@ export function createTurnOrchestrator(options) {
     const foregroundWorldBook = typeof options.projectForegroundWorldbook === 'function'
       ? await options.projectForegroundWorldbook({ chat, card, turn, userText: runtimeUserText, requestKey: foregroundOperation.operationId }) : null
     if (typeof options.projectForegroundWorldbook === 'function') {
+      const screenedFrom = Number(preparationBase?._storageRevision)
       if (!preview) {
         chat = await contextForSession(input.sessionId)
         if (chat) preparationBase = captureChatHeader(chat)
       }
       const current = chat && timeline.inspect({ chat })
       if (!current || current.branchId !== foregroundOperation.basedOn.branchId || current.revision !== foregroundOperation.basedOn.revision ||
-          current.operations[foregroundOperation.operationId]?.status !== 'running') throw preparationConflict()
+          current.operations[foregroundOperation.operationId]?.status !== 'running') {
+        throw preparationConflict('timeline-changed-during-worldbook', { writers: chat ? store.writersSince?.(chat.id, screenedFrom) : [] })
+      }
       const stage = chat.promptTemplateInput
       const row = chat.messages[requestUserIndex(chat.messages, requestId)]
       if (stage?.turn === turn && inputVariablesChanged(stage, row, row)) copyInputVariables(stage.message, row)
@@ -801,6 +857,15 @@ export function createTurnOrchestrator(options) {
       ? await options.foregroundRosterAddendum({ chat, userText: runtimeUserText }) : ''
     const source = frameSource(chat, card, foregroundOperation)
     if (typeof options.bodyGeneration === 'function') source.bodyGeneration = await (options.prepareBodyGeneration || options.bodyGeneration)(input.sessionId)
+    if (typeof options.activeDamperRuling === 'function') {
+      const activeDamper = options.activeDamperRuling(chat.id, turn)
+      if (activeDamper?.ruling) source.narrativeDamper = clone(activeDamper.ruling)
+      const resolvedOutcome = activeDamper?.outcome || (activeDamper?.ruling ? summarizeDamperRulingOutcome(activeDamper.ruling) : null)
+      if (resolvedOutcome) {
+        source.narrativeDamperOutcome = clone(resolvedOutcome)
+        preparedDamperOutcome = clone(resolvedOutcome)
+      }
+    }
     source.worldBook.scriptPromptRefs = Array.isArray(scriptWorldBook && scriptWorldBook.refs) ? clone(scriptWorldBook.refs) : []
     if (scriptWorldBook && typeof scriptWorldBook.recordReads === 'function') chat.worldBookReads = scriptWorldBook.recordReads(chat.worldBookReads)
     source.worldBook.templateRefs = Array.isArray(templateWorldBook && templateWorldBook.refs) ? clone(templateWorldBook.refs) : []
@@ -1019,7 +1084,19 @@ export function createTurnOrchestrator(options) {
       } else if (messages.length) {
         // Saves prepared before placeholder support, and adopted native rounds,
         // retain the original append-only commit contract.
-        changes.push({ op: 'splice', path: ['messages'], index: count, deleteCount: 0, items: messages })
+        // A discarded attempt keeps the player's durable input row in the save, so
+        // its补写 arrives here without a placeholder while that input is already
+        // stored. Appending it again paints two identical input bubbles in the
+        // story; the same request id may only ever own one row.
+        let items = messages
+        const inputRequestId = messages[0]?.role === 'user' ? str(messages[0].source?.rpcId).trim() : ''
+        if (inputRequestId) {
+          const start = Math.max(0, count - 8)
+          const tail = await readRows(Array.from({ length: count - start }, (_, offset) => start + offset))
+          if (stale) continue
+          if (tail.some(row => row?.role === 'user' && str(row.source?.rpcId).trim() === inputRequestId)) items = messages.slice(1)
+        }
+        if (items.length) changes.push({ op: 'splice', path: ['messages'], index: count, deleteCount: 0, items })
       }
       if (await store.patchChat(before.id, revision, changes, metadata)) return result
     }
@@ -1056,14 +1133,18 @@ export function createTurnOrchestrator(options) {
     const userText = str(input.userText).trim()
     const attachments = inputAttachments(input.userContent)
     const mode = chat.mode || 'story'
-    const sourceText = str(input.assistantText).trim()
+    const rawAssistantText = str(input.assistantText).trim()
     const frame = Object.values(chat.foregroundFrames || {}).findLast(item => Number(item.turn) === turn)
     const pluginBody = input.pluginBodyGeneration === true || frame?.source?.bodyGeneration?.mode?.startsWith('plugin-')
     const hostRegex = pluginBody && frame?.source?.bodyGeneration?.hostRegex === true
     const generated = pluginBody ? chat.timeline?.operations?.[frame?.operationId]?.bodyGeneration : null
     if (pluginBody) {
-      if (generated?.status !== 'ready' || generated.receipt?.text?.trim() !== sourceText) throw new Error('本轮未取得有效的插件正文，不能保存或自动补记')
+      if (generated?.status !== 'ready' || generated.receipt?.text?.trim() !== rawAssistantText) throw new Error('本轮未取得有效的插件正文，不能保存或自动补记')
     }
+    const extractedForegroundChoices = mode === 'story'
+      ? extractForegroundStoryChoices(rawAssistantText, { card: { name: chat.cardName }, chat })
+      : { proseText: rawAssistantText, choices: null, hadTag: false }
+    const sourceText = str(extractedForegroundChoices.proseText).trim()
     let assistantText = sourceText
     let previousMvuVariables
     let operation
@@ -1251,6 +1332,15 @@ export function createTurnOrchestrator(options) {
         // variables it started from and is not settled now, which would wait on
         // the turn that is about to start. Later rounds settle as usual.
         const adopted = input.adopt === true
+        const activeDamperEntry = !adopted && typeof options.activeDamperRuling === 'function'
+          ? options.activeDamperRuling(draft.id, turn) : null
+        const latestDamperFrameSource = !adopted ? Object.values(draft.foregroundFrames || {})
+          .filter(item => item && item.kind === 'foreground' && Number(item.turn) === Number(turn))
+          .at(-1)?.source || null : null
+        const persistedDamper = activeDamperEntry?.ruling || latestDamperFrameSource?.narrativeDamper || null
+        let persistedDamperOutcome = activeDamperEntry?.outcome
+          || latestDamperFrameSource?.narrativeDamperOutcome
+          || (persistedDamper ? summarizeDamperRulingOutcome(persistedDamper) : null)
         if (usesOfficialMvu(draft)) Object.assign(assistantMessage, {
           swipeId: 0,
           swipes: [str(reply.projectionText)],
@@ -1258,6 +1348,25 @@ export function createTurnOrchestrator(options) {
           mvu: adopted ? { pending: false, modified: false, diagnostics: [{ message: '这一轮补记自模型上下文，当时的变量变化未结算' }], events: [] }
             : { pending: true, modified: false, diagnostics: [], events: [] }
         })
+        else if (!adopted && persistedDamper && persistedDamper.fallbackStateForPlainCards !== false) {
+          const priorPlain = readDamperStateSnapshot(draft, {
+            excludeAssistantIndex: Number.isInteger(placeholder?.assistantIndex) ? placeholder.assistantIndex : -1,
+            fallbackForPlain: true
+          })
+          if (priorPlain.kind === 'plain-fallback') {
+            const nextPlain = nextPlainDamperState(priorPlain.data, persistedDamper)
+            assistantMessage.damperState = [nextPlain]
+            if (persistedDamperOutcome) {
+              persistedDamperOutcome = {
+                ...clone(persistedDamperOutcome),
+                plainState: { before: clone(priorPlain.data), after: clone(nextPlain) }
+              }
+            }
+          }
+        }
+        if (!adopted && persistedDamperOutcome) {
+          assistantMessage.narrativeDamper = [clone(persistedDamperOutcome)]
+        }
         commitMessageRow(draft, placeholder?.assistantIndex, assistantMessage)
         if (!adopted) {
           draft.settleStatus = 'pending'
@@ -1271,8 +1380,27 @@ export function createTurnOrchestrator(options) {
     })
     chat = completed.chat
     if (completed.value.status !== 'committed') throw new Error('正文生成期间剧情状态已变化，本轮结果已作废')
+    // 这一局只留最近一轮的候选项：没有的一轮必须把上一轮清掉，否则旧选项会被
+    // 当成这一轮的选项显示出来（页面按「最近一轮」读，不靠消息 id 对齐）。
+    if (input.adopt !== true) {
+      const messageId = str(input.replyMessageId)
+      if (extractedForegroundChoices.choices && messageId !== '') {
+        chat.candidates = {
+          messageId,
+          choices: extractedForegroundChoices.choices,
+          generatedAt: now(),
+          script: undefined,
+          requestId: requestId ? 'fg-choices-' + requestId : 'fg-choices-' + turn,
+          operationId: operation.id,
+          traceSessionId: str(input.sessionId),
+          traceSessionIds: str(input.sessionId) ? [str(input.sessionId)] : [],
+          traceMode: 'one-shot',
+          basedOn: { branchId: chat.timeline.branchId, revision: chat.timeline.revision }
+        }
+      } else if (chat.candidates) delete chat.candidates
+    }
     await writeChat(chat, { source: 'foreground.commit', operationId: operation.id })
-    return { saved: true, mode, changed: false, chatId: chat.id, cardName: chat.cardName, reply }
+    return { saved: true, mode, changed: false, chatId: chat.id, cardName: chat.cardName, reply, candidates: chat.candidates || null }
   }
 
   async function recordFailure(input) {
@@ -1375,17 +1503,23 @@ export function createTurnOrchestrator(options) {
     const outputToolCall = !pluginGeneration && (await options.storyToolCall?.()) === true
     const inputToolCall = (await options.storyInputToolCall?.()) === true
     const storyTools = storyToolCallEnabled(chat, outputToolCall || inputToolCall) ? [STORY_SUBMIT_TOOL_NAME] : []
+    if (storyToolCallEnabled(chat, inputToolCall) && (await options.historyLayout?.()) === 'envelope') {
+      storyTools.push(STORY_CONTEXT_TOOL_NAME)
+    }
     if (pluginGeneration && ['story', 'script'].includes(mode)) storyTools.push(STORY_GENERATE_TOOL_NAME)
     // Card workbenches keep their fixed editing tools; the per-game switches are play-only.
     if (mode === 'card') return [...CARD_MEMORY_TOOLS, 'web_search', 'web_fetch', shellToolName, ...dshFileToolNames, 'skill', 'tavern_read_skill_reference', 'tavern_save_skill', ...cordisToolNames, 'tavern_user_profile_read', 'tavern_user_profile_save', 'tavern_read_card', 'tavern_read_card_raw', 'tavern_search_card', 'tavern_replace_card_text', 'tavern_mvu_overview', 'tavern_apply_mvu', 'tavern_read_play_chat', 'tavern_read_runtime_health', 'tavern_read_worldbook', 'tavern_update_worldbook', 'tavern_read_preset', 'tavern_update_preset', 'tavern_read_regex_library', 'tavern_copy_card', 'tavern_set_card_cover', 'tavern_export_card_png', 'tavern_update_card', 'tavern_restore_card', 'tavern_validate_card', 'tavern_test_response']
     // Search and browse expose current real files; native read is restricted
     // to the calling game's effective static worldbook generation.
     const worldbookTools = ['read', 'worldbook_list', 'worldbook_grep']
-    // A mod's foreground tool (options.modTools: [{modId, name}]) is offered where the card has its mod on, or where
-    // this game's history already calls it (a replayed call needs its tool declared).
+    // A mod's foreground tool (options.modTools: [{modId, name}]) is offered where this game's history already calls it (a
+    // replayed call needs its tool declared), where the card offers it (cardOffer, lib/mod-tools.js: 'card'), or where the card
+    // leaves it to the mod switch (null) and the card has the mod on.
     const modTools = []
+    const cardOffer = await options.cardOffer?.(chat)
     for (const tool of options.modTools || []) {
-      if ((chat.usedModTools || []).includes(tool.name) || await options.modEnabled?.(tool.modId, chat.cardPath) === true) modTools.push(tool.name)
+      const from = cardOffer?.(tool) ?? null
+      if ((chat.usedModTools || []).includes(tool.name) || from === 'card' || (from === null && await options.modEnabled?.(tool.modId, chat.cardPath) === true)) modTools.push(tool.name)
     }
     const names = mode === 'script'
       ? [...modTools, 'tavern_read_variables', 'skill', 'tavern_read_skill_reference', 'tavern_read_script', 'tavern_recall_history', ...worldbookTools, ...webTools, ...storyTools]

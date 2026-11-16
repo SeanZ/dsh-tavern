@@ -101,6 +101,22 @@ test('原生模型根菜单加入所有模型的流式/非流式切换，默认�
     row.remove()
     await settle(dom)
     assert.equal(dom.window.document.querySelector('[data-dsh-tavern-stream-mode]')?.getAttribute('data-stream'), 'false')
+    const portal = dom.window.document.querySelector('[role="menu"]')
+    const rootButtons = [...portal.querySelectorAll('[role="menuitem"]')]
+    portal.setAttribute('role', 'group')
+    rootButtons.forEach(button => button.remove())
+    const choices = dom.window.document.createElement('div')
+    choices.setAttribute('role', 'menu')
+    choices.innerHTML = '<button role="menuitemradio" aria-checked="true">DeepSeek</button><button role="menuitemradio">第二个模型</button>'
+    portal.prepend(choices)
+    await settle(dom)
+    assert.equal(portal.querySelector('[data-dsh-tavern-stream-mode]'), null, '原生模型子页复用容器时移除旧开关')
+    assert.deepEqual([...portal.querySelectorAll('[role="menuitemradio"]')].map(button => button.textContent), ['DeepSeek', '第二个模型'])
+    choices.remove()
+    portal.setAttribute('role', 'menu')
+    portal.append(...rootButtons)
+    await settle(dom)
+    assert.equal(portal.querySelector('[data-dsh-tavern-stream-mode]')?.getAttribute('data-stream'), 'false')
     dom.window.document.querySelector('[role="menu"]').remove()
     const effort = dom.window.document.createElement('div')
     effort.setAttribute('role', 'menu')
@@ -108,6 +124,40 @@ test('原生模型根菜单加入所有模型的流式/非流式切换，默认�
     dom.window.document.body.appendChild(effort)
     await settle(dom)
     assert.equal(effort.querySelector('[data-dsh-tavern-stream-mode]'), null)
+  } finally {
+    dom.window.__dshTavernGenerationStreamMode?.dispose()
+    dom.window.close()
+  }
+})
+
+test('整棵文档的观察者把成批变动合并成一次扫描', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost', runScripts: 'outside-only', pretendToBeVisual: true })
+  dom.window.fetch = async () => ({ json: async () => ({ ok: true, stream: true }) })
+  try {
+    dom.window.eval(generationStreamModeBootScript())
+    await settle(dom)
+    const container = dom.window.document.createElement('div')
+    dom.window.document.body.appendChild(container)
+    await settle(dom)
+    let scans = 0
+    const original = dom.window.Element.prototype.querySelectorAll
+    dom.window.Element.prototype.querySelectorAll = function (...args) {
+      if (this === container) scans++
+      return original.apply(this, args)
+    }
+    for (let index = 0; index < 20; index++) {
+      const child = dom.window.document.createElement('div')
+      child.textContent = String(index)
+      container.appendChild(child)
+    }
+    await settle(dom)
+    assert.equal(scans, 1, '同一批里 20 次对同一容器的追加只查一次')
+    const menu = dom.window.document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    menu.innerHTML = '<button role="menuitem"><span class="hash_cellLabel">模型</span></button>'
+    container.appendChild(menu)
+    await settle(dom)
+    assert.ok(menu.querySelector('[data-dsh-tavern-stream-mode]'), '合并后仍然认出新出现的菜单')
   } finally {
     dom.window.__dshTavernGenerationStreamMode?.dispose()
     dom.window.close()

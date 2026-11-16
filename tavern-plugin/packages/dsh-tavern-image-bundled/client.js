@@ -274,6 +274,10 @@ let openImageOverlay = null
       const next = normalizeImageWidth(value)
       if (next === bodyImageWidth) return
       bodyImageWidth = next
+      if (typeof imagePlacement !== 'undefined') {
+        imagePlacement = { ...imagePlacement, width: next }
+        for (const listener of placementListeners) listener(imagePlacement)
+      }
       for (const notify of imageWidthListeners) notify(next)
     }
 
@@ -1225,7 +1229,7 @@ function versionsOf(jobId) {
         setPos({ x: touch.clientX - dragRef.current.x, y: touch.clientY - dragRef.current.y })
       }, [])
       openImageOverlay = (next) => setView(current => Object.assign({}, current, next && next.open ? Object.assign({ index: 0, versionAt: 0, versions: [], images: null, jobIds: [] }, next) : next))
-      const close = () => openImageOverlay({ open: false, jobIds: [], versions: [], versionAt: 0, note: '', working: false, index: 0 })
+      const close = () => openImageOverlay({ open: false, images: null, jobIds: [], versions: [], versionAt: 0, note: '', working: false, index: 0 })
       const total = (view.images ?? view.jobIds).length
       const at = total ? Math.max(0, Math.min(total - 1, Number(view.index) || 0)) : 0
       // 当前这张图自己的重画版本链（与整场翻页互不影响）
@@ -1234,6 +1238,21 @@ function versionsOf(jobId) {
       const vAt = vTotal ? Math.max(0, Math.min(vTotal - 1, Number(view.versionAt) || 0)) : 0
       // 真正显示的那张：有版本链就用版本链的当前版，否则用主列表的当前张
       const shownImage = view.images?.[at]
+      function illustrationAction(id) {
+        const element = shownImage?.element
+        if (!element?.isConnected || element.querySelector('img')?.getAttribute('src') !== shownImage.url) return null
+        return element.querySelector(`button[data-dsh-illustration-action="${id}"]:not(:disabled)`)
+      }
+      function runIllustrationAction(id) {
+        if (!illustrationAction(id)) return
+        close()
+        requestAnimationFrame(() => {
+          const button = illustrationAction(id)
+          if (!button) return
+          if (id === 'redraw') button.scrollIntoView({ block: 'nearest' })
+          button.click()
+        })
+      }
       const shownId = vTotal ? versions[vAt] : (shownImage?.jobId || view.jobIds[at])
       const src = shownImage?.url || (shownId ? BASE + '/jobs?id=' + encodeURIComponent(shownId) + '&image=1' : '')
       React.useEffect(() => {
@@ -1298,6 +1317,8 @@ function versionsOf(jobId) {
             src ? React.createElement('button', { type: 'button', title: '重置缩放', style: controls,
               onClick: () => { setZoom(1); setPos({ x: 0, y: 0 }) } }, Math.round(zoom * 100) + '%') : null,
             src ? React.createElement('button', { type: 'button', title: '放大', style: controls, onClick: () => setZoom(z => Math.min(8, z * 1.25)) }, '+') : null,
+            illustrationAction('redraw') ? React.createElement('button', { type: 'button', style: controls, onClick: () => runIllustrationAction('redraw') }, '重画') : null,
+            illustrationAction('image-edit') ? React.createElement('button', { type: 'button', style: controls, onClick: () => runIllustrationAction('image-edit') }, '改图') : null,
             React.createElement('button', {
               type: 'button', onClick: close,
               style: controls,
@@ -1433,7 +1454,46 @@ function versionsOf(jobId) {
       const [selected, select] = React.useState('')
       const [collapsed, setCollapsed] = React.useState(false)
       const [offset, setOffset] = React.useState(null)
+      const [sizeNote, setSizeNote] = React.useState('')
       const drag = React.useRef(null)
+      const resize = React.useRef(null)
+      const saveTimer = React.useRef(null)
+      const pendingWidth = React.useRef(null)
+      const savingWidth = React.useRef(false)
+      React.useEffect(() => () => clearTimeout(saveTimer.current), [])
+      async function saveWidth(value) {
+        clearTimeout(saveTimer.current)
+        pendingWidth.current = normalizeImageWidth(value)
+        if (savingWidth.current) return
+        savingWidth.current = true
+        try {
+          while (pendingWidth.current !== null) {
+            const width = pendingWidth.current
+            pendingWidth.current = null
+            try {
+              const response = await jsonFetch(BASE + '/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ config: { imageDisplayWidth: width } }) })
+              // A completed request must not reset a newer live preview.
+              if (pendingWidth.current === null && !resize.current && imagePlacement.width === width) {
+                window.dispatchEvent(new CustomEvent('dsh-tavern-image:config', { detail: response.state?.config }))
+                setSizeNote('')
+              }
+            } catch {
+              if (pendingWidth.current === null) setSizeNote('大小保存失败，请重新调节重试')
+            }
+          }
+        } finally { savingWidth.current = false }
+      }
+      function previewWidth(value) {
+        applyImageWidth(value)
+        setSizeNote('')
+        clearTimeout(saveTimer.current)
+        if (!resize.current) saveTimer.current = setTimeout(() => saveWidth(imagePlacement.width), 300)
+      }
+      function finishResize() {
+        if (!resize.current) return
+        resize.current = null
+        saveWidth(imagePlacement.width)
+      }
       React.useEffect(() => {
         placementListeners.add(setSettings)
         setSettings(imagePlacement)
@@ -1461,7 +1521,7 @@ function versionsOf(jobId) {
               return [{ src, title: img.alt || '正文插图', element, anchor }]
             })
             setPictures(previous => previous.length === records.length && previous.every((item, index) =>
-              item.src === records[index].src && item.title === records[index].title) ? previous : records)
+              item.src === records[index].src && item.title === records[index].title && item.element === records[index].element) ? previous : records)
           }
           if (!records.length) { select(''); return }
           if (settings.follow === 'off') {
@@ -1532,7 +1592,7 @@ function versionsOf(jobId) {
         }
       }, [settings.position, settings.follow])
 
-      const widthRule = settings.width ? `:is(${DISPLAY_FIGURES}) img { width: min(${settings.width}px, 100%, 96vw) !important; max-height: none !important; height: auto !important; }` : ''
+      const widthRule = settings.width && settings.position === 'inline' ? `:is(${DISPLAY_FIGURES}) img { width: min(${settings.width}px, 100%, 96vw) !important; max-height: none !important; height: auto !important; }` : ''
       if (settings.position === 'inline') return widthRule ? h('style', null, widthRule) : null
       const index = Math.max(0, pictures.findIndex(item => item.src === selected))
       const picture = pictures[index]
@@ -1550,10 +1610,10 @@ function versionsOf(jobId) {
       return h(React.Fragment, null,
         h('style', null, widthRule, `:is(${DISPLAY_FIGURES}) { min-height: 1px; min-width: 1px; } :is(${DISPLAY_FIGURES}) img { display: none !important; }`),
         picture ? h('aside', { 'data-dti-placement': settings.position, 'aria-label': '正文图片查看器',
-          style: { position: 'fixed', ...position, zIndex: 110, width, maxHeight: 'min(80vh, 900px)', overflow: 'auto', boxSizing: 'border-box',
+          style: { position: 'fixed', ...position, zIndex: 110, width, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxSizing: 'border-box',
             border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10, padding: 8, boxShadow: '0 8px 24px #0003',
             background: 'var(--dsw-specific-input-major, Canvas)', color: 'var(--dsw-alias-label-primary, CanvasText)' } },
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, cursor: floating ? 'move' : 'default', touchAction: floating ? 'none' : 'auto' },
+          h('div', { style: { display: 'flex', flexShrink: 0, alignItems: 'center', gap: 4, cursor: floating ? 'move' : 'default', touchAction: floating ? 'none' : 'auto' },
             onPointerDown: startDrag, onPointerUp: () => { drag.current = null }, onLostPointerCapture: () => { drag.current = null },
             onPointerMove: event => {
               if (!drag.current) return
@@ -1565,9 +1625,36 @@ function versionsOf(jobId) {
             collapsed ? null : h('button', { type: 'button', style: btn, 'aria-label': '上一张正文图片', disabled: index < 1, onClick: () => select(pictures[index - 1].src) }, '‹'),
             collapsed ? null : h('button', { type: 'button', style: btn, 'aria-label': '下一张正文图片', disabled: index + 1 >= pictures.length, onClick: () => select(pictures[index + 1].src) }, '›'),
             h('button', { type: 'button', style: btn, onClick: () => setCollapsed(value => !value) }, collapsed ? '展开' : '收起')),
-          collapsed ? null : h('button', { type: 'button', style: { display: 'block', width: '100%', border: 0, background: 'transparent', padding: 0, marginTop: 6, cursor: 'zoom-in' },
-            onClick: () => openImageOverlay?.({ open: true, images: pictures.map(item => ({ url: item.src, alt: item.title })), index, note: '正文插图' }) },
-            h('img', { src: picture.src, alt: picture.title, style: { display: 'block', width: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 6 } }))) : null)
+          collapsed ? null : h('button', { type: 'button', style: { display: 'flex', flex: '0 1 auto', minHeight: 0, width: '100%', overflow: 'hidden', border: 0, background: 'transparent', padding: 0, marginTop: 6, cursor: 'zoom-in' },
+            onClick: () => openImageOverlay?.({ open: true, images: pictures.map(item => ({ url: item.src, alt: item.title, element: item.element })), index, note: '正文插图' }) },
+            h('img', { src: picture.src, alt: picture.title, style: { display: 'block', width: '100%', minHeight: 0, objectFit: 'contain', borderRadius: 6 } })),
+          collapsed ? null : h('div', { style: { display: 'flex', flexShrink: 0, alignItems: 'center', gap: 8, marginTop: 8 } },
+            h('input', { type: 'range', min: IMAGE_WIDTH_LIMIT.min, max: IMAGE_WIDTH_LIMIT.max, step: 1,
+              'aria-label': '悬浮图片宽度', value: settings.width || (floating ? 420 : 300), style: { flex: 1, minWidth: 0, touchAction: 'none' },
+              onPointerDown: event => {
+                if (event.button !== 0) return
+                event.preventDefault()
+                event.currentTarget.focus()
+                const rect = event.currentTarget.getBoundingClientRect()
+                const span = IMAGE_WIDTH_LIMIT.max - IMAGE_WIDTH_LIMIT.min
+                const track = Math.max(1, rect.width - 16)
+                const value = imagePlacement.width || (floating ? 420 : 300)
+                const thumbX = rect.left + 8 + (value - IMAGE_WIDTH_LIMIT.min) / span * track
+                const start = Math.abs(event.clientX - thumbX) <= 12 ? value : normalizeImageWidth(IMAGE_WIDTH_LIMIT.min + (event.clientX - rect.left - 8) / track * span)
+                // Keep the initial track as the ruler: the viewer itself changes width while dragging.
+                resize.current = { x: event.clientX, value: start, scale: span / track }
+                event.currentTarget.setPointerCapture(event.pointerId)
+                previewWidth(start)
+              },
+              onPointerMove: event => {
+                if (!resize.current) return
+                previewWidth(resize.current.value + (event.clientX - resize.current.x) * resize.current.scale)
+              },
+              onPointerUp: finishResize, onPointerCancel: finishResize, onLostPointerCapture: finishResize,
+              onChange: event => { if (!resize.current) previewWidth(event.target.value) },
+              onBlur: () => { if (!resize.current) saveWidth(imagePlacement.width) } }),
+            h('span', { style: { fontSize: 12, minWidth: '7ch', textAlign: 'right', whiteSpace: 'nowrap' } }, (settings.width || (floating ? 420 : 300)) + ' px')),
+          sizeNote && !collapsed ? h('small', { role: 'status' }, sizeNote) : null) : null)
     }
     const imageLoraKey = binding => binding.slot ? String(binding.node) + ':' + binding.slot : String(binding.node)
 
@@ -2904,7 +2991,7 @@ function versionsOf(jobId) {
         note ? h('div', { role: 'status', style: { fontSize: '12px', marginTop: '8px' } }, note) : null)
     }
 
-    function LegacyWorldbookPanel({ initialFormat = 'tags', providers = [] }) {
+    function LegacyWorldbookPanel({ initialFormat = 'tags', save, providers = [] }) {
       const [format, setFormat] = React.useState(initialFormat)
       const [book, setBook] = React.useState('main')
       const [books, setBooks] = React.useState([])
@@ -2919,6 +3006,13 @@ function versionsOf(jobId) {
         setBooks(result.worldbookBooks || [])
       }
       React.useEffect(() => { let alive = true; jsonFetch(BASE + '/worldbook?format=' + encodeURIComponent(format)).then(result => { if (alive) setBooks(result.worldbookBooks || []) }).catch(error => { if (alive) setNote(error.message) }); return () => { alive = false } }, [format])
+      async function changeFormat(next) {
+        const previous = format
+        setFormat(next); setBusy(true); setNote('')
+        const result = await save({ worldbookEditorFormat: next })
+        if (!result) { setFormat(previous); setNote('格式保存失败，请重试') }
+        setBusy(false)
+      }
       async function write(action, body) {
         if (busy) return
         setBusy(true); setNote('')
@@ -2928,7 +3022,7 @@ function versionsOf(jobId) {
         } catch (error) { setNote(error.message) } finally { setBusy(false) }
       }
       return h('section', { 'aria-label': '生图世界书', style: S.card },
-        h('div', { style: S.row }, promptField('世界书格式', h('select', { 'aria-label': '世界书格式', style: S.input, value: format, disabled: busy, onChange: event => setFormat(event.target.value) },
+        h('div', { style: S.row }, promptField('世界书格式', h('select', { 'aria-label': '世界书格式', style: S.input, value: format, disabled: busy, onChange: event => changeFormat(event.target.value) },
           PROMPT_MODES_UI.filter(([key]) => key !== 'auto').map(([key, label]) => h('option', { key, value: key }, label)))),
           h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: () => write('worldbook-add', {}) }, '新增条目'),
           h('a', { style: buttonStyle, href: BASE + '/worldbook-export?format=' + encodeURIComponent(format) + '&book=' + book, download: 'image-worldbook.json' }, '导出世界书'),
@@ -3083,6 +3177,7 @@ function versionsOf(jobId) {
         h('summary', null, '查看组装过程'),
         trace ? h('div', { className: 'dti-tryout-text' },
           h('div', null, '用途 · ' + (trace.usage || 'story')),
+          trace.scenario ? h('div', null, '场景模式 · ' + trace.scenario.name + '（' + ({ model: '模型判断', keywords: '关键词', fixed: '固定选择', inherited: '沿用本轮判断' }[trace.scenario.reason] || trace.scenario.reason) + '）') : null,
           trace.contextChars ? h('div', null, '本次模型输入约 ' + trace.contextChars + ' 字符') : null,
           trace.modules?.length ? h('div', null, '模块顺序 · ' + trace.modules.map(item => item.title).join(' → ')) : null,
           Object.entries(trace.inputs || {}).map(([key, value]) => h('div', { key }, key + ' · ' + (value || '空'))),
@@ -3095,10 +3190,78 @@ function versionsOf(jobId) {
           skipped.length ? h('details', null, h('summary', null, '未采用的词条 · ' + skipped.length),
             skipped.map(item => h('div', { key: item.id }, item.title + ' · ' + (reasons[item.reason] || item.reason)))) : null) : null)
     }
+    // Optional starter entries. Users add only the groups they want.
+    const BUILTIN_PROMPT_ENTRIES = [
+      {"id":"builtin-visual-1-1","group":"镜头构图","title":"特写","content":"close-up, detailed face","format":"tags","injection":"guidance","any":["特写","脸部","close-up"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-2","group":"镜头构图","title":"半身","content":"upper body, medium shot","format":"tags","injection":"guidance","any":["半身","胸像","upper body"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-3","group":"镜头构图","title":"全身","content":"full body, feet in frame","format":"tags","injection":"guidance","any":["全身","full body"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-4","group":"镜头构图","title":"远景","content":"wide shot, environmental composition","format":"tags","injection":"guidance","any":["远景","wide shot"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-5","group":"镜头构图","title":"俯视","content":"from above, high angle","format":"tags","injection":"guidance","any":["俯视","从上方","from above"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-6","group":"镜头构图","title":"仰视","content":"from below, low angle","format":"tags","injection":"guidance","any":["仰视","从下方","from below"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-7","group":"镜头构图","title":"背影","content":"from behind, back view","format":"tags","injection":"guidance","any":["背影","背面","from behind"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-1-8","group":"镜头构图","title":"侧面","content":"profile, side view","format":"tags","injection":"guidance","any":["侧面","侧脸","side view"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-1","group":"光线","title":"逆光","content":"backlighting, rim light","format":"tags","injection":"guidance","any":["逆光","轮廓光","backlight"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-2","group":"光线","title":"柔光","content":"soft lighting, diffused light","format":"tags","injection":"guidance","any":["柔光","漫射光","soft light"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-3","group":"光线","title":"月光","content":"moonlight, cool lighting","format":"tags","injection":"guidance","any":["月光","moonlight"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-4","group":"光线","title":"烛光","content":"candlelight, warm shadows","format":"tags","injection":"guidance","any":["烛光","蜡烛","candlelight"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-5","group":"光线","title":"霓虹","content":"neon lighting, colored reflections","format":"tags","injection":"guidance","any":["霓虹","neon"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-6","group":"光线","title":"窗光","content":"window light, soft shadows","format":"tags","injection":"guidance","any":["窗光","窗边光","window light"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-7","group":"光线","title":"夕阳","content":"golden hour, warm sunlight","format":"tags","injection":"guidance","any":["夕阳","日落","golden hour"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-2-8","group":"光线","title":"聚光","content":"spotlight, dramatic shadows","format":"tags","injection":"guidance","any":["聚光灯","舞台灯","spotlight"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-1","group":"环境","title":"森林","content":"forest, layered foliage, tree canopy","format":"tags","injection":"guidance","any":["森林","树林","forest"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-2","group":"环境","title":"海岸","content":"seaside, ocean horizon, coastal rocks","format":"tags","injection":"guidance","any":["海岸","海边","seaside"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-3","group":"环境","title":"车站","content":"train station, platform, railway tracks","format":"tags","injection":"guidance","any":["车站","站台","train station"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-4","group":"环境","title":"图书馆","content":"library, bookshelves, reading tables","format":"tags","injection":"guidance","any":["图书馆","藏书室","library"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-5","group":"环境","title":"咖啡馆","content":"cafe interior, wooden tables, cups","format":"tags","injection":"guidance","any":["咖啡馆","咖啡店","cafe"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-6","group":"环境","title":"庭院","content":"courtyard, stone path, garden plants","format":"tags","injection":"guidance","any":["庭院","院落","courtyard"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-7","group":"环境","title":"街道","content":"city street, sidewalks, storefronts","format":"tags","injection":"guidance","any":["街道","街头","city street"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-3-8","group":"环境","title":"山间","content":"mountain landscape, distant peaks, valley","format":"tags","injection":"guidance","any":["山间","山谷","mountain"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-1","group":"天气时间","title":"雨天","content":"rain, wet surfaces, raindrops","format":"tags","injection":"guidance","any":["雨天","下雨","rain"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-2","group":"天气时间","title":"雪天","content":"snowfall, snow-covered ground","format":"tags","injection":"guidance","any":["雪天","下雪","snowfall"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-3","group":"天气时间","title":"雾天","content":"fog, atmospheric perspective, soft distance","format":"tags","injection":"guidance","any":["浓雾","雾天","fog"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-4","group":"天气时间","title":"晴天","content":"clear sky, sunlight","format":"tags","injection":"guidance","any":["晴天","晴空","clear sky"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-5","group":"天气时间","title":"风中","content":"wind, flowing hair, fluttering fabric","format":"tags","injection":"guidance","any":["风中","起风","wind"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-6","group":"天气时间","title":"清晨","content":"early morning, pale dawn light","format":"tags","injection":"guidance","any":["清晨","黎明","dawn"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-7","group":"天气时间","title":"深夜","content":"night, dark sky, sparse lights","format":"tags","injection":"guidance","any":["深夜","午夜","night"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-4-8","group":"天气时间","title":"黄昏","content":"dusk, fading sky, long shadows","format":"tags","injection":"guidance","any":["黄昏","暮色","dusk"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-1","group":"色彩","title":"暖色","content":"warm color palette, amber tones","format":"tags","injection":"guidance","any":["暖色","琥珀色","warm palette"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-2","group":"色彩","title":"冷色","content":"cool color palette, blue tones","format":"tags","injection":"guidance","any":["冷色","蓝色调","cool palette"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-3","group":"色彩","title":"低饱和","content":"muted colors, low saturation","format":"tags","injection":"guidance","any":["低饱和","灰调","muted colors"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-4","group":"色彩","title":"高对比","content":"high contrast, deep shadows","format":"tags","injection":"guidance","any":["高对比","强反差","high contrast"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-5","group":"色彩","title":"单色","content":"monochrome, tonal composition","format":"tags","injection":"guidance","any":["单色","黑白","monochrome"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-6","group":"色彩","title":"粉彩","content":"pastel colors, soft palette","format":"tags","injection":"guidance","any":["粉彩","马卡龙","pastel"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-7","group":"色彩","title":"青橙","content":"teal and orange color palette","format":"tags","injection":"guidance","any":["青橙","teal and orange"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-5-8","group":"色彩","title":"大地色","content":"earth tones, ochre, muted green","format":"tags","injection":"guidance","any":["大地色","earth tones"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-1","group":"服装","title":"衬衫","content":"collared shirt, button front","format":"tags","injection":"guidance","any":["衬衫","shirt"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-2","group":"服装","title":"外套","content":"coat, layered clothing","format":"tags","injection":"guidance","any":["外套","大衣","coat"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-3","group":"服装","title":"针织衫","content":"knit sweater, knitted texture","format":"tags","injection":"guidance","any":["针织衫","毛衣","sweater"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-4","group":"服装","title":"连衣裙","content":"dress, fabric folds","format":"tags","injection":"guidance","any":["连衣裙","dress"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-5","group":"服装","title":"披风","content":"cape, draped fabric","format":"tags","injection":"guidance","any":["披风","斗篷","cape"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-6","group":"服装","title":"围巾","content":"scarf, wrapped fabric","format":"tags","injection":"guidance","any":["围巾","scarf"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-7","group":"服装","title":"皮靴","content":"leather boots, visible seams","format":"tags","injection":"guidance","any":["皮靴","leather boots"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-6-8","group":"服装","title":"运动服","content":"sportswear, breathable fabric","format":"tags","injection":"guidance","any":["运动服","sportswear"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-1","group":"材质","title":"金属","content":"metallic surface, specular highlights","format":"tags","injection":"guidance","any":["金属","metallic"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-2","group":"材质","title":"玻璃","content":"glass, transparency, reflections","format":"tags","injection":"guidance","any":["玻璃","glass"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-3","group":"材质","title":"丝绸","content":"silk fabric, smooth sheen","format":"tags","injection":"guidance","any":["丝绸","silk"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-4","group":"材质","title":"皮革","content":"leather texture, subtle grain","format":"tags","injection":"guidance","any":["皮革","leather"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-5","group":"材质","title":"木纹","content":"wood grain, natural texture","format":"tags","injection":"guidance","any":["木纹","wood grain"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-6","group":"材质","title":"石材","content":"stone texture, weathered surface","format":"tags","injection":"guidance","any":["石材","石墙","stone texture"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-7","group":"材质","title":"陶瓷","content":"ceramic glaze, smooth surface","format":"tags","injection":"guidance","any":["陶瓷","瓷器","ceramic"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-7-8","group":"材质","title":"水面","content":"water surface, ripples, reflections","format":"tags","injection":"guidance","any":["水面","涟漪","ripples"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-1","group":"画面表现","title":"浅景深","content":"shallow depth of field, background bokeh","format":"tags","injection":"guidance","any":["浅景深","背景虚化","bokeh"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-2","group":"画面表现","title":"动态","content":"dynamic pose, motion in fabric","format":"tags","injection":"guidance","any":["动态姿势","跃起","dynamic pose"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-3","group":"画面表现","title":"静谧","content":"quiet atmosphere, balanced composition","format":"tags","injection":"guidance","any":["静谧","宁静","quiet atmosphere"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-4","group":"画面表现","title":"紧张","content":"tense atmosphere, dramatic composition","format":"tags","injection":"guidance","any":["紧张气氛","tense atmosphere"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-5","group":"画面表现","title":"水彩","content":"watercolor, translucent pigment, paper texture","format":"tags","injection":"guidance","any":["水彩","watercolor"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-6","group":"画面表现","title":"油画","content":"oil painting, visible brushstrokes","format":"tags","injection":"guidance","any":["油画","oil painting"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-7","group":"画面表现","title":"素描","content":"pencil drawing, graphite strokes","format":"tags","injection":"guidance","any":["素描","铅笔画","pencil drawing"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0},
+      {"id":"builtin-visual-8-8","group":"画面表现","title":"赛璐璐","content":"cel shading, clean linework, flat colors","format":"tags","injection":"guidance","any":["赛璐璐","cel shading"],"all":[],"exclude":[],"always":false,"enabled":true,"priority":0}
+    ]
     function PromptEntryLibrary({ entries, limit, revision, save, compact = false, group = '' }) {
       const editor = useImageDraft('entry-editor', null, revision)
       const draft = editor.value
       const setDraft = editor.update
+      const [catalogGroup, setCatalogGroup] = React.useState('')
       const [query, setQuery] = React.useState('')
       const [busy, setBusy] = React.useState(false)
       const [note, setNote] = React.useState('')
@@ -3110,7 +3273,7 @@ function versionsOf(jobId) {
       const existing = entries.some(entry => entry.id === draft?.id)
       const edit = entry => { setDraft(entry); setNote('') }
       const patch = change => setDraft(current => ({ ...current, ...change }))
-      const parseTerms = value => [...new Set(value.split(/[,，\n]/).map(term => term.trim().slice(0, 80)).filter(Boolean))].slice(0, 16)
+      const parseTerms = value => [...new Set(value.split(/[,，\n]/).map(term => term.trim().slice(0, 80)).filter(Boolean))].slice(0, 32)
       async function persist(remove = false) {
         if (!draft || busy) return
         const entry = { ...draft, title: draft.title.trim(), content: draft.content.trim(), group: draft.group.trim(),
@@ -3135,12 +3298,23 @@ function versionsOf(jobId) {
         !compact ? h('summary', { className: 'dti-structure-heading' }, h('strong', null, '生图词条库'),
           h('span', { style: STRUCTURE_MUTED }, entries.length + ' / ' + limit)) : null,
         h('fieldset', { className: 'dti-entry-library', disabled: busy },
-          !compact ? h('p', { style: STRUCTURE_MUTED }, '给地点、道具或画面设定写一份视觉资料，再用模板中的「词条库」模块引用。只有命中本轮正文的词条会交给规划模型。') : null,
+          !compact ? h('p', { style: STRUCTURE_MUTED }, '支持自然语言、标签串和混合内容。用模板里的「词条库」模块引用分组；可交给模型参考，也可命中后原样加入提示词。最多保存 1000 条，每轮匹配 32 条。') : null,
           !compact ? h('div', { style: S.row },
             h('input', { style: S.input, 'aria-label': '搜索词条', placeholder: '搜索名称或分组', value: query, onChange: event => setQuery(event.target.value) }),
             h('button', { type: 'button', style: buttonStyle, disabled: entries.length >= limit, onClick: () => edit({
               id: 'entry-' + Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''), title: '', group: '', content: '', any: '', all: '', exclude: '', priority: 0, enabled: true, always: false,
             }) }, '新建词条')) : null,
+          !compact ? h('div', { style: S.row },
+            promptField('内置词条分组', h('select', { 'aria-label': '内置词条分组', style: S.input, value: catalogGroup, onChange: event => setCatalogGroup(event.target.value) },
+              h('option', { value: '' }, '全部内置词条（64 条）'), [...new Set(BUILTIN_PROMPT_ENTRIES.map(entry => entry.group))].map(group => h('option', { key: group, value: group }, group)))),
+            h('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: async () => {
+              const additions = BUILTIN_PROMPT_ENTRIES.filter(entry => (!catalogGroup || entry.group === catalogGroup) && !entries.some(saved => saved.id === entry.id))
+              if (!additions.length) { setNote('这些内置词条已经添加过'); return }
+              if (entries.length + additions.length > limit) { setNote('词条数量已达上限，请选择更小的分组'); return }
+              setBusy(true)
+              try { if (await save({ promptEntries: [...entries, ...additions], ...(revision ? { promptRevision: revision } : {}) })) setNote('已添加 ' + additions.length + ' 条，可继续编辑触发词和内容') }
+              finally { setBusy(false) }
+            } }, '添加内置词条')) : null,
           compact ? promptField('编辑引用词条', h('select', { 'aria-label': '编辑引用词条', style: S.input, value: shownDraft?.id || '', onChange: event => {
             const entry = visible.find(item => item.id === event.target.value)
             if (entry) edit({ ...entry, any: entry.any.join('，'), all: entry.all.join('，'), exclude: entry.exclude.join('，') })
@@ -3157,8 +3331,13 @@ function versionsOf(jobId) {
               promptField('分组', h('input', { style: S.input, list: groupList, value: draft.group, maxLength: 60,
                 placeholder: '例如：城镇地点', onChange: event => patch({ group: event.target.value }) }))),
             h('datalist', { id: groupList }, groups.map(group => h('option', { key: group, value: group }))),
-            promptField('视觉资料', h('textarea', { 'aria-label': '视觉资料', style: promptArea(96), value: draft.content, maxLength: 1200,
-              placeholder: '例如：候车厅有墨绿瓷砖、黄铜吊灯，站牌是深蓝色珐琅。',
+            h('div', { style: S.row },
+              promptField('内容写法', h('select', { 'aria-label': '词条内容写法', style: S.input, value: draft.format || 'auto', onChange: event => patch({ format: event.target.value }) },
+                [['auto', '跟随模板'], ['natural', '自然语言'], ['tags', '标签串'], ['mixed', '混合']].map(([value, label]) => h('option', { key: value, value }, label)))),
+              promptField('命中后用途', h('select', { 'aria-label': '词条命中后用途', style: S.input, value: draft.injection || 'guidance', onChange: event => patch({ injection: event.target.value }) },
+                [['guidance', '交给模型参考'], ['positive', '原样加入正面提示词'], ['negative', '原样加入负面提示词']].map(([value, label]) => h('option', { key: value, value }, label))))),
+            promptField('词条内容', h('textarea', { 'aria-label': '视觉资料', style: promptArea(96), value: draft.content, maxLength: 4000,
+              placeholder: '可写完整描述，或标签串：cinematic lighting, rim light, depth of field',
               onChange: event => patch({ content: event.target.value }) })),
             h('label', { style: S.row }, h('input', { type: 'checkbox', checked: draft.always, onChange: event => patch({ always: event.target.checked }) }), '始终候选'),
             !draft.always ? field('any', '命中任一词', 1328, '例如：旧车站，北站，候车厅') : null,
@@ -3232,6 +3411,7 @@ function versionsOf(jobId) {
         const blocks = structure.blocks.filter(block => promptBlockLabel(block?.kind)).slice(0, PROMPT_BLOCK_LIMIT).map(block => ({
           kind: block.kind, title: String(block.title ?? '').slice(0, 60), text: String(block.text ?? '').slice(0, ['rule', 'library', 'output'].includes(block.kind) ? 4000 : 1000),
           ...(block.kind === 'output' ? { format: PROMPT_MODES_UI.some(([id]) => id === block.format) ? block.format : structure.format } : {}),
+          ...(Array.isArray(block.modes) ? { modes: [...block.modes] } : {}),
           ...(typeof block.usage === 'string' ? { usage: block.usage.slice(0, 64) } : {}),
           ...(block.enabled === false ? { enabled: false } : {}),
           ...(block.kind === 'extension' ? { moduleId: block.moduleId || 'core.custom', values: JSON.parse(JSON.stringify(block.values || {})) } : {}),
@@ -3244,7 +3424,7 @@ function versionsOf(jobId) {
         }))
         const targets = Array.isArray(structure.targets) ? structure.targets.filter(target => ['channel', 'workflow'].includes(target?.kind) && typeof target.id === 'string').slice(0, 60) : []
         const generationRules = typeof structure.generationRules === 'string' ? structure.generationRules.slice(0, 4000) : ''
-        return exposePromptGeneration({ ...rest, structure: { format: structure.format, purpose: structure.purpose || 'both', blocks, ...(Array.isArray(structure.inputs) ? { inputs: JSON.parse(JSON.stringify(structure.inputs)) } : {}), targets, ...(generationRules ? { generationRules } : {}) } })
+        return exposePromptGeneration({ ...rest, structure: { format: structure.format, purpose: structure.purpose || 'both', blocks, ...(structure.scenarios ? { scenarios: JSON.parse(JSON.stringify(structure.scenarios)) } : {}), ...(Array.isArray(structure.inputs) ? { inputs: JSON.parse(JSON.stringify(structure.inputs)) } : {}), targets, ...(generationRules ? { generationRules } : {}) } })
       }
       const [tryoutOpen, setTryoutOpen] = React.useState(false)
       const workspace = useImageDraft('templates' + (config.promptCatalogEpoch ? ':' + config.promptCatalogEpoch : ''), {
@@ -3477,7 +3657,7 @@ function versionsOf(jobId) {
               h('button', { type: 'button', style: S.tab(selected === item.id), 'aria-pressed': selected === item.id,
                 onClick: () => { select(item.id); setMessage('') } },
                 h('strong', null, item.name || '未命名'),
-                h('small', null, !item.id ? '默认' : item.scope === 'builtin' ? '内置' : item.project || '未分组'))))
+                h('small', null, !item.id ? '默认' : item.scope === 'builtin' ? (item.source || '内置') + (item.status === 'experimental' ? ' · 实验' : '') : item.project || '未分组'))))
               : h('li', { style: STRUCTURE_MUTED }, '没有匹配的模板')),
             h('div', { style: S.row, className: 'dti-template-filters' },
               h('button', { type: 'button', style: buttonStyle, disabled: draft.length >= limit, onClick: () => append(null, true) }, '新建空白模板')),
@@ -3751,13 +3931,14 @@ function versionsOf(jobId) {
 
     function GenerationTemplateSettings({ config, save, onEdit }) {
       const templates = (config.promptPresets || []).filter(item => item.enabled !== false && item.structure?.blocks?.length && item.structure.purpose !== 'edit')
+        .concat((config.promptPresetLibrary || []).filter(item => item.registered || item.id?.startsWith('galgame-')))
       const selected = templates.some(item => item.id === config.activePromptPreset) ? config.activePromptPreset : ''
       return h('section', { style: S.card, 'aria-label': '生图模板绑定' },
         h('div', { style: S.row }, promptField('生图使用的模板', h('select', { 'aria-label': '生图使用的模板', style: S.input,
           value: config.randomPromptTemplates ? '__random__' : selected,
           onChange: event => event.target.value === '__random__' ? save({ randomPromptTemplates: true }) : save({ activePromptPreset: event.target.value, randomPromptTemplates: false }) },
           h('option', { value: '' }, config.promptDefault?.name || '模块化模板'),
-          templates.map(item => h('option', { key: item.id, value: item.id }, item.name || '未命名模板')),
+          templates.map(item => h('option', { key: item.id, value: item.id }, (item.name || '未命名模板') + (item.registered ? ' · ' + item.source : '') + (item.status === 'experimental' ? ' · 实验' : ''))),
           h('option', { value: '__random__' }, '随机模板'))),
           h('button', { type: 'button', style: buttonStyle, onClick: () => onEdit(selected) }, '编辑模板')))
     }
@@ -4069,6 +4250,7 @@ function versionsOf(jobId) {
 
     const PROMPT_USAGES = [
       ['story', '剧情与卡片配图'], ['stage', '舞台与宿主素材'], ['plugin', '直接调用生图 SDK'],
+      ['background', '空背景'], ['figure', '透明底人物（立绘、头像）'], ['sheet', '人物设定图'],
     ]
 
     function PromptUsageField({ label, value = '', allowAll = true, editable = true, onChange }) {
@@ -4157,6 +4339,7 @@ function versionsOf(jobId) {
         setOpenBlock(blocks.length)
       }
       return h('div', { className: 'dti-inline-structure' },
+        h(PromptScenarioEditor, { structure, editable, onChange }),
         h('div', { className: 'dti-structure-heading' }, h('strong', null, '模块清单'),
           h('span', { style: STRUCTURE_MUTED }, blocks.length + ' 个模块')),
         h('ol', { className: 'dti-inline-blocks', 'aria-label': '提示词分节顺序' },
@@ -4224,11 +4407,15 @@ function versionsOf(jobId) {
                   h('option', { value: '' }, '所有分组'),
                   block.entryGroup && !groups.includes(block.entryGroup) ? h('option', { value: block.entryGroup }, block.entryGroup + '（当前无词条）') : null,
                   groups.map(group => h('option', { key: group, value: group }, group)))),
-                h('span', { style: STRUCTURE_MUTED }, '只在试规划和正文自动规划时，按本轮正文匹配词条。'))
+                h('span', { style: STRUCTURE_MUTED }, '规划时按正文匹配；直接加入提示词的词条在出图时也会匹配，保留标签串。每轮最多 32 条、16000 字符。'))
               : promptField(textLabel,
               h('textarea', { 'aria-label': textLabel, style: promptArea(64), value: block.text, readOnly: !editable, maxLength: block.kind === 'rule' ? 4000 : 1000,
                 placeholder: block.kind === 'rule' ? '例如：先写人物动作，再补镜头和光线。' : undefined,
                 onChange: event => patchBlock(index, { text: event.target.value }) })),
+            structure.scenarios?.modes?.length ? h('fieldset', { disabled: !editable, style: { border: 0, padding: '8px 0', margin: 0 } },
+              h('legend', { style: STRUCTURE_MUTED }, '在哪些模式启用（全不选表示所有模式）'),
+              h('div', { style: S.row }, structure.scenarios.modes.map(mode => h('label', { key: mode.id, style: S.row },
+                h('input', { type: 'checkbox', checked: block.modes?.includes(mode.id) || false, onChange: event => patchBlock(index, { modes: event.target.checked ? [...(block.modes || []), mode.id] : (block.modes || []).filter(id => id !== mode.id) }) }), mode.name)))) : null,
             h('div', { style: S.row },
               h('label', { style: S.row }, h('input', { type: 'checkbox', checked: block.enabled !== false, disabled: !editable,
                 onChange: event => patchBlock(index, { enabled: event.target.checked }) }), '启用'),
@@ -4368,6 +4555,36 @@ function versionsOf(jobId) {
         (definition?.fields || []).filter(field => field.type !== 'json').map(fieldControl),
         definition?.fields?.some(field => field.type === 'json') ? h('details', null, h('summary', { style: PROMPT_DISCLOSURE }, '高级参数'), definition.fields.filter(field => field.type === 'json').map(fieldControl)) : null)
     }
+
+    function PromptScenarioEditor({ structure, editable, onChange }) {
+      const settings = structure.scenarios
+      const update = patch => onChange({ scenarios: { ...settings, ...patch } })
+      const setMode = (id, patch) => update({ modes: settings.modes.map(mode => mode.id === id ? { ...mode, ...patch } : mode) })
+      return h('details', { style: S.card, 'aria-label': '场景模式设置' },
+        h('summary', { style: PROMPT_DISCLOSURE }, '场景模式', settings ? ' · ' + ({ model: '模型判断', keywords: '关键词判断', fixed: '固定模式' }[settings.policy]) : ' · 未启用'),
+        h('p', { style: STRUCTURE_MUTED }, '先判断本次场景，再启用对应模块。画风、词条、角色引用、排除词与插件模块均可限定模式。'),
+        h('label', { style: S.row }, h('input', { type: 'checkbox', 'aria-label': '启用场景模式', disabled: !editable, checked: !!settings,
+          onChange: event => onChange({ scenarios: event.target.checked ? { policy: 'keywords', fallback: 'normal', fixed: 'normal', modes: [
+            { id: 'normal', name: '普通', description: '日常、对话、冒险等普通画面。', keywords: [] },
+            { id: 'nsfw', name: 'NSFW', description: '正文当前画面明确涉及成人裸露或性内容。', keywords: ['nsfw', 'NSFW场景'] },
+          ] } : null }) }), '启用场景模式'),
+        settings ? h('div', { style: PROMPT_FIELDS },
+          promptField('判断方式', h('select', { 'aria-label': '场景判断方式', style: S.input, disabled: !editable, value: settings.policy, onChange: event => update({ policy: event.target.value }) },
+            h('option', { value: 'keywords' }, '关键词规则（按列表顺序匹配）'), h('option', { value: 'model' }, '模型自行判断'), h('option', { value: 'fixed' }, '固定使用指定模式'))),
+          promptField(settings.policy === 'fixed' ? '固定场景模式' : '未命中时使用', h('select', { 'aria-label': '默认场景模式', style: S.input, disabled: !editable, value: settings.policy === 'fixed' ? settings.fixed : settings.fallback,
+            onChange: event => update({ [settings.policy === 'fixed' ? 'fixed' : 'fallback']: event.target.value }) }, settings.modes.map(mode => h('option', { key: mode.id, value: mode.id }, mode.name)))),
+          settings.policy === 'model' ? h('small', { style: STRUCTURE_MUTED }, '每次规划前调用当前后台文字模型判断一次；同批出图沿用判断结果。') : null,
+          settings.modes.map(mode => h('fieldset', { key: mode.id, disabled: !editable, style: { ...S.card, margin: 0 } },
+            promptField('模式名称', h('input', { 'aria-label': '模式名称 ' + mode.id, style: S.input, maxLength: 60, value: mode.name, onChange: event => setMode(mode.id, { name: event.target.value }) })),
+            promptField('判断说明', h('textarea', { 'aria-label': '模式判断说明 ' + mode.id, style: promptArea(60), maxLength: 1000, value: mode.description || '', placeholder: '告诉模型什么画面属于这个模式', onChange: event => setMode(mode.id, { description: event.target.value }) })),
+            promptField('触发词（逗号分隔）', h('input', { 'aria-label': '模式触发词 ' + mode.id, style: S.input, value: (mode.keywords || []).join('，'), placeholder: '例如：nsfw，成人场景', onChange: event => setMode(mode.id, { keywords: event.target.value.split(/[,，\n]/) }) })),
+            h('button', { type: 'button', style: buttonStyle, disabled: settings.modes.length < 2, onClick: () => {
+              const modes = settings.modes.filter(item => item.id !== mode.id)
+              onChange({ scenarios: { ...settings, modes, fallback: settings.fallback === mode.id ? modes[0].id : settings.fallback, fixed: settings.fixed === mode.id ? modes[0].id : settings.fixed },
+                blocks: structure.blocks.map(block => ({ ...block, modes: block.modes?.filter(id => id !== mode.id) })) })
+            } }, '删除模式'))),
+          h('button', { type: 'button', style: buttonStyle, disabled: !editable || settings.modes.length >= 20, onClick: () => update({ modes: [...settings.modes, { id: 'mode-' + crypto.randomUUID().slice(0, 8), name: '自定义模式', description: '', keywords: [] }] }) }, '添加场景模式')) : null)
+    }
     function CharacterDesignSettings({ config, save }) {
       const [draft, setDraft] = React.useState({})
       const textField = (key, label) => promptField(label, h('textarea', { 'aria-label': label,
@@ -4482,6 +4699,9 @@ function versionsOf(jobId) {
             const current = typeof r?.current === 'string' && list.some(item => item.path === r.current) ? r.current : ''
             setCurrentCardPath(current)
             setImportCard(existing => existing || current || (list[0]?.path ?? ''))
+            const games = Array.isArray(r?.games) ? r.games : []
+            setDesignGames(games)
+            setDesignGame(existing => games.some(game => game.id === existing) ? existing : (games[0]?.id || ''))
           } catch {}
         })()
         return () => { alive = false }
@@ -4495,6 +4715,12 @@ function versionsOf(jobId) {
       // 设计角色：内联展开（不用浮层，设置面板层级更高会挡住）
       const [designMode, setDesignMode] = React.useState('')
       const [designBrief, setDesignBrief] = React.useState('')
+      const [designGames, setDesignGames] = React.useState([])
+      const [designGame, setDesignGame] = React.useState('')
+      const [designUseCard, setDesignUseCard] = React.useState(false)
+      const [designUseWorldbook, setDesignUseWorldbook] = React.useState(false)
+      const [designUseRecent, setDesignUseRecent] = React.useState(false)
+      const [designTurnCount, setDesignTurnCount] = React.useState(3)
       const [designMediaType, setDesignMediaType] = React.useState('')
       const [designPreview, setDesignPreview] = React.useState('')
       const [designName, setDesignName] = React.useState('')
@@ -4525,6 +4751,10 @@ function versionsOf(jobId) {
       // 历史图：批量选择模式
       const [gallerySelect, setGallerySelect] = React.useState(false)
       const [galleryPicked, setGalleryPicked] = React.useState({})
+      const [galleryDeletion, setGalleryDeletion] = React.useState(null)
+      const [galleryDeleting, setGalleryDeleting] = React.useState(false)
+      const galleryDeleteBusy = React.useRef(false)
+      const [galleryDeleteNote, setGalleryDeleteNote] = React.useState('')
       // 画廊页签的切换：默认游玩画廊，卡片画廊按需切过去。
       const [gallerySource, setGallerySource] = React.useState('play')
 
@@ -4657,7 +4887,7 @@ function versionsOf(jobId) {
           if (!alive) return
           const list = r?.jobs ?? []
           setHistoryJobs(list)
-          setHistoryNote(list.length ? '' : '还没有生成过图片')
+          setHistoryNote(list.length || galleryMode === 'trash' ? '' : '还没有生成过图片')
           reportHost('history-ok', { jobs: list.length })
         }).catch(error => {
           if (!alive) return
@@ -4671,6 +4901,17 @@ function versionsOf(jobId) {
         })
         return () => { alive = false }
       }, [tab, historyTick, galleryMode])
+
+      React.useEffect(() => {
+        const receive = event => {
+          if (!event.detail) return
+          setDisplayWidthDraft(null)
+          setDisplayWidthNote('')
+          setData(current => current ? { ...current, config: { ...current.config, ...event.detail } } : current)
+        }
+        window.addEventListener('dsh-tavern-image:config', receive)
+        return () => window.removeEventListener('dsh-tavern-image:config', receive)
+      }, [])
 
       function post(pathname, body) {
         return jsonFetch(BASE + pathname, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -4710,7 +4951,7 @@ function versionsOf(jobId) {
         if (!saved) { setDisplayWidthNote('保存失败，请重试'); return }
         applyImageWidth(value)
         setDisplayWidthDraft(null)
-        setDisplayWidthNote(value ? ('已保存：正文插图统一按 ' + value + ' px 显示') : '已恢复默认大小')
+        setDisplayWidthNote(value ? ('已保存：图片统一按 ' + value + ' px 显示') : '已恢复默认大小')
       }
 
       if (!data) return h('div', { style: Object.assign({}, S.surface, { padding: '18px', fontSize: '13px' }) }, note || '正在读取…')
@@ -5090,7 +5331,8 @@ function versionsOf(jobId) {
         const valid = /^\s*\d*\s*$/.test(draftText)
         const draftValue = normalizeImageWidth(draftText)
         const busy = displayWidthNote === '保存中…'
-        const previewWidth = draftValue || saved || IMAGE_WIDTH_LIMIT.fallback
+        const defaultWidth = config.imageDisplayPosition === 'floating' ? 420 : ['left', 'right'].includes(config.imageDisplayPosition) ? 300 : IMAGE_WIDTH_LIMIT.fallback
+        const previewWidth = draftValue || defaultWidth
         // 有没保存的改动 = 正在预览：此时正文插图已经按草稿宽度显示了，只是还没写盘。
         const dirty = displayWidthDraft !== null && draftValue !== saved
         const sampleSrc = widthSampleJob ? BASE + '/jobs?id=' + encodeURIComponent(widthSampleJob.id) + '&image=1' : ''
@@ -5101,7 +5343,7 @@ function versionsOf(jobId) {
         // 只列两个**确定**的值：设置值和默认值。聊天区宽度因面板不同而变，放进来只会让人怀疑数字。
         const compareRows = [
           { key: 'mine', label: '你设的宽度', width: previewWidth, color: 'var(--dsw-alias-brand-primary)', image: sampleSrc },
-          { key: 'default', label: '默认', width: IMAGE_WIDTH_LIMIT.fallback, color: 'var(--dsw-alias-label-tertiary)', dashed: true },
+          { key: 'default', label: '默认', width: defaultWidth, color: 'var(--dsw-alias-label-tertiary)', dashed: true },
         ]
         const rulerBg = 'repeating-linear-gradient(to right, color-mix(in srgb, var(--dsw-alias-label-tertiary) 18%, transparent) 0 1px, transparent 1px 100px)'
         const compareBar = row => h('div', { key: row.key, style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px' } },
@@ -5138,7 +5380,7 @@ function versionsOf(jobId) {
             h('input', {
               'aria-label': '正文图片显示宽度', type: 'range',
               min: String(IMAGE_WIDTH_LIMIT.min), max: String(IMAGE_WIDTH_LIMIT.max), step: '10',
-              value: String(draftValue || IMAGE_WIDTH_LIMIT.fallback), disabled: busy,
+              value: String(draftValue || defaultWidth), disabled: busy,
               style: { width: 'min(240px, 52vw)', accentColor: 'var(--dsw-alias-brand-primary)', cursor: 'pointer' },
               onChange: e => { setDisplayWidthNote(''); setDisplayWidthDraft(String(e.target.value)); applyImageWidth(e.target.value) },
             }),
@@ -5155,7 +5397,7 @@ function versionsOf(jobId) {
             h('button', { style: buttonStyle, disabled: busy || !saved, onClick: () => { void saveDisplayWidth('') } }, '恢复默认'),
             !valid ? h('span', { role: 'alert', style: { fontSize: '12px', color: 'var(--dsw-alias-state-error-primary)' } }, '宽度只能是数字') : null,
             dirty
-              ? h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '12px', color: 'var(--dsw-alias-state-warning-primary)' } }, '预览中（未保存）：正文已临时按 ' + (draftValue ? draftValue + ' px' : '默认') + ' 显示')
+              ? h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '12px', color: 'var(--dsw-alias-state-warning-primary)' } }, '预览中（未保存）：图片已临时按 ' + (draftValue ? draftValue + ' px' : '默认') + ' 显示')
               : (displayWidthNote ? h('span', { role: 'status', 'aria-live': 'polite', style: { fontSize: '12px', color: /失败/.test(displayWidthNote) ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-success-primary)' } }, displayWidthNote) : null),
           ),
           h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '6px' } },
@@ -5552,6 +5794,17 @@ function versionsOf(jobId) {
           const target = activeCharacter
           const isNew = designMode === 'new'
           const isPhoto = designMode === 'photo'
+          const isImport = designMode === 'import'
+          const isOutfit = designMode === 'outfit'
+          async function refreshDesignGames() {
+            try {
+              const result = await post('/cards', {})
+              const games = Array.isArray(result?.games) ? result.games : []
+              setDesignGames(games)
+              setDesignGame(existing => games.some(game => game.id === existing) ? existing : (games[0]?.id || ''))
+              setDesignNote(games.length ? '已刷新游玩对话' : '没有找到游玩对话')
+            } catch (error) { setDesignNote('刷新失败：' + (error?.message ?? error)) }
+          }
           function pickDesignFile(event) {
             const file = event?.target?.files && event.target.files[0]
             if (!file) return
@@ -5571,12 +5824,21 @@ function versionsOf(jobId) {
             if (designInFlight.current) return
             const brief = String(designBrief || '').trim()
             if (!isNew && !target) { setDesignNote('请先选择角色'); return }
-            if (isPhoto ? !designPreview : !brief) { setDesignNote(isPhoto ? '请先选择照片' : '请填写需求'); return }
+            if (isPhoto ? !designPreview : !brief && !designPreview && !designUseCard && !designUseWorldbook && !designUseRecent) {
+              setDesignNote(isPhoto ? '请先选择照片' : '请选择资料或填写需求'); return
+            }
+            if ((designUseCard || designUseRecent) && !designGame) { setDesignNote('请先选择游玩对话'); return }
+            if (designUseWorldbook && !importCard) { setDesignNote('请先选择世界书所属卡片'); return }
+            if (designUseRecent && (!Number.isInteger(Number(designTurnCount)) || Number(designTurnCount) < 1 || Number(designTurnCount) > 20)) {
+              setDesignNote('最近轮数请填写 1–20'); return
+            }
             designInFlight.current = true
             setDesignPanelBusy(true)
             setDesignNote(isPhoto ? '正在识别照片…' : '正在设计…')
             try {
-              const payload = { brief, sessionId: String(lastSessionId || '') }
+              const payload = { brief, sessionId: designGame || '', designType: isOutfit ? 'outfit' : 'character',
+                sources: { card: designUseCard, worldbook: designUseWorldbook, worldbookCard: designUseWorldbook ? importCard : '',
+                  recentTurns: designUseRecent ? Number(designTurnCount) : 0 } }
               if (!isNew) payload.current = target
               if (designPreview) Object.assign(payload, { data: designPreview, mediaType: designMediaType, name: designName })
               const r = await post(isPhoto ? '/vision' : '/design', payload)
@@ -5595,6 +5857,26 @@ function versionsOf(jobId) {
               const people = r.people || []
               if (!people.length) { setDesignNote('没产出人物。模型原文：' + String(r.raw || '').slice(0, 160)); return }
               const next = (dataRef.current?.definitions?.characters || []).slice()
+              if (isOutfit) {
+                const index = next.findIndex(character => character.id === target.id)
+                if (index < 0) { setDesignNote('角色已删除，已忽略设计结果'); return }
+                const person = people.find(item => String(item.name || '').trim() === String(target.name || '').trim())
+                if (!person) { setDesignNote('模型返回的角色与当前角色不一致，请重试。'); return }
+                const existing = next[index].outfits || []
+                const names = new Set(existing.map(outfit => String(outfit.name || '').trim().toLocaleLowerCase()))
+                const generated = (person.outfits || []).filter(outfit => {
+                  const name = String(outfit.name || '').trim()
+                  if (!name || names.has(name.toLocaleLowerCase()) || !['upper', 'lower', 'shoes', 'accessory', 'full', 'back'].some(key => String(outfit[key] || '').trim())) return false
+                  names.add(name.toLocaleLowerCase())
+                  return true
+                }).map(outfit => Object.assign({}, outfit, { id: 'o' + Date.now() + Math.random().toString(36).slice(2, 8), enabled: true, default: false }))
+                if (!generated.length) { setDesignNote('没有发现新的服装，已有服装未修改。'); return }
+                next[index] = { ...next[index], outfits: existing.concat(generated) }
+                setCharacters(next)
+                const saved = await commit(true)
+                setDesignNote(saved ? '已加入 ' + generated.length + ' 套新服装' : '新服装已保留在草稿，请保存人物库')
+                return
+              }
               // 改进模式：原地替换那个角色；新建模式：追加
               if (!isNew) {
                 const index = next.findIndex(character => character.id === target.id)
@@ -5611,21 +5893,28 @@ function versionsOf(jobId) {
                 setDesignName(current => current === designName ? '' : current)
                 return
               }
+              const knownNames = new Set(next.map(person => String(person.name || '').trim().toLocaleLowerCase()))
+              const added = []
               for (const person of people) {
+                const name = String(person.name || '').trim()
+                if (!name || knownNames.has(name.toLocaleLowerCase())) continue
+                knownNames.add(name.toLocaleLowerCase())
                 next.push({
                   id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
                   name: person.name || '未命名', match: person.match || '', enabled: true,
-                  continuity: '', note: person.note || '', inject: {}, cards: [], outfitRefs: [],
+                  continuity: '', note: person.note || '', inject: {}, cards: designUseWorldbook && importCard ? [importCard] : [], outfitRefs: [],
                   traits: Object.assign({ feature: '', face: '', faceBack: '', bodySFW: '', bodySFWBack: '', lowerSFW: '', lowerSFWBack: '', bodyNSFW: '', bodyNSFWBack: '', lowerNSFW: '', lowerNSFWBack: '', negative: '' }, person.traits || {}),
                   outfits: (person.outfits || []).map(o => Object.assign({ id: 'o' + Date.now() + Math.random().toString(36).slice(2, 6), enabled: true, default: false }, o)),
                 })
+                added.push(name)
               }
+              if (!added.length) { setDesignNote('没有新增角色；同名角色已保留。'); return }
               setCharacters(next)
               setPeopleSearch('')
-              setPeopleActiveId(next[next.length - people.length]?.id || '')
+              setPeopleActiveId(next[next.length - added.length]?.id || '')
                 const saved = await commit(true)
-              if (saved && typeof showToast === 'function') showToast('已生成 ' + people.length + ' 个角色，并写入角色库')
-              setDesignNote(saved ? '已生成 ' + people.length + ' 位角色并保存' : '生成结果已保留，请点「保存人物库」重试保存')
+              if (saved && typeof showToast === 'function') showToast('已生成 ' + added.length + ' 个角色，并写入角色库')
+              setDesignNote(saved ? '已生成 ' + added.length + ' 位角色并保存' : '生成结果已保留，请点「保存人物库」重试保存')
               // 面板保持打开，让「保存人物库」提醒可见
               setDesignBrief(current => current === designBrief ? '' : current)
               setDesignMediaType(current => current === designMediaType ? '' : current)
@@ -5640,12 +5929,38 @@ function versionsOf(jobId) {
           }
           return h('section', { 'aria-label': 'Agent 角色工具', style: { ...S.card, margin: '10px 0' } },
             h('div', { style: S.row }, [
-              ['photo', '从照片识别'], ['new', '设计新角色'], ['edit', '改这个角色'],
+              ['new', '设计新角色'], ['outfit', '生成新服装'], ['edit', '改这个角色'], ['photo', '从照片识别'], ['import', '世界书导入'],
             ].map(([mode, label]) => h('button', { key: mode, type: 'button', style: S.tab(designMode === mode),
-              'aria-pressed': designMode === mode, disabled: designPanelBusy || (mode !== 'new' && !target),
-              onClick: () => { setDesignMode(mode); setDesignBrief(''); setDesignNote('') } }, label))),
+              'aria-pressed': designMode === mode, disabled: designPanelBusy || (['photo', 'edit', 'outfit'].includes(mode) && !target),
+              onClick: () => { setDesignMode(mode); setDesignBrief(''); setDesignNote(''); setImportPreview(null) } }, label))),
+            isImport ? h(React.Fragment, null,
+              promptField('选择要导入的卡', h('select', { 'aria-label': '选择要导入的卡', value: importCard, style: S.input,
+                onChange: event => setImportCard(event.target.value) },
+                importCards.map(item => h('option', { key: item.path, value: item.path }, item.label)))),
+              h('button', { type: 'button', style: buttonStyle, disabled: !importCard || designPanelBusy, onClick: importFromCard }, '读取世界书并生成'),
+              importPreviewPanel()) : h(React.Fragment, null,
             !isNew && target ? h('p', { style: STRUCTURE_MUTED }, '当前角色：' + (target.name || '未命名角色')) : null,
-            !isPhoto ? promptField(isNew ? '设计需求' : '修改要求', h('textarea', { value: designBrief,
+            !isPhoto ? h('fieldset', { style: { ...S.card, margin: '10px 0' } },
+              h('legend', null, '参考资料'),
+              h('div', { style: S.row },
+                h('label', { style: S.row }, h('input', { type: 'checkbox', checked: designUseWorldbook, disabled: designPanelBusy,
+                  onChange: event => setDesignUseWorldbook(event.target.checked) }), '卡片世界书'),
+                h('label', { style: S.row }, h('input', { type: 'checkbox', checked: designUseCard, disabled: designPanelBusy,
+                  onChange: event => setDesignUseCard(event.target.checked) }), '游玩卡片设定'),
+                h('label', { style: S.row }, h('input', { type: 'checkbox', checked: designUseRecent, disabled: designPanelBusy,
+                  onChange: event => setDesignUseRecent(event.target.checked) }), '最近正文')),
+              designUseWorldbook ? promptField('世界书所属卡片', h('select', { value: importCard, style: S.input, disabled: designPanelBusy,
+                onChange: event => setImportCard(event.target.value) },
+                importCards.length ? importCards.map(item => h('option', { key: item.path, value: item.path }, item.label))
+                  : h('option', { value: '' }, '没有可用卡片'))) : null,
+              designUseCard || designUseRecent ? promptField('游玩对话', h('select', { value: designGame, style: S.input, disabled: designPanelBusy,
+                onChange: event => setDesignGame(event.target.value) },
+                designGames.length ? designGames.map(game => h('option', { key: game.id, value: game.id }, game.title + (game.cardName && game.cardName !== game.title ? ' · ' + game.cardName : '')))
+                  : h('option', { value: '' }, '没有可用的游玩对话'))) : null,
+              designUseCard || designUseRecent ? h('button', { type: 'button', style: buttonStyle, disabled: designPanelBusy, onClick: refreshDesignGames }, '刷新游玩对话') : null,
+              designUseRecent ? promptField('最近轮数（1–20）', h('input', { type: 'number', min: 1, max: 20, step: 1,
+                value: designTurnCount, style: S.input, disabled: designPanelBusy, onChange: event => setDesignTurnCount(event.target.value) })) : null) : null,
+            !isPhoto ? promptField(isNew ? '设计需求或补充资料（可选）' : isOutfit ? '服装需求或补充资料（可选）' : '修改要求或补充资料（可选）', h('textarea', { value: designBrief,
               disabled: designPanelBusy, style: promptArea(72), onChange: event => setDesignBrief(event.target.value) })) : null,
             h('div', { style: S.row },
               promptField(isPhoto ? '识别照片' : '参考照片（可选）', h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif',
@@ -5655,8 +5970,8 @@ function versionsOf(jobId) {
             designPreview ? h('img', { src: designPreview, alt: '待处理照片', style: { display: 'block', maxWidth: '100%', maxHeight: 96, marginTop: 6 } }) : null,
             h('div', { style: S.row },
               h('button', { type: 'button', style: S.tab(true), disabled: designPanelBusy, onClick: runDesign },
-                designPanelBusy ? '处理中…' : isPhoto ? '识别并填入资料' : isNew ? '生成角色' : '应用修改')),
-            designNote ? h('div', { role: 'status', style: STRUCTURE_MUTED }, designNote) : null)
+                designPanelBusy ? '处理中…' : isPhoto ? '识别并填入资料' : isNew ? '生成角色' : isOutfit ? '生成并加入服装库' : '应用修改')),
+            designNote ? h('div', { role: 'status', style: STRUCTURE_MUTED }, designNote) : null))
         }
 
         function area(label, why, value, onChange, rows) {
@@ -6090,14 +6405,6 @@ function versionsOf(jobId) {
                   onClick: reloadLibrary }, '重新载入最新人物库') : null,
                 h('button', { type: 'button', style: S.tab(true), disabled: saveState === 'saving',
                   onClick: () => commit(false) }, saveState === 'saving' ? '正在保存…' : '保存人物库'))),
-            h('details', null,
-              h('summary', { style: PROMPT_DISCLOSURE }, '从世界书生成角色'),
-              h('div', { style: S.row },
-                importCards.length ? h('select', { 'aria-label': '选择要导入的卡', value: importCard, style: S.input,
-                  onChange: event => setImportCard(event.target.value) },
-                  importCards.map(item => h('option', { key: item.path, value: item.path }, item.label))) : null,
-                h('button', { type: 'button', style: buttonStyle, disabled: !importCard, onClick: importFromCard }, '读取世界书并生成')),
-              importPreviewPanel()),
             libraryDraft.value ? h('div', { style: S.row },
               h('span', { style: STRUCTURE_MUTED }, '本地草稿已保留'),
               h('button', { type: 'button', style: buttonStyle, disabled: !libraryDraft.canUndo, onClick: undoLibraryEdit }, '撤销人物修改'),
@@ -6225,6 +6532,7 @@ function versionsOf(jobId) {
       }
 
       async function updateGalleryItem(id, operation) {
+        if (galleryDeleteBusy.current) return false
         try {
           const response = await post('/gallery-item', { id, operation })
           if (!response?.job) throw new Error('未收到画廊操作结果')
@@ -6246,6 +6554,36 @@ function versionsOf(jobId) {
         if (!ids.length || !confirm('将 ' + ids.length + ' 张图移到回收站？')) return
         for (const id of ids) await updateGalleryItem(id, 'trash')
         setGalleryPicked({})
+      }
+
+      function requestGalleryDeletion(ids, all = false) {
+        if (galleryDeleteBusy.current || !all && !ids.length) return
+        setGalleryDeleteNote('')
+        setGalleryDeletion({ ids, all })
+      }
+
+      async function deleteGalleryImages() {
+        if (!galleryDeletion || galleryDeleteBusy.current) return
+        galleryDeleteBusy.current = true
+        setGalleryDeleting(true)
+        setGalleryDeleteNote('')
+        try {
+          const response = await post('/gallery-delete', galleryDeletion)
+          if (!Array.isArray(response.deleted)) throw new Error('未收到删除结果')
+          const deleted = new Set(response.deleted)
+          setHistoryJobs(list => list.filter(job => !deleted.has(job.id)))
+          setGalleryPicked(current => Object.fromEntries(Object.entries(current).filter(([id]) => !deleted.has(id))))
+          setGalleryPrompt(current => deleted.has(current?.id) ? null : current)
+          setGalleryDeletion(null)
+          setHistoryTick(n => n + 1)
+          const failed = response.failed || []
+          setGalleryDeleteNote('已彻底删除 ' + deleted.size + ' 张图' + (failed.length ? '，' + failed.length + ' 张删除失败：' + failed[0].error : ''))
+        } catch (error) {
+          setGalleryDeleteNote('删除失败：' + (error?.message ?? error))
+        } finally {
+          galleryDeleteBusy.current = false
+          setGalleryDeleting(false)
+        }
       }
 
       /** 工作流：导入、查看、LoRA 管理。 */
@@ -6381,13 +6719,13 @@ function versionsOf(jobId) {
           if (r?.ok) { setLoraList(r.loras ?? []); setWfNote(r.loras?.length ? ('读到 ' + r.loras.length + ' 个已安装的 LoRA') : '没读到 LoRA 列表（ComfyUI 开了吗）') }
         }
 
-        async function previewImport(text) {
+        async function previewImport(text, filename) {
           if (wfImportBusy) return
           setWfImportBusy(true)
           setWfImportPreview(null)
           try {
             const payload = JSON.parse(text)
-            const result = await post('/workflow-import', { workflow: payload, preview: true })
+            const result = await post('/workflow-import', { workflow: payload, filename, preview: true })
             setWfImportPreview({ ...result, payload })
             setWfNote('')
           } catch (error) { setWfNote('预检失败：' + (error?.message ?? error)) }
@@ -6398,7 +6736,7 @@ function versionsOf(jobId) {
           if (wfImportBusy || !wfImportPreview?.outputNode) return
           setWfImportBusy(true)
           try {
-            const r = await post('/workflow-import', { workflow: wfImportPreview.payload, outputNode: wfImportPreview.outputNode })
+            const r = await post('/workflow-import', { workflow: wfImportPreview.payload, name: wfImportPreview.name, outputNode: wfImportPreview.outputNode })
             setWfNote('已导入《' + r.name + '》')
             setWfImportOpen(false); setWfPaste(''); setWfImportPreview(null)
             const state = await jsonFetch(BASE + '/state', { cache: 'no-store' }).catch(() => null)
@@ -6410,7 +6748,7 @@ function versionsOf(jobId) {
           const file = event.target.files?.[0]
           event.target.value = ''
           if (!file) return
-          try { const text = await file.text(); setWfPaste(text); await previewImport(text) }
+          try { const text = await file.text(); setWfPaste(text); await previewImport(text, file.name) }
           catch { setWfNote('读文件失败') }
         }
 
@@ -6459,7 +6797,9 @@ function versionsOf(jobId) {
               h('button', { type: 'button', style: buttonStyle, onClick: () => { setWfPaste(''); setWfNote(''); setWfImportPreview(null) } }, '清空'),
             ),
             wfImportPreview ? h('section', { style: S.card, 'aria-label': '工作流导入预检' },
-              h('strong', null, wfImportPreview.name + ' · ' + wfImportPreview.nodes + ' 个节点'),
+              promptField('工作流名称', h('input', { style: S.input, 'aria-label': '工作流名称', value: wfImportPreview.name,
+                maxLength: 80, disabled: wfImportBusy, onChange: event => setWfImportPreview(value => ({ ...value, name: event.target.value })) })),
+              h('div', null, wfImportPreview.nodes + ' 个节点'),
               h('dl', null, [['positive', '正面'], ['negative', '负面'], ['size', '尺寸'], ['seed', '种子'], ['loras', 'LoRA']].map(([key, label]) =>
                 h('div', { key, style: S.row }, h('dt', null, label),
                   h('dd', { style: { margin: 0 } }, (wfImportPreview.bindings?.[key] || []).map(item => item.node + ' · ' + (item.name || item.input)).join('、') || '未识别')))),
@@ -6468,7 +6808,7 @@ function versionsOf(jobId) {
                 h('option', { value: '' }, '选择输出节点'),
                 wfImportPreview.outputs?.map(item => h('option', { key: item.id, value: item.id }, item.id + ' · ' + item.label)))),
               h('button', { type: 'button', style: S.tab(true), disabled: wfImportBusy || !wfImportPreview.outputNode ||
-                !wfImportPreview.bindings?.positive?.length, onClick: doImport }, '确认导入')) : null,
+                (!wfImportPreview.bindings?.positive?.length && !wfImportPreview.hasImageInput), onClick: doImport }, '确认导入')) : null,
           ) : null,
 
           h('div', { style: { marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' } },
@@ -6712,6 +7052,7 @@ function versionsOf(jobId) {
                     { label: '查看负面提示词', onClick: () => showGalleryPrompt(job, 'negative') },
                     ...(galleryMode === 'trash' ? [
                       { label: '恢复到画廊', onClick: () => updateGalleryItem(job.id, 'restore') },
+                      { label: '彻底删除', onClick: () => requestGalleryDeletion([job.id]) },
                     ] : [
                       { label: '用这张图编辑', onClick: () => setImageEditSource({ url: BASE + '/jobs?id=' + encodeURIComponent(job.id) + '&image=1', name: job.label || '已有图片' }) },
                       { label: job.favorite ? '取消收藏' : '收藏', onClick: () => updateGalleryItem(job.id, job.favorite ? 'unfavorite' : 'favorite') },
@@ -6727,6 +7068,7 @@ function versionsOf(jobId) {
             !gallerySelect ? h('button', {
               type: 'button',
               title: galleryMode === 'trash' ? '恢复到画廊' : '移到回收站',
+              disabled: galleryDeleting,
               'aria-label': (galleryMode === 'trash' ? '恢复 ' : '回收 ') + (job.label || job.id),
               onClick: function (e) { e.stopPropagation(); updateGalleryItem(job.id, galleryMode === 'trash' ? 'restore' : 'trash') },
               style: {
@@ -6744,6 +7086,7 @@ function versionsOf(jobId) {
             !gallerySelect ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 6px 6px' } },
               h('button', { type: 'button', style: { ...buttonStyle, padding: '3px 5px', flex: '1 0 auto' }, 'aria-label': '查看提示词 ' + (job.label || job.id), onClick: () => showGalleryPrompt(job, 'positive') }, '提示词'),
               h('button', { type: 'button', style: { ...buttonStyle, padding: '3px 5px', flex: '1 0 auto' }, 'aria-label': '查看负面词 ' + (job.label || job.id), onClick: () => showGalleryPrompt(job, 'negative') }, '负面'),
+              galleryMode === 'trash' ? h('button', { type: 'button', disabled: galleryDeleting, style: { ...buttonStyle, padding: '3px 5px', color: 'var(--dsw-alias-state-error-primary)' }, 'aria-label': '彻底删除 ' + (job.label || job.id), onClick: () => requestGalleryDeletion([job.id]) }, '彻底删除') : null,
               galleryMode !== 'trash' ? h('button', { type: 'button', style: { ...buttonStyle, padding: '3px 5px' }, 'aria-label': '图生图 ' + (job.label || job.id), onClick: () => setImageEditSource({ url: BASE + '/jobs?id=' + encodeURIComponent(job.id) + '&image=1', name: job.label || '已有图片' }) }, '图生图') : null) : null,
             !gallerySelect && galleryPrompt?.id === job.id ? h('section', { 'aria-label': '图片提示词详情', style: { padding: 6, minWidth: 0 } },
               h('div', { style: { ...S.row, justifyContent: 'space-between' } }, h('strong', { style: { fontSize: 12 } }, galleryPrompt.field === 'negative' ? '完整负面提示词' : '完整正面提示词'),
@@ -6782,15 +7125,16 @@ function versionsOf(jobId) {
           h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginBottom: '10px' } }, '点缩略图查看原图，按页面顺序切图。右键插件图可查看操作。'),
           h('div', { style: S.row },
             [['', '全部图片'], ['favorite', '收藏'], ['trash', '回收站']].map(([key, label]) =>
-              h('button', { key, type: 'button', style: S.tab(galleryMode === key), 'aria-pressed': galleryMode === key, onClick: () => {
+              h('button', { key, type: 'button', style: S.tab(galleryMode === key), 'aria-pressed': galleryMode === key, disabled: galleryDeleting, onClick: () => {
                 if (galleryMode === key) return
-                setGalleryMode(key); setHistoryJobs([]); setGalleryPicked({}); setGallerySelect(false)
+                setGalleryMode(key); setHistoryJobs([]); setGalleryPicked({}); setGallerySelect(false); setGalleryDeletion(null); setGalleryDeleteNote('')
               } }, label)),
             h('button', { style: buttonStyle, onClick: function () { setHistoryNote('读取中…'); setHistoryTick(n => n + 1) } }, '🔄 刷新'),
             h('button', { style: buttonStyle, onClick: () => preview(), disabled: !ordered.length }, '浏览全部'),
-            galleryMode !== 'trash' ? h('button', { style: buttonStyle, onClick: function () {
-              setGallerySelect(v => !v); setGalleryPicked({})
-            } }, gallerySelect ? '✖ 退出批量' : '☑ 批量选择') : null,
+            h('button', { style: buttonStyle, disabled: galleryDeleting, onClick: function () {
+              setGallerySelect(v => !v); setGalleryPicked({}); setGalleryDeletion(null)
+            } }, gallerySelect ? '✖ 退出批量' : '☑ 批量选择'),
+            galleryMode === 'trash' ? h('button', { style: { ...buttonStyle, color: 'var(--dsw-alias-state-error-primary)' }, disabled: galleryDeleting || !done.length, onClick: () => requestGalleryDeletion([], true) }, '清空回收站') : null,
             gallerySelect ? h('button', { style: Object.assign({}, buttonStyle, { fontSize: '12px' }), onClick: function () {
               const next = {}
               for (const job of done) next[job.id] = true
@@ -6799,15 +7143,26 @@ function versionsOf(jobId) {
             gallerySelect ? h('button', { style: Object.assign({}, buttonStyle, { fontSize: '12px' }), onClick: function () { setGalleryPicked({}) } }, '取消全选') : null,
             gallerySelect ? h('button', {
               style: Object.assign({}, buttonStyle, { borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 70%, transparent)', color: 'var(--dsw-alias-state-error-primary)' }),
-              onClick: function () { trashSelected(Object.keys(galleryPicked).filter(k => galleryPicked[k])) },
-            }, '移到回收站（' + Object.keys(galleryPicked).filter(k => galleryPicked[k]).length + '）') : null,
+              disabled: galleryDeleting || !Object.values(galleryPicked).some(Boolean),
+              onClick: function () {
+                const ids = Object.keys(galleryPicked).filter(k => galleryPicked[k])
+                if (galleryMode === 'trash') requestGalleryDeletion(ids)
+                else trashSelected(ids)
+              },
+            }, (galleryMode === 'trash' ? '彻底删除（' : '移到回收站（') + Object.keys(galleryPicked).filter(k => galleryPicked[k]).length + '）') : null,
             historyNote ? h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)' } }, historyNote) : null,
           ),
+          galleryMode === 'trash' && galleryDeletion ? h('div', { role: 'group', 'aria-label': '确认彻底删除图片', style: { ...S.card, marginTop: 10 } },
+            h('p', { style: { margin: '0 0 8px', fontSize: 13 } }, galleryDeletion.all ? '清空回收站中的全部图片？删除后无法恢复。' : '彻底删除这 ' + galleryDeletion.ids.length + ' 张图片？删除后无法恢复。'),
+            h('div', { style: S.row },
+              h('button', { type: 'button', style: buttonStyle, disabled: galleryDeleting, onClick: () => setGalleryDeletion(null) }, '取消'),
+              h('button', { type: 'button', style: { ...buttonStyle, color: 'var(--dsw-alias-state-error-primary)' }, disabled: galleryDeleting, onClick: deleteGalleryImages }, galleryDeleting ? '正在删除…' : '确认彻底删除'))) : null,
+          galleryDeleteNote ? h('p', { role: 'status', style: { fontSize: 12 } }, galleryDeleteNote) : null,
           ordered.length ? ordered.map(group => h('details', { key: group.key, open: true, style: { marginTop: '14px' } },
             h('summary', { style: { cursor: 'pointer', fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } },
               groupTitle(group), h('span', { style: { fontWeight: 400, fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginLeft: '8px' } }, group.items.length + ' 张')),
             h('div', { style: GALLERY_GRID }, group.items.map(item => item.node))))
-            : historyNote ? null : h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', padding: '14px 0 0' } }, '还没有图片'),
+            : historyNote ? null : h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', padding: '14px 0 0' } }, galleryMode === 'trash' ? '回收站是空的' : '还没有图片'),
           legacyTiles.length ? h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '14px' } }, '「早期插图」是换用插件之前 Tavern 自带生图画的，只读；要删除请到对应那局的「画廊」。') : null,
 
         )
@@ -6916,7 +7271,7 @@ function versionsOf(jobId) {
         return workflow ? h(WorkflowGraphEditor, { key: workflow.file, file: workflow.file, post, embedded: true, onClose: close })
           : h('p', { style: STRUCTURE_MUTED }, '先选择此模块使用的工作流。')
       }
-      const worldbookMode = config.promptSystem === 'worldbook'
+      const worldbookMode = config.promptSystem !== 'workbench'
       const tabs = [['plan', '设置'], ...(!worldbookMode ? [['style', '生图工作台']] : [['worldbook', '世界书']]), ...(cardEnabled === true ? [['card-worldbook', '卡片世界书']] : []), ['library', '资料库'], ['people', '人物库'], ['gallery', '画廊']]
       const section = text => h('div', { style: { fontSize: '14px', fontWeight: 600, margin: '18px 0 2px', color: 'var(--dsw-alias-label-primary)' } }, text)
       return h('div', { className: 'dti-settings', style: Object.assign({}, S.surface, { padding: '4px 2px 20px', fontSize: '13px' }) },
@@ -6930,8 +7285,8 @@ function versionsOf(jobId) {
             h('span', { style: { display: 'block', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary)', marginTop: '2px' } },
               config.imageEnabled === false ? '已关闭：不再自动或手动配图，正文里不显示配图按钮；已有插图照常显示' : '为剧情自动或手动配图；关掉后正文里不显示配图按钮，已有插图照常显示')),
           h('input', { type: 'checkbox', role: 'switch', className: 'dti-switch', 'aria-label': '启用配图', checked: config.imageEnabled !== false, onChange: e => save({ imageEnabled: e.target.checked }) })),
-        h('div', { style: S.row }, promptField('生图模式', h('select', { 'aria-label': '生图系统模式', style: S.input, value: config.promptSystem || 'workbench', onChange: async event => { const mode = event.target.value; if (await save({ promptSystem: mode })) setTab(mode === 'worldbook' ? 'worldbook' : 'style') } },
-          h('option', { value: 'workbench' }, '生图工作台'), h('option', { value: 'worldbook' }, '世界书模式')))),
+        h('div', { style: S.row }, promptField('生图模式', h('select', { 'aria-label': '生图系统模式', style: S.input, value: config.promptSystem || 'worldbook', onChange: async event => { const mode = event.target.value; if (await save({ promptSystem: mode })) setTab(mode === 'worldbook' ? 'worldbook' : 'style') } },
+          h('option', { value: 'worldbook' }, '世界书模式（默认）'), h('option', { value: 'workbench' }, '生图工作台（高级模式）')))),
         taskPanel(),
         h('div', { style: S.row }, tabs.map(([key, label]) => h('button', { key, style: S.tab(tab === key), onClick: () => setTab(key) }, label))),
         tab === 'plan' ? h('div', null,
@@ -6958,7 +7313,7 @@ function versionsOf(jobId) {
           ),
           gallerySource === 'card' ? h('div', { style: S.card }, h(CardGalleryPage, { onEdit: item => setImageEditSource({ url: item.url, name: item.prompt?.slice(0, 60) || '卡片图片' }) })) : galleryTab(),
         ) : null,
-        worldbookMode && tab === 'worldbook' ? h(LegacyWorldbookPanel, { initialFormat: data.worldbookFormat || 'tags', providers: data.imageProviders || [] }) : null,
+        worldbookMode && tab === 'worldbook' ? h(LegacyWorldbookPanel, { initialFormat: config.worldbookEditorFormat || data.worldbookFormat || 'tags', save, providers: data.imageProviders || [] }) : null,
         cardEnabled === true && tab === 'card-worldbook' ? h('section', { 'aria-label': '卡片模式世界书' }, h(CardWorldbookPanel)) : null,
         wfGraphFile ? h(WorkflowGraphEditor, { key: wfGraphFile, file: wfGraphFile, post,
           onClose: () => setWfGraphFile(''),

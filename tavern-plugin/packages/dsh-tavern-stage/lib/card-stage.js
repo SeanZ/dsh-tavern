@@ -96,7 +96,7 @@ export function cardBubbleConfig(raw, engine, packSnapshots = [], globalEnabledP
     const promptEmotionIds = (figure.emotions || []).map(row=>row.id)
     // 通用声音 speaks an enabled figure that has no voice binding (one set to 「不配音」, source null, stays silent).
     const general = stage.voice && figure.enabled && !figure.voice
-    return {...character, ...(general ? {general:true} : {}), promptEmotionIds, defaultEmotion:figure.outfits.find(outfit=>outfit.enabled)?.defaultEmotion || figure.emotions?.[0]?.id || null, ref, aliases:figure.aliases || [], recall:figure.recall, voiceKey:figure?.voice ? figureVoiceKey(ref, figure, pack, extension) : null, avatarMedia:{...outfitMedia(opening), outfits:Object.fromEntries(figure.outfits.filter(outfit => outfit.enabled && outfit !== opening).map(outfit => [outfit.key, outfitMedia(outfit)]))},
+    return {...character, ...(general ? {general:true} : {}), promptEmotionIds, defaultEmotion:figure.outfits.find(outfit=>outfit.enabled)?.defaultEmotion || figure.emotions?.[0]?.id || null, ref, aliases:figure.aliases || [], recall:figure.recall, voiceKey:figure?.voice?.voice ? figureVoiceKey(ref, figure, pack, extension) : null, avatarMedia:{...outfitMedia(opening), outfits:Object.fromEntries(figure.outfits.filter(outfit => outfit.enabled && outfit !== opening).map(outfit => [outfit.key, outfitMedia(outfit)]))},
       voiceLanguage:figureVoiceLanguage(figure, pack)}
   })
   config.stage.styles = directionStyles(packSnapshots, extension?.assetBindings.boundPackIds, globalEnabledPackIds)
@@ -134,7 +134,9 @@ export function cardBubbleConfig(raw, engine, packSnapshots = [], globalEnabledP
   config.stage.enabled = !!extension && stage.stage
   // the 入场演出 this card's stage opens with (stage-entrance.js), or null.
   config.stage.entrance = extension ? selectStageEntrance(extension, packSnapshots, engine) : null
-  config.voice = {enabled:stage.voice && config.characters.some(character => character.voice)}
+  // enabled = this card's 角色配音 switch. Whether a line has a voice is each figure's own state: a card whose figures are all
+  // unbound still speaks them with 通用声音, so the switch must not depend on any figure having a voice of its own.
+  config.voice = {enabled:stage.voice}
   // Neither reaches the dialogue-format prompt (normalizeBubbleConfig keeps only voice.enabled).
   // 通用声音 / 旁白 speak as the figure they point at: its voice key (the cast's, so the clips are shared) and its 配音语言,
   // which decides 配音补译; neither reaches the prompt. 「不配音」 is silent; a figure gone has no key (silent, a 配音页 problem).

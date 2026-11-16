@@ -52,6 +52,7 @@ export async function app(t, chat, scoped, template = false, options = {}) {
       readChatSlice: createSessionSliceReader({ links: async () => ({ [chat.sessionId]: chat.id }), readSlice: persistence.readSlice }),
       readChangedSlice: persistence.readChangedSlice,
       readWindow: persistence.readWindow,
+      writersSince: persistence.writersSince,
       async patchChat(...args) { calls.patch++; const hook = beforePatch; beforePatch = null; await hook?.(); return persistence.patch(...args) }
     } : {})
   }
@@ -117,4 +118,3 @@ export async function saveTemplate(run, target, hp, patch = true) {
   if (patch) assert.ok(Array.isArray(result.statePatch), '正式模板增量保存路径已执行')
   await run.helper.updateVariables(request.sessionId, { type: 'chat' }, { ...request.chat_metadata.variables, playerName: '玩家' + hp }, 0)
 }
-

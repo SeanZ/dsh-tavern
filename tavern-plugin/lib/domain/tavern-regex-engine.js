@@ -91,78 +91,7 @@ function createTavernRegexEngine() {
     return { sourceText, text, changed: applied.length > 0, applied, warnings }
   }
 
-  /**
-   * Apply character-card display regexes in their original array order.
-   * `text` is the SillyTavern-compatible display projection. `bodyText` removes
-   * every matched source segment so display markup never remains in story text.
-   */
-  function renderTavernRegexDisplay(value, scripts, options = {}) {
-    const sourceText = str(value)
-    let text = sourceText
-    let bodyText = sourceText
-    const warnings = []
-    const applied = []
-    const presentationParts = []
-
-    function presentationToken(index) {
-      return '\uE000DSH_TAVERN_REGEX_' + index + '\uE001'
-    }
-
-    function restorePresentationTokens(value) {
-      return str(value).replace(/\uE000DSH_TAVERN_REGEX_(\d+)\uE001/g, function (token, index) {
-        return presentationParts[Number(index)] || ''
-      })
-    }
-
-    for (const [index, script] of (Array.isArray(scripts) ? scripts : []).entries()) {
-      if (!enabledFor(script, options)) continue
-      const label = str(script.name || script.id) || '正则 ' + (index + 1)
-      try {
-        const displayRegex = regexFromString(script.findRegex)
-        const bodyRegex = regexFromString(script.findRegex)
-        const buildReplacement = replacementFor(script)
-        const displayed = replaceAndCount(text, displayRegex, function () {
-          const replacement = buildReplacement.apply(null, arguments)
-          const token = presentationToken(presentationParts.length)
-          presentationParts.push(replacement)
-          return token
-        })
-        if (displayed.count === 0) continue
-        text = displayed.text
-        bodyText = replaceAndCount(bodyText, bodyRegex, function () { return '' }).text
-        applied.push({ index, id: str(script.id), name: label, matches: displayed.count })
-      } catch (error) {
-        warnings.push(label + '：' + str(error && error.message || error))
-      }
-    }
-
-    if (applied.length > 0 && sourceText.trim() !== '' && bodyText.trim() === '') {
-      warnings.push('显示正则覆盖了整轮正文，已忽略本轮展示结果')
-      return {
-        sourceText,
-        text: sourceText,
-        bodyText: sourceText,
-        presentationText: '',
-        changed: false,
-        applied: [],
-        warnings
-      }
-    }
-
-    const presentationTokens = text.match(/\uE000DSH_TAVERN_REGEX_\d+\uE001/g) || []
-
-    return {
-      sourceText,
-      text: restorePresentationTokens(text),
-      bodyText,
-      presentationText: presentationTokens.map(restorePresentationTokens).filter(Boolean).join('\n'),
-      changed: applied.length > 0,
-      applied,
-      warnings
-    }
-  }
-
-  return { applyTavernRegexText, renderTavernRegexDisplay, regexFromString }
+  return { applyTavernRegexText, regexFromString }
 }
 
 export { createTavernRegexEngine }

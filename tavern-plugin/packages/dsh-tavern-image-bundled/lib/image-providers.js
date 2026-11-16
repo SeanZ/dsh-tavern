@@ -175,7 +175,7 @@ async function fetchRaw(fetchImpl, url, init, max, signal, channel) {
 }
 function decodeBase64(value, max, declared = '') {
   const clean = String(value).replace(/\s/g, '')
-  if (clean.length > Math.ceil(max * 4 / 3) + 8 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(clean)) throw new Error('服务返回的图片编码无效或过大')
+  if (clean.length > Math.ceil(max * 4 / 3) + 8 || (clean.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(clean))) throw new Error('服务返回的图片编码无效或过大')
   const bytes = Buffer.from(clean, 'base64')
   if (!bytes.length || bytes.length > max) throw new Error('服务返回的图片超过允许大小')
   return { bytes, mediaType: imageType(bytes, declared) }
@@ -608,9 +608,10 @@ async function generateAtlascloud(channel, request, ctx) {
     const { width, height } = dims(request)
     const sizeMode = option(ch, 'sizeMode', 'size')
     if (sizeMode === 'size') {
-      const size = String(option(ch, 'size', `${width}*${height}`)).trim().match(/^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i)
+      const sizeText = String(option(ch, 'size', `${width}*${height}`)).trim()
+      const size = sizeText.match(/^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i)
       if (!size || Number(size[1]) <= 0 || Number(size[2]) <= 0) throw new Error('atlas cloud 尺寸请填写宽×高，例如 1024x1536')
-      payload.size = `${Number(size[1])}*${Number(size[2])}`
+      payload.size = sizeText
     } else if (sizeMode === 'aspect_ratio') {
       payload.aspect_ratio = String(option(ch, 'aspectRatio', closestRatio(width, height))).trim()
     } else if (sizeMode !== 'none') throw new Error('atlas cloud 尺寸参数模式无效')

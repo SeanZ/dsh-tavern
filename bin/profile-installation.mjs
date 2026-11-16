@@ -17,11 +17,15 @@ import { installCliRuntime, migrateCliHome } from './cli-runtime.mjs'
 import { extractDshVersion, assertCompatibleDshVersion, dshCompatibilityNotice } from './dsh-compatibility.mjs'
 import { patchThemeFontLimit } from './theme-font-limit.mjs'
 import { patchChatAnswerStep } from './chat-answer-step-patch.mjs'
+import { patchChatReasoningFold } from './chat-reasoning-fold-patch.mjs'
+import { patchChatToolReplyStream } from './chat-tool-reply-stream-patch.mjs'
 import { patchDeepSeekStreamOption } from './deepseek-stream-option-patch.mjs'
 import { patchPiAiNonStream } from './pi-ai-nonstream-patch.mjs'
+import { patchPiAiVertexStream, resolveVertexProject } from './pi-ai-vertex-stream-patch.mjs'
 import { patchWebViewportMeta } from './web-viewport-patch.mjs'
 import { installPluginDependencies, resolveHostAnchor, resolveHostDependencies } from './plugin-dependencies.mjs'
 import { installBundledSceneImagePlugin } from './bundled-scene-image-plugin.mjs'
+import { installBundledTavernPlugins } from './bundled-tavern-plugins.mjs'
 import { isAsarPath } from './desktop-host-paths.mjs'
 import { repairDirectoryLinksSync } from './portable-fs.mjs'
 import { migrateLegacyTavernData, resolveTavernDataRoot } from '../tavern-plugin/lib/domain/tavern-data.js'
@@ -376,6 +380,17 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh, guiRoo
     }
     const configuration = prepareProfileConfiguration(host, dshVersion)
     prepared?.prepareManifest(configuration.manifest)
+
+    // 带「酒馆插件」身份的内置插件（剧情罗盘）装进 plugins/ 目录：插件页据此列出、可停用，也随酒馆
+    // 更新。判定「profile 里还有同名包」用刚算出来的清单，而不是磁盘上的 node_modules —— 从旧版本升上来时
+    // 依赖是这次 pnpm install 才摘掉的，看磁盘会永远让位、插件永远装不上。
+    for (const bundled of installBundledTavernPlugins({
+      sourceRoot: SOURCE_ROOT, dataRoot, profileDependencies: configuration.manifest.dependencies || {},
+    })) {
+      if (bundled.action === 'installed') console.log(`已内置插件 ${bundled.packageName} ${bundled.version}：${bundled.target}`)
+      else if (bundled.action === 'upgraded') console.log(`已把内置插件 ${bundled.packageName} 从 ${bundled.installedVersion} 更新到 ${bundled.version}`)
+      else console.log('内置插件 ' + bundled.packageName + '：' + (bundled.reason || bundled.action))
+    }
     const transaction = await beginProfileConfigurationUpdate({
       profileDir,
       manifest: configuration.manifest,
@@ -423,6 +438,12 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh, guiRoo
         const patched = patchChatAnswerStep(chat.directory)
         if (patched === null) console.log('当前 DSH 的对话界面与回复步骤补丁不符，已跳过。')
         else if (patched) console.log('已修正 DSH 对话界面：整理过正文的回合不再被当作过程收起。')
+        const folded = patchChatReasoningFold(chat.directory)
+        if (folded === null) console.log('当前 DSH 的对话界面与思维链补丁不符，已跳过；思维链仍按宿主自己的展示规则。')
+        else if (folded) console.log('已让 DSH 对话界面的思考行跟随流式展开，写完自动收起。')
+        const toolStreamed = patchChatToolReplyStream(chat.directory)
+        if (toolStreamed === null) console.log('当前 DSH 的对话界面与工具流式预览补丁不符，已跳过。')
+        else if (toolStreamed) console.log('已启用 submit_story 工具调用期间的思维链与正文实时流式显示。')
       }
       if (!isAsarPath(deepseek.directory)) {
         const patched = patchDeepSeekStreamOption(deepseek.directory)
@@ -454,6 +475,23 @@ async function installProfileOwned(host, { attemptId, runInstall, runDsh, guiRoo
         const patched = patchPiAiNonStream({ adapterDirectory: piAi.adapter.directory, sdkDirectory: piAi.sdkDirectory })
         if (patched === null) console.log('当前 DSH 的 pi-ai 适配器与非流式补丁不符，已跳过；非流式仍在响应完成后一次性显示。')
         else if (patched) console.log('已为 pi-ai 的 OpenAI 兼容模型启用上游非流式请求。')
+      }
+      if (piAi && !isAsarPath(piAi.sdkDirectory)) {
+        // Gemini 3/4 answer only at `locations/global`, a resource path: the catalog can
+        // carry it only with the project the profile's Vertex route already names.
+        let profileText = ''
+        try {
+          profileText = readFileSync(path.join(PROFILE_DIR, 'cordis.patch.yml'), 'utf8')
+        } catch {}
+        const vertexProject = resolveVertexProject({ profileText })
+        const vertexPatched = patchPiAiVertexStream({ sdkDirectory: piAi.sdkDirectory, project: vertexProject })
+        if (vertexPatched === null) console.log('当前 DSH 的 pi-ai Vertex 适配器与流式工具调用补丁不符，已跳过。')
+        else if (vertexPatched) console.log(vertexProject === null
+          ? '已为 pi-ai Vertex 渠道启用工具调用流式参数与最新 Gemini 模型目录。'
+          : `已为 pi-ai Vertex 渠道启用工具调用流式参数与最新 Gemini 模型目录（global 端点，project ${vertexProject}）。`)
+        if (vertexPatched !== null && vertexProject === null) {
+          console.log('pi-ai Vertex 目录未写入 global 端点：配置里没有可读的 project。Gemini 3/4 只在 locations/global 上线，请把 google-vertex 的 baseURL 设为 https://aiplatform.googleapis.com/v1/projects/<project>/locations/global，或设置 GOOGLE_CLOUD_PROJECT。')
+        }
       }
       if (bridge) {
         // The ordinary installer publishes the bridge reversibly before validation.

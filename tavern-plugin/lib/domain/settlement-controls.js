@@ -32,7 +32,9 @@ export function createSettlementControls(deps) {
     const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, storyTimeline, view } = deps
     for (let attempt=0;attempt<5;attempt++) {
       const recent = await readOpeningWindow(sessionId)
-      const window = recent && recent.chat.timeline?.schemaVersion === 1
+      // MVU 重算需要结算前快照及参与者状态，显示窗口有意省略这些字段。
+      // 仅这条显式写操作读取完整存档，日常显示继续使用有界窗口。
+      const window = recent && recent.chat.mvu?.enabled !== true && recent.chat.timeline?.schemaVersion === 1
         && !Object.values(recent.chat.timeline.operations || {}).some(op => op?.kind === 'body' && op.status === 'foreground-completed')
         && recent.chat.messages.some(message => message.role === 'assistant' && message.greeting !== true) ? recent : null
       const chat = window ? window.chat : await chatForSession(sessionId)

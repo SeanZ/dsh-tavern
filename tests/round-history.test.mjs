@@ -13,7 +13,7 @@ import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal
 import { createMvuDiagnosticExport } from '../tavern-plugin/lib/domain/mvu-diagnostics.js'
 import { readZipEntries } from '../tavern-plugin/lib/domain/zip-entries.js'
 
-function harness({ checkpoint = false, mode = 'story', journal = false } = {}) {
+function harness({ checkpoint = false, mode = 'story', journal = false, replyText } = {}) {
   const calls = [], revisions = new Map()
   let counter = 0
   const timeline = createStoryTimeline({ id: prefix => prefix + '-' + (++counter) })
@@ -50,7 +50,7 @@ function harness({ checkpoint = false, mode = 'story', journal = false } = {}) {
     if (generation === 'throw') throw new Error('fixture generation failed')
     const turn = ++agent.phase.lastTurn
     if (generation === 'missing') return
-    const text = generation === 'empty' ? '' : '新正文' + turn
+    const text = generation === 'empty' ? '' : (replyText ?? ('新正文' + turn))
     const begun = timeline.apply({ chat, intent: { kind: 'body.begin', turn, userText: agent.input.content[0].text } })
     const requestId = String(agent.input.source?.rpcId || '')
     const savedUserIndex = requestId ? chat.messages.findLastIndex(message => message?.role === 'user' && message.source?.rpcId === requestId) : -1
@@ -107,6 +107,20 @@ function harness({ checkpoint = false, mode = 'story', journal = false } = {}) {
   return { create: () => createRoundHistory(options), options, calls, session, agent, timeline, get chat() { return chat },
     setGeneration(value) { generation = value }, setSettlement(value) { settlementOutcome = value }, beforeGenerate(fn) { beforeGenerate = fn }, revisions }
 }
+
+test('regeneration resumes and releases a nonresident foreground Agent', async () => {
+  const h = harness()
+  h.options.sessions.get = () => undefined
+  h.options.sessions.resume = async id => {
+    assert.equal(id, 'session')
+    h.calls.push('resume')
+    return { agent: h.agent, dispose: async () => h.calls.push('dispose') }
+  }
+  const result = await h.create().regenerate('chat', '', 'session')
+  assert.equal(result.adopted.text, '新正文3')
+  assert.ok(h.calls.indexOf('resume') < h.calls.indexOf('followup'))
+  assert.equal(h.calls.at(-1), 'dispose')
+})
 
 for (const stored of [true, false]) test('rollback after foreground Agent release, stored Session=' + stored, async () => {
   const h = harness({checkpoint:true,journal:true})
@@ -461,6 +475,93 @@ test('补写只有流式正文时保留正文并清除旧原生位置', async ()
   assert.equal(h.chat.messages.at(-1).nativeAnchor, undefined)
   assert.deepEqual(h.chat.regeneratedDshTurns, { 1: 11 })
   assert.deepEqual(h.chat.suppressedDshTurns, [12])
+})
+
+test('重新生成中带思考与 submit_story 工具流手动终止时保留已流式输出的正文', async () => {
+  const h = harness({ checkpoint: true, journal: true })
+  const model = { kind: 'model', provider: 'gemini', model: 'gemini-4-hydrogen' }
+  h.setGeneration('missing')
+  h.beforeGenerate(() => {
+    const turn = h.agent.phase.lastTurn + 1
+    h.session.append('turn/start', { turn })
+    h.session.append('user/message', { ...h.agent.input, turn }, { surfaceOp: 'append' })
+    h.session.append('assistant/message', {
+      turn,
+      step: 1,
+      interrupted: true,
+      message: { role: 'assistant', source: model, content: [{ type: 'reasoning', text: '先构思场景细节' }] },
+      stream: [
+        { type: 'reasoning-chunks', index: 0, dt: [], texts: ['先构思场景细节'] },
+        { type: 'tool-call-chunks', index: 1, dt: [], id: 'call_1', name: 'submit_story', args: [''] },
+        { type: 'tool-call-chunks', index: 1, dt: [30], id: 'call_1', args: ['{"think":"构思","content":"长尾依然松松地搭在你的手腕旁', '，时不时随着她说话的节奏轻轻点着石凳边缘。'] }
+      ]
+    }, { surfaceOp: 'append' })
+    h.session.append('turn/end', { turn, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  })
+
+  const view = await h.create().regenerate('chat', '', 'session')
+  assert.equal(view.adopted.text, '长尾依然松松地搭在你的手腕旁，时不时随着她说话的节奏轻轻点着石凳边缘。')
+  assert.equal(view.regenerationWarning, undefined)
+  assert.equal(h.chat.messages.at(-1).text, '长尾依然松松地搭在你的手腕旁，时不时随着她说话的节奏轻轻点着石凳边缘。')
+  assert.equal(h.chat.messages.at(-1).incomplete, true)
+  assert.equal(h.chat.regenInProgress, undefined)
+})
+
+test('未回答尾部重新生成在 submit_story 流中途手动终止时保留正文并补齐原生消息面', async () => {
+  const h = harness({ checkpoint: true, journal: true })
+  h.chat.messages.push({ role: 'user', text: '学习魔法', native: true })
+  h.setGeneration('missing')
+  h.beforeGenerate(() => {
+    const turn = h.agent.phase.lastTurn + 1
+    h.session.append('turn/start', { turn })
+    h.session.append('user/message', { ...h.agent.input, turn }, { surfaceOp: 'append' })
+    h.session.append('assistant/attempt', {
+      turn,
+      step: 1,
+      stream: [
+        { type: 'tool-call-chunks', index: 0, dt: [], id: 'call_2', name: 'submit_story', args: ['{"content":"指尖微光凝聚成一枚符文'] }
+      ]
+    })
+    h.session.append('turn/end', { turn, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  })
+
+  const view = await h.create().regenerate('chat', '', 'session')
+  assert.equal(view.adopted.text, '指尖微光凝聚成一枚符文')
+  assert.equal(h.chat.messages.at(-1).text, '指尖微光凝聚成一枚符文')
+  assert.equal(h.chat.messages.at(-1).incomplete, true)
+  assert.ok(h.chat.messages.at(-1).nativeAnchor?.reply >= 0)
+  assert.ok(h.chat.suppressedDshTurns.includes(3))
+})
+
+test('重新生成零正文手动终止时静默收尾不抛错；上游错误直接透传真实原因', async () => {
+  const h = harness({ checkpoint: true, journal: true })
+  const original = structuredClone(h.chat.messages)
+  h.setGeneration('missing')
+  h.beforeGenerate(() => {
+    const turn = h.agent.phase.lastTurn + 1
+    h.session.append('turn/start', { turn })
+    h.session.append('user/message', { ...h.agent.input, turn }, { surfaceOp: 'append' })
+    h.session.append('assistant/attempt', {
+      turn,
+      step: 1,
+      stream: [{ type: 'reasoning-chunks', index: 0, dt: [], texts: ['还在思考尚未输出正文'] }]
+    })
+    h.session.append('turn/end', { turn, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  })
+
+  const abortedView = await h.create().regenerate('chat', '', 'session')
+  assert.equal(abortedView.aborted, true)
+  assert.deepEqual(h.chat.messages, original.slice(0, -1))
+  assert.equal(h.chat.failedRegenerationTarget.assistant.text, '旧正文')
+  assert.equal(h.chat.regenInProgress, undefined)
+
+  h.beforeGenerate(() => {
+    const turn = h.agent.phase.lastTurn + 1
+    h.session.append('turn/start', { turn })
+    h.session.append('user/message', { ...h.agent.input, turn }, { surfaceOp: 'append' })
+    h.session.append('turn/end', { turn, reason: { kind: 'error', error: { message: '429 Too Many Requests', code: 'RATE_LIMIT' } } })
+  })
+  await assert.rejects(h.create().regenerate('chat', '', 'session'), /429 Too Many Requests/)
 })
 
 test('重新创建流程模块后连续重生成仍替换原轮次；回退恢复 checkpoint 并按顺序通知脚本', async () => {
@@ -895,14 +996,23 @@ test('rollback cannot cancel and consume an active regeneration',async()=>{
  assert.deepEqual(h.chat,before)
 })
 
-test('rescued history blocks regeneration and rollback without modifying old text', async()=>{
+test('rescued history still refuses rollback without modifying old text', async()=>{
  const h=harness()
  h.chat.importHistory={operationId:'rescue-1234',rescue:{sourceChatId:'broken'}}
  h.chat.messages.at(-1).importSource={operationId:'rescue-1234'}
  const before=structuredClone(h.chat)
- await assert.rejects(h.create().regenerate('chat','','session'),/救援/)
  await assert.rejects(h.create().rollback('session','chat'),/救援/)
  assert.deepEqual(h.chat,before)
+})
+
+test('rescued history regenerates the newest imported reply and drops its import identity', async()=>{
+ const h=harness()
+ h.chat.importHistory={operationId:'rescue-1234',rescue:{sourceChatId:'broken'}}
+ h.chat.messages.at(-1).importSource={operationId:'rescue-1234'}
+ await h.create().regenerate('chat','','session')
+ // 重新生成写出的正文属于这一局：那一行不再被当成只能接续的导入历史
+ assert.equal(h.chat.messages.at(-1).importSource, undefined)
+ assert.ok(h.chat.messages.at(-1).text)
 })
 
 test('舞台打断：正文已提交时不回退该轮', async () => {
@@ -978,4 +1088,93 @@ test('失败尾已撤回时，显式重试不会覆盖此前正文', async () =>
   await assert.rejects(h.create().regenerate('', '', 'session', undefined, 3), /失败回合已变化/)
   assert.ok(!h.calls.includes('followup'))
   assert.equal(h.chat.messages.at(-1).text, '旧正文')
+})
+test('已有楼层重生成在生成开始即把最新决策裁定写入占位楼层与恢复快照', async () => {
+  const h = harness({ checkpoint: true, journal: true })
+  const staleOutcome = { mode: 'balanced', judgeMode: 'roleplay', rulingTier: 'strip_delusion', leverageScore: 0.2, clampedCount: 2, clampedKeys: [], evaluatedAt: 100 }
+  const freshOutcome = { mode: 'balanced', judgeMode: 'author', rulingTier: 'full_accept', leverageScore: 1.4, clampedCount: 0, clampedKeys: [], evaluatedAt: 200 }
+  await h.options.chats.update('chat', current => {
+    current.messages[2].narrativeDamper = [staleOutcome]
+    return current
+  }, { source: 'test.seed-stale-damper' })
+
+  const basePrepare = h.options.prepareRegenerationFrame
+  h.options.prepareRegenerationFrame = async input => {
+    const built = await basePrepare(input)
+    built.frame.source.narrativeDamperOutcome = freshOutcome
+    return built
+  }
+
+  let livePlaceholderDamper = null
+  let liveDiscardedPlaceholderDamper = null
+  h.beforeGenerate(async () => {
+    const liveChat = await h.options.chats.read('chat')
+    assert.equal(liveChat.regenInProgress, true)
+    assert.equal(liveChat.messages[2].placeholder, true)
+    livePlaceholderDamper = liveChat.messages[2].narrativeDamper
+    liveDiscardedPlaceholderDamper = liveChat.regenRecovery?.discarded?.placeholder?.narrativeDamper
+  })
+
+  await h.create().regenerate('chat', '', 'session')
+  assert.deepEqual(livePlaceholderDamper, [freshOutcome])
+  assert.deepEqual(liveDiscardedPlaceholderDamper, [freshOutcome])
+})
+
+test('原生重新生成正文不标记为插件已处理，后续视图和编辑仍运行卡/预设显示正则', async () => {
+  const { projectReplyLayers, projectReplyHistory } = await import('../tavern-plugin/lib/domain/reply-presentation.js')
+  const h = harness({ checkpoint: true })
+  const regexScripts = [{
+    id: 'hide-ta-hub',
+    name: 'hide-ta-hub',
+    findRegex: '/<ta_hub>[\\s\\S]*?<\\/ta_hub>/gi',
+    replaceString: '',
+    trimStrings: [],
+    placement: [2],
+    enabled: true,
+    markdownOnly: true,
+    promptOnly: false,
+    runOnEdit: true,
+    minDepth: null,
+    maxDepth: null
+  }]
+  const rawReply = '正文段落。\n<ta_hub>{"version":1,"source":"preset fallback"}</ta_hub>'
+  h.options.prepareRegenerationReply = async () => projectReplyLayers(rawReply, { regexScripts, placement: 2, isEdit: false, depth: 0 })
+  await h.create().regenerate('chat', '', 'session')
+  const regenerated = h.chat.messages[2]
+  assert.equal(regenerated.bodyRegenerationProcessed, undefined)
+  const projected = projectReplyHistory(h.chat.messages, { regexScripts, placement: 2, isEdit: false, depth: 0 }).projections.find(p => p.turn === 2)
+  assert.equal(projected.text.trim(), '正文段落。')
+  assert.doesNotMatch(projected.text, /preset fallback/)
+})
+
+test('原生重新生成向 prepareRegenerationReply 传入 hostRegex: true 与 regexChat，落盘时同步应用宿主正则', async () => {
+  const { projectPluginBody } = await import('../tavern-plugin/lib/domain/st-contract-service.js')
+  const regexScripts = [{
+    id: 'dsh-runninghub-marker-strip',
+    scriptName: 'RunningHub · 移除正文标记块',
+    findRegex: '/[\\[［]{2}\\s*RH\\s*[:：]\\s*SHOT\\s*[\\]］]{2}[\\s\\S]*?[\\[［]{2}\\s*[\\/／]\\s*RH\\s*(?:[:：]\\s*SHOT\\s*)?[\\]］]{2}/gi',
+    replaceString: '',
+    trimStrings: [],
+    placement: [2],
+    disabled: false,
+    markdownOnly: false,
+    promptOnly: false,
+    runOnEdit: false
+  }]
+  const seenCalls = []
+  const rawReply = '[[RH:SHOT]]\n@after\n她推开门。\n@prompt\ncinematic shot\n[[/RH:SHOT]]\n\n她推开门。\n<story_choices>\n{"actors":[{"name":"我","actions":["走进去看看屋里的情况","先在门口听一听动静","打开随身携带的手电筒"]}],"event":"楼上突然传来木地板咯吱作响"}\n</story_choices>'
+  const h = harness({ checkpoint: true, replyText: rawReply })
+  h.options.prepareRegenerationReply = async input => {
+    seenCalls.push(input)
+    return projectPluginBody(input.text, { hostRegex: input.hostRegex, regexScripts: input.hostRegex ? regexScripts : undefined })
+  }
+  await h.create().regenerate('chat', '', 'session')
+  assert.equal(seenCalls.length, 1)
+  assert.equal(seenCalls[0].hostRegex, true)
+  assert.equal(seenCalls[0].regexChat?.id, 'chat')
+  const regenerated = h.chat.messages[2]
+  assert.match(regenerated.sourceText, /\[\[RH:SHOT\]\]/, 'sourceText 保留原始标记给插件解析')
+  assert.doesNotMatch(regenerated.text, /\[\[RH:SHOT\]\]/, 'text 经宿主正则移除标记')
+  assert.doesNotMatch(regenerated.displayText, /\[\[RH:SHOT\]\]/, 'displayText 经宿主正则移除标记')
+  assert.equal(h.chat.candidates?.choices?.length, 4, '重新生成 extracted candidates 正常保留')
 })

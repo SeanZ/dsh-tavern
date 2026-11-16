@@ -121,11 +121,10 @@ export async function prepareExpandedPatch(runtime) {
       text.replace(/\bnew SessionQueryError\(/g, 'new NativeQueryError(').replace(/\binstanceof SessionQueryError\b/g, 'instanceof NativeQueryError') +
       '\nexport { SessionCorpus, SessionObservationReader };')
     const { text: originalClient } = await source('@deepseek-ai/dsh-api-session-controller/client')
-    // rc.2 客户端压缩为无空格和模板字符串；仍只放宽同一条替换校验。
-    const clientAnchor = /if\s*\(event\.type\s*===\s*(["'`])assistant\/message\1\s*&&\s*raw\s*!==\s*void\s+0\)\s*throw/g
-    const clientMatches = [...originalClient.matchAll(clientAnchor)]
-    assert.equal(clientMatches.length, 1, '补丁锚点已变化：客户端 assistant/message 来源校验')
-    const clientSource = originalClient.replace(clientAnchor, match => match.replace(/\)\s*throw$/, ` && !${own}) throw`))
+    // DSH 0.2.2-rc.2 minifies the browser bundle and uses template literals.
+    const clientAnchor = /\bif\s*\(event\.type\s*===\s*(?:"assistant\/message"|`assistant\/message`)\s*&&\s*raw\s*!==\s*void 0(?=\)\s*throw\b)/g
+    assert.equal(originalClient.match(clientAnchor)?.length ?? 0, 1, '浏览器会话补丁锚点已变化：assistant/message 的 sourceEventSeqs 校验')
+    const clientSource = originalClient.replace(clientAnchor, match => `${match} && !${own}`)
     const undoPersistence = []
     // Prove the relaxation end to end before any live instance is touched: an
     // in-memory session replaces an assistant reply while citing it, and the

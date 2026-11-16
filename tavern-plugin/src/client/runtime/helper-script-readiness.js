@@ -1,3 +1,18 @@
+			function announceMountedScriptLayers(sessionId) {
+				if (!sessionId || !hostDocument || typeof hostDocument.querySelectorAll !== "function") return;
+				for (const record of records.values()) {
+					if (record.sessionId !== String(sessionId) || !record.trustedCardMode || !record.subscriptionsReady
+						|| !record.subscriptions.has("character_message_rendered")) continue;
+					const seen = new Set();
+					for (const node of hostDocument.querySelectorAll("[data-dsh-script-layer]")) {
+						if (!node.isConnected || !node.hidden || node.getAttribute("data-session") !== String(sessionId)) continue;
+						const id = Number(node.getAttribute("data-mesid"));
+						if (!Number.isSafeInteger(id) || id < 0 || seen.has(id)) continue;
+						seen.add(id);
+						emitToRecord(record, "character_message_rendered", [id]).catch(function () {});
+					}
+				}
+			}
 // 初始化就绪只依据已确认的持久化结果；失败使用同一错误通路通知宿主。
 			function maybeAnnounceReady() {
 				if (!readinessKey || records.size === 0 || announcedReadinessKey === readinessKey) return;
@@ -8,7 +23,7 @@
 				const refreshAfterSuppress = suppressedCompactMutations > 0;
 				suppressedCompactMutations = 0;
 				for (const record of records.values()) record.suppressCompactViewRefresh = false;
-				Promise.resolve(onReady(readySessionId)).catch(function (error) { reportError("人物卡脚本初始化", error); });
+				Promise.resolve(onReady(readySessionId)).then(function () { announceMountedScriptLayers(readySessionId); }).catch(function (error) { reportError("人物卡脚本初始化", error); });
 				if (readySessionId && refreshAfterSuppress) {
 					clearPendingMutation(readySessionId);
 					notifyMutation(readySessionId, "initialization-ready", null);

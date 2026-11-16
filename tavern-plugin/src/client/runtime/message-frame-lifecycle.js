@@ -1,4 +1,41 @@
-		const TAVERN_FRAME_MAX_HEIGHT = 32000;
+// A card figure's face by alias or name: the identity resolver's card figure (config.characters[] holds every enabled
+// figure of the card's and the global packs) and its avatarMedia.default, the face its transcript bubbles show (bubbles.js),
+// as this session's avatar-cache descriptor; null for a name with no figure or no face. The one rule for the stage widgets'
+// faces (source-widgets useCardFaces, handed over as characters.face) and the chat card frames' (bubbleCardFaceBlobs).
+function bubbleCardFace(config, name, sessionId) {
+    const descriptor = name ? bubbleCharacter(config, name)?.avatarMedia?.default : null;
+    return descriptor ? {...descriptor, sessionId} : null;
+}
+// A chat card frame's faces (its window.DshCardFaces.faces, frame-document.js): each named figure's card face, prepared in
+// the session avatar cache as the transcript prepares its rows' and handed over as a Blob the frame makes its own URL of
+// (a sandboxed frame cannot load the host's). A name without a face is left out; a card without bubble settings has none.
+// The avatar cache is bound to a session by the stage client's session observation; with the stage off (or not started
+// yet) nothing binds it, so a frame binds it itself before preparing its face (as the transcript rows work with the stage off).
+const BUBBLE_FRAME_FACE_PX = 96;
+async function bubbleCardFaceBlobs(sessionId, names) {
+    const data = bubbleStore.get(sessionId) || await rpc("getDialogueBubbles", { sessionId: sessionId }, sessionId);
+    const faces = await Promise.all([...new Set(names)].map(async name => {
+        const face = bubbleCardFace(data?.config, name, sessionId);
+        if (!face) return null;
+        if (avatarCache.sessionId === null) avatarCache.select(sessionId);
+        avatarCache.revision(face.ref.packId, face.revision);
+        // the stage client is up but its session has no resource authority yet: the face waits for it
+        const session = stageSessions.get(sessionId);
+        if (stageSessions.resourceOwner && session?.subscribe && !session.getSnapshot().source) await new Promise(resolve => {
+            const stop = session.subscribe(() => { if (session.getSnapshot().source) { stop(); resolve(); } });
+        });
+        const source = session?.getSnapshot().source, authority = source ? JSON.stringify([source.sessionId,source.authorityEpoch]) : null;
+        let url = avatarCache.get(face,BUBBLE_FRAME_FACE_PX) || avatarCache.ready(face);
+        if (!url && !(stageSessions.resourceOwner && !authority)) {
+            const pool = bubbleMediaPool.retain(), {sessionId: _session, ...descriptor} = face;
+            try {
+                const pin = await pool.owner.acquire(descriptor, authority);
+                try { url = await avatarCache.prepare(face,pin.handle.url,BUBBLE_FRAME_FACE_PX); } finally { pin.release(); }
+            } catch (_) { /* an unleasable face is left out, as the transcript leaves its avatar empty */ } finally { pool.release(); }
+        }
+        return url ? {name, blob: await (await fetch(url)).blob()} : null;
+    }));
+    return faces.filter(Boolean);}		const TAVERN_FRAME_MAX_HEIGHT = 32000;
 		function clampTavernFrameHeight(value) {
 			const height = Number(value);
 			return Number.isFinite(height) ? Math.max(48, Math.min(TAVERN_FRAME_MAX_HEIGHT, Math.ceil(height))) : 48;
@@ -28,18 +65,28 @@
 		// the frame's own floor travel inline. Template display output is a host rendering
 		// artifact that card scripts do not read.
 		const TAVERN_FRAME_INLINE_FLOORS = 48;
-		const tavernFrameRows = new WeakMap(), tavernFrameStubs = new WeakMap(), tavernFrameContexts = new WeakMap();
-		function tavernFrameRow(row) {
+		const tavernFrameRows = new WeakMap(), tavernFrameMaskedRows = new WeakMap(), tavernFrameStubs = new WeakMap(), tavernFrameContexts = new WeakMap();
+		function tavernFrameRow(row, visibility) {
 			const data = row && typeof row === "object" && !row.stub ? row.pluginData : null;
-			if (!data || (data.template_display === undefined && data.template_rendered === undefined)) return row;
-			let view = tavernFrameRows.get(row);
-			if (!view) {
-				const pluginData = Object.assign({}, data);
-				delete pluginData.template_display; delete pluginData.template_rendered;
-				view = Object.assign({}, row, { pluginData: pluginData });
-				tavernFrameRows.set(row, view);
+			let base = row;
+			if (data && (data.template_display !== undefined || data.template_rendered !== undefined)) {
+				let view = tavernFrameRows.get(row);
+				if (!view) {
+					const pluginData = Object.assign({}, data);
+					delete pluginData.template_display; delete pluginData.template_rendered;
+					view = Object.assign({}, row, { pluginData: pluginData });
+					tavernFrameRows.set(row, view);
+				}
+				base = view;
 			}
-			return view;
+			if (!visibility || !hasMvuVisibilityRules(visibility) || !base || typeof base !== "object" || base.stub) return base;
+			const visKey = JSON.stringify(visibility);
+			let byVis = tavernFrameMaskedRows.get(base);
+			if (!byVis) { byVis = new Map(); tavernFrameMaskedRows.set(base, byVis); }
+			if (byVis.has(visKey)) return byVis.get(visKey);
+			const masked = maskMvuHelperMessageRow(base, visibility);
+			byVis.set(visKey, masked);
+			return masked;
 		}
 		function tavernFrameStub(row) {
 			if (!row || typeof row !== "object" || row.stub) return row;
@@ -56,13 +103,20 @@
 			if (!context || typeof context !== "object" || !Array.isArray(context.messages)) return context;
 			let byTurn = tavernFrameContexts.get(context);
 			if (!byTurn) { byTurn = new Map(); tavernFrameContexts.set(context, byTurn); }
-			const key = String(Math.max(0, Number(turn) || 0));
+			const visibility = context.mvuVisibility && hasMvuVisibilityRules(context.mvuVisibility) ? context.mvuVisibility : null;
+			const key = String(Math.max(0, Number(turn) || 0)) + ":" + (visibility ? JSON.stringify(visibility) : "");
 			if (byTurn.has(key)) return byTurn.get(key);
-			const own = context.turnMessageIds && context.turnMessageIds[key];
+			const own = context.turnMessageIds && context.turnMessageIds[String(Math.max(0, Number(turn) || 0))];
 			const inlineFrom = context.historyAccess ? context.messages.length - TAVERN_FRAME_INLINE_FLOORS : 0;
-			const view = Object.assign({}, context, { messages: context.messages.map(function (row, index) {
-				return index < inlineFrom && index !== Number(own) ? tavernFrameStub(row) : tavernFrameRow(row);
-			}) });
+			const chatVariables = visibility && context.chatVariables && typeof context.chatVariables === "object" && context.chatVariables.stat_data
+				? Object.assign({}, context.chatVariables, { stat_data: maskMvuStatDataForDisplay(context.chatVariables.stat_data, visibility) })
+				: context.chatVariables;
+			const view = Object.assign({}, context, {
+				...(chatVariables !== context.chatVariables ? { chatVariables: chatVariables } : {}),
+				messages: context.messages.map(function (row, index) {
+					return index < inlineFrom && index !== Number(own) ? tavernFrameStub(row) : tavernFrameRow(row, visibility);
+				})
+			});
 			byTurn.set(key, view);
 			return view;
 		}
@@ -660,6 +714,16 @@
 						return;
 					}
 
+					// window.DshCardFaces.faces(names): the card figures' transcript faces (bubbles.js bubbleCardFaceBlobs).
+					if (data.method === "getCardFaces") {
+						const names = Array.isArray(data.args && data.args.names) ? data.args.names.slice(0, 32).map(String) : [];
+						bubbleCardFaceBlobs(props.sessionId, names).then(function (result) {
+							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result: result }, "*");
+						}, function (error) {
+							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: String(error && error.message || error) }, "*");
+						});
+						return;
+					}
 					if (data.method === "triggerTavernSlash") {
 						const executeSlash = configuredSlashExecutor || requestProps.executeSlash;
 						Promise.resolve().then(function () {

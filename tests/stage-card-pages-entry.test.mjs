@@ -65,6 +65,8 @@ test('the controller handles each navigation visit once and skipping resumes the
  assert.deepEqual(opened.slice(3),['intro'])
  navigation.galLeave();navigation.galOpen('s',{page:''});run()
  assert.deepEqual(opened.slice(3),['intro'],'page \'\' opens none');assert.equal(latest,1,'and does not skip to the latest round')
+ // the entry page stands in for that visit's entrance (继续 from the title page plays none; a new game plays it after the opening, owner 11-12)
+ assert.equal(ended,opened.length,'every entry page ends its entrance');assert.equal(ended,4,'page \'\' ends none')
  stop()
 })
 
@@ -81,8 +83,8 @@ test('closing an entry page leaves the stage; continueGame enters it; only an en
  const context={props:{onExit:()=>calls.push('exit')},forkUiSfx:{play:cue=>calls.push('sfx:'+cue)},backlogClosedAt:{current:0},setOpenPage:id=>calls.push('open:'+id)}
  vm.runInNewContext(fn('leaveEntryPage')+';'+fn('closeCardPage')+';leaveEntryPage();closeCardPage();',context)
  assert.deepEqual(calls,['sfx:close','exit','sfx:close','open:null'])
- // the Overlay's close (×, Esc, the backdrop, the page's close()) on an entry page is leaveEntryPage, CONFIG / 回想 over it first
- assert.match(source,/onClose: configOpen \? closeConfig : galleryOpen \? closeGallery : entryOpen \? leaveEntryPage : closeCardPage/)
+ // the Overlay's close (×, Esc, the backdrop, the page's close()) on an entry page is leaveEntryPage, CONFIG / 回想 / 履历 over it first
+ assert.match(source,/onClose: configOpen \? closeConfig : galleryOpen \? closeGallery : backlog \? closeBacklog : entryOpen \? leaveEntryPage : closeCardPage/)
  assert.match(source,/if \(kind === 'continue'\) \{ closeCardPage\(\); return; \}/)
  const reveal=source.slice(source.indexOf('    const stageRevealed ='),source.indexOf('\n',source.indexOf('    const stageRevealed =')))
  assert.match(reveal,/&& !entryOpen;\r?$/,'the reveal holds for the entry page only, not any open page')

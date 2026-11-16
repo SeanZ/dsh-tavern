@@ -29,7 +29,7 @@ export function createForegroundFrameSessionAdapter(options = {}) {
     // Native virtual projection already deduplicates by entry identity+hash;
     // two distinct entries with identical text still need their own receipt.
     const entries = frame.contributions.filter(item => item.slot === 'activeWorldbook').flatMap((item, index) =>
-      item.entries || [{ ref: JSON.stringify(['section', item.source?.stage, item.source?.plugin, item.source?.name, index]), text: promptSectionBody('worldbook_context', promptSectionBody('constant_worldbook', item.text)) }])
+      item.entries || [{ ref: JSON.stringify(['section', item.source?.stage, item.source?.plugin, item.source?.name, index]), text: promptSectionBody('lorebook_activated', promptSectionBody('lorebook_constant', item.text)) }])
     const snapshot = worldbookSnapshot(virtual ? null : input.session, entries, virtual ? [] : input.historyMessages || messages)
     const delta = snapshot && virtual ? worldbookContextDelta(input.session, virtual, snapshot.rendered, input.historyMessages || messages) : null
     if (delta) snapshot.rendered = delta.text

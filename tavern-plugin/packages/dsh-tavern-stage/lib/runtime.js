@@ -32,7 +32,7 @@ export function createStageRuntime(core, factories = {assets:createStageAssets, 
     foreground(bindings) {
       assert('assets')
       const capabilities=createForegroundCapabilities({...bindings,
-        modPrompts:(chat,options)=>module?.managedModManagement.foreground(chat,options),
+        modPrompts:(chat,options)=>module?.managedModManagement.foreground(chat,{...options,cardGoverns:bindings.cardGoverns}),
         judge:()=>assets.assetEngineSettings.read().values.judge})
       scope.own(capabilities)
       return capabilities
@@ -45,7 +45,7 @@ export function createStageRuntime(core, factories = {assets:createStageAssets, 
     async start(bindings) {
       assert('assets');phase = 'starting'
       try {
-        module = await factories.start({...bindings,...assets,ctx:scope.ctx,cardsActive:() => scope.active() && bindings.cardsActive()})
+        module = await factories.start({...bindings,...assets,ctx:scope.ctx,settingsOwner:core.settingsOwner,cardsActive:() => scope.active() && bindings.cardsActive()})
         assert('starting');phase = 'running'
         return module
       } catch(error) {phase = scope.active() ? 'failed' : phase;await scope.dispose();throw error}

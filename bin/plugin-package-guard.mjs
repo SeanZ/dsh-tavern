@@ -1,3 +1,6 @@
+import { fileURLToPath } from 'node:url'
+import { installBundledTavernPlugins } from './bundled-tavern-plugins.mjs'
+import { userPluginPaths } from '../tavern-plugin/lib/domain/user-plugins.js'
 import { readHostCompatibility } from '../tavern-plugin/lib/domain/host-compatibility.js'
 import { resolveTavernDataRoot } from '../tavern-plugin/lib/domain/tavern-data.js'
 import { ensureUserExtensions } from '../tavern-plugin/lib/domain/user-extensions.js'
@@ -14,5 +17,14 @@ export function isCompatibleHost(compatibility) {
 export async function apply() {
   const compatibility = readHostCompatibility()
   if (!isCompatibleHost(compatibility)) throw new Error(compatibility.message)
-  await ensureUserExtensions(resolveTavernDataRoot())
+  await prepareStandardPackage(resolveTavernDataRoot())
+}
+
+// 标准插件安装不经过独立启动器，也要安装随包分发的酒馆插件。
+export async function prepareStandardPackage(dataRoot) {
+  await ensureUserExtensions(dataRoot)
+  return installBundledTavernPlugins({
+    sourceRoot: fileURLToPath(new URL('../', import.meta.url)),
+    dataRoot, profileDir: userPluginPaths(dataRoot).profile,
+  })
 }

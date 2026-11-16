@@ -81,3 +81,21 @@ test('失效前迟到的增量任务不能重新污染同版本缓存', async ()
  release();await old
  assert.equal((await cache.project(fresh,options)).projections[0].text,'新正文')
 })
+
+test('显示刷新失效同一聊天的全部舞台签名，保留其它聊天缓存', async () => {
+ const {markStageRead}=await import('../tavern-plugin/lib/domain/stage-read-projection.js')
+ const cache=createIncrementalReplyView()
+ const chat={id:'multi-scope',_storageRevision:1,messages:[{role:'assistant',turn:2,text:'旧正文'}]}
+ const stage=markStageRead({...chat},{kind:'round',turn:2})
+ await cache.project(chat,options)
+ await cache.project(stage,options)
+ const other={...chat,id:'other-scope'}
+ const kept=await cache.project(other,options,options,{shared:true})
+ assert.equal(cache.stats().entries,3)
+ cache.invalidate(chat.id)
+ assert.equal(cache.stats().entries,1)
+ const fresh={...chat,messages:[{role:'assistant',turn:2,text:'新正文'}]}
+ assert.equal((await cache.project(fresh,options)).projections[0].text,'新正文')
+ assert.equal((await cache.project(markStageRead({...fresh},{kind:'round',turn:2}),options)).projections[0].text,'新正文')
+ assert.equal((await cache.project(other,options,options,{shared:true})).projections,kept.projections)
+})

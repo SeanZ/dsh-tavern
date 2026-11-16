@@ -12,6 +12,8 @@ import { variableDiagnosticSummary } from './mvu-diagnostics.js'
 import { normalizeBackgroundTasks } from './tavern-settings.js'
 import { POSTURE_SUBMIT_TOOL, POSTURE_SUBMIT_TOOL_NAME, normalizePostureSubmission } from './posture-submission.js'
 import { resolveRuntimeMacroText } from './runtime-content-projection.js'
+import { describeMvuLimits, mvuLimitViolations } from './mvu-limits.js'
+import { clampMvuSubmissionOperationsWithReport } from './narrative-damper.js'
 
 // Prompt prose source. Keys are stable; interpolation arguments are data.
 export const PROMPT_PROSE = Object.freeze({
@@ -30,7 +32,7 @@ export const PROMPT_PROSE = Object.freeze({
   p013: "If character design is truly needed, load character-design and call the character file tools in this background agent; no other agent is needed. Then continue this turn's settlement.",
   p014: "In one reply, call posture_submit (character postures visible at this turn's end) and mvu_submit_update (variable changes) together; they are independent, so don't wait for either. Keep JSON in tool calls, not the reply text.",
   p015: "Posture settlement is off this turn: submit variables directly, without postures.",
-  p016: "You must call mvu_submit_update this turn. Each tool's result is authoritative for its postures or variables; resubmit only unfinished items.",
+  p016: "Submit this turn's variable changes with mvu_submit_update (an empty operations list when nothing changed); variables are saved only through it. Each tool's result is authoritative for its postures or variables; resubmit only unfinished items.",
   p017: "If a number is uncertain, a reasonable value is enough; exactness isn't required."
 })
 
@@ -56,7 +58,7 @@ export const MVU_SUBMIT_UPDATE_TOOL = Object.freeze({
     '提交本轮正文确认的变量变化，以返回的实际执行校验结果为准。变量通过本工具提交，不在回复中输出 XML 变量协议；人物卡中的变量含义、更新条件和校验规则仍须遵守。',
     '所有写入值使用 valueJson 提交 JSON 编码字符串，不使用 value；对象必须编码完整对象，数字不能用布尔值代替。',
     '最多提交三次。若 ok=false 且 retryable=true，读取 error、failures 和 runtimeDiagnostics，根据 currentVariables 与变量结构修正完整 operations 后重试，不要原样反复提交。',
-    'rolledBack=true 表示整批修改未保存，可以基于原快照重新提交完整更新；不得用空 operations 掩盖尚未修复的失败。',
+    'rolledBack=true 表示整批修改未保存，可以基于原快照重新提交完整更新；提交空 operations 等于放弃这些变化，所以先修好失败项再提交。',
     '返回 ok=true 或 retryable=false 后停止调用本工具，不能重复执行已成功的变量更新，也不能绕过人物卡校验。'
   ].join('\n'),
   parameters: Object.freeze({
@@ -107,6 +109,47 @@ function promptVariables(value) {
 // structure section already states it; left in the snapshot it reads as one more
 // state field the model may try to update (#153). Only object keys are hidden:
 // dropping an array element would shift every index the model writes back.
+// The variables as they are once the host has written its tool operations (tool-settlement-context.js), for the prompt:
+// the background settlement reads the values the tools settled, not the ones before them.
+function withToolOperations(value, operations) {
+  if (!operations.length) return value
+  const variables = clone(object(value))
+  for (const operation of operations) {
+    const keys = pointerSegments(variablesPointer(operation.path))
+    let parent = variables
+    for (const key of keys.slice(0, -1)) parent = parent[key] = parent[key] !== null && typeof parent[key] === 'object' ? parent[key] : {}
+    if (operation.op === 'remove') delete parent[keys.at(-1)]
+    else parent[keys.at(-1)] = clone(operation.value)
+  }
+  return variables
+}
+
+function toolOperationsOf(rows) {
+  return rows.flatMap(row => row.operations)
+}
+
+// The tools' rows once the background has backfilled: a tool with backfilled results settles all of them again
+// (`backfill`: {tool name: [result text]}, kept with the durable submission so a redelivery writes the same).
+function toolRowsWith(input, rows, backfill) {
+  const settled = (input.backfillTools || []).filter(tool => backfill[tool.definition.name]?.length)
+    .map(tool => tool.settle([...tool.results, ...backfill[tool.definition.name]]))
+  if (!settled.length) return rows
+  const again = new Set(settled.map(row => row.tool))
+  return [...rows.filter(row => !again.has(row.tool)), ...normalizeToolResults(settled)]
+}
+
+// The tools' rows enter here once: their operations take the provider path contract (absolute /stat_data paths).
+function normalizeToolResults(rows) {
+  return (Array.isArray(rows) ? rows : []).map(row => ({ tool: str(row?.tool), note: str(row?.note).trim(),
+    operations: normalizeMvuProviderSubmission({ operations: Array.isArray(row?.operations) ? row.operations : [] }).operations }))
+    .filter(row => row.tool && row.operations.length)
+}
+
+function toolResultText(row) {
+  return ['[' + row.tool + ']', ...(row.note ? [row.note] : []),
+    ...row.operations.map(operation => operation.path + (operation.op === 'remove' ? ' 删除' : ' = ' + JSON.stringify(operation.value)))].join('\n')
+}
+
 function withoutMetadataKeys(value) {
   if (Array.isArray(value)) { value.forEach(withoutMetadataKeys); return }
   if (value === null || typeof value !== 'object') return
@@ -239,8 +282,9 @@ function operationNeedsMutation(operation, before) {
   return !target.exists || !sameValue(target.value, operation.value)
 }
 
-/** Attribute final state changes to submitted operations and expose silent runtime rejection. */
-function auditMvuSettlement(before, after, operations) {
+/** Attribute final state changes to submitted operations and expose silent runtime rejection
+ * and values outside the card's declared limits. */
+function auditMvuSettlement(before, after, operations, limits) {
   const allChanges = diffValues(before, after)
   const claimed = new Set()
   const failures = []
@@ -260,6 +304,11 @@ function auditMvuSettlement(before, after, operations) {
         message: '提交后该路径没有变化；请对照当前变量结构、提交值与运行时诊断修正操作'
       })
     }
+  }
+  for (const violation of mvuLimitViolations(object(before).stat_data, object(after).stat_data, limits)) {
+    // Name the submitted operation that wrote it, so the retry sees its own value back.
+    const operation = operations.find(item => operationPointers(item).some(pointer => pathsOverlap(violation.path, pointer)))
+    failures.push({ operation: operation ? operation.op : '', path: operation ? operation.path : violation.path, message: violation.message })
   }
   return {
     changes: allChanges.filter(function (_change, index) { return claimed.has(index) }),
@@ -371,11 +420,14 @@ export function normalizeMvuProviderSubmission(value) {
 function valueKind(value) {
   return Array.isArray(value) ? '列表' : value !== null && typeof value === 'object' ? '对象' : typeof value === 'number' ? '数字' : typeof value === 'boolean' ? '布尔值' : value === null ? '空值' : '文本'
 }
-// A replace that changes a field's shape (list <-> text <-> object) makes MVU's
-// schema diverge and the card's view mis-render. Let the agent fix it and retry.
+const SCHEMA_KINDS = { string: '文本', number: '数字', boolean: '布尔值' }
+// A write that changes a field's type makes MVU's schema diverge and the card's view
+// mis-render; number <-> text too: a text 1999 sent without quotes would be stored as a
+// number, and MVU turns text sent to a number field into Number(text) (NaN for 12%).
+// Let the agent fix it and retry. The stored value is the type (MVU regenerates its
+// schema from the values); the schema only speaks where no value is stored yet.
 function assertMvuValueKinds(operations, variables) {
   const root = object(variables)
-  const compatible = (before, after) => before === after || (before === '数字' && after === '文本') || (before === '文本' && after === '数字')
   const elementKind = list => {
     const kinds = [...new Set(list.map(valueKind))]
     return kinds.length === 1 ? kinds[0] : null
@@ -388,30 +440,41 @@ function assertMvuValueKinds(operations, variables) {
     }
     return { found: true, target }
   }
-  const fail = (index, path, before, after, element) => {
-    throw new Error('变量操作 #' + (index + 1) + ' 类型不一致：' + path + (element ? ' 的列表元素' : '') + ' 当前是' + before + '，提交的是' + after + '；请按原类型提交（列表用 JSON 数组，元素与已有元素同形）')
+  function schemaKind(keys) {
+    let node = object(root.schema)
+    for (const key of keys[0] === 'stat_data' ? keys.slice(1) : keys) {
+      node = node.type === 'object' ? object(node.properties)[key] : node.type === 'array' && (key === '-' || /^\d+$/.test(key)) ? node.elementType : undefined
+      if (!node) return null
+    }
+    return SCHEMA_KINDS[node.type] || null
+  }
+  const hint = (before, value) => before === '文本' && typeof value === 'number' ? '文本值要带 JSON 双引号，valueJson 写 ' + JSON.stringify(String(value))
+    : before === '数字' && typeof value === 'string' ? '数字不带引号也不带单位，valueJson 写数字本身，例如 12；正文没有给出数字就不改这一项'
+    : '请按原类型提交（列表用 JSON 数组，元素与已有元素同形）'
+  const check = (index, path, before, value, element) => {
+    const after = valueKind(value)
+    if (before && before !== after) throw new Error('变量操作 #' + (index + 1) + ' 类型不一致：' + path + (element ? ' 的列表元素' : '') + ' 当前是' + before + '，提交的是' + after + '；' + hint(before, value))
   }
   for (const [index, operation] of operations.entries()) {
     if (!['replace', 'insert', 'add'].includes(operation.op)) continue
     const keys = operation.path.split('/').slice(1).map(key => key.replace(/~1/g, '/').replace(/~0/g, '~'))
     const self = lookup(keys)
     if (operation.op === 'replace' && self.found && self.target !== null) {
-      const before = valueKind(self.target), after = valueKind(operation.value)
-      if (!compatible(before, after)) fail(index, operation.path, before, after, false)
+      check(index, operation.path, valueKind(self.target), operation.value, false)
       // Elements of a list keep the shape of the existing ones (MVU infers the element schema).
       if (Array.isArray(self.target) && Array.isArray(operation.value) && self.target.length) {
         const kind = elementKind(self.target)
-        const bad = kind && operation.value.find(item => !compatible(kind, valueKind(item)))
-        if (bad !== undefined && kind) fail(index, operation.path, kind, valueKind(bad), true)
+        if (kind) for (const item of operation.value) check(index, operation.path, kind, item, true)
       }
       continue
     }
     // Inserting into a list: the new element matches its siblings.
     const parent = lookup(keys.slice(0, -1))
-    if (parent.found && Array.isArray(parent.target) && parent.target.length && (keys.at(-1) === '-' || /^\d+$/.test(keys.at(-1)))) {
-      const kind = elementKind(parent.target)
-      if (kind && !compatible(kind, valueKind(operation.value))) fail(index, operation.path, kind, valueKind(operation.value), true)
+    if (parent.found && Array.isArray(parent.target) && (keys.at(-1) === '-' || /^\d+$/.test(keys.at(-1)))) {
+      check(index, operation.path, parent.target.length ? elementKind(parent.target) : schemaKind(keys), operation.value, true)
+      continue
     }
+    if (!self.found || self.target === null) check(index, operation.path, schemaKind(keys), operation.value, false)
   }
 }
 
@@ -499,11 +562,18 @@ export function createMvuBackgroundTaskFrame(input = {}) {
       storyDigest: str(input.storyDigest)
     },
     foregroundOutput: { storyText },
-    authoritativeState: { currentVariables, variableSchema },
+    authoritativeState: { currentVariables, variableSchema, variableLimits: Array.isArray(input.variableLimits) ? clone(input.variableLimits) : [] },
     taskRules: {
       updateRules: Array.isArray(input.updateRules) ? input.updateRules.map(str).filter(Boolean) : [],
       backgroundTasks: normalizeBackgroundTasks(input.backgroundTasks),
       helperContext: Array.isArray(input.helperContext) ? input.helperContext.map(str).filter(Boolean) : [],
+      // What this reply's tools settled (tool-settlement-context.js): the host writes these operations ahead of the
+      // background's, and the background is told so.
+      toolResults: normalizeToolResults(input.toolResults),
+      // The tools the background may use to backfill (lib/mod-tools.js): their definitions, offered with mvu_submit_update.
+      backfillTools: (input.backfillTools || []).map(tool => clone(tool.definition)),
+      // The /stat_data paths those tools own: the background's writes there are dropped like its copies of tool values.
+      ownedPaths: (input.backfillTools || []).flatMap(tool => Array.isArray(tool.owns) ? tool.owns.map(str) : []),
       guides: Array.isArray(input.guides) ? input.guides.map(item => str(item?.text ?? item).trim()).filter(Boolean) : [],
       guidance: str(input.guidance).trim(),
       updateOnlyFromStory: true
@@ -532,9 +602,16 @@ export function projectMvuBackgroundRequest(frame) {
     turnContext: promptSection('variable_state', [
       PROMPT_PROSE.p001,
       JSON.stringify(state.variableSchema || {}),
+      ...(state.variableLimits?.length ? [promptSection('variable_limits', ['写入后超出范围的整批不保存，会退回重交。', describeMvuLimits(state.variableLimits)].join('\n'))] : []),
       ...(updateRules.length === 0 ? [] : [PROMPT_PROSE.p002, updateRules.join('\n\n')]),
       PROMPT_PROSE.p003,
-      JSON.stringify(promptVariables(state.currentVariables)),
+      JSON.stringify(promptVariables(withToolOperations(state.currentVariables, toolOperationsOf(rules.toolResults || [])))),
+      ...(rules.toolResults?.length ? [promptSection('turn_tool_results', [
+        '下面这些变量由正文里的工具算定，程序会原样写入；上面的当前变量快照已经是写入后的值。这些路径不用再提交（提交了也不会保存），正文里写到同一件事时也不要再记一次。',
+        ...rules.toolResults.map(toolResultText)].join('\n'))] : []),
+      ...(rules.backfillTools?.length ? [promptSection('rule_backfill', [
+        '这些变量归规则管，只能经规则工具（' + rules.backfillTools.map(tool => '`' + tool.name + '`').join('、') + '）改，用 mvu_submit_update 写它们不会保存：' + (rules.ownedPaths || []).join('、'),
+        '规则管的事正文里发生了、上面的工具结果里却没有时，先用规则工具补记，再提交 mvu_submit_update：补记算出的值由程序和工具结果一起写入。正文里没有发生的不补；被拒绝就不要再试，程序会记下这处不一致。'].join('\n'))] : []),
       ...(rules.helperContext?.length ? [PROMPT_PROSE.p004,
         PROMPT_PROSE.p005,
         ...rules.helperContext] : []),
@@ -553,7 +630,7 @@ export function projectMvuBackgroundRequest(frame) {
       PROMPT_PROSE.p016,
       PROMPT_PROSE.p017
     ].join('\n')),
-    tools: [...(tasks.posture ? [POSTURE_SUBMIT_TOOL] : []), ...(tasks.characterDesign ? [CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL] : []), MVU_SUBMIT_UPDATE_TOOL]
+    tools: [...(tasks.posture ? [POSTURE_SUBMIT_TOOL] : []), ...(tasks.characterDesign ? [CHARACTER_DESIGN_READ_TOOL, CHARACTER_DESIGN_SAVE_TOOL] : []), ...(rules.backfillTools || []), MVU_SUBMIT_UPDATE_TOOL]
   }
 }
 
@@ -567,9 +644,33 @@ export function createMvuSettlementModule(options = {}) {
     return createMvuBackgroundTaskFrame(input)
   }
 
-  async function applySubmission(input, frame, submission, diagnosticId) {
+  async function applySubmission(input, frame, submission, diagnosticId, backfill = {}) {
+    const rows = toolRowsWith(input, frame.taskRules.toolResults, backfill)
     submission = resolveSubmissionPaths(submission, input.currentVariables)
-    if (input.onSubmission) await input.onSubmission(clone(submission))
+    // The tools' values are the host's to write: the background's operations on those paths are dropped (its copy of
+    // a tool value, or a guess at it, would only race the settled one) and recorded, the rest is written after them.
+    const own = resolveSubmissionPaths({ operations: toolOperationsOf(rows) }, input.currentVariables).operations
+    const owned = [...own.map(item => variablesPointer(item.path)), ...frame.taskRules.ownedPaths.map(variablesPointer)]
+    if (owned.length) {
+      const dropped = []
+      submission = { ...submission, operations: submission.operations.filter(operation => {
+        const hit = operationPointers(operation).some(pointer => owned.some(item => pathsOverlap(pointer, item)))
+        if (hit) dropped.push(operation)
+        return !hit
+      }) }
+      if (dropped.length) {
+        try { await options.diagnostics?.record(input.sessionId, { diagnosticId, operationId: input.operationId, chatId: input.chatId, branchId: input.branchId, messageId: input.messageId, swipeId: input.swipeId, stage: 'tool-paths-dropped', operations: dropped }) } catch { /* Diagnostics must not change settlement behaviour. */ }
+      }
+    }
+    let damper = null
+    if (input.narrativeDamperRuling) {
+      const clampedResult = clampMvuSubmissionOperationsWithReport(submission, input.currentVariables, input.narrativeDamperRuling)
+      submission = clampedResult.submission
+      damper = clampedResult.report
+    }
+    // The durable copy holds the background's share only: a redelivery adds the tools' operations again, from the same records.
+    if (input.onSubmission) await input.onSubmission(clone(Object.keys(backfill).length ? { ...submission, toolBackfill: backfill } : submission))
+    if (own.length) submission = { ...submission, operations: [...own, ...submission.operations] }
     const applied = await options.runtime.settleMvuUpdate({
       compactResult: true,
       durable: Boolean(input.onSubmission), signal: input.signal,
@@ -581,22 +682,22 @@ export function createMvuSettlementModule(options = {}) {
       // Card constraints must see the same setup/Helper facts as the model, including durable retries.
       storyText: [...frame.taskRules.helperContext, frame.foregroundOutput.storyText].filter(Boolean).join('\n\n'),
       command: formatMvuUpdateCommand(submission),
-      validate: ({ before, after }) => auditMvuSettlement(before, after, submission.operations)
+      validate: ({ before, after }) => auditMvuSettlement(before, after, submission.operations, frame.authoritativeState.variableLimits)
     })
-    if (applied.deferred === true || applied.stale === true) return { applied }
+    if (applied.deferred === true || applied.stale === true) return { applied, damper }
     const projected = applied.context?.messages?.[input.messageId]
     const after = clone(applied.variables || projected?.variables || {})
-    const audit = applied.validation || auditMvuSettlement(input.currentVariables, after, submission.operations)
+    const audit = applied.validation || auditMvuSettlement(input.currentVariables, after, submission.operations, frame.authoritativeState.variableLimits)
     const rolledBack = applied.rejected === true
     const changes = rolledBack ? [] : audit.changes
     const sideEffects = rolledBack ? [] : audit.sideEffects
     const status = audit.failures.length > 0
       ? (changes.length > 0 ? 'partial' : 'error')
       : (changes.length > 0 ? 'updated' : 'unchanged')
-    return { applied, after, audit, rolledBack, changes, sideEffects, status, effect: applied.effect }
+    return { applied, after, audit, rolledBack, changes, sideEffects, status, effect: applied.effect, damper }
   }
 
-  function pendingReceipt(applied, diagnosticId) {
+  function pendingReceipt(applied, diagnosticId, damper = null) {
     const reasons = {
       'claim-timeout': '任务领取超时，变量操作已保存，等待重新投递；无需反复重载 MVU。',
       'runtime-busy': '执行器正在处理其他任务，变量操作已保存，等待空闲后继续。',
@@ -604,26 +705,30 @@ export function createMvuSettlementModule(options = {}) {
       'delivery-interrupted': '任务投递中断，变量操作已保存，等待重新投递。'
     }
     const deferredReason = Object.hasOwn(reasons, applied.deferredReason) ? applied.deferredReason : 'runtime-not-ready'
-    return { version: 1, status: 'pending', deferredReason, summary: reasons[deferredReason], diagnosticId, changes: [], sideEffects: [], failures: [] }
+    return { version: 1, status: 'pending', deferredReason, summary: reasons[deferredReason], diagnosticId, changes: [], sideEffects: [], failures: [], ...(damper ? { damper } : {}) }
   }
 
   async function resumeVariables(input = {}) {
     const frame = taskFrame(input)
     const submission = resolveMvuSubmissionMacros(normalizeMvuToolSubmission(input.submission), input)
     const diagnosticId = frame.frameId + ':resume'
-    const outcome = await applySubmission(input, frame, submission, diagnosticId)
+    const outcome = await applySubmission(input, frame, submission, diagnosticId, object(object(input.submission).toolBackfill))
+    const resolvedDamper = input.previousDamperReport?.clampedCount > 0 && !(outcome.damper?.clampedCount > 0)
+      ? clone(input.previousDamperReport)
+      : outcome.damper
     if (outcome.applied.deferred === true) {
       return { frame, submission, variables: clone(input.currentVariables),
-        receipt: pendingReceipt(outcome.applied, diagnosticId) }
+        receipt: pendingReceipt(outcome.applied, diagnosticId, resolvedDamper) }
     }
     if (outcome.applied.stale === true) {
-      return { frame, submission, receipt: { version: 1, status: 'stale', summary: '变量结算目标已经变化，迟到结果未写入。', diagnosticId, changes: [], sideEffects: [], failures: [] } }
+      return { frame, submission, receipt: { version: 1, status: 'stale', summary: '变量结算目标已经变化，迟到结果未写入。', diagnosticId, changes: [], sideEffects: [], failures: [], ...(resolvedDamper ? { damper: resolvedDamper } : {}) } }
     }
     const result = {
       frame, submission, variables: outcome.after, effect: outcome.effect,
       receipt: { version: 1, status: outcome.status, summary: '', diagnosticId,
         runtimeDiagnostics: outcome.applied.diagnostics || [], changes: outcome.changes,
-        sideEffects: outcome.sideEffects, failures: outcome.audit.failures }
+        sideEffects: outcome.sideEffects, failures: outcome.audit.failures,
+        ...(resolvedDamper ? { damper: resolvedDamper } : {}) }
     }
     if (input.onPrepared && outcome.audit.failures.length === 0) await input.onPrepared(clone(result))
     return result
@@ -648,6 +753,9 @@ export function createMvuSettlementModule(options = {}) {
     let diagnosticId = frame.frameId + ':attempt-1'
     let toolTail = Promise.resolve()
     let retryNotBefore = 0
+    // What the background backfilled with the rule tools ({tool name: [result text]}) and what they refused.
+    let backfill = {}
+    const refusals = []
     async function record(stage, details = {}) {
       try { await options.diagnostics?.record(input.sessionId, { diagnosticId, operationId: input.operationId, chatId: input.chatId, branchId: input.branchId, basedOnRevision: input.basedOnRevision, messageId: input.messageId, swipeId: input.swipeId, attempt, traceSessionId, stage, ...details }) } catch { /* Diagnostics must not change settlement behaviour. */ }
     }
@@ -675,6 +783,20 @@ export function createMvuSettlementModule(options = {}) {
           return JSON.stringify({ ok: false, retryable: true, error: str(error && error.message || error) })
         }
       }
+      const backfillTool = (input.backfillTools || []).find(tool => tool.definition.name === call?.name)
+      if (backfillTool) {
+        if (feedback?.ok) return JSON.stringify({ ok: false, error: '变量已经提交：补记要在 mvu_submit_update 之前。' })
+        const name = backfillTool.definition.name
+        try {
+          const ruling = await backfillTool.run(object(call.arguments), [...backfillTool.results, ...(backfill[name] || [])])
+          if (ruling.backfill) backfill = { ...backfill, [name]: [...(backfill[name] || []), JSON.stringify(ruling)] }
+          return JSON.stringify(ruling)
+        } catch (error) {
+          refusals.push(str(error?.message || error))
+          await record('backfill-refused', { tool: name, error: refusals.at(-1), arguments: call.arguments })
+          return JSON.stringify({ ok: false, error: refusals.at(-1) })
+        }
+      }
       // Serialize parallel calls too. Success or an unsafe-to-retry failure is terminal.
       if (feedback && (feedback.ok || !feedback.retryable)) return JSON.stringify(feedback)
       if (attempt >= maxAttempts) return JSON.stringify({ ...feedback, ok: false, retryable: false })
@@ -689,7 +811,7 @@ export function createMvuSettlementModule(options = {}) {
         if (feedback && submission.operations.length === 0) throw new Error('上一批更新未通过校验，请修正完整 operations，不能用空数组跳过失败')
       } catch (error) {
         await record('submission-rejected', { error: error.message, argumentKeys: Object.keys(object(call?.arguments)), operations: object(call?.arguments).operations })
-        feedback = { ok: false, retryable: attempt < maxAttempts, rolledBack: true, error: error.message, currentVariables: promptVariables(input.currentVariables), attemptsRemaining: maxAttempts - attempt }
+        feedback = { ok: false, retryable: attempt < maxAttempts, rolledBack: true, error: error.message, currentVariables: promptVariables(withToolOperations(input.currentVariables, toolOperationsOf(toolRowsWith(input, frame.taskRules.toolResults, backfill)))), attemptsRemaining: maxAttempts - attempt }
         result = { variables: clone(input.currentVariables), receipt: { version: 1, status: 'error',
           summary: feedback.error, diagnosticId, changes: [], sideEffects: [], failures: [{ message: feedback.error }] } }
         return JSON.stringify(feedback)
@@ -699,7 +821,7 @@ export function createMvuSettlementModule(options = {}) {
       try {
         const waitMs = retryNotBefore - Date.now()
         if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
-        applied = await applySubmission(input, frame, submission, diagnosticId)
+        applied = await applySubmission(input, frame, submission, diagnosticId, backfill)
       } catch (error) {
         // A timeout or disk error may have an uncertain outcome; do not replay a delta.
         await record('failed', { error: str(error.message || error) })
@@ -709,7 +831,7 @@ export function createMvuSettlementModule(options = {}) {
       }
       if (applied.applied.deferred === true) {
         await record('deferred')
-        const receipt = pendingReceipt(applied.applied, diagnosticId)
+        const receipt = pendingReceipt(applied.applied, diagnosticId, applied.damper)
         feedback = { ok: false, retryable: false, deferred: true, deferredReason: receipt.deferredReason, error: receipt.summary }
         result = { variables: clone(input.currentVariables), submission,
           receipt }
@@ -718,7 +840,7 @@ export function createMvuSettlementModule(options = {}) {
       if (applied.applied.stale === true) {
         await record('stale')
         feedback = { ok: false, retryable: false, error: '变量结算目标已经变化，迟到结果未写入。' }
-        result = { receipt: { version: 1, status: 'stale', summary: feedback.error, changes: [], sideEffects: [], failures: [] } }
+        result = { receipt: { version: 1, status: 'stale', summary: feedback.error, changes: [], sideEffects: [], failures: [], ...(applied.damper ? { damper: applied.damper } : {}) } }
         return JSON.stringify(feedback)
       }
       const after = applied.after
@@ -731,7 +853,8 @@ export function createMvuSettlementModule(options = {}) {
       result = {
         variables: after, submission, effect: applied.effect,
         receipt: { version: 1, status, summary: '', diagnosticId,
-          runtimeDiagnostics: applied.applied.diagnostics || [], changes, sideEffects, failures: audit.failures }
+          runtimeDiagnostics: applied.applied.diagnostics || [], changes, sideEffects, failures: audit.failures,
+          ...(applied.damper ? { damper: applied.damper } : {}) }
       }
       if (input.onPrepared && audit.failures.length === 0) await input.onPrepared(clone({ ...result, posture: posture?.posture }))
       feedback = {
@@ -739,7 +862,7 @@ export function createMvuSettlementModule(options = {}) {
         retryable: rolledBack && applied.applied.retryable === true && attempt < maxAttempts,
         rolledBack, status, changes, failures: audit.failures,
         runtimeDiagnostics: applied.applied.diagnostics || [],
-        ...(audit.failures.length === 0 ? {} : { error: '变量更新未通过校验；请对照 rejectedOperations 的提交值与执行后值检查人物卡约束，修正完整 operations，不得原样重试失败项，也不得绕过校验。', rejectedOperations: rejectedOperations(submission.operations, audit.failures, after), ...retryPromptState(after, frame.authoritativeState.variableSchema) }),
+        ...(audit.failures.length === 0 ? {} : { error: '变量更新未通过校验：请对照 rejectedOperations 的提交值与执行后值检查人物卡约束，修正后提交完整 operations。原样重试会得到同样的结果。', rejectedOperations: rejectedOperations(submission.operations, audit.failures, after), ...retryPromptState(after, frame.authoritativeState.variableSchema) }),
         attemptsRemaining: maxAttempts - attempt
       }
       await record('result', { status, rolledBack, retryable: feedback.retryable, variables: variableDiagnosticSummary(after), changes, sideEffects, failures: audit.failures, runtimeDiagnostics: applied.applied.diagnostics || [] })
@@ -753,7 +876,7 @@ export function createMvuSettlementModule(options = {}) {
         selection: input.selection, messages: request.messages, turnContext: request.turnContext,
         system: [str(input.system).trim(), request.system].filter(Boolean).join('\n\n'),
         tools: request.tools, maxToolCalls: maxAttempts + 12,
-        toolLimitMessage: '本轮后台工具调用过多，请停止额外查询；变量更新仍不得跳过校验。',
+        toolLimitMessage: '本轮后台工具调用已到上限，请停止额外查询，用已有材料完成变量提交（提交仍会校验）。',
         stopToolsWhen: () => feedback !== null && (feedback.ok || !feedback.retryable) && (!tasks.posture || posture !== null),
         acceptWithoutText: () => result !== null && (!tasks.posture || posture !== null),
         sessionId: input.sessionId, turn: Math.max(0, Number(input.turn) || 0), signal: input.signal,
@@ -788,6 +911,8 @@ export function createMvuSettlementModule(options = {}) {
       error.traceBoundary = traceBoundary
       throw error
     }
+    // A backfill the rules refused: the story and the rules disagree, which the receipt shows.
+    if (refusals.length && result.receipt) result.receipt = { ...result.receipt, backfillRefused: refusals }
     await record('finished', { status: result.receipt.status })
     return {
       frame,
@@ -805,7 +930,7 @@ export function createMvuSettlementModule(options = {}) {
     const tasks = normalizeBackgroundTasks(input.backgroundTasks)
     const tools = request.tools.filter(tool => tool.name !== MVU_SUBMIT_UPDATE_TOOL_NAME)
     const system = [
-      '只根据本轮正文处理独立的姿势与人物设计任务；不得修改或提交变量。',
+      '本轮只处理姿势与人物设计，依据本轮正文；变量不在这一轮的任务里，不修改或提交变量。',
       ...(tasks.characterDesign ? ['若确实需要人物设计，使用 character-design 工具读取或保存人物档案。'] : []),
       ...(tasks.posture ? ['调用 posture_submit 提交本轮结束时可见的人物姿势。'] : [])
     ].join('\n')

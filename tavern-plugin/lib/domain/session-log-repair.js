@@ -2,8 +2,8 @@ import { access, copyFile, readdir, readFile, rename, stat, writeFile } from 'no
 import path from 'node:path'
 import { parseSessionLog, encodeCurrentGeneration } from './session-log-codec.js'
 
-// DSH refuses a whole log for two kinds of damage older Tavern versions wrote, and
-// the session can then never be opened again:
+// DSH refuses a whole log for the damage older Tavern versions and the host itself
+// wrote, and the session can then never be opened again:
 // - a turn/start reusing the number of a closed turn ("turn/start does not open the
 //   expected turn"): a live Agent never learned its reserved opening turn. Turns are
 //   renumbered in order.
@@ -12,7 +12,23 @@ import { parseSessionLog, encodeCurrentGeneration } from './session-log-codec.js
 //   step for its replacement: the two rows swap places. Native repair wrote whole
 //   rounds after the last turn ended: that tail is dropped, it only copied the save
 //   and the next reconcile writes it again.
-// Neither inserts a row or moves an earlier event, so anchors into the log stay valid.
+// - a step reusing the number of an earlier step of its turn ("step/start does not
+//   match the open turn and next step"): older Tavern versions wrote a template rewrite
+//   as an edit step into a turn the Agent had opened, and took the number of the
+//   Agent's next step. Steps are renumbered in order within each turn.
+// - a log whose surface does not begin with a system head ("system/message requires a
+//   protected first surface head"). Whoever projected a message before the host wrote
+//   its empty system slot left the surface without the protected head; the host then
+//   appends a real system message in a later step and the reader rejects the log. The
+//   head is reserved the same way the host reserves it, and every later seq shifts by
+//   one so all replacement ranges and source references keep naming the same rows.
+// - a whole turn written while a compaction was still open ("turn/start crosses an open
+//   compaction"): Tavern opened an edit turn (a rollback after an input edit) while
+//   the compaction was summarizing. The compaction then really starts after that turn:
+//   its compaction/start row moves to just behind the turn's end, which the turn's
+//   rows make room for, and every reference to the moved rows follows them.
+// The first three kinds never insert a row or move an earlier event, so anchors into
+// the log stay valid; the head repair shifts every seq after the inserted row by one.
 const TURN_REPAIR_SUFFIX = '.bak-tavern-turnrepair'
 const SESSION_ID = /^[a-zA-Z0-9_-]+$/
 
@@ -40,11 +56,18 @@ export function repairCurrentSessionBuffer(buffer, catalog) {
   const healthy = openCurrentSession(catalog, parsed.header, parsed.events)
   if (healthy.ok) return { ok: true, changed: false, artifact: healthy.artifact, reason: '会话日志可以打开' }
   let events = parsed.events.map(event => structuredClone(event))
+  const uncrossed = /crosses an open compaction/.test(healthy.reason || '') ? startCompactionsAfterCrossingTurns(events) : null
+  if (uncrossed !== null) events = uncrossed
   const renumbered = assignTurnNumbers(events)
+  const stepped = assignStepNumbers(events)
   const placed = placeStrayReplies(events)
   if (placed === null) return refuse(healthy.reason)
   events = placed.events
-  if (!renumbered && !placed.changed) return refuse(healthy.reason)
+  // Only a log the reader rejected for the missing head gets one: a log without any
+  // system/message row opens fine, and reserving a head there would be a silent edit.
+  const headed = /protected first surface head/.test(healthy.reason || '') ? restoreSurfaceHead(events, parsed.header) : null
+  if (headed !== null) events = headed
+  if (uncrossed === null && !renumbered && !stepped && !placed.changed && headed === null) return refuse(healthy.reason)
   const repaired = openCurrentSession(catalog, parsed.header, events)
   if (!repaired.ok) return refuse(repaired.reason)
   return { ok: true, changed: true, artifact: repaired.artifact, reason: healthy.reason }
@@ -170,6 +193,23 @@ function assignTurnNumbers(events) {
   return changed
 }
 
+// Number each turn's steps 1, 2, ... in log order; every row inside a step carries its number.
+function assignStepNumbers(events) {
+  let changed = false
+  let next = 1
+  let current = null
+  for (const event of events) {
+    if (event.type === 'turn/start') { next = 1; current = null; continue }
+    if (event.type === 'step/start') current = next++
+    if (current !== null && event.data && Object.hasOwn(event.data, 'step') && event.data.step !== current) {
+      event.data = { ...event.data, step: current }
+      changed = true
+    }
+    if (event.type === 'step/end') current = null
+  }
+  return changed
+}
+
 const NEEDS_STEP = new Set(['assistant/message', 'tool/result'])
 
 // Seq references a stored row may carry: replacement ranges and their sources.
@@ -221,6 +261,123 @@ function placeStrayReplies(input) {
     return { events, changed: true }
   }
   return { events, changed }
+}
+
+const SURFACE_ROW_TYPES = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
+
+// Move every seq reference at or after the inserted row, so replacement ranges,
+// source lists and header links keep naming the rows they named before the insert.
+function shiftSeqReferences(event, shift) {
+  const op = event.surfaceOp
+  if (op && typeof op === 'object') {
+    const copy = { ...op }
+    for (const key of ['startSeq', 'endSeq', 'start', 'end']) if (Number.isSafeInteger(copy[key])) copy[key] = shift(copy[key])
+    event.surfaceOp = copy
+  }
+  const shiftList = value => Array.isArray(value) ? value.map(shiftList) : shift(value)
+  if (Array.isArray(event.sourceEventSeqs)) event.sourceEventSeqs = shiftList(event.sourceEventSeqs)
+  const data = event.data
+  if (!data || typeof data !== 'object') return
+  let next = data
+  if (event.type === 'session/title' && Array.isArray(data.messageSeqs)) next = { ...next, messageSeqs: data.messageSeqs.map(shift) }
+  if (Array.isArray(data.tavernRestoredSurfaceSeqs)) next = { ...next, tavernRestoredSurfaceSeqs: data.tavernRestoredSurfaceSeqs.map(shift) }
+  if (Number.isSafeInteger(data.headerSeq)) next = { ...next, headerSeq: shift(data.headerSeq) }
+  if (Number.isSafeInteger(data.sourceEventSeq)) next = { ...next, sourceEventSeq: shift(data.sourceEventSeq) }
+  if (Array.isArray(data.shadowedSeqs)) next = { ...next, shadowedSeqs: data.shadowedSeqs.map(shift) }
+  const range = data.shadowedRange
+  if (range && typeof range === 'object' && (Number.isSafeInteger(range.start) || Number.isSafeInteger(range.end))) {
+    next = { ...next, shadowedRange: {
+      ...range,
+      ...(Number.isSafeInteger(range.start) ? { start: shift(range.start) } : {}),
+      ...(Number.isSafeInteger(range.end) ? { end: shift(range.end) } : {}),
+    } }
+  }
+  if (next !== data) event.data = next
+}
+
+/**
+ * Reserve the host's empty system head when the surface starts without one.
+ * DSH accepts a later system/message only when the surface already begins with an
+ * appended one; a log that projected a message first can never be read again. The
+ * head is inserted inside the step its first surface row belongs to, exactly where
+ * the host writes it, and every later seq shifts by one. Returns null when the log
+ * already opens with a head or cannot hold one.
+ */
+export function restoreSurfaceHead(events, header = {}) {
+  const first = events.findIndex(event => event?.surfaceOp !== undefined && SURFACE_ROW_TYPES.has(event?.type))
+  if (first < 0) return null
+  const opening = events[first]
+  if (opening.type === 'system/message' && opening.surfaceOp === 'append') return null
+  let turn = null
+  let step = null
+  let openedAt = -1
+  for (let index = 0; index < first; index += 1) {
+    const event = events[index]
+    if (event.type === 'turn/start') { turn = event.data?.turn ?? null; step = null }
+    else if (event.type === 'step/start') { step = event.data?.step ?? null; openedAt = index }
+    else if (event.type === 'step/end' || event.type === 'turn/end') step = null
+  }
+  // The head must sit in the same open step as the row it protects, or the host
+  // rejects it before the surface fold ever runs.
+  if (openedAt < 0 || !Number.isSafeInteger(turn) || !Number.isSafeInteger(step)) return null
+  if (opening.type !== 'user/message' && (opening.data?.turn !== turn || opening.data?.step !== step)) return null
+  const insertAt = openedAt + 1
+  const shift = seq => Number.isSafeInteger(seq) && seq >= insertAt ? seq + 1 : seq
+  const shifted = events.map(event => ({ ...event }))
+  for (const event of shifted) {
+    if (Number.isSafeInteger(event.seq)) event.seq = shift(event.seq)
+    shiftSeqReferences(event, shift)
+  }
+  shifted.splice(insertAt, 0, {
+    seq: insertAt,
+    time: typeof opening.time === 'number' ? opening.time : 0,
+    type: 'system/message',
+    surfaceOp: 'append',
+    data: { turn, step, message: {
+      id: `tavern-surface-head:${typeof header.id === 'string' ? header.id : 'session'}`,
+      role: 'system',
+      content: [],
+      source: { kind: 'system-prompt', plugin: '@deepseek-ai/dsh-system-prompt' },
+    } },
+  })
+  return shifted
+}
+
+const COMPACTION_OWN_ROWS = new Set(['compaction/summary', 'compaction/end', 'session/end-seed'])
+
+/**
+ * Start every between-turns compaction after the whole turns written inside it. The
+ * compaction/start row moves to just behind the last such turn's end; the rows it
+ * passes move up by one, and every reference to a moved row follows it. Returns null
+ * when no compaction is crossed by a whole turn, or when a crossing turn is still open
+ * when the compaction writes its own rows (that log is not this damage).
+ */
+export function startCompactionsAfterCrossingTurns(input) {
+  let events = input
+  let moved = false
+  for (let index = 0; index < events.length; index += 1) {
+    if (events[index].type !== 'compaction/start' || events[index].data?.turn != null) continue
+    let lastEnd = -1
+    let inTurn = false
+    let cursor = index + 1
+    for (; cursor < events.length && !COMPACTION_OWN_ROWS.has(events[cursor].type); cursor += 1) {
+      if (events[cursor].type === 'turn/start') inTurn = true
+      else if (events[cursor].type === 'turn/end') { inTurn = false; lastEnd = cursor }
+    }
+    if (inTurn) return null
+    if (lastEnd < 0) continue
+    const order = [...events.slice(0, index), ...events.slice(index + 1, lastEnd + 1), events[index], ...events.slice(lastEnd + 1)]
+    const renamed = new Map(order.map((event, position) => [event.seq, position]))
+    const shift = seq => renamed.has(seq) ? renamed.get(seq) : seq
+    events = order.map((event, position) => {
+      const copy = { ...event, seq: position }
+      shiftSeqReferences(copy, shift)
+      return copy
+    })
+    moved = true
+    index = lastEnd
+  }
+  return moved ? events : null
 }
 
 function refuse(reason) {

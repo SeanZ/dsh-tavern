@@ -1,12 +1,5 @@
 import { promptSection } from './prompt-section.js'
 
-// Prompt prose source. Keys are stable; interpolation arguments are data.
-export const PROMPT_PROSE = Object.freeze({
-  p001: "Current ledger (settled):\n",
-  p002: "Play ledger, updated through turn ",
-  p003: " (this turn only, for checking items, characters and places; the story text wins on conflict; omitted counts entries left out for space, not deleted):\n"
-})
-
 /** Generic ledger fields and selection rules informed by ST-BaiBai-Book.
  * Reference: docs/research/baibai-book-ledger-2026-09-09.md.
  * Persistence and rollback belong to Tavern's Story Timeline, not ST message extras.
@@ -70,14 +63,14 @@ export const LEDGER_SUBMIT_TOOL = Object.freeze({
   parameters: { type: 'object', additionalProperties: false, properties: { location: { type: 'string' }, locationPath: { type: 'array', items: { type: 'string' }, minItems: 1 }, ...groups } }
 })
 export const LEDGER_RULES = `## Ledger upkeep
-In this background agent, keep the items, characters and places ledgers and submit with ledger_submit. Record only facts the latest story text confirms; the player's plans, choices and hidden reasoning are not facts. Submit {} if nothing changed. Finish the ledger before submitting posture or variables, and work within this agent.
+In this background agent, keep the items, characters and places ledgers and submit with ledger_submit. Record only facts the latest story text confirms; the player's plans, choices and hidden reasoning are not facts. Write entries in the story's language. Submit {} if nothing changed. Work within this agent.
 The current ledger is settled. Submit only this batch's new item quantities and movements; review the current personality and relationships of characters appearing in this batch. Unmentioned old entries stay, so don't record them twice. add/update/remove reuse existing names and places reuse the full path; aliases of one thing share one entry.
 - Items: only things deliberately obtained and kept, with story use or emotional meaning; ordinary surroundings, everyday food and worn clothes stay off. add.qty for new quantities, update.qty for the remaining total after partial use, remove when used up; add nothing unshown. carried=true by default; carried=false with location only when explicitly stored. Update fields on retrieval or transfer.
 - Characters: only key characters with meaningful interaction or repeated mentions; no one-off staff or passers-by, and never the player in npcs. title is their role. For characters appearing in this batch, review and rewrite personality, relation and ties against established facts and this batch, rather than appending a change to an obsolete conclusion. Unchanged facts may stay; invent nothing to fill space. personality is usually 60-120 Chinese characters: stable traits, supporting behavior and known vulnerabilities or boundaries; keep it shorter when evidence is scarce, without guessing hidden feelings. relation records the current relationship, trust or caution, affection and boundaries with the player; cite the turn and event for a qualitative change. Neither infer love from one friendly moment nor preserve an early debt after explicit love over several turns. ties describes each known relationship with other characters, attitudes and evidence for changes; leave unknown relations empty and do not force symmetry. Keep appearance desc and personality apart from current outfit and condition. Record outfit on first entry when the story establishes it, then update changes. Main leads important=true; companions follow=true, otherwise record location. Temporary departures stay listed.
 - Places: named places actually reached and concretely described; path runs largest to smallest, and the map grows only with the story. Give desc on add; updates keep old key points. Hierarchy changes use reparent with node (old path) and newPath (new path); child places move along. location is the current position; locationPath points to a recorded place; with no fitting place, update only location.
 Keep items.desc within about 25 Chinese characters and scenes.desc within about 60 when possible: distinguishing features, uses or environmental state, not a plot log. Preserve essential information and compact only entries touched by this batch.
 No full rewrite needed. Invent no numbers, relationships or post-departure changes. MVU variables and character design files keep their own tasks; the ledger never edits them.`
-export function ledgerContext(value) { return promptSection('current_ledger', PROMPT_PROSE.p001 + JSON.stringify(readLedger(value))) }
+export function ledgerContext(value) { return promptSection('current_ledger', 'Current ledger (settled):\n' + JSON.stringify(readLedger(value))) }
 
 const MAX_INJECTED_LEDGER = 12000
 function frameLedgerText(ledger) {
@@ -112,7 +105,7 @@ export function ledgerFrameInputs(chat) {
   if (!ledger.location && !['items', 'npcs', 'scenes'].some(kind => ledger[kind]?.length)) return []
   const text = frameLedgerText(ledger)
   return [{ kind: 'foreground.current-state', required: false, source: { stage: 'ledger', through: chat.ledgerInjection.through },
-    text: promptSection('story_ledger', PROMPT_PROSE.p002 + chat.ledgerInjection.through + PROMPT_PROSE.p003 + text) }]
+    text: promptSection('story_ledger', 'Play ledger, updated through turn ' + chat.ledgerInjection.through + " (this turn only, for checking items, characters and places; the story text wins on conflict; omitted counts entries left out for space, not deleted):\n" + text) }]
 }
 
 /** Pure, atomic delta projection. A failed call leaves the authoritative ledger untouched. */

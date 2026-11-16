@@ -5,8 +5,6 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { parse } from 'acorn'
-import vm from 'node:vm'
-import { sourceFunction } from './fixtures/source-function.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const read = name => readFileSync(path.join(root, name), 'utf8')
@@ -119,10 +117,9 @@ test('standard package ships runtime resources without local links, host copies 
 test('standard bundle and sidebar distribution match their maintained sources', async () => {
   const { patchSidebarTeams } = await import('../bin/sidebar-team-compat.mjs')
   execFileSync(process.execPath, ['bin/build-plugin-package.mjs', '--check'], { cwd: root })
-  const patchTitle = vm.runInNewContext(sourceFunction(read('bin/vendor-plugin-package.mjs'), 'patchSidebarTitle') + '; patchSidebarTitle')
   for (const name of ['index.js', 'client.js', 'client-registry.js', 'client-terminal.js', 'client-editor.js', 'client-mermaid.js', 'client-locale.js']) {
     const source = patchSidebarTeams(read(`node_modules/dsh-better-sidebar/lib/${name}`), name)
-    const expected = name === 'client.js' || name === 'client-registry.js' ? patchTitle(source) : source
+    const expected = source
     assert.equal(read(`tavern-plugin/packages/dsh-better-sidebar/lib/${name}`), expected)
   }
   assert.match(read('tavern-plugin/packages/dsh-better-sidebar/lib/index.js'), /function threadOwnLogEvents\(/)

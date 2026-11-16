@@ -10,14 +10,14 @@ import { createFishAudioAdapter } from './providers/fish-audio.js'
 import { createVoicePilot } from './providers/fish-voice-design.js'
 import { createVolcengineAdapter } from './providers/volcengine.js'
 import { createMinimaxAdapter, MINIMAX_MODELS } from './providers/minimax.js'
-import { hash, canonical, fail, voicePreset, describeTtsError } from './core.js'
+import { hash, canonical, fail, voicePreset, describeTtsError, wav, durationMs } from './core.js'
 import { boundedFetch } from './providers/fetch.js'
 import { createModelValidation } from './model-validation.js'
 
 // 台词朗读: 通用声音 and 旁白 each point at one figure of the asset library ({packId, figureId}: they speak with that figure's
-// voice; null = the browser's default voice), 旁白配音's global switch (off by default) and 全文朗读's reader. The reader is the voice
-// picker's binding: {browser:name}, {serviceId, voice}, a pack voice or a template. Schemastery drops null defaults, so readingOf fills them.
-const Reading = z.object({ general: z.object({ figure: z.any() }), narrator: z.object({ enabled: z.boolean().default(false), figure: z.any() }), readAloud: z.object({ voice: z.any(), auto: z.boolean().default(false) }) })
+// voice; null = the browser's default voice) and 旁白配音's global switch (off by default). Schemastery drops null defaults, so
+// readingOf fills them.
+const Reading = z.object({ general: z.object({ figure: z.any() }), narrator: z.object({ enabled: z.boolean().default(false), figure: z.any() }) })
 export const Settings = z.object({ enabled: z.boolean().default(true), providers: z.array(z.any()).default([]), voices: z.array(z.any()).default([]),
   reading: Reading,
   cacheMaxGB: z.number().min(0.1).max(100).default(1).description('\u7f13\u5b58\u4e0a\u9650\uff08GB\uff09'),
@@ -51,21 +51,9 @@ export function validateSettings(value) {
 }
 export function readingOf(settings) {
   const r = settings.reading || {}
-  return { general: { figure: r.general?.figure ?? null }, narrator: { enabled: r.narrator?.enabled === true, figure: r.narrator?.figure ?? null },
-    readAloud: { voice: r.readAloud?.voice ?? null, auto: r.readAloud?.auto === true } }
+  return { general: { figure: r.general?.figure ?? null }, narrator: { enabled: r.narrator?.enabled === true, figure: r.narrator?.figure ?? null } }
 }
 const plainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
-const voiceName = v => typeof v === 'string' && v.trim() !== '' && v.length <= 200 && !/[\u0000-\u001f]/.test(v)
-function readingVoice(v) {
-  if (v === null) return null
-  const keys = plainObject(v) ? Object.keys(v).sort().join() : ''
-  if (keys === 'browser' && voiceName(v.browser)) return { browser: v.browser }
-  if (keys === 'serviceId,voice' && PROVIDER_ID.test(v.serviceId) && voiceName(v.voice)) return { serviceId: v.serviceId, voice: v.voice }
-  const uuid = s => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(s)
-  if (keys === 'packId,voiceId' && uuid(v.packId) && typeof v.voiceId === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(v.voiceId) && !['constructor','prototype','__proto__'].includes(v.voiceId)) return {packId:v.packId,voiceId:v.voiceId}
-  if (keys === 'templateId' && uuid(v.templateId)) return {templateId:v.templateId}
-  fail('INVALID_READING_VOICE')
-}
 // 通用声音 / 旁白's figure: null, or a figure of an installed pack (whether it exists is the speaker's to find out).
 function figureRef(v) {
   if (v === null) return null
@@ -76,7 +64,7 @@ function figureRef(v) {
 // Validated once here, on write; a bad patch is a repairable INVALID_READING_VOICE.
 export function patchReading(current, patch) {
   const next = readingOf({ reading: current })
-  if (!plainObject(patch) || Object.keys(patch).some(k => !['general','narrator','readAloud'].includes(k))) fail('INVALID_READING_VOICE')
+  if (!plainObject(patch) || Object.keys(patch).some(k => !['general','narrator'].includes(k))) fail('INVALID_READING_VOICE')
   if (patch.general !== undefined) {
     if (!plainObject(patch.general) || Object.keys(patch.general).some(k => k !== 'figure')) fail('INVALID_READING_VOICE')
     if (Object.hasOwn(patch.general,'figure')) next.general.figure = figureRef(patch.general.figure)
@@ -86,12 +74,6 @@ export function patchReading(current, patch) {
     if (!plainObject(n) || Object.keys(n).some(k => !['enabled','figure'].includes(k))) fail('INVALID_READING_VOICE')
     if (n.enabled !== undefined) { if (typeof n.enabled !== 'boolean') fail('INVALID_READING_VOICE'); next.narrator.enabled = n.enabled }
     if (Object.hasOwn(n,'figure')) next.narrator.figure = figureRef(n.figure)
-  }
-  if (patch.readAloud !== undefined) {
-    const r = patch.readAloud
-    if (!plainObject(r) || Object.keys(r).some(k => !['auto','voice'].includes(k))) fail('INVALID_READING_VOICE')
-    if (r.auto !== undefined) { if (typeof r.auto !== 'boolean') fail('INVALID_READING_VOICE'); next.readAloud.auto = r.auto }
-    if (Object.hasOwn(r,'voice')) next.readAloud.voice = readingVoice(r.voice)
   }
   return next
 }
@@ -282,6 +264,16 @@ export function createServiceSettings({ tts, get, replace, credentials, fetch, w
       const p = record(args.serviceId)
       return voicePilot(args, p, async () => (await secrets(p)).key)
     },
+    // One short line through the service's own adapter (the path a figure's line takes), to check a voice speaks. The audio is
+    // measured here and not returned; nothing is cached or played.
+    async voiceSynth({serviceId, params, text}) {
+      const p = record(serviceId), a = adapters[p.kind]
+      if (!a || typeof text !== 'string' || !text.trim() || text.length > 200 || !params || typeof params !== 'object') fail('INVALID_INPUT')
+      const started = Date.now(), audio = wav(await a.synthesize(p, await secrets(p), {text, params, signal:AbortSignal.timeout(120000)}))
+      let peak = 0
+      for (let at = audio.length - (audio.length % 2) - 2; at >= 44; at -= 2) peak = Math.max(peak, Math.abs(audio.readInt16LE(at)))
+      return {serviceId, kind:p.kind, durationMs:durationMs(audio), bytes:audio.length, peak:+(peak / 32768).toFixed(4), elapsedMs:Date.now() - started}
+    },
     // Read-only names for the CLI. Host records are listed by key only; each saved Fish service is asked by its canonical
     // credential ref through describe alone. `present` is the host's configured flag, never a value or a successful lookup.
     async credentialNames() {
@@ -422,7 +414,9 @@ export function createServiceSettings({ tts, get, replace, credentials, fetch, w
         let fishModels = customFish ? [] : structuredClone(FISH_MODELS)
         const speaking = model => {
           const found = model ? fishModels.find(m => m.id === model) : fishModels.find(m => m.id === FISH_DEFAULT_MODEL) || fishModels[0]
-          const m = found || (model ? {id:model,label:model,billing:customFish ? 'unknown' : fishModel(model).billing} : null)
+          // Until a server has answered, a named model takes directions as the known model does: the spoken text (and the
+          // cached line it names) must not depend on whether the server was asked yet.
+          const m = found || (model ? {id:model,label:model,billing:customFish ? 'unknown' : fishModel(model).billing,voiceDirections:fishModel(model).voiceDirections} : null)
           return m ? {model:m.id,modelLabel:m.label,billing:m.billing || 'unknown',paid:m.billing !== 'free',voiceDirections:m.voiceDirections === true} : {billing:'unknown',paid:true,voiceDirections:false}
         }
         // 配音来源 (Provider.capabilities.voiceSources): what the protocol always serves (its kind's declaration); a Fish

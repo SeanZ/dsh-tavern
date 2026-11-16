@@ -1,18 +1,21 @@
+import { resolveTemplateScenarioSync } from './prompt-scenarios.js'
 import { selectPromptMaterials, fillPromptInputs } from './prompt-materials.js'
 import { normalizePromptUsage } from './prompt-structure.js'
 import { activeChannel } from './image-channels.js'
 import { imageReferenceLimit, imageTransparency } from './image-provider-capabilities.js'
 import { composePluginImagePrompt, composePluginImagePromptAsync } from './prompt-assembly.js'
-import { effectivePromptPreset, promptConfigForTarget } from './prompt-presets.js'
+import { effectivePromptPreset, listPromptPresets, promptConfigForTarget, withPromptPreset } from './prompt-presets.js'
 export { composePluginImagePrompt, composePluginImagePromptAsync } from './prompt-assembly.js'
 
 /** The same adapter serves Tavern assets and public model discovery. Model IDs are template:<id>, saved channel IDs or comfyui:<workflowId>. */
 export function createImageGenerator(getConfig, generate, defaultUsage = 'plugin', library = {}) {
-  const current = (modelId) => {
-    const config = getConfig()
-    if (library.generateTemplate && (typeof modelId === 'string' && modelId.startsWith('template:') || modelId === undefined && config.promptSystem === 'workbench')) {
+  const current = (modelId, promptPreset) => {
+    const config = withPromptPreset(getConfig(), promptPreset)
+    const preset = effectivePromptPreset(config)
+    // An explicit style preset replaces the default workbench template; named templates still win.
+    if (library.generateTemplate && (typeof modelId === 'string' && modelId.startsWith('template:') || modelId === undefined && promptPreset === undefined && config.promptSystem === 'workbench' && (!preset?.registered || preset?.structure))) {
       const models = library.templates?.() || []
-      const template = modelId ? models.find(item => item.id === modelId) : models.find(item => item.templateId === config.activePromptPreset) || models[0]
+      const template = modelId ? models.find(item => item.id === modelId) : models.find(item => item.templateId === config.activePromptPreset) || models.find(item => item.templateId === '__default__' || config.promptPresets?.some(saved => saved.id === item.templateId))
       if (template) return { config, template }
     }
     const wanted = typeof modelId === 'string' && modelId.startsWith('comfyui:') ? modelId : undefined
@@ -48,8 +51,10 @@ export function createImageGenerator(getConfig, generate, defaultUsage = 'plugin
         ...(library.workflows?.() || []).map(({ workflowId, ...item }) => item)]
     },
     status({ modelId } = {}) { return status(current(modelId)) },
-    async generate({ prompt, negative, references = [], width, height, background, quality, signal, modelId, templateId, usage, inputs, subjects, definitions } = {}) {
-      const { config, channel: selected, workflow, template: templateModel, reason } = current(templateId ? 'template:' + templateId : modelId)
+    /** Read-only list of the style presets `generate({ promptPreset })` accepts. */
+    presets() { return listPromptPresets(getConfig()) },
+    async generate({ prompt, negative, references = [], width, height, background, quality, signal, modelId, templateId, promptPreset, usage, inputs, subjects, definitions, chooseScenario } = {}) {
+      const { config, channel: selected, workflow, template: templateModel, reason } = current(templateId ? 'template:' + templateId : modelId, promptPreset)
       if (templateModel) {
         if (!templateModel.ready) throw new Error(templateModel.reason || '模板还没有可用的生图接口')
         signal?.throwIfAborted()
@@ -60,7 +65,7 @@ export function createImageGenerator(getConfig, generate, defaultUsage = 'plugin
         signal?.throwIfAborted()
         if (references.length > workflow.maxReferences) throw new Error('这个工作流最多支持 ' + workflow.maxReferences + ' 张输入图片')
         if (workflow.maxReferences && !references.length) throw new Error('这个 ComfyUI 工作流需要输入图片；请添加素材或选择文生图工作流')
-        return library.generateComfy({ workflowId: workflow.workflowId, prompt, negative, references, width, height, background, quality, signal, inputs, subjects, definitions,
+        return library.generateComfy({ workflowId: workflow.workflowId, promptPreset, prompt, negative, references, width, height, background, quality, signal, inputs, subjects, definitions,
           usage: normalizePromptUsage(usage, defaultUsage) })
       }
       if (!selected) throw Object.assign(new Error(reason), { requestMayHaveSucceeded: false })
@@ -70,10 +75,10 @@ export function createImageGenerator(getConfig, generate, defaultUsage = 'plugin
       const promptUsage = normalizePromptUsage(usage, defaultUsage)
       const maxImageBytes = config.maxImageBytes
       const records = definitions || library.definitions?.() || {}
-      const prepared = await composePluginImagePromptAsync(config, { channel, prompt, negative, usage: promptUsage, inputs, subjects, definitions: records, signal })
+      const prepared = await composePluginImagePromptAsync(config, { channel, prompt, negative, usage: promptUsage, inputs, subjects, definitions: records, signal, chooseScenario })
       if (prepared.workflowValues?.length) throw new Error('当前模板的节点参数需要 ComfyUI 工作流')
       const template = effectivePromptPreset(promptConfigForTarget(config, null, channel))
-      const materials = selectPromptMaterials(fillPromptInputs(template?.structure, inputs).structure, records, { usage: promptUsage, subjects })
+      const materials = selectPromptMaterials(resolveTemplateScenarioSync(fillPromptInputs(template?.structure, inputs).structure, { scene: prompt, selected: prepared.scenario?.id }).structure, records, { usage: promptUsage, subjects })
       const available = Math.max(0, imageReferenceLimit(channel) - references.length)
       if (library.readReference && available) {
         const bound = materials.selected.flatMap(item => item.references)

@@ -30,10 +30,10 @@
             const rounds = policy && policy.mode === "rounds";
             return h("div", { className: "dsh-tavern-compaction-settings", role: "group", "aria-label": "上下文压缩" },
                 h("h3", { className: "dsh-tavern-gs-subhead" }, "上下文压缩",
-                    typeof HelpTip === "function" ? h(HelpTip, { label: "上下文压缩说明" }, "把较早的剧情压成摘要，前后台都适用；接近容量或请求超限时总会自动保护，原始剧情记录不删。") : null),
-                policy ? h(TavernSettingRow, { title: "压缩模式", help: "手动（默认）、每 N 轮或上下文达到一定比例时自动压缩。" },
+                    typeof HelpTip === "function" ? h(HelpTip, { label: "上下文压缩说明" }, "把较早的剧情压成摘要，前后台都适用；手动模式下只有你主动压缩才执行，按轮数或占用比例才自动触发，请求超限时仍会尝试恢复，原始剧情记录不删。") : null),
+                policy ? h(TavernSettingRow, { title: "压缩模式", help: "手动（默认，不按容量自动压缩）、每 N 轮或上下文达到一定比例时自动压缩。" },
                     h(InlineField, { kind: "menu", label: "压缩模式", hideLabel: true, value: policy.mode, disabled: busy, onCommit: value => field("mode", value),
-                        options: [{ value: "manual", label: "手动压缩（默认）" }, { value: "rounds", label: "每 N 轮自动压缩" }, { value: "percent", label: "上下文达到 X% 自动压缩" }] })) : null,
+                        options: [{ value: "manual", label: "手动压缩（默认，不自动触发）" }, { value: "rounds", label: "每 N 轮自动压缩" }, { value: "percent", label: "上下文达到 X% 自动压缩" }] })) : null,
                 policy && policy.mode !== "manual" ? h(TavernSettingRow, { title: rounds ? "剧情轮数" : "上下文占用",
                         help: rounds ? "1–1000 轮；重写同一轮、工具调用和生图不计轮数。" : "10–95%，按估算；模型窗口未知时会提示，可改用轮数模式。" },
                     h(InlineField, { kind: "number", label: rounds ? "剧情轮数" : "上下文占用百分比", hideLabel: true, integer: true, min: rounds ? 1 : 10, max: rounds ? 1000 : 95, unit: rounds ? "轮" : "%",
@@ -75,7 +75,7 @@
 			React.useEffect(function () {
 				let active = true;
 				if (!isTavernBackground) return function () { active = false; };
-				rpc("getTavernSettings").then(function (result) {
+				rpc("getTavernModelCatalog").then(function (result) {
 					if (active) setCatalog(Array.isArray(result.modelCatalog) ? result.modelCatalog : []);
 				}, function () {});
 				return function () { active = false; };
@@ -127,33 +127,41 @@
         function TavernDefaultModelSetting(props) {
             const h = React.createElement;
             const selection = props.selection;
-            const key = selection ? JSON.stringify({ provider: selection.provider, model: selection.model }) : "";
+            const modeOptions = Array.isArray(props.modeOptions) ? props.modeOptions : null;
+            const isModeString = Boolean(modeOptions && typeof selection === "string");
+            const isModelObject = Boolean(selection && typeof selection === "object");
+            const key = isModeString ? selection : isModelObject ? JSON.stringify({ provider: selection.provider, model: selection.model }) : (modeOptions ? modeOptions[0].value : "");
+            const modelKey = isModelObject ? key : "";
             const [reasoning, setReasoning] = React.useState({ key: "", value: null, error: "" });
             React.useEffect(() => {
                 let active = true;
-                if (key && props.kind !== "scoring") rpc("getBackgroundModelReasoning", JSON.parse(key)).then(result => {
-                    if (active) setReasoning({ key, value: result.reasoning, error: "" });
-                }, err => { if (active) setReasoning({ key, value: null, error: String(err.message || err) }); });
+                if (modelKey && props.kind !== "scoring") rpc("getBackgroundModelReasoning", JSON.parse(modelKey)).then(result => {
+                    if (active) setReasoning({ key: modelKey, value: result.reasoning, error: "" });
+                }, err => { if (active) setReasoning({ key: modelKey, value: null, error: String(err.message || err) }); });
                 return () => { active = false; };
-            }, [key]);
-            const efforts = reasoning.key === key ? reasoning.value?.efforts || [] : [];
-            const known = !selection || props.catalog.some(group => group.provider === selection.provider && group.models.some(model => model.id === selection.model));
+            }, [modelKey]);
+            const efforts = reasoning.key === modelKey ? reasoning.value?.efforts || [] : [];
+            const known = !isModelObject || props.catalog.some(group => group.provider === selection.provider && group.models.some(model => model.id === selection.model));
             // one row — the name and its 「?」, then model · reasoning as the shared
             // inline menus (no native select, ui-design §三.5); the provider is the menu's group heading.
-            const models = [{ value: "", label: props.fallback }]
-                .concat(!known ? [{ value: key, label: backgroundModelLabel(selection, props.catalog) + "（当前不可用）" }] : [])
+            const models = (modeOptions ? modeOptions : [{ value: "", label: props.fallback }])
+                .concat(!known ? [{ value: modelKey, label: backgroundModelLabel(selection, props.catalog) + "（当前不可用）" }] : [])
                 .concat(props.catalog.flatMap(group => group.models.map(model => ({ value: JSON.stringify({ provider: group.provider, model: model.id }), label: model.name || model.id, group: group.providerName || group.provider }))));
             // Every slot offers the same choices; a slot's declared initial effort (the phone call: off) is the
             // value shown until this slot stores its own, where the model offers it (model-slots.js resolves the same way).
             // 模型默认 is stored as null so it stays chosen over that initial value.
             const initial = props.initialEffort && efforts.some(item => item.id === props.initialEffort) ? props.initialEffort : "";
-            const effort = selection && Object.hasOwn(selection, "reasoningEffort") ? selection.reasoningEffort || "" : initial;
+            const effort = isModelObject && Object.hasOwn(selection, "reasoningEffort") ? selection.reasoningEffort || "" : initial;
+            const idleEffortLabel = modeOptions ? (modeOptions.find(item => item.value === key)?.label || modeOptions[0].label) : "模型默认";
             return h(TavernSettingRow, { title: props.title || props.label, help: props.description, className: "dsh-tavern-model-row",
-                    note: key && reasoning.key === key && reasoning.error ? "⚠ " + reasoning.error : "", noteRole: "alert" },
+                    note: modelKey && reasoning.key === modelKey && reasoning.error ? "⚠ " + reasoning.error : "", noteRole: "alert" },
                 h(InlineField, { kind: "menu", label: props.label, hideLabel: true, value: key, disabled: props.disabled, options: models, className: "dsh-tavern-model-pick",
-                    onCommit: value => props.onChange(value ? JSON.parse(value) : null) }),
-                props.kind === "scoring" ? null : h(InlineField, { kind: "menu", label: props.label + "推理强度", hideLabel: true, value: effort, disabled: props.disabled || !key || !efforts.length, className: "dsh-tavern-effort-pick",
-                    options: [{ value: "", label: "模型默认" }].concat(effort && !efforts.some(item => item.id === effort) ? [{ value: effort, label: effort }] : [], efforts.map(item => ({ value: item.id, label: item.name || item.id }))),
+                    onCommit: value => {
+                        if (modeOptions && modeOptions.some(item => item.value === value)) return props.onChange(value);
+                        return props.onChange(value ? JSON.parse(value) : null);
+                    } }),
+                props.kind === "scoring" ? null : h(InlineField, { kind: "menu", label: props.label + "推理强度", hideLabel: true, value: effort, disabled: props.disabled || !modelKey || !efforts.length, className: "dsh-tavern-effort-pick",
+                    options: [{ value: "", label: isModelObject ? "模型默认" : idleEffortLabel }].concat(effort && !efforts.some(item => item.id === effort) ? [{ value: effort, label: effort }] : [], efforts.map(item => ({ value: item.id, label: item.name || item.id }))),
                     onCommit: value => props.onChange({ ...selection, reasoningEffort: value || null }) }));
         }
 
@@ -216,7 +224,12 @@
                 return input && typeof input === "object" && Array.isArray(input.items) ? { items: tavernViewTabItems(input) } : null;
             }
             function apply(settings) {
-                value = { showSystemNavigation: settings.showSystemNavigation === true, showPlayProcess: settings.showPlayProcess === true, hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
+                const showDamper = settings
+                    ? (Object.hasOwn(settings, "showDamperStatus")
+                        ? settings.showDamperStatus !== false
+                        : settings.narrativeDamper?.showTurnStatus !== false)
+                    : true;
+                value = { showSystemNavigation: settings.showSystemNavigation === true, showPlayProcess: settings.showPlayProcess === true, showDamperStatus: showDamper, hideContextAndReasoning: settings.hideContextAndReasoning === true, headerItems: headerItemsOf(settings), viewTabs: viewTabsOf(settings) };
                 document.documentElement.classList.toggle("dsh-tavern-hide-process", !value.showPlayProcess);
                 applyDebug(document, !value.hideContextAndReasoning); // derive developer chrome from the same setting
                 document.documentElement.classList.toggle("dsh-tavern-show-system-navigation", value.showSystemNavigation);
@@ -246,7 +259,8 @@
                     const onStorage = event => { if (event.key === key) refresh(); };
                     window.addEventListener("focus", refresh);
                     window.addEventListener("storage", onStorage);
-                    return () => { ++revision; window.removeEventListener("focus", refresh); window.removeEventListener("storage", onStorage); document.documentElement.classList.remove("dsh-tavern-hide-process", "dsh-tavern-show-system-navigation"); applyDebug(document, false); };
+                    window.addEventListener("dsh-tavern-settings-changed", refresh);
+                    return () => { ++revision; window.removeEventListener("focus", refresh); window.removeEventListener("storage", onStorage); window.removeEventListener("dsh-tavern-settings-changed", refresh); document.documentElement.classList.remove("dsh-tavern-hide-process", "dsh-tavern-show-system-navigation"); applyDebug(document, false); };
                 }
             };
         })();
@@ -414,8 +428,25 @@
             return mode;
         }
 
-        // the automatic candidate preference hook (its switch lives in 舞台设置 › 基础设置); no stage/bubble dependency.
-        // @include auto-choices-preference.js
+        // 设置 › 高级 › 候选多角色 / 全局 Tab（默认关闭）: the candidate card splits into 精选 / 角色 / 全局 tabs only
+        // while this switch is on; off (the shipped default) keeps the flat 精选 list. Reread on every settings save so a
+        // switch flipped in 设置 reaches an open game without a reload.
+        function useCandidateTabPreference() {
+            const [enabled, setEnabled] = React.useState(false);
+            React.useEffect(function () {
+                let active = true;
+                function read() {
+                    rpc("getCandidatePreferences").then(result => {
+                        if (active) setEnabled(result && result.candidateTabs === true);
+                    }, () => {});
+                }
+                read();
+                window.addEventListener("dsh-tavern-settings-changed", read);
+                return () => { active = false; window.removeEventListener("dsh-tavern-settings-changed", read); };
+            }, []);
+            return enabled;
+        }
+
 
         function CandidatePreferencesSettings() {
             const mode = useCandidatePreferences();
@@ -549,7 +580,9 @@
             }
             const stateLabel = { loaded: "已启用", pending: "刷新后生效", restart: "重启 DSH 后生效", failed: "加载失败", skipped: "未加载", disabled: "已停用" };
             const sourceLabel = function (source) { return source.kind === "builtin" ? "内置插件 · 默认启用，随酒馆更新，不可删除" : source.kind === "github" ? "GitHub · " + source.repo + (source.resolved ? " · " + source.resolved : "") : source.kind === "zip" ? "ZIP 上传" : source.kind === "managed" ? (source.builtin ? "内置舞台模组 · 随酒馆提供" : "舞台模组 · 由模组管理器维护") : source.kind === "card" ? "人物卡附带 · 由人物卡管理，不可在此删除" : "手动放入"; };
-            const plugins = (data?.plugins || []).filter(plugin => plugin.source.kind !== "builtin" && !(plugin.source.kind === "managed" && plugin.source.builtin));
+            // 内置插件（随酒馆发行、装进 plugins/ 的那几个）照常列出：可停用、随酒馆更新、不可删除。
+            // 只有内置舞台模组不进这个列表——它们在「管理模组」里。
+            const plugins = (data?.plugins || []).filter(plugin => !(plugin.source.kind === "managed" && plugin.source.builtin));
             return h("div", { className: "dsh-tavern-settings-group dsh-tavern-user-plugins" },
                 h("div", { className: "dsh-tavern-user-plugins-install" },
                     // the shared inline text field; Enter keeps the address, 安装 installs it.
@@ -590,21 +623,13 @@
         }
 
         // @include modules/global-settings.js
-        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, stageGlobalSettingsOptions } = createGlobalSettingsModule({
+        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, TavernNarrativeDamperSettingsSection, stageGlobalSettingsOptions } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             // Process visibility and developer chrome have separate rows; 配音 has its own settings page.
             TavernDefaultModelSetting, TavernModelSlotGroups, TavernConversationWritingSkills, DisplayPreferencesSettings, SystemNavigationSettings, HeaderItemsSettings,
             CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, DebugSetting, SpineRuntimeEntry,
-            // both are stage package pages (asset-pack-gen-ui.js / mod-manager.js): drawn once the stage client binds them (StagePackView).
-            StageGenerationSettings: () => React.createElement(StagePackView, { view: ui => ui.GenPromptSettings, call: engineRpc }),
-            // 设置 › 舞台 › 模组管理 (mod-manager.js).
+            // 设置 › 舞台 › 模组管理 (mod-manager.js), a stage package page: drawn once the stage client binds it (StagePackView).
             ForkModManagerEntry: () => React.createElement(StagePackView, { view: ui => ui.ModManagerEntry, rpc, Row: TavernSettingRow }),
-            VoiceCataloguePicker:packUi.VoiceCataloguePicker, voiceKey:packUi.voiceKey, voiceFromKey:packUi.voiceFromKey,
-            useReadingBinding:() => {
-                usePackRevision(ttsClientAvailable);
-                const service = packClient(), tts = forkTtsScope?.get('ttsClient');
-                return React.useMemo(() => ({service,tts}), [service,tts]);
-            },
             // the shared row and controls of the page.
             TavernSettingRow, InlineField, Switch, HelpTip: typeof HelpTip === "function" ? HelpTip : null
         });

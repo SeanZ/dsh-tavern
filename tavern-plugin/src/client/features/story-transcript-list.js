@@ -5,7 +5,7 @@
 const TAVERN_STORY_TRANSCRIPT_LABELS = Object.freeze({ code: Object.freeze({ copyLabel: '复制', copiedLabel: '已复制' }), footnotes: '脚注' })
 const TAVERN_STORY_TRANSCRIPT_EMPTY_CALLS = Object.freeze([])
 
-function tavernStoryReadAloudId(row) {
+function tavernStorySpeechId(row) {
 	return JSON.stringify([row.messageUid || row.key, row.message?.swipeId])
 }
 
@@ -25,6 +25,138 @@ function TavernStoryMarkdown(props) {
 			React.createElement(DshUi.MarkdownText, { text: text, labels: labels }))
 	}
 	return React.createElement('div', { className: 'dsh-tavern-story-markdown', style: { whiteSpace: 'pre-wrap' } }, text)
+}
+
+// 故事楼层的按需挂载。长故事一层正文就有上千个节点（一轮几十个对话气泡，各带头像、名字和配音按钮），
+// 几十层全挂着时，页面只为读者看不到的楼层就占掉几百 MB，舞台盖住正文时也一样。
+// 这里只让读者附近（滚动区上下各约一屏半）的楼层挂着；其余楼层留一个同样标记、同样高度的空楼层
+// （量过的按量到的高度，没挂过的按字数估），滚到附近再挂回来。舞台盖住这一局时，被盖住的楼层全部收起。
+// 宿主的滚动锚点、楼层跳转（turn-rail.js）照旧认 data-chat-anchor-key / data-story-row / data-floor，空楼层都带着。
+// 楼层挂上或收起时，读者眼前那一行留在原处（宿主的滚动区关了浏览器自带的滚动锚定）。
+// 没有 IntersectionObserver 的环境不收楼层。
+
+const TAVERN_STORY_ROW_MARGIN = '150% 0px'
+
+function createTavernStoryRowWindow(notify) {
+	const near = new Set(), measured = new Map(), estimated = new Map(), chars = new Map(), elements = new Map(), refs = new Map()
+	let observer = null, root = null, resizer = null, pending = false, disposed = false, anchor = null
+	const supported = typeof IntersectionObserver === 'function' && typeof ResizeObserver === 'function'
+	// 读者眼前的那一行（滚动区顶边下的第一行）和它离顶边多远。
+	function capture() {
+		if (anchor || !root || !root.isConnected) return
+		const top = root.getBoundingClientRect().top
+		const jumpToken = typeof root.getAttribute === 'function' ? (root.getAttribute('data-story-jump-token') || '') : ''
+		for (const row of root.querySelectorAll('[data-story-row][data-row-key]')) {
+			const box = row.getBoundingClientRect()
+			if (box.bottom > top) { anchor = { key: row.getAttribute('data-row-key'), offset: box.top - top, jumpToken: jumpToken }; return }
+		}
+	}
+	function changed() {
+		capture()
+		if (pending || disposed) return
+		pending = true
+		Promise.resolve().then(function () { pending = false; if (!disposed) notify() })
+	}
+	function observeAll() {
+		observer = new IntersectionObserver(function (entries) {
+			let moved = false
+			for (const entry of entries) {
+				const key = entry.target.getAttribute('data-row-key')
+				if (!key || elements.get(key) !== entry.target) continue
+				if (entry.isIntersecting !== near.has(key)) {
+					moved = true
+					if (entry.isIntersecting) near.add(key)
+					else near.delete(key)
+				}
+			}
+			if (moved) changed()
+		}, { root: root, rootMargin: TAVERN_STORY_ROW_MARGIN })
+		for (const element of elements.values()) observer.observe(element)
+	}
+	function onResize(entries) {
+		const first = measured.size === 0
+		for (const entry of entries) {
+			const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
+			const key = entry.target.getAttribute('data-row-key')
+			// 被舞台盖住、或所在面板收起时量到 0，不当真。
+			if (key && height > 0 && elements.get(key) === entry.target) measured.set(key, Math.round(height))
+		}
+		// 第一次量到真实楼层后，没挂过的楼层按量到的每字高度重估一次（之前是按默认值估的）。
+		if (first && measured.size) { estimated.clear(); changed() }
+	}
+	function watch(key, element) {
+		const previous = elements.get(key)
+		if (previous === element) return
+		if (previous) { observer?.unobserve(previous); resizer?.unobserve(previous) }
+		if (!element) { elements.delete(key); return }
+		elements.set(key, element)
+		// 宿主的滚动区：隐式视口根会被滚动区的裁剪抵消掉 rootMargin（bubbles.js 同理）。
+		const scroller = element.closest('[data-conversation-scroll]')
+		if (!observer || scroller !== root) {
+			observer?.disconnect()
+			root = scroller
+			observeAll()
+		} else observer.observe(element)
+		if (!element.hasAttribute('data-story-held')) {
+			resizer ||= new ResizeObserver(onResize)
+			resizer.observe(element)
+		}
+	}
+	return {
+		supported: supported,
+		refFor(key) {
+			if (!refs.has(key)) refs.set(key, function (element) { if (!disposed) watch(key, element) })
+			return refs.get(key)
+		},
+		near(key) { return near.has(key) },
+		// 收起的楼层的高度：量过的用量到的；没量过的按已量楼层每字多高来估（一层都没量过时每字 1.5px），
+		// 估过一次就不再随别的楼层变，免得每次重绘都挪动读者上方的内容。
+		height(key, text) {
+			if (measured.has(key)) return measured.get(key)
+			if (!estimated.has(key)) {
+				let height = 0, count = 0
+				for (const [row, value] of measured) if (chars.has(row)) { height += value; count += chars.get(row) }
+				estimated.set(key, Math.max(120, Math.round(text.length * (count > 0 ? height / count : 1.5))))
+			}
+			chars.set(key, text.length)
+			return estimated.get(key)
+		},
+		remember(key, text) { chars.set(key, text.length) },
+		// 提交之后、绘制之前：把读者眼前那一行挪回原来的位置。
+		restore() {
+			const held = anchor
+			anchor = null
+			if (!held || !root || !root.isConnected) return
+			const jumpToken = typeof root.getAttribute === 'function' ? (root.getAttribute('data-story-jump-token') || '') : ''
+			if (jumpToken !== held.jumpToken) return
+			const row = root.querySelector('[data-row-key="' + CSS.escape(held.key) + '"]')
+			if (!row) return
+			const delta = row.getBoundingClientRect().top - root.getBoundingClientRect().top - held.offset
+			if (Math.abs(delta) >= 1) root.scrollTop += delta
+		},
+		dispose() {
+			disposed = true
+			observer?.disconnect()
+			resizer?.disconnect()
+			elements.clear(); near.clear()
+		}
+	}
+}
+
+function useTavernStoryRowWindow(sessionId) {
+	const [, setVersion] = React.useState(0)
+	const holder = React.useRef(null)
+	if (!holder.current || holder.current.sessionId !== sessionId) {
+		holder.current?.window.dispose()
+		holder.current = { sessionId: sessionId, window: createTavernStoryRowWindow(function () { setVersion(function (value) { return value + 1 }) }) }
+	}
+	React.useEffect(function () { return function () { holder.current?.window.dispose() } }, [])
+	React.useLayoutEffect(function () { holder.current.window.restore() })
+	// 舞台盖住这一局时（gal-stage-active.cjs），被盖住的楼层收起；离开舞台时按读者位置挂回。
+	const covered = React.useSyncExternalStore(
+		typeof galActive === 'undefined' ? function () { return function () {} } : galActive.subscribe,
+		function () { return Boolean(sessionId) && typeof galActive !== 'undefined' && galActive.get() === sessionId })
+	return { window: holder.current.window, covered: covered }
 }
 
 // liveTavernView 只提供 Helper、变量和后台状态，不参与正文行的显隐。
@@ -50,7 +182,7 @@ function createTavernStoryTranscriptFeature(deps) {
 	let flowExecuteSlash = options.executeSlash || null
 	let storyExternalHistory = options.externalHistory || null
 	let hostFlowActive = false
-	const storyEligibility = new Map()
+	const mountedStories = new Set()
 	const externalHistoryInstaller = options.externalHistoryInstaller ||
 		(typeof installTavernStoryExternalHistory === 'function' ? installTavernStoryExternalHistory : null)
 
@@ -184,8 +316,8 @@ function createTavernStoryTranscriptFeature(deps) {
 			row.role === 'user' ? editButton : copyButton,
 			row.role === 'user' ? copyButton : editButton,
 			assistantActions ? h('span', { className: 'dsh-fork-turn-actions' },
-				h('span', { 'data-fork-turn': 'speech' }, h(replyActions.ReadAloud, {
-					sessionId: props.sessionId, messageId: tavernStoryReadAloudId(row), source: row.text, state: props.readAloudState
+				h('span', { 'data-fork-turn': 'speech' }, h(replyActions.Speech, {
+					sessionId: props.sessionId, messageId: tavernStorySpeechId(row), source: row.text, voiced: props.speechVoiced
 				})),
 				turn ? h('span', { 'data-fork-turn': 'receipt' }, h(StoryTranscriptMvuReceipt, actionProps)) : null,
 				props.latest && props.host ? h(replyActions.Latest, {
@@ -201,10 +333,21 @@ function createTavernStoryTranscriptFeature(deps) {
 				? h(StoryTranscriptTurnFooter, { host: props.turnFooter, nativeTurn: row.nativeTurn }) : null)
 	}
 
+	function StoryLegacyGreeting(props) {
+		const native = React.useRef(null), node = React.useRef(null)
+		React.useLayoutEffect(function () {
+			return mountTavernLegacyMessage({ node: node.current, native: native.current, source: props.source })
+		}, [props.source])
+		return h('div', { className: 'mes', mesid: '0', is_user: 'false' },
+			h('div', { ref: native }, props.children),
+			h('div', { ref: node, 'data-dsh-legacy-message': '0' }))
+	}
+
 	const memoComponent = typeof React.memo === 'function' ? React.memo : function (component) { return component }
 	const StoryTranscriptRow = memoComponent(function StoryTranscriptRow(props) {
 		const row = props.row
 		const [renderRound, setRenderRound] = React.useState(false)
+		const [damperExpanded, setDamperExpanded] = React.useState(false)
 		const floorNo = Number(row.floorNo) || 0
 		const floorCount = Number(props.transcript && props.transcript.floorCount) || 0
 		// Match the native assistant renderer: only the latest three floors mount
@@ -227,35 +370,60 @@ function createTavernStoryTranscriptFeature(deps) {
 			? createTavernPluginTextContext({ items: pluginMedia.items, extras: [], sessionId: mediaSessionId, turn: projectionTurn, streaming: row.streaming === true })
 			: null
 		if (row.role === 'user') {
+			const editedText = props.helperView?.userInputEdits && row.nativeTurn > 0 ? props.helperView.userInputEdits[String(row.nativeTurn)] : undefined
+			const userText = typeof editedText === 'string' ? editedText : row.text
+			const templateDisplay = typeof editedText === 'string' ? null
+				: (row.inputTurnKey && (props.view?.inputTemplateDisplays?.[row.inputTurnKey] ?? props.storyView?.inputTemplateDisplays?.[row.inputTurnKey]))
 			return h('article', Object.assign({}, attributes, {
 				className: 'dsh-tavern-story-transcript-row dsh-tavern-user-row dsh-tavern-story-input'
 			}),
 				h('div', { className: 'dsh-tavern-user-bubble' },
-					h('div', { className: 'dsh-tavern-story-body', style: { whiteSpace: 'pre-wrap' } }, row.text)),
+					templateDisplay && typeof TavernMessageFrame === 'function'
+						? h(TavernMessageFrame, { content: templateDisplay, sessionId: String(props.sessionId || ''), turn: Number(row.inputTurnKey) || 0, partIndex: 'user-template', frameOwner: props.frameOwner, eager: true })
+						: h('div', { className: 'dsh-tavern-story-body', style: { whiteSpace: 'pre-wrap' } }, userText)),
 				h(StoryTranscriptActions, { row: row, transcript: props.transcript, sessionId: props.sessionId, running: props.running }))
 		}
 		const sharedProjection = !row.streaming && row.key === 'turn:' + String(projectionTurn) && typeof tavernProjectionForTurn === 'function'
-			? tavernProjectionForTurn(props.view, projectionTurn) : null
+			? (tavernProjectionForTurn(props.view, projectionTurn) || tavernProjectionForTurn(props.storyView, projectionTurn)) : null
 		const projection = sharedProjection || row.projection
+		const trustedCardMode = Boolean(props.helperView && props.helperView.tavernRuntimePolicy && props.helperView.tavernRuntimePolicy.trustedCardMode)
+		const helper = props.helperView && props.helperView.tavernHelper
+		const helperMessageId = Number.isSafeInteger(row.absoluteIndex) && row.absoluteIndex >= 0
+			? row.absoluteIndex
+			: helper?.turnMessageIds?.[String(projectionTurn)]
+		const scriptLayer = !row.streaming && trustedCardMode && Number.isSafeInteger(helperMessageId)
+			? { sessionId: String(props.sessionId || ''), messageId: helperMessageId } : null
 		const rendered = projection && renderProjection ? renderProjection(projection, {
 			sessionId: String(props.sessionId || ''),
 			turn: projectionTurn,
 			streaming: row.streaming === true,
 			codeLabels: labels.code,
 			plugin: pluginText,
-			helperContext: props.helperView && props.helperView.tavernHelper,
+			helperContext: helper,
 			helperContextReader: function () {
 				const current = typeof liveTavernView !== 'undefined' && liveTavernView && typeof liveTavernView.getSnapshot === 'function'
 					? liveTavernView.getSnapshot(String(props.sessionId || '')).view : null
-				return current && current.tavernHelper || props.helperView && props.helperView.tavernHelper
+				const currentRevision = Number(current && (current.storageRevision ?? (current.tavernHelper && current.tavernHelper.stateRevision)))
+				const fallbackRevision = Number(props.helperView && (props.helperView.storageRevision ?? (props.helperView.tavernHelper && props.helperView.tavernHelper.stateRevision)))
+				if (current && current.tavernHelper && !(Number.isSafeInteger(currentRevision) && Number.isSafeInteger(fallbackRevision) && currentRevision < fallbackRevision)) {
+					return current.tavernHelper
+				}
+				return (props.helperView && props.helperView.tavernHelper) || (current && current.tavernHelper)
 			},
 			frameSizing: props.helperView && props.helperView.tavernRuntimePolicy && props.helperView.tavernRuntimePolicy.frameSizing,
-			trustedCardMode: Boolean(props.helperView && props.helperView.tavernRuntimePolicy && props.helperView.tavernRuntimePolicy.trustedCardMode),
+			trustedCardMode: trustedCardMode,
 			frameOwner: props.frameOwner,
 			executeSlash: props.executeSlash,
-			eagerFrame: row.streaming === true || (typeof tavernLatestProjectionTurn === 'function' && projectionTurn === tavernLatestProjectionTurn(props.view)),
+			scriptLayer: scriptLayer,
+			eagerFrame: row.streaming === true || props.latest === true || (typeof tavernLatestProjectionTurn === 'function' && projectionTurn === tavernLatestProjectionTurn(props.view)),
 			deferHtml: deferHtml
 		}) : null
+		const rawBody = rendered || markdown(row.text, { greeting: row.greeting, streaming: row.streaming })
+		const legacyGreeting = !row.streaming && row.greeting && trustedCardMode && typeof mountTavernLegacyMessage === 'function'
+		const greetingSource = helper?.messages?.[0]?.message ?? row.text ?? ''
+		const bodyNode = legacyGreeting
+			? h(StoryLegacyGreeting, { key: String(props.sessionId || '') + ':greeting', source: greetingSource }, rawBody)
+			: rawBody
 		// 与原生渲染一致：正文渲染会登记已落位的 anchor；其余媒体只追加一次。
 		const trailingMedia = pluginMedia.items.filter(function (item) { return !(pluginText && pluginText.placed.has(item.id)) })
 		const pluginMediaNode = trailingMedia.length && typeof TavernPluginMediaItem === 'function'
@@ -263,16 +431,68 @@ function createTavernStoryTranscriptFeature(deps) {
 				return h(TavernPluginMediaItem, { key: item.id, item: item, sessionId: mediaSessionId, turn: projectionTurn })
 			})) : null
 		const hasTurn = replyActions && playView && !row.streaming && row.key === 'turn:' + projectionTurn
+		const inlineStatus = props.latest === true && !row.streaming && props.helperView?.statusBarPlacement === 'body'
+			&& typeof TavernPersistentStatusRuntime === 'function'
+			? h(TavernPersistentStatusRuntime, { sessionId: String(props.sessionId || ''), view: props.helperView, executeSlash: props.executeSlash, panels: 'status' })
+			: null
+		const rowVisibility = props.helperView?.mvuVisibility || props.helperView?.tavernHelper?.mvuVisibility || null
+		const damperOutcome = props.showDamperStatus !== false && !row.greeting && typeof tavernDamperOutcomeForMessage === 'function'
+			? tavernDamperOutcomeForMessage(row.message)
+			: null
 		return h('article', Object.assign({}, attributes, {
+			ref: props.windowRef,
 			className: 'dsh-tavern-story-transcript-row dsh-tavern-assistant dsh-tavern-story-floor' + (row.streaming ? ' dsh-tavern-story-streaming' : ''),
 			'aria-live': row.streaming ? 'polite' : undefined
 		}),
 			row.floorNo === null ? null : h('div', { className: 'dsh-tavern-story-floor-head' },
 				h('span', { className: 'dsh-tavern-story-floor-no' }, '第 ' + String(row.floorNo) + ' 楼'),
 				row.greeting ? h('span', { className: 'dsh-tavern-story-floor-tag' }, '开场') : null,
-				row.streaming ? h('span', { className: 'dsh-tavern-story-floor-tag' }, row.tool ? '正在调用 ' + row.tool : '正在生成') : null),
-			props.showPlayProcess && !row.streaming && row.toolCalls?.length > 0 ? h(StoryToolCalls, { calls: row.toolCalls }) : null,
-			h('div', { className: 'dsh-tavern-story-body' }, rendered || markdown(row.text, { greeting: row.greeting, streaming: row.streaming })),
+				row.streaming ? h('span', { className: 'dsh-tavern-story-floor-tag' }, row.tool ? '正在调用 ' + row.tool : '正在生成') : null,
+				damperOutcome && typeof StoryFloorDamperPill === 'function' ? h(StoryFloorDamperPill, {
+					outcome: damperOutcome,
+					sessionId: mediaSessionId,
+					turn: projectionTurn,
+					fallbackReceipt: row.message?.mvu?.receipt || null,
+					visibility: rowVisibility,
+					expanded: damperExpanded,
+					onToggle: function () { setDamperExpanded(function (open) { return !open }) }
+				}) : null),
+			damperOutcome && damperExpanded && typeof StoryFloorDamperPanel === 'function' ? h(StoryFloorDamperPanel, {
+				outcome: damperOutcome,
+				sessionId: mediaSessionId,
+				turn: projectionTurn,
+				fallbackReceipt: row.message?.mvu?.receipt || null,
+				visibility: rowVisibility,
+				streaming: row.streaming === true,
+				hasMvu: Boolean(row.message?.mvu),
+				mvuPending: row.message?.mvu?.pending === true
+			}) : null,
+			props.showPlayProcess && !row.streaming && row.toolCalls?.length > 0 ? h(StoryToolCalls, { calls: row.toolCalls, visibility: rowVisibility }) : null,
+			props.showStreamReasoning && !row.greeting ? (function () {
+				const chatUseHook = (props.host && typeof props.host.useChat === 'function' ? props.host.useChat : null)
+					|| (props.turnFooter && typeof props.turnFooter.useChat === 'function' ? props.turnFooter.useChat : null)
+				const reasoningTurn = row.streaming
+					? (Number.isInteger(row.streamingNativeTurn) && row.streamingNativeTurn > 0 ? row.streamingNativeTurn : row.nativeTurn)
+					: row.nativeTurn
+				if (chatUseHook && Number.isInteger(reasoningTurn) && reasoningTurn > 0) {
+					return h(StoryTurnReasoningLive, {
+						key: 'reasoning-live',
+						useChat: chatUseHook,
+						nativeTurn: reasoningTurn,
+						fallbackText: row.reasoningText || '',
+						fallbackLive: row.reasoningLive === true,
+						streaming: row.streaming === true
+					})
+				}
+				return row.reasoningText
+					? h(StoryTurnReasoningBox, {
+						key: 'reasoning-static',
+						text: row.reasoningText,
+						live: row.streaming === true && row.reasoningLive === true
+					})
+					: null
+			})() : null,
+			h('div', { className: 'dsh-tavern-story-body' }, bodyNode),
 			row.greeting && !props.running && props.helperView?.tavernHelper?.openingHost
 				? h(TavernOpeningNav, { sessionId: props.sessionId, opening: props.helperView.tavernHelper.openingHost,
 					lifecycleRevision: Number(props.helperView.tavernHelper.lifecycleRevision) || 0 }) : null,
@@ -280,62 +500,187 @@ function createTavernStoryTranscriptFeature(deps) {
 			pluginMediaNode,
 			hasTurn ? h(replyActions.IllustrationDraft, { sessionId: mediaSessionId, turn: projectionTurn, items: pluginMedia.items }) : null,
 			hasTurn ? h(replyActions.PluginActions, { sessionId: mediaSessionId, turn: projectionTurn, settled: true, text: row.text }) : null,
+			inlineStatus,
 			h(StoryTranscriptActions, { row, transcript: props.transcript, sessionId: props.sessionId, running: props.running,
-				view: props.helperView, latest: props.latest, latestTurn: props.latestTurn, readAloudState: props.readAloudState, host: props.host, turnFooter: props.turnFooter }))
+				view: props.helperView, latest: props.latest, latestTurn: props.latestTurn, speechVoiced: props.speechVoiced, host: props.host, turnFooter: props.turnFooter }))
 	})
 
-	function StoryToolCalls({ calls }) {
+	function StoryTurnReasoningBox({ text, live }) {
+		const active = live === true
+		const detailsRef = React.useRef(null)
+		const preRef = React.useRef(null)
+		const scrollStateRef = React.useRef({
+			pinned: true,
+			prevActive: active,
+			lastTop: 0,
+			programmaticTop: null
+		})
+		const useEffectHook = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect
+		const syncToBottom = React.useCallback(function () {
+			const pre = preRef.current
+			const details = detailsRef.current
+			if (!pre || !active || !scrollStateRef.current.pinned) return
+			if (details && details.open === false) return
+			const floor = Math.max(0, pre.scrollHeight - pre.clientHeight)
+			if (floor <= 0) {
+				scrollStateRef.current.lastTop = pre.scrollTop
+				return
+			}
+			if (floor - pre.scrollTop > 1) {
+				pre.scrollTop = pre.scrollHeight
+				scrollStateRef.current.programmaticTop = pre.scrollTop
+				scrollStateRef.current.lastTop = pre.scrollTop
+			}
+		}, [active])
+		useEffectHook(function () {
+			const state = scrollStateRef.current
+			if (active && !state.prevActive) state.pinned = true
+			state.prevActive = active
+			if (!text) return
+			syncToBottom()
+		}, [active, text, syncToBottom])
+		const onScroll = React.useCallback(function (event) {
+			const el = event && event.currentTarget
+			if (!el) return
+			const state = scrollStateRef.current
+			const top = el.scrollTop
+			const floor = Math.max(0, el.scrollHeight - el.clientHeight)
+			if (floor - top <= 16) {
+				state.pinned = true
+			} else if (state.programmaticTop !== null && Math.abs(top - state.programmaticTop) <= 1) {
+				// 忽略自身同步滚动触发的异步 scroll 事件，防止新分片继续撑高内容时误判为上翻
+			} else if (top < state.lastTop - 1 || state.programmaticTop === null) {
+				state.pinned = false
+			}
+			state.programmaticTop = null
+			state.lastTop = top
+		}, [])
+		const onToggle = React.useCallback(function (event) {
+			if (event && event.currentTarget && event.currentTarget.open && active && scrollStateRef.current.pinned) {
+				syncToBottom()
+			}
+		}, [active, syncToBottom])
+		if (!text) return null
+		return h('details', {
+			ref: detailsRef,
+			className: 'dsh-tavern-assistant-reasoning dsh-tavern-stream-reasoning',
+			open: active,
+			onToggle: onToggle
+		},
+			h('summary', null, active ? '思考中…' : '思考过程'),
+			h('pre', { ref: preRef, onScroll: onScroll }, text))
+	}
+
+	function StoryTurnReasoningLive({ useChat, nativeTurn, fallbackText, fallbackLive, streaming }) {
+		const turn = useChat(function (snapshot) {
+			return snapshot && snapshot.timeline && snapshot.timeline.turns
+				? snapshot.timeline.turns.get(nativeTurn)
+				: null
+		})
+		const resolved = tavernStoryTranscriptTurnReasoning(turn)
+		const text = resolved.text !== '' ? resolved.text : fallbackText
+		const live = (resolved.text !== '' ? resolved.live : fallbackLive) && streaming === true
+		return h(StoryTurnReasoningBox, { text: text, live: live })
+	}
+
+	function StoryToolCalls({ calls, visibility }) {
 		return h('details', { className: 'dsh-tavern-assistant-reasoning dsh-tavern-story-tools' },
 			h('summary', null, '工作过程 · ' + calls.length + ' 次工具调用'),
-			h('ol', null, calls.map(call => h('li', { key: call.id },
-				h('strong', null, call.name), ' · ', call.status === 'error' ? '失败' : call.status === 'success' ? '完成' : '未返回结果',
-				call.arguments && h('pre', null, '参数\n' + call.arguments),
-				call.result && h('pre', null, '结果\n' + call.result)))))
+			h('ol', null, calls.map(call => {
+				const resultText = call.name === 'tavern_read_variables' && call.result && visibility && typeof maskTavernReadVariablesResultText === 'function'
+					? maskTavernReadVariablesResultText(call.result, visibility)
+					: call.result;
+				return h('li', { key: call.id },
+					h('strong', null, call.name), ' · ', call.status === 'error' ? '失败' : call.status === 'success' ? '完成' : '未返回结果',
+					call.arguments && h('pre', null, '参数\n' + call.arguments),
+					resultText && h('pre', null, '结果\n' + resultText));
+			})))
 	}
 
 	function TavernStoryTranscriptList(props) {
 		const transcript = props.transcript || null
 		const sessionId = String(props.sessionId || '')
+		const showStreamReasoning = typeof useTavernReasoningStreamEnabled === 'function'
+			? useTavernReasoningStreamEnabled()
+			: (typeof tavernReasoningStreamEnabled === 'function' ? tavernReasoningStreamEnabled() : true)
 		// Rows remain story-transcript projections. The live Tavern view only keeps
 		// iframe Helper variables/runtime policy fresh after background settlement.
 		const live = typeof useLiveTavernView === 'function' ? useLiveTavernView(sessionId, 'story-transcript-frame') : null
+		const liveDamper = typeof useTavernStoryLiveDamper === 'function' ? useTavernStoryLiveDamper(sessionId) : null
 		const liveView = live && live.view ? live.view : null
 		const storyBusy = props.running === true || Boolean(liveView && liveView.activity && liveView.activity.busy)
-		const helperView = liveView || props.view
-		const liveRevision = Number(liveView && liveView.tavernHelper && liveView.tavernHelper.stateRevision)
+		const liveRevision = Number(liveView && (liveView.storageRevision ?? (liveView.tavernHelper && liveView.tavernHelper.stateRevision)))
 		const storyRevision = Number(transcript && transcript.revision)
+		const liveViewStale = Boolean(liveView && props.view && Number.isSafeInteger(liveRevision) && Number.isSafeInteger(storyRevision) && liveRevision < storyRevision)
+		const helperView = liveViewStale ? (props.view || liveView) : (liveView || props.view)
 		// A native snapshot older than the story read must not repaint a newly
 		// committed row. Same/newer revisions carry post-settlement EJS parts.
 		const projectionView = liveView && Number.isSafeInteger(liveRevision) && Number.isSafeInteger(storyRevision) && liveRevision >= storyRevision ? liveView : props.view
+		const streamView = liveView && (!props.view || (Number.isSafeInteger(liveRevision) && Number.isSafeInteger(storyRevision) && liveRevision > storyRevision))
+			? liveView : (props.view || liveView)
 		// 正文重生成只读故事视图；UID 用来定位同一故事行，不用于任何失败过滤。
-		const storyStreamUid = props.view && props.view.regenInProgress === true
-			&& typeof props.view.streamingMessageUid === 'string' && props.view.streamingMessageUid !== ''
-			? props.view.streamingMessageUid : null
+		const storyStreamUid = streamView && streamView.regenInProgress === true
+			&& typeof streamView.streamingMessageUid === 'string' && streamView.streamingMessageUid !== ''
+			? streamView.streamingMessageUid : null
 		const regeneratingTarget = storyStreamUid
-		const regeneratingStoryTurn = props.view && props.view.regenInProgress === true
-			&& Number.isInteger(props.view.streamingStoryTurn) && props.view.streamingStoryTurn > 0
-			? props.view.streamingStoryTurn : null
-		const streamRef = React.useRef({ sessionId: sessionId, turn: null, partial: null, revision: null, settledTurn: null, running: props.running === true })
+		const regeneratingStoryTurn = streamView && streamView.regenInProgress === true
+			&& Number.isInteger(streamView.streamingStoryTurn) && streamView.streamingStoryTurn > 0
+			? streamView.streamingStoryTurn : null
+		const regenDamperOutcome = streamView && streamView.regenInProgress === true
+			&& streamView.streamingDamperOutcome && typeof streamView.streamingDamperOutcome === 'object'
+			? streamView.streamingDamperOutcome : null
+		const activeLiveDamper = liveDamper && liveDamper.active === true && liveDamper.outcome && typeof liveDamper.outcome === 'object'
+			? liveDamper : null
+		const draftDamperOutcome = activeLiveDamper && (
+			(regeneratingStoryTurn !== null && Number(activeLiveDamper.storyTurn) === regeneratingStoryTurn)
+			|| activeLiveDamper.regeneration === true
+		) ? activeLiveDamper.outcome : regenDamperOutcome
+		const streamRef = React.useRef({
+			sessionId: sessionId, turn: null, nativeTurn: null, partial: null,
+			stepReasonings: new Map(), activeStep: null, revision: null, settledTurn: null, running: props.running === true
+		})
 		function storyTurn(nativeTurn) {
-			return typeof tavernStoryTurnForDshTurn === 'function' ? tavernStoryTurnForDshTurn(props.view, nativeTurn) : Number(nativeTurn)
+			return typeof tavernStoryTurnForDshTurn === 'function' ? tavernStoryTurnForDshTurn(streamView || props.view, nativeTurn) : Number(nativeTurn)
 		}
-		if (streamRef.current.sessionId !== sessionId) streamRef.current = { sessionId: sessionId, turn: null, partial: null, revision: null, settledTurn: null, running: props.running === true }
+		if (streamRef.current.sessionId !== sessionId) {
+			streamRef.current = {
+				sessionId: sessionId, turn: null, nativeTurn: null, partial: null,
+				stepReasonings: new Map(), activeStep: null, revision: null, settledTurn: null, running: props.running === true
+			}
+		}
 		if (props.running === true && !streamRef.current.running) {
-			streamRef.current = { sessionId: sessionId, turn: null, partial: null, revision: null, settledTurn: null, running: true }
+			streamRef.current = {
+				sessionId: sessionId, turn: null, nativeTurn: null, partial: null,
+				stepReasonings: new Map(), activeStep: null, revision: null, settledTurn: null, running: true
+			}
 		} else if (props.running !== true) streamRef.current.running = false
 		// 重生成已有故事行 UID 时完全不看原生 turn；失败尾则使用预留的故事轮次。
 		// 两条路径都不能把宿主临时 turn（可能远大于剧情轮号）拿来找故事行。
 		const nativeLiveTurn = storyStreamUid === null && regeneratingStoryTurn === null
 			&& props.partial && Number.isInteger(storyTurn(props.partial.turn)) ? storyTurn(props.partial.turn) : null
-		const latestTurnHint = storyStreamUid !== null && Number.isInteger(props.view.latestAssistantTurn)
-			? props.view.latestAssistantTurn : null
+		const latestTurnHint = storyStreamUid !== null && streamView && Number.isInteger(streamView.latestAssistantTurn)
+			? streamView.latestAssistantTurn : null
 		const liveTurn = latestTurnHint !== null ? latestTurnHint : (regeneratingStoryTurn !== null ? regeneratingStoryTurn : nativeLiveTurn)
 		if (liveTurn !== null) {
 			const previous = streamRef.current
 			const text = tavernStoryTranscriptStreamText(props.partial)
+			const reasoningState = tavernStoryTranscriptReasoningState(props.partial && props.partial.blocks, Boolean(props.partial))
+			const partialNativeTurn = props.partial && Number.isInteger(props.partial.turn) && props.partial.turn > 0 ? props.partial.turn : null
+			const partialStep = props.partial && Number.isInteger(props.partial.step) ? props.partial.step : 0
 			if (previous.settledTurn !== liveTurn && previous.turn !== liveTurn) {
-				streamRef.current = { sessionId: sessionId, turn: liveTurn, partial: props.partial, revision: transcript && transcript.revision, settledTurn: null, running: props.running === true }
-			} else if (previous.settledTurn !== liveTurn && text !== '') previous.partial = props.partial
+				const steps = new Map()
+				if (reasoningState.text !== '') steps.set(partialStep, reasoningState)
+				streamRef.current = {
+					sessionId: sessionId, turn: liveTurn, nativeTurn: partialNativeTurn, partial: props.partial,
+					stepReasonings: steps, activeStep: props.partial ? partialStep : null,
+					revision: transcript && transcript.revision, settledTurn: null, running: props.running === true
+				}
+			} else if (previous.settledTurn !== liveTurn) {
+				if (partialNativeTurn !== null) previous.nativeTurn = partialNativeTurn
+				if (props.partial) previous.activeStep = partialStep
+				if (reasoningState.text !== '') previous.stepReasonings.set(partialStep, reasoningState)
+				if (text !== '' || reasoningState.text !== '') previous.partial = props.partial
+			}
 		}
 		const cached = streamRef.current
 		let partial = cached.turn === null ? null : cached.partial
@@ -347,25 +692,46 @@ function createTavernStoryTranscriptFeature(deps) {
 			return Number(entry.message.turn) === Number(cached.turn)
 		})
 		if (partial && finalRow && (cached.revision !== (transcript && transcript.revision) || (!props.running && !props.partial))) {
-			streamRef.current = { sessionId: sessionId, turn: cached.turn, partial: null,
-				revision: transcript && transcript.revision, settledTurn: cached.turn, running: props.running === true }
+			streamRef.current = {
+				sessionId: sessionId, turn: cached.turn, nativeTurn: null, partial: null,
+				stepReasonings: new Map(), activeStep: null,
+				revision: transcript && transcript.revision, settledTurn: cached.turn, running: props.running === true
+			}
 			partial = null
 		}
+		const streamLive = Boolean(props.partial && partial === props.partial)
+		const summarizedReasoning = cached.turn !== null
+			? tavernStoryTranscriptSummarizeSteps(cached.stepReasonings, cached.activeStep, streamLive)
+			: { text: '', live: false }
+		const reasoningOverride = partial ? {
+			text: summarizedReasoning.text,
+			live: summarizedReasoning.live,
+			nativeTurn: cached.nativeTurn
+		} : null
 		const rows = React.useMemo(function () {
+			const drafted = tavernStoryTranscriptRegenerationDraftRows(tavernStoryTranscriptRows(transcript), transcript, regeneratingStoryTurn, draftDamperOutcome)
 			const base = typeof tavernStoryTranscriptPendingRows === 'function'
-				? tavernStoryTranscriptPendingRows(tavernStoryTranscriptRegenerationDraftRows(tavernStoryTranscriptRows(transcript), transcript, regeneratingStoryTurn), props.pendingInputs)
-				: tavernStoryTranscriptRegenerationDraftRows(tavernStoryTranscriptRows(transcript), transcript, regeneratingStoryTurn)
-			const overlaid = tavernStoryTranscriptStreamRows(base, partial, props.runningCalls, cached.turn, allowCommitted && partial === props.partial, storyStreamUid)
+				? tavernStoryTranscriptPendingRows(drafted, props.pendingInputs)
+				: drafted
+			const streamed = tavernStoryTranscriptStreamRows(base, partial, props.runningCalls, cached.turn, allowCommitted && streamLive, storyStreamUid, reasoningOverride)
+			const overlaid = typeof tavernStoryTranscriptDamperRows === 'function'
+				? tavernStoryTranscriptDamperRows(streamed, {
+					regenerating: regeneratingTarget !== null || regeneratingStoryTurn !== null,
+					targetUid: storyStreamUid,
+					storyTurn: regeneratingStoryTurn,
+					regenOutcome: regenDamperOutcome,
+					live: activeLiveDamper
+				})
+				: streamed
 			// 生成期间只处理当前流式目标；除此之外故事存档怎么返回就怎么渲染。
 			if (regeneratingTarget === null) return overlaid
 			const streaming = overlaid.some(function (row) { return row.streaming === true && row.messageUid === regeneratingTarget })
 			return streaming ? overlaid : overlaid.filter(function (row) { return !(row.role === 'assistant' && row.messageUid === regeneratingTarget) })
-		}, [transcript, partial, props.runningCalls, props.pendingInputs, cached.turn, allowCommitted, storyStreamUid, regeneratingTarget, regeneratingStoryTurn])
+		}, [transcript, partial, props.runningCalls, props.pendingInputs, cached.turn, cached.nativeTurn, allowCommitted, streamLive, summarizedReasoning.text, summarizedReasoning.live, storyStreamUid, regeneratingTarget, regeneratingStoryTurn, regenDamperOutcome, activeLiveDamper, draftDamperOutcome])
 		const latest = rows.findLast(row => row.role === 'assistant')
-		const generating = Boolean(props.partial || props.view?.regenInProgress || (props.running && rows.at(-1)?.role === 'user'))
-		const readAloudSignal = generating ? '[true,null,""]' : latest && !latest.streaming
-			? JSON.stringify([false, tavernStoryReadAloudId(latest), latest.text, latest.floorNo]) : null
-		const readAloudState = replyActions ? replyActions.useReadAloudState(sessionId, readAloudSignal) : null
+		const generating = Boolean(props.partial || streamView?.regenInProgress || (props.running && rows.at(-1)?.role === 'user'))
+		const speechVoiced = replyActions ? replyActions.useSpeechVoiced(sessionId) : false
+		const rowWindow = useTavernStoryRowWindow(sessionId)
 		if (!rows.length) {
 			return h('div', {
 				className: 'dsh-tavern-story-transcript-row dsh-tavern-story-empty',
@@ -377,15 +743,35 @@ function createTavernStoryTranscriptFeature(deps) {
 		// A failed round keeps its input as the last row; the reason stands right under it
 		// (its withdraw and regenerate actions are the tail buttons below the transcript).
 		const failure = !generating && rows.at(-1)?.role === 'user' && props.view?.foregroundError?.message
+		// Only floors near the reader stay mounted (createTavernStoryRowWindow); the latest two floors and a streaming one always do.
+		const floorCount = Number(transcript && transcript.floorCount) || 0
+		const windowed = function (row) {
+			return rowWindow.window.supported && row.role === 'assistant' && !row.streaming && row !== latest
+				&& Number(row.floorNo) > 0 && floorCount - Number(row.floorNo) >= 2
+		}
 		return h(React.Fragment, null, rows.map(function (row) {
 			const renderKey = row.requestId ? 'request:' + row.requestId : row.key
-			return h(StoryTranscriptRow, { key: renderKey, row: row, transcript: transcript, markdown: renderText, running: storyBusy,
-				sessionId: sessionId, view: projectionView, helperView: helperView, executeSlash: props.executeSlash, frameOwner: props.frameOwner,
-				showPlayProcess: props.showPlayProcess, latest: row === latest, latestTurn: latest?.legacyTurn, readAloudState,
+			const text = String(row.text || '')
+			if (windowed(row) && (rowWindow.covered || !rowWindow.window.near(row.key))) {
+				return h('article', Object.assign({}, rowAttributes(row, transcript), {
+					key: renderKey, ref: rowWindow.window.refFor(row.key), 'data-story-held': '',
+					className: 'dsh-tavern-story-transcript-row dsh-tavern-assistant dsh-tavern-story-floor dsh-tavern-story-held',
+					style: { height: rowWindow.window.height(row.key, text) + 'px' }
+				}), h('div', { className: 'dsh-tavern-story-floor-head' },
+					h('span', { className: 'dsh-tavern-story-floor-no' }, '第 ' + String(row.floorNo) + ' 楼')))
+			}
+			if (windowed(row)) rowWindow.window.remember(row.key, text)
+			return h(StoryTranscriptRow, { windowRef: windowed(row) ? rowWindow.window.refFor(row.key) : undefined, key: renderKey, row: row, transcript: transcript, markdown: renderText, running: storyBusy,
+				sessionId: sessionId, view: projectionView, storyView: props.view, helperView: helperView, executeSlash: props.executeSlash, frameOwner: props.frameOwner,
+				showPlayProcess: props.showPlayProcess, showStreamReasoning: showStreamReasoning, showDamperStatus: props.showDamperStatus,
+				latest: row === latest, latestTurn: latest?.legacyTurn, speechVoiced,
 				host: row === latest ? props.host : null, turnFooter: props.turnFooter })
 		}), failure ? h('div', { key: 'foreground-error', className: 'dsh-tavern-story-transcript-row dsh-tavern-story-error', role: 'alert' },
 			h('span', null, '\u26a0 ' + failure)) : null)
 	}
+
+	const alwaysShowDamper = function () { return true }
+	const noopProcessSubscribe = function () { return function () {} }
 
 	function useStoryController(store, sessionId, controllerOptions) {
 		const settings = controllerOptions || {}
@@ -393,14 +779,23 @@ function createTavernStoryTranscriptFeature(deps) {
 		const localFrom = requested.sessionId === sessionId ? requested.from : null
 		const explicitFrom = Number.isSafeInteger(settings.historyFrom) && settings.historyFrom >= 0 ? settings.historyFrom : null
 		const historyFrom = explicitFrom === null ? localFrom : explicitFrom
-		const showPlayProcess = React.useSyncExternalStore(store.subscribeProcess, store.showPlayProcess, store.showPlayProcess)
+		const subscribePrefs = store.subscribeProcess || noopProcessSubscribe
+		const readDamperPref = store.showDamperStatus || alwaysShowDamper
+		const showPlayProcess = React.useSyncExternalStore(subscribePrefs, store.showPlayProcess, store.showPlayProcess)
+		const showDamperStatus = React.useSyncExternalStore(subscribePrefs, readDamperPref, readDamperPref)
 		const state = useTavernStoryTranscript(store, sessionId, { historyFrom: historyFrom, enabled: settings.enabled !== false, showPlayProcess })
 		const loadOlder = React.useCallback(function () {
 			const transcript = state.transcript
 			if (!transcript || !Number.isInteger(transcript.from) || transcript.from <= 0) return
 			setRequested({ sessionId: sessionId, from: Math.max(0, transcript.from - 60) })
 		}, [sessionId, state.transcript])
-		return { state: state, historyFrom: historyFrom, loadOlder: loadOlder, showPlayProcess: showPlayProcess && state.sessionId === sessionId }
+		return {
+			state: state,
+			historyFrom: historyFrom,
+			loadOlder: loadOlder,
+			showPlayProcess: showPlayProcess && state.sessionId === sessionId,
+			showDamperStatus: showDamperStatus !== false
+		}
 	}
 
 	function TavernStoryTranscriptContent(props) {
@@ -424,7 +819,7 @@ function createTavernStoryTranscriptFeature(deps) {
 		return h(React.Fragment, null, error, older,
 			h(TavernStoryTranscriptList, { transcript: transcript, partial: props.partial, running: props.running,
 				runningCalls: props.runningCalls, pendingInputs: props.pendingInputs, emptyLabel: props.emptyLabel, sessionId: props.sessionId, view: props.view,
-				executeSlash: props.executeSlash, frameOwner: props.frameOwner, showPlayProcess: props.showPlayProcess, host: props.host, turnFooter: props.turnFooter }))
+				executeSlash: props.executeSlash, frameOwner: props.frameOwner, showPlayProcess: props.showPlayProcess, showDamperStatus: props.showDamperStatus, host: props.host, turnFooter: props.turnFooter }))
 	}
 
 	function defaultStore() {
@@ -444,6 +839,7 @@ function createTavernStoryTranscriptFeature(deps) {
 			historyFrom: controller.historyFrom,
 			loadOlder: controller.loadOlder,
 			showPlayProcess: controller.showPlayProcess,
+			showDamperStatus: props.showDamperStatus !== undefined ? props.showDamperStatus : controller.showDamperStatus,
 			transcript: props.transcript || controller.state.transcript,
 			view: props.view || controller.state.view
 		}))
@@ -463,6 +859,7 @@ function createTavernStoryTranscriptFeature(deps) {
 		const view = props.view || state.view
 		const storyUnavailable = !transcript && state.status === 'empty'
 		const storyActive = enabled && sessionMode !== 'card' && (!view || view.mode !== 'card') && !storyUnavailable
+		const ownsHistory = storyActive && Boolean(transcript)
 		const partial = props.useChat(function (snapshot) { return snapshot && snapshot.legacy ? snapshot.legacy.partial : null })
 		const runningCalls = props.useChat(function (snapshot) { return snapshot && snapshot.legacy && Array.isArray(snapshot.legacy.runningCalls) ? snapshot.legacy.runningCalls : TAVERN_STORY_TRANSCRIPT_EMPTY_CALLS })
 		const running = props.useSession(function (snapshot) { return snapshot && snapshot.running === true })
@@ -472,11 +869,27 @@ function createTavernStoryTranscriptFeature(deps) {
 			transcript, view, externalHistory: storyExternalHistory
 		})
 		React.useEffect(function () {
-			// An ordinary chat with no Tavern story falls back to the native flow;
-			// restore every native row instead of leaving only the latest turn.
-			storyEligibility.set(sessionId, !storyUnavailable && sessionMode !== 'card' && (!view || view.mode !== 'card'))
-			if (storyExternalHistory) storyExternalHistory.refresh(sessionId)
-		}, [sessionId, enabled, sessionMode, view && view.mode, storyUnavailable])
+			// Only prune native rows after their replacement has committed. A
+			// different slot renderer can win, or this flow can unmount.
+			if (!sessionId || !ownsHistory) return undefined
+			mountedStories.add(sessionId)
+			storyExternalHistory?.refresh(sessionId)
+			return function () {
+				mountedStories.delete(sessionId)
+				storyExternalHistory?.refresh(sessionId)
+			}
+		}, [sessionId, ownsHistory])
+		React.useEffect(function () {
+			if (!sessionId || !storyActive || typeof acquireStoryFloorRail !== 'function') return undefined
+			const lease = acquireStoryFloorRail(sessionId)
+			return function () { lease.release() }
+		}, [sessionId, storyActive])
+		React.useEffect(function () {
+			if (!sessionId || !ownsHistory || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return
+			window.dispatchEvent(new CustomEvent('dsh-tavern-story-floors-rendered', {
+				detail: { sessionId: sessionId, floorCount: Number(transcript && transcript.floorCount) || 0 }
+			}))
+		}, [sessionId, ownsHistory, transcript && transcript.revision, transcript && transcript.floorCount, transcript && transcript.from])
 		React.useEffect(function () {
 			if (view && typeof view.mode === 'string' && typeof publishSessionMode === 'function') publishSessionMode(sessionId, view.mode)
 		}, [sessionId, view && view.mode])
@@ -494,6 +907,7 @@ function createTavernStoryTranscriptFeature(deps) {
 			historyFrom: controller.historyFrom,
 			loadOlder: controller.loadOlder,
 			showPlayProcess: controller.showPlayProcess,
+			showDamperStatus: controller.showDamperStatus,
 			transcript: transcript,
 			view: view,
 			partial: partial,
@@ -532,10 +946,7 @@ function createTavernStoryTranscriptFeature(deps) {
 				require: typeof require === 'function' ? require : function () { throw new Error('宿主模块加载器不可用') },
 				uiConversation: uiConversation,
 				isEnabled: function (sessionId) {
-					if (!hostFlowActive || !mode.getSnapshot() || storyEligibility.get(String(sessionId)) === false || (typeof tavernStoryViewActive === 'function' && tavernStoryViewActive(sessionId))) return false
-					const values = typeof tavernSessionModes !== 'undefined' && tavernSessionModes && tavernSessionModes.values ? tavernSessionModes.values : {}
-					const sessionMode = values[String(sessionId)] || ''
-					return !sessionMode || (typeof isPlayMode === 'function' ? isPlayMode(sessionMode) : sessionMode !== 'card')
+					return hostFlowActive && mode.getSnapshot() && mountedStories.has(String(sessionId)) && !(typeof tavernStoryViewActive === 'function' && tavernStoryViewActive(sessionId))
 				}
 			})
 			storyExternalHistory = external
@@ -549,6 +960,85 @@ function createTavernStoryTranscriptFeature(deps) {
 				external.dispose()
 			}
 		}, 'dsh-tavern: story external history')
+		if (ctx.sessions && ctx.sessions.list && typeof ctx.sessions.list.subscribe === 'function') ctx.effect(function () {
+			const list = ctx.sessions.list
+			const runningStates = new Map()
+			const prepareTimers = new Map()
+			let lastCurrentId = ''
+			const setTimer = typeof window !== 'undefined' && window && typeof window.setTimeout === 'function' ? window.setTimeout.bind(window) : setTimeout
+			const clearTimer = typeof window !== 'undefined' && window && typeof window.clearTimeout === 'function' ? window.clearTimeout.bind(window) : clearTimeout
+			function activeSessionId(snapshot) {
+				if (typeof tavernMainSessionId === 'function') return tavernMainSessionId(ctx.sessions)
+				if (snapshot && typeof snapshot.current === 'string' && snapshot.current) return String(snapshot.current)
+				const items = Object.values((snapshot && snapshot.byId) || {})
+				for (let index = 0; index < items.length; index += 1) {
+					const item = items[index]
+					if (item && item.retainedBy && (item.retainedBy.mainView ?? 0) > 0) return String(item.id || '')
+				}
+				return ''
+			}
+			function warmBackgroundSession(id) {
+				const store = options.store || storyTranscriptStore
+				if (!store || typeof store.peek !== 'function' || typeof store.prefetch !== 'function') return
+				if (!store.peek(id) || mountedStories.has(id)) return
+				if (typeof liveTavernView !== 'undefined' && liveTavernView && typeof liveTavernView.evict === 'function') {
+					try { liveTavernView.evict(id) } catch (_) {}
+				}
+				void store.prefetch(id)
+			}
+			function schedulePrepareWarm(id) {
+				if (!id || prepareTimers.has(id)) return
+				const store = options.store || storyTranscriptStore
+				if (!store || typeof store.peek !== 'function' || !store.peek(id)) return
+				prepareTimers.set(id, setTimer(function () {
+					prepareTimers.delete(id)
+					warmBackgroundSession(id)
+				}, 250))
+			}
+			function syncBackgroundSessions() {
+				const snapshot = typeof list.getSnapshot === 'function' ? list.getSnapshot() : null
+				const byId = (snapshot && snapshot.byId) || {}
+				const currentId = activeSessionId(snapshot)
+				const previousCurrentId = lastCurrentId
+				lastCurrentId = currentId
+				if (previousCurrentId && previousCurrentId !== currentId && byId[previousCurrentId] && byId[previousCurrentId].running === true) {
+					schedulePrepareWarm(previousCurrentId)
+				}
+				const seen = new Set()
+				const ids = Object.keys(byId)
+				for (let index = 0; index < ids.length; index += 1) {
+					const id = ids[index]
+					const row = byId[id]
+					const running = Boolean(row && row.running === true)
+					const previous = runningStates.get(id)
+					runningStates.set(id, running)
+					seen.add(id)
+					if (!id || id === currentId || mountedStories.has(id) || previous === undefined) continue
+					if (previous === true && !running) {
+						const pendingTimer = prepareTimers.get(id)
+						if (pendingTimer !== undefined) { clearTimer(pendingTimer); prepareTimers.delete(id) }
+						warmBackgroundSession(id)
+					} else if (previous === false && running) {
+						schedulePrepareWarm(id)
+					}
+				}
+				runningStates.forEach(function (_, id) {
+					if (!seen.has(id)) {
+						runningStates.delete(id)
+						const pendingTimer = prepareTimers.get(id)
+						if (pendingTimer !== undefined) { clearTimer(pendingTimer); prepareTimers.delete(id) }
+					}
+				})
+			}
+			syncBackgroundSessions()
+			const unsubscribe = list.subscribe(syncBackgroundSessions)
+			return function () {
+				if (typeof unsubscribe === 'function') unsubscribe()
+				prepareTimers.forEach(function (timer) { clearTimer(timer) })
+				prepareTimers.clear()
+				runningStates.clear()
+			}
+		}, 'dsh-tavern: warm background story transcripts')
 	}
 
 	return Object.freeze({

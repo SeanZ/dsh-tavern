@@ -33,7 +33,7 @@ test('real DSH: manual story compaction commits the summary with the latest roun
   assert.ok(summarized[0].includes('第3轮行动') && !summarized[0].includes('第4轮行动'), 'the summarizer sees only older rounds')
   const checkpoint = sessionEvents(agent.session).findLast(e => e.type === 'user/message' && e.data?.source?.compactionId)
   const text = checkpoint.data.content.map(block => block.text || '').join('\n')
-  assert.match(text, /【最近 2 轮原文（未压缩，按时间顺序）】/)
+  assert.match(text, /<recent_transcript>\n最近 2 轮原文（未压缩，按时间顺序）\n/)
   assert.match(text, /\[玩家\]\n第4轮行动/)
   assert.deepEqual(foldStoryRounds(sessionEvents(agent.session)).floors, floorsBefore, '压缩只缩短模型上下文，故事楼层保留原始正文与身份')
 })
@@ -74,7 +74,7 @@ test('real DSH: a second story compaction carries the first volume verbatim befo
   assert.deepEqual(foldStoryRounds(sessionEvents(agent.session)).floors, beforeSecond, '第二次真实压缩保留全部楼层')
   assert.match(instructions[1], /旧卷会原样保留[^]*第 4–6 轮剧情摘要/)
   const text = checkpointText()
-  const order = [STORY_SUMMARY_NOTE, '【第 1–3 轮剧情摘要】\n甲在第二轮许下约定。', '【第 4–6 轮剧情摘要】\n乙离开了城镇。', '【最近 1 轮原文'].map(part => text.indexOf(part))
+  const order = [STORY_SUMMARY_NOTE, '【第 1–3 轮剧情摘要】\n甲在第二轮许下约定。', '【第 4–6 轮剧情摘要】\n乙离开了城镇。', '<recent_transcript>\n最近 1 轮原文'].map(part => text.indexOf(part))
   assert.ok(order.every(index => index >= 0), text)
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'note, old volume, new volume, then the kept rounds')
 })
@@ -94,4 +94,26 @@ test('real DSH: the summarizer receives the story prompt, not DSH\'s own directi
   })
   await new BasicCompactionEngine(h.ctx, { auto: false, maxTokens: 4096 }).compactNow(agent, new AbortController().signal)
   assert.deepEqual(instructions, ['剧情压缩提示词'])
+})
+
+const text = value => [{ type: 'text', text: value }]
+const player = (id, value) => ({ id, role: 'user', content: text(value) })
+const story = (id, value) => ({ id, role: 'assistant', content: text(value) })
+
+// A tool result (DSH 0.2 role 'tool') is not story prose, and plugin-injected settings are not a player action.
+test('the kept rounds hold only player actions and story prose, not tool results or derived settings', () => {
+  const messages = [
+    player('u1', '第1轮行动'), story('a1', '第1轮正文'),
+    player('u2', '第2轮行动'),
+    { id: 's2', role: 'user', source: { kind: 'plugin:dsh-tavern' }, content: text('<turn_settings>派生设置：对话气泡开启</turn_settings>') },
+    { id: 't2', role: 'tool', toolCallId: 'call-1', content: text('{"ok":true,"variables":{"hp":3}}') },
+    story('a2', '第2轮正文'),
+    player('u3', '第3轮行动'), story('a3', '第3轮正文'),
+    { id: 'c', role: 'user', content: text('请压缩') }
+  ]
+  const { appendix, kept } = retainRecentStoryRounds({ purpose: 'compaction', messages }, 2)
+  assert.equal(kept, 2)
+  assert.match(appendix, /第2轮正文/)
+  assert.doesNotMatch(appendix, /"ok":true/, 'tool results are not story prose')
+  assert.doesNotMatch(appendix, /派生设置/, 'plugin-injected settings are not a player action')
 })

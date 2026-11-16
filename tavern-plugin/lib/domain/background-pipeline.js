@@ -5,14 +5,14 @@
 // sit in the background session's cached prefix and never change; which may be called this
 // turn is stated in the per-turn task text.
 
-const PLUGIN_HEADER = '## Plugin settlement tasks'
+import { promptSection } from './prompt-section.js'
 
 function pluginText(names, notes) {
   if (!notes.length && !names.available.length && !names.unavailable.length) return ''
-  return [PLUGIN_HEADER,
+  return promptSection('plugin_task', promptSection('plugin_settlement', [
     ...(names.available.length ? ['Plugin tools available this turn: ' + names.available.join('、') + ". This list is current; earlier turns where they were off or failed no longer apply. Call them as needed before submitting this turn's settlement; a plugin tool failure doesn't affect it."] : []),
     ...(names.unavailable.length ? ['Plugin tools unavailable this turn (the player turned off their plugins for this game): ' + names.unavailable.join('、') + ". Don't call them this turn."] : []),
-    ...notes.map(note => note.text)].join('\n\n')
+    ...notes.map(note => note.text)].join('\n\n')))
 }
 
 /**
@@ -96,7 +96,7 @@ export const CHARACTER_DESIGN_ITEM = Object.freeze({
   id: 'tavern.character-design',
   trigger: 'manual',
   requirement: 'Character design task started manually by the user. With empty design notes, pick the important characters needing a new or fuller design from the current story and existing files; with notes, follow them first. ',
-  protocol: "Load character-design with skill, then check this game's worldbook and existing files by name or alias with character_design_read. If the worldbook already defines a character, character_design_reuse completes it with no new file; call character_design_save only for new characters without a definition or to revise an existing design file. Leave variables, postures and story text untouched.",
+  protocol: "Load character-design with skill, then check this game's lorebook and existing files by name or alias with character_design_read. If the lorebook already defines a character, character_design_reuse completes it with no new file; call character_design_save only for new characters without a definition or to revise an existing design file. Leave variables, postures and story text untouched.",
   system() { return this.requirement + this.protocol }
 })
 

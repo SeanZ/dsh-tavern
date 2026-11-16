@@ -223,6 +223,33 @@ test('历史正文走工具调用：开关打开时请求里的旧正文变成�
   assert.equal(on.messages[5].content[0].text, '第二次', '本轮玩家输入保持原样')
 })
 
+test('工具提交正文时，相邻轮次只在上一轮请求末尾追加新消息', async () => {
+  const run = strategies({ nativePlay: {
+    async modeFor() { return 'story' },
+    filterMessages(messages) { return messages },
+    async resolvePreset() { return null },
+    async prepareTurn({ userText }) { return { frame: { userInput: { projectedText: userText } } } },
+    appendFrame({ messages }) { return { messages, receipt: {} } },
+    recordFrame() {},
+    async visibleTools() { return ['submit_story'] },
+    async storyOutputToolCall() { return true }
+  } })
+  const chat = run.chats.get('native')
+  const tools = [{ name: 'submit_story' }]
+  const request = async (turn, messages) => {
+    await run.value.prepareStep({ sessionId: 'native', chat, payload: { turn, step: 1, messages }, decision: { messages } })
+    return run.value.projectRequest({ sessionId: 'native', provider: 'zen', model: 'gemini-4-carbon', system: '提交正文', tools, messages })
+  }
+  const firstMessages = [userMessage('开场'), userMessage('走过石桥')]
+  const first = await request(2, firstMessages)
+  const story = { role: 'assistant', source: { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' }, content: [{ type: 'text', text: '你走到了桥头。' }] }
+  const next = await request(3, [...firstMessages, story, userMessage('举起灯')])
+
+  assert.equal(first.toolChoice, 'any')
+  assert.equal(next.toolChoice, 'any')
+  assert.deepEqual(next.messages.slice(0, first.messages.length), first.messages)
+})
+
 test('Anthropic：去掉本轮输入之前各轮回复的签名思考块，本轮工具循环里的保留', async () => {
   const { projectAnthropicPriorThinking } = await import('../tavern-plugin/lib/domain/foreground-orchestration-strategies.js')
   const replay = blocks => ({ response: { kind: 'pi-ai', version: 2, api: 'anthropic-messages', provider: 'opencode', model: 'claude-opus-5-5' }, blocks })
@@ -271,22 +298,22 @@ test('提交提示词按最终工具列表选择，插件工具关闭后仍留�
 
   const strict = await assemble([{ name: 'submit_story' }])
   assert.deepEqual(strict.tools.map(tool => tool.name), ['submit_story'])
-  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /不要调用任何其他工具/)
-  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /所有面向玩家的输出/)
-  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /写在 content 之外的文字会被丢弃/)
+  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /本轮只开放这一个工具/)
+  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /写给玩家的全部内容/)
+  assert.match(strict.sections.find(section => section.name === 'tavern:story-tool-submission').text, /content 之外的文字会被丢弃/)
 
   const normal = await assemble([{ name: 'submit_story' }, { name: 'plugin_tool' }])
   assert.deepEqual(normal.tools.map(tool => tool.name), ['submit_story', 'plugin_tool'])
   assert.deepEqual(recorded.map(tool => tool.name), ['plugin_tool'])
-  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /可以先使用已开放的其他工具/)
-  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /除已开放的其他工具调用外/)
-  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /每轮只调用一次 submit_story/)
+  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /可以先调用已开放的其他工具/)
+  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /最后再调用 submit_story/)
+  assert.match(normal.sections.find(section => section.name === 'tavern:story-tool-submission').text, /每轮只提交一次/)
 
   chat.disabledForegroundTools = ['plugin_tool']
   const filtered = await assemble([{ name: 'submit_story' }, { name: 'plugin_tool' }])
   assert.deepEqual(filtered.tools.map(tool => tool.name), ['submit_story'])
   assert.deepEqual(recorded.map(tool => tool.name), ['plugin_tool'], '关闭的工具仍要出现在设置目录里')
-  assert.match(filtered.sections.find(section => section.name === 'tavern:story-tool-submission').text, /不要调用任何其他工具/)
+  assert.match(filtered.sections.find(section => section.name === 'tavern:story-tool-submission').text, /本轮只开放这一个工具/)
   chat.disabledForegroundTools = []
 
   // 只开输入回放：submit_story 在工具表里，但不能把本轮也要求成工具输出。
@@ -302,3 +329,45 @@ test('提交提示词按最终工具列表选择，插件工具关闭后仍留�
   assert.deepEqual(none.tools, [])
   assert.ok(none.sections.some(section => section.name === 'tavern:no-foreground-tools'))
 })
+
+test('后台请求投影保留前段与后段预设，不因前台优化而丢弃 front', async () => {
+  const { createForegroundOrchestrationStrategies } = await import('../tavern-plugin/lib/domain/foreground-orchestration-strategies.js')
+  const stagedRequests = new Map([[
+    'bg-session',
+    {
+      turn: 1,
+      step: 1,
+      scope: 'background',
+      snapshot: {
+        front: { entries: [{ role: 'system', content: '预设前段内容' }] },
+        middle: { entries: [{ role: 'system', content: '预设中段内容' }] },
+        back: { entries: [{ role: 'user', content: '预设后段内容' }] }
+      }
+    }
+  ]])
+  const s = createForegroundOrchestrationStrategies({
+    modeFor: async () => 'story',
+    nativePlay: {
+      stagedRequests,
+      async modeFor() { return 'story' },
+      filterMessages: m => m,
+      async resolvePreset() { return null },
+      async prepareTurn() { return { text: '' } },
+      appendFrame: i => ({ messages: i.messages, receipt: {} }),
+      recordFrame() {},
+      async visibleTools() { return [] },
+      modePrompt: () => ''
+    }
+  })
+  const projected = s.projectRequest({
+    sessionId: 'bg-session',
+    system: '后台系统提示',
+    messages: [{ role: 'user', content: [{ type: 'text', text: '后台任务正文' }], source: { kind: 'plugin:dsh-tavern' } }]
+  })
+  assert.ok(projected)
+  assert.equal(projected.system, undefined)
+  assert.equal(projected.messages[0].role, 'system')
+  assert.match(projected.messages[0].content[0].text, /预设前段内容[\s\S]*后台系统提示/)
+  assert.match(projected.messages.at(-1).content[0].text, /后台任务正文[\s\S]*预设后段内容/)
+})
+

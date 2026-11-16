@@ -1,6 +1,6 @@
 import { worldbookTitleHints } from './worldbook-title-hints.js'
 import { classifyWorldbookEntry, hasWorldbookPreprocessingSyntax, isWorldbookRuntimeEntry } from './worldbook-entry-classification.js'
-import { currentVirtualState, virtualEntriesVersion, virtualEntryVersion, virtualDependencyHash, virtualHash, virtualScope, virtualDependencyHasDynamicValue } from './worldbook-virtual-state.js'
+import { currentVirtualState, withdrawnEntryText, virtualEntriesVersion, virtualEntryVersion, virtualDependencyHash, virtualHash, virtualScope, virtualDependencyHasDynamicValue } from './worldbook-virtual-state.js'
 import { promptOrder } from './worldbook-activation.js'
 import { worldbookRandomState, hasWorldbookRandom, entryRandom } from './worldbook-random.js'
 import { fingerprint, isMvuUpdateEntry } from './worldbook-recall.js'
@@ -60,7 +60,8 @@ export function createForegroundWorldbook({ bound, runtime, globalVariables, sca
       const executionKey = String(requestKey ?? `${turn}:${purpose}:${virtualHash(userText || '')}`)
       const preparationScope = String(preparationKey ?? executionKey)
       const scope = virtualScope(chat)
-      const version = virtualHash([executionKey, virtualEntriesVersion(sourceEntries), selectedRefs])
+      const resolvedScanText = await scanText(chat)
+      const version = virtualHash([executionKey, virtualEntriesVersion(sourceEntries), selectedRefs, resolvedScanText])
       const previous = requests.get(scope)
       if (previous?.version === version) return await previous.result
       // Upstream preprocessing is an effectful whole-book batch without a
@@ -97,7 +98,7 @@ export function createForegroundWorldbook({ bound, runtime, globalVariables, sca
         const preparedActivations = [...(worldBook?.templateActivationRequests || []), ...unreadCharacterDesigns(worldBook, chat), ...(worldBook?.pluginActivationRequests || []), ...selectedRefs.map(ref => ({ ref, force: false, sourceRef: '[STRATEGY]' }))]
         const previousState = previous?.requestKey === executionKey ? (await previous.result).virtualState : undefined
         const executionChat = previousState ? { ...chat, worldBookVirtualState: previousState } : chat
-        const projected = await projectMandatoryWorldbook({ worldBook, sourceEntries, chat: executionChat, card, templateRuntime, globals, preparedActivations, randomState, turn, requestKey: executionKey, userText, userTextInHistory, scanText: scanText(chat) })
+        const projected = await projectMandatoryWorldbook({ worldBook, sourceEntries, chat: executionChat, card, templateRuntime, globals, preparedActivations, randomState, turn, requestKey: executionKey, userText, userTextInHistory, scanText: resolvedScanText })
         if (initial.sources.some(entry => entry.decorated)) projected.virtualState.preprocessing = {
           requestKey: preparationScope, sources: initial.sources,
           prepared: initial.snapshot
@@ -182,7 +183,7 @@ async function projectMandatoryWorldbook({ worldBook, sourceEntries, chat, card,
         const text = output?.text || '', renderHash = virtualHash(text)
         const previous = chat.worldBookVirtualState?.scope === virtualState.scope ? chat.worldBookVirtualState.entries?.[entry.ref] : undefined
         const withdrawn = !text && Boolean(previous?.text || previous?.withdrawn)
-        const contextText = text || (withdrawn ? `【世界书条目 ${entry.ref} 已更新为空；先前该条目的内容已撤回，不再作为当前设定。】` : '')
+        const contextText = text || (withdrawn ? withdrawnEntryText(entry.ref) : '')
         virtualState.entries[entry.ref] = { contextText, withdrawn, version: virtualEntryVersion(original.get(entry.ref) || entry), text, renderHash, requestKey,
           dependencyHash: virtualDependencyHash(type, chat, card, globals), projection: renderCache.get(entry.ref) }
         if (contextText && previous?.renderHash !== renderHash) changed.push({ ...output, ref: entry.ref, text: contextText, renderHash })

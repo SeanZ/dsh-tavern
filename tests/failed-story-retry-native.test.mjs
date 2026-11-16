@@ -157,7 +157,7 @@ test('真实 DSH 补写也失败时，同一玩家输入可以再次重试', nat
   const { host, session, chatId, greeting, text, input, source, requests, releaseDiscard, succeed, retry } = await failedOpening(t)
   const originalTurn = sessionEvents(session).findLast(event => event.type === 'turn/end').data.turn
   releaseDiscard.resolve()
-  await assert.rejects(retry(), /这次重新生成没有完成/)
+  await assert.rejects(retry(), /合成模型暂不可用/)
   assert.ok(requests.length > 0)
   const retryFailure = sessionEvents(session).findLast(event => event.type === 'turn/end').data
   assert.equal(retryFailure.reason.kind, 'error')

@@ -2,9 +2,15 @@ import { DEFAULT_BIND_HOST, resolveBindHost, serviceOrigin, isLoopbackHost } fro
 import { inspectRecordedProcess as inspectProcess, processStartToken } from './service-process-identity.mjs'
 import { startupTimeoutMs, waitForServiceStartup, stopStartupChild } from './service-startup.mjs'
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
-import { resolveDesktopAsarCommand, resolveDshCliEntry } from './plugin-dependencies.mjs'
+import { isAsarPath } from './desktop-host-paths.mjs'
+import { discoverVertexProject, patchPiAiVertexStream, repairVertexRouteBaseUrl, resolveVertexProject, vertexApiKeyFrom } from './pi-ai-vertex-stream-patch.mjs'
+import { patchPiAiNonStream } from './pi-ai-nonstream-patch.mjs'
+import { patchChatAnswerStep } from './chat-answer-step-patch.mjs'
+import { patchChatReasoningFold } from './chat-reasoning-fold-patch.mjs'
+import { patchChatToolReplyStream } from './chat-tool-reply-stream-patch.mjs'
+import { resolveDesktopAsarCommand, resolveDshCliEntry, resolveHostDependencies } from './plugin-dependencies.mjs'
 import path from 'node:path'
 import { migrateSessionPrefixEvents } from './session-prefix-migration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
@@ -300,6 +306,111 @@ export async function stopService() {
   throw new Error(`服务未能在 10 秒内停止；没有强制结束进程，请手动检查 PID ${state.record.pid}。`)
 }
 
+/**
+ * The active profile's patch list, which is where a configured Vertex route spells out
+ * `.../projects/<project>/locations/<location>`. Kept as text: only the project is read
+ * from it, and a profile that cannot be read simply leaves the catalog on its template.
+ * @returns the profile text, or an empty string when it is unreadable.
+ */
+function readProfileText() {
+  try {
+    return readFileSync(path.join(PROFILE_DIR, 'cordis.patch.yml'), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/** The stored Vertex key, when the credentials service has one. */
+function readCredentialsText() {
+  try {
+    return readFileSync(path.join(DSH_ROOT, '.credentials.yaml'), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Keep the profile's own Vertex route on the global endpoint. A route-level baseURL wins
+ * over the catalog, so a regional one keeps answering 404 even after the catalog is fixed.
+ * @param profileText - the profile patch list as currently written.
+ * @param project - the project that endpoint belongs to.
+ */
+function ensureVertexRoute(profileText, project) {
+  const repaired = repairVertexRouteBaseUrl({ profileText, project })
+  if (repaired.status === 'unsafe') {
+    console.log('profile 里 google-vertex 的 baseURL 是多行标量，未自动改写；请确认它是 https://aiplatform.googleapis.com/v1/projects/<project>/locations/global。')
+    return
+  }
+  if (repaired.status !== 'repaired') return
+  const file = path.join(PROFILE_DIR, 'cordis.patch.yml')
+  try {
+    writeFileSync(`${file}.bak-vertex-global-${Date.now()}`, profileText)
+    writeFileSync(file, repaired.text)
+    console.log('已把 profile 里 google-vertex 的 baseURL 指向 locations/global。')
+  } catch (error) {
+    console.log(`改写 profile 的 google-vertex baseURL 失败：${error?.message ?? error}`)
+  }
+}
+
+/**
+ * Re-apply the runtime patches this install expects but cannot prove are current.
+ * A runtime tree installed before a patch existed keeps its old bytes: the install path
+ * only writes them on the install that introduced them. Re-applying on every start makes
+ * a running service converge on the same code the repository ships, without touching a
+ * read-only asar host (its page-side equivalents own that case).
+ * @param dsh - the resolved DSH command for this host.
+ * @param host - the runtime host kind.
+ */
+async function ensureRuntimePatches(dsh, host) {
+  try {
+    const cliEntry = resolveDshCliEntry({ dsh })
+    if (cliEntry && !isAsarPath(cliEntry)) {
+      const sdkDirectory = path.resolve(path.dirname(realpathSync(cliEntry)), '..', '..', '..', '@earendil-works', 'pi-ai')
+      const adapterDirectory = path.resolve(path.dirname(sdkDirectory), '..', 'dsh-llm-pi-ai')
+      if (existsSync(path.join(sdkDirectory, 'package.json'))) {
+        // Vertex's global endpoint is a resource path, so the model catalog can only name
+        // `locations/global` once it knows the project. The profile's own Vertex route names
+        // it; without one the catalog keeps pi-ai's `{location}` template and Express mode
+        // resolves a region from the API key, which 404s every global-only Gemini.
+        const profileText = readProfileText()
+        let vertexProject = resolveVertexProject({ profileText })
+        if (vertexProject === null) {
+          // A key-only install names no project anywhere; Vertex's own 404 does, and the
+          // catalog needs it to spell out the global endpoint Gemini 3/4 live at.
+          const apiKey = vertexApiKeyFrom({ credentialsText: readCredentialsText() })
+          vertexProject = await discoverVertexProject({ apiKey })
+          if (vertexProject !== null) console.log(`已从 Vertex API key 解析出 project ${vertexProject}。`)
+        }
+        if (vertexProject !== null) ensureVertexRoute(profileText, vertexProject)
+        if (patchPiAiVertexStream({ sdkDirectory, project: vertexProject })) {
+          console.log(vertexProject === null
+            ? '已为 pi-ai Vertex 渠道启用工具调用流式参数与最新 Gemini 模型目录。'
+            : `已为 pi-ai Vertex 渠道启用工具调用流式参数与最新 Gemini 模型目录（global 端点，project ${vertexProject}）。`)
+        }
+        if (vertexProject === null) {
+          console.log('pi-ai Vertex 目录未写入 global 端点：配置里没有可读的 project。Gemini 3/4 只在 locations/global 上线，请把 google-vertex 的 baseURL 设为 https://aiplatform.googleapis.com/v1/projects/<project>/locations/global，或设置 GOOGLE_CLOUD_PROJECT。')
+        }
+        // The adapter must pass the caller's toolChoice through: without it a forge-style
+        // request reaches Vertex as `auto`, and Vertex then returns one whole argument
+        // object instead of a streamed argument list.
+        if (existsSync(path.join(adapterDirectory, 'package.json')) && patchPiAiNonStream({ adapterDirectory, sdkDirectory })) {
+          console.log('已为 pi-ai 适配器打开流式开关与 toolChoice 透传。')
+        }
+      }
+    }
+  } catch {}
+  try {
+    const [chat] = resolveHostDependencies({ dsh, host, requiredExports: { '@deepseek-ai/dsh-client-ui-chat': null } })
+    if (!chat || isAsarPath(chat.directory)) return
+    const applied = [
+      ['对话界面', patchChatAnswerStep(chat.directory)],
+      ['思维链流式', patchChatReasoningFold(chat.directory)],
+      ['工具调用流式预览', patchChatToolReplyStream(chat.directory)],
+    ].filter(([, changed]) => changed === true).map(([label]) => label)
+    if (applied.length > 0) console.log(`已补齐 DSH 对话界面补丁：${applied.join('、')}。`)
+  } catch {}
+}
+
 export function serviceDshArgs(bindHost, port) {
   const args = ['--profile', PROFILE, '--host', bindHost, '--port', String(port), '--no-open']
   if (!isLoopbackHost(bindHost)) {
@@ -357,6 +468,7 @@ export async function startService() {
   }
   const runtimeHost = RUNTIME_HOST
   const dsh = findDshCommand(runtimeHost)
+  await ensureRuntimePatches(dsh, runtimeHost)
   const invocation = resolveDshInvocation(
     dsh,
     serviceDshArgs(state.bindHost, state.port),

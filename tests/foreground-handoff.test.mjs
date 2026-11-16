@@ -114,3 +114,24 @@ test('旧 runtime ready 不能放行尚未持久化完成的开场', async () =>
   await assert.rejects(handoff.prepare({ sessionId: 's' }), /开场初始化尚未完成/)
   assert.equal(prepared, 0)
 })
+
+test('正文准备冲突在 DSH 转为 UNKNOWN 前保存原始错误码和请求号', async () => {
+  const conflict = { reason: 'header-changed', revision: 7, currentRevision: 8, field: 'timeline' }
+  const error = Object.assign(new Error('存档在准备正文期间发生冲突，本轮已停止'), { code: 'TAVERN_PREPARE_CONFLICT', conflict })
+  const input = { sessionId: 's', turn: 4, requestId: 'req-4', userText: '继续' }
+  const logs = []
+  let failure
+  const handoff = createForegroundHandoff({
+    store: { async chatForSession() { return { id: 'chat' } } },
+    tasks: { activity() { return {} } }, async queueBackground() {},
+    logger: { warn: message => logs.push(message) },
+    turns: {
+      async finalize() {}, async discard() {}, async prepare() { throw error },
+      async recordFailure(next) { failure = next }
+    }
+  })
+  await assert.rejects(handoff.prepare(input), caught => caught === error)
+  assert.deepEqual(failure, { sessionId: 's', turn: 4, requestId: 'req-4', code: error.code,
+    message: '这一轮没有生成正文：' + error.message })
+  assert.deepEqual(logs, ['dsh-tavern: 正文准备冲突 ' + JSON.stringify({ sessionId: 's', turn: 4, code: error.code, ...conflict })])
+})

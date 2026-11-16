@@ -6,6 +6,29 @@ const escape=value=>value.replace(/~/g,'~0').replace(/\//g,'~1')
 const visible=key=>!key.startsWith('$')&&!key.startsWith('__')
 const digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
 
+// The game's latest saved stat_data (the newest floor that has one, else the chat's) and the turn it belongs to.
+export function currentVariableSnapshot(chat){
+  for(const message of [...(chat?.messages||[])].reverse()){
+    if(message.role==='tavern-helper')continue
+    const value=message.variables?.[message.swipeId||0]
+    if(object(value?.stat_data))return {snapshot:value.stat_data,turn:message.turn}
+  }
+  return {snapshot:lastTavernHelperVariables([], chat?.variables)?.stat_data,turn:undefined}
+}
+
+// The newest settled stat_data among the replies before message index `before` and the turn it belongs to: a reply whose
+// settlement is still pending or did not save still holds the variables of an earlier turn, so it is skipped. A tool whose
+// records follow from the variables counts its records of later turns on top (tool-settlement-context.js).
+export function settledVariables(chat,before=chat?.messages?.length??0){
+  const messages=chat?.messages||[]
+  for(let index=Math.min(before,messages.length)-1;index>=0;index--){
+    const message=messages[index],value=message?.variables?.[message.swipeId||0]
+    if(message?.role!=='assistant'||!object(value?.stat_data)||message.mvu?.pending===true||['error','partial','stale','pending'].includes(message.mvu?.receipt?.status))continue
+    return {snapshot:value.stat_data,turn:Number(message.turn)||0}
+  }
+  return {snapshot:lastTavernHelperVariables([], chat?.variables)?.stat_data,turn:0}
+}
+
 export function readVariables(chat,args={}) {
   if(!chat||!['story','script'].includes(chat.mode||'story'))throw Error('变量查询仅用于当前游玩会话')
   const action=args.action||'list',path=args.path||'',query=args.query||''
@@ -14,13 +37,7 @@ export function readVariables(chat,args={}) {
   if(typeof query!=='string'||query.length>100||action==='search'&&!query.trim())throw Error('search 需要 1–100 字符的 query')
   const limit=args.limit===undefined?20:args.limit
   if(!Number.isInteger(limit)||limit<1||limit>50)throw Error('limit 范围为 1–50')
-  let snapshot,turn
-  for(const message of [...(chat.messages||[])].reverse()){
-    if(message.role==='tavern-helper')continue
-    const value=message.variables?.[message.swipeId||0]
-    if(object(value?.stat_data)){snapshot=value.stat_data;turn=message.turn;break}
-  }
-  snapshot ??= lastTavernHelperVariables([], chat.variables)?.stat_data
+  const {snapshot,turn}=currentVariableSnapshot(chat)
   if(!snapshot)return {available:false,message:'当前会话尚无已保存的变量快照',settlement:chat.settleStatus||'idle'}
   const revision=digest([chat.id,chat._storageRevision,snapshot])
   const identity=digest([revision,action,path,query])

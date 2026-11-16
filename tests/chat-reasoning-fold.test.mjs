@@ -1,0 +1,278 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import {
+  CHAT_REASONING_STREAM_MARKER,
+  patchReasoningChatSource
+} from '../tavern-plugin/lib/domain/chat-reasoning-fold.js'
+import { chatAnswerBootScript } from '../tavern-plugin/lib/domain/chat-answer-boot-patch.js'
+
+// The shipped shape: ReasoningRow is memoized and reads its disclosure state from the
+// props the host injects. The fixture keeps that call path so the patch is exercised
+// exactly where the page runs it.
+const SHIPPED = `const react = { memo: (fn) => fn, useSyncExternalStore: (subscribe, snapshot) => snapshot() };
+const ReasoningRow = (0, react.memo)(function ReasoningRow({ text: rawText, running, textInteractionSource = false, usePresentation, useDisclosure, renderSlot, t }) {
+	const { expanded, toggle } = useDisclosure();
+	return { expanded: expanded, toggle: toggle };
+});
+`
+
+function load(source) {
+  return new Function(source + '\nreturn ReasoningRow;')()
+}
+
+test('思考行跟随流式展开：生成中铺开，写完自动收起', () => {
+  const result = patchReasoningChatSource(SHIPPED)
+  assert.equal(result.status, 'applied')
+  assert.ok(result.text.includes(CHAT_REASONING_STREAM_MARKER))
+  const ReasoningRow = load(result.text)
+  const useDisclosure = () => ({ expanded: false, toggle: () => {} })
+  // No stored preference: the shipped default is on.
+  globalThis.localStorage = { getItem: () => null }
+  assert.equal(ReasoningRow({ running: true, useDisclosure }).expanded, true)
+  assert.equal(ReasoningRow({ running: false, useDisclosure }).expanded, false)
+})
+
+test('关掉开关后完全交还宿主：思考行依旧默认收起', () => {
+  const ReasoningRow = load(patchReasoningChatSource(SHIPPED).text)
+  const useDisclosure = () => ({ expanded: false, toggle: () => {} })
+  globalThis.localStorage = { getItem: key => (key === 'dsh-tavern.reasoningStreamOnly' ? '0' : null) }
+  assert.equal(ReasoningRow({ running: true, useDisclosure }).expanded, false)
+  delete globalThis.localStorage
+})
+
+test('读者自己展开的选择在流式结束后仍然有效', () => {
+  const ReasoningRow = load(patchReasoningChatSource(SHIPPED).text)
+  globalThis.localStorage = { getItem: () => '1' }
+  assert.equal(ReasoningRow({ running: false, useDisclosure: () => ({ expanded: true, toggle: () => {} }) }).expanded, true)
+  delete globalThis.localStorage
+})
+
+test('幂等，且形状不符时保持原样', () => {
+  const once = patchReasoningChatSource(SHIPPED)
+  assert.equal(patchReasoningChatSource(once.text).status, 'patched')
+  assert.equal(patchReasoningChatSource('function Latest(turn) { return turn.answer }').status, 'unmatched')
+})
+
+test('也认没有 memo 包裹的 ReasoningRow', () => {
+  const bare = `const react = { memo: (fn) => fn, useSyncExternalStore: (subscribe, snapshot) => snapshot() };\n\t\tfunction ReasoningRow({ running, useDisclosure }) {\n\t\t\tconst { expanded, toggle } = useDisclosure();\n\t\t\treturn expanded;\n\t\t}\n`
+  const result = patchReasoningChatSource(bare)
+  assert.equal(result.status, 'applied')
+  const rebuilt = new Function(result.text + '\nreturn ReasoningRow;')()
+  globalThis.localStorage = { getItem: () => '1' }
+  assert.equal(rebuilt({ running: true, useDisclosure: () => ({ expanded: false, toggle: () => {} }) }), true)
+  delete globalThis.localStorage
+})
+
+test('压缩宿主（0.2.2-rc.2+）：无空白的 useDisclosure 声明切在语句边界，补丁后语法合法', () => {
+  // rc.3 真实形状：整段无空白、反引号字符串，声明是 const{expanded,toggle}=useDisclosure();
+  // 前后都有其他语句，切点落错会当场造成 SyntaxError。
+  const minified = 'var css_default={"root":"x"};const ReasoningRow=(0,react.memo)(function ReasoningRow({text:rawText,running,textInteractionSource=false,usePresentation,useDisclosure,renderSlot,t}){const{expanded,toggle}=useDisclosure();const{text,hidden}=(0,react.useMemo)(()=>({text:rawText,hidden:false}),[rawText]);return{expanded,toggle}});const next=1;'
+  const result = patchReasoningChatSource(minified)
+  assert.equal(result.status, 'applied')
+  const react = { memo: fn => fn, useSyncExternalStore: (subscribe, snapshot) => snapshot(), useMemo: fn => fn() }
+  const ReasoningRow = new Function('react', result.text + '\nreturn ReasoningRow;')(react)
+  const useDisclosure = () => ({ expanded: false, toggle: () => {} })
+  globalThis.localStorage = { getItem: () => null }
+  assert.equal(ReasoningRow({ running: true, useDisclosure }).expanded, true)
+  assert.equal(ReasoningRow({ running: false, useDisclosure }).expanded, false)
+  delete globalThis.localStorage
+  assert.equal(patchReasoningChatSource(result.text).status, 'patched')
+})
+
+test('非字符串输入与缺少 running prop 的宿主保持原样', () => {
+  assert.equal(patchReasoningChatSource(null).status, 'unmatched')
+  assert.equal(patchReasoningChatSource(undefined).status, 'unmatched')
+  // 重写引用 running prop：宿主改名时宁可跳过，不得在渲染时 ReferenceError
+  const noRunning = 'const ReasoningRow=(0,react.memo)(function ReasoningRow({useDisclosure}){const{expanded,toggle}=useDisclosure();return expanded});'
+  assert.equal(patchReasoningChatSource(noRunning).status, 'unmatched')
+  assert.equal(patchReasoningChatSource(noRunning).text, noRunning)
+})
+
+test('running 被别名解构时不打补丁；同名别名与默认值仍是 running 绑定', () => {
+  // running: isRunning 绑定的是 isRunning，注入代码引用 running 会 ReferenceError
+  const aliased = 'const ReasoningRow=(0,react.memo)(function ReasoningRow({text:rawText,running:isRunning,useDisclosure}){const{expanded,toggle}=useDisclosure();return expanded});'
+  const result = patchReasoningChatSource(aliased)
+  assert.equal(result.status, 'unmatched')
+  assert.equal(result.text, aliased)
+  const aliasedSpaced = aliased.replace('running:isRunning', 'running : isRunning')
+  assert.equal(patchReasoningChatSource(aliasedSpaced).status, 'unmatched')
+  const useDisclosure = () => ({ expanded: false, toggle: () => {} })
+  for (const params of ['running:running$1', 'running:$running', 'running:isRunning, label="a, running, b"', 'running:isRunning/* running */']) {
+    const source = SHIPPED.replace('text: rawText, running', params)
+    const skipped = patchReasoningChatSource(source)
+    assert.equal(load(skipped.text)({ running: true, useDisclosure }).expanded, false, params)
+    assert.deepEqual(skipped, { status: 'unmatched', text: source })
+  }
+  for (const params of ['running:running', 'running=false', 'label="a, b", running']) {
+    const patched = patchReasoningChatSource(SHIPPED.replace('text: rawText, running', params))
+    assert.equal(patched.status, 'applied', params)
+    assert.equal(load(patched.text)({ running: true, useDisclosure }).expanded, true, params)
+  }
+})
+
+test('页面补丁脚本同时带上两条改写规则', () => {
+  const script = chatAnswerBootScript()
+  assert.ok(script.includes('dsh-tavern:answer-step'))
+  assert.ok(script.includes('dsh-tavern:reasoning-stream'))
+})
+
+// 整轮思考汇总：玩法回合的思考落在工具步上，收尾行要能把它们全取出来画一次。
+function extractFunction(source, name) {
+  const start = source.indexOf('function ' + name + '(')
+  if (start < 0) throw new Error('missing ' + name)
+  let depth = 0
+  for (let index = source.indexOf('{', start); index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1
+    else if (source[index] === '}') { depth -= 1; if (depth === 0) return source.slice(start, index + 1) }
+  }
+  throw new Error('unbalanced ' + name)
+}
+
+test('按整轮收集思考块：工具步与收尾步的 reasoning 都算', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../tavern-plugin/src/client/features/assistant-renderer.js', import.meta.url), 'utf8')
+  const collect = new Function(extractFunction(source, 'tavernTurnReasoningBlocks') + '\nreturn tavernTurnReasoningBlocks')()
+  const node = blocks => ({ data: { get: key => (key === 'assistant-step' ? { blocks } : undefined) } })
+  const turn = { steps: [
+    node([{ kind: 'reasoning', text: '先想一层' }, { kind: 'tool-call' }]),
+    node([{ kind: 'reasoning', text: '  ' }, { kind: 'tool-call' }]),
+    node([{ kind: 'reasoning', text: '再想一层' }, { kind: 'text', text: '正文' }])
+  ] }
+  assert.deepEqual(collect(turn).map(block => block.text), ['先想一层', '再想一层'])
+  assert.deepEqual(collect({ steps: [node([{ kind: 'text', text: '正文' }])] }), [])
+  assert.deepEqual(collect(undefined), [])
+})
+
+
+test('原生对话流在出正文前借宿步骤槽流式展开思维链，出正文与跨多步后由回复座位统一收拢展示', async () => {
+  const { readFileSync } = await import('node:fs')
+  const vm = await import('node:vm')
+  const source = readFileSync(new URL('../tavern-plugin/src/client/features/assistant-renderer.js', import.meta.url), 'utf8')
+  const start = source.indexOf('function tavernAssistantStepNode(')
+  const end = source.indexOf('// Third-party plugins:', start)
+  assert.ok(start > 0 && end > start, '应能定位流式思维链辅助函数区间')
+  const snippet = source.slice(start, end)
+  let streamEnabled = true
+  const FakeReact = {
+    createElement(type, props, ...children) {
+      const nextProps = children.length ? Object.assign({}, props, { children }) : Object.assign({}, props)
+      if (typeof type === 'function') return type(nextProps)
+      return { type, props: props || {}, children }
+    }
+  }
+  const TavernReasoningSeat = props => ({ seat: 'host', props })
+  const context = vm.createContext({
+    React: FakeReact,
+    TavernReasoningSeat,
+    useTavernReasoningStreamEnabled: () => streamEnabled,
+    tavernReasoningStreamEnabled: () => streamEnabled
+  })
+  vm.runInContext(snippet, context)
+  const { TavernAssistantReasoningSlot, TavernTurnReasoning, tavernTurnReasoningIsLive } = context
+
+  const step1Running = {
+    status: 'running',
+    finalNode: { seq: 1 },
+    blocks: [{ kind: 'reasoning', text: '第1步思考中' }]
+  }
+  const turnOnlyStep1 = {
+    status: 'open',
+    steps: [{ data: { get: k => (k === 'assistant-step' ? step1Running : null) } }]
+  }
+  const nodeStep1 = { data: step1Running, location: { kind: 'step', turn: turnOnlyStep1 } }
+  const firstRender = TavernAssistantReasoningSlot({ node: nodeStep1 })
+  assert.equal(firstRender.type, 'details')
+  assert.equal(firstRender.props.className, 'dsh-tavern-assistant-reasoning dsh-tavern-stream-reasoning')
+  assert.equal(firstRender.props.open, true, '首步仅有思考尚未出正文时应保持流式展开')
+  assert.equal(firstRender.children[0].children[0], '思考中…')
+
+  const step1CallingTool = {
+    status: 'settled',
+    finalNode: { seq: 1 },
+    blocks: [{ kind: 'reasoning', text: '第1步思考完' }, { kind: 'tool-call', name: 'read' }]
+  }
+  const turnStep1Tool = { status: 'open', steps: [{ data: step1CallingTool }] }
+  const toolPauseRender = TavernAssistantReasoningSlot({ node: { data: step1CallingTool, location: { kind: 'step', turn: turnStep1Tool } } })
+  assert.equal(toolPauseRender.type, 'details')
+  assert.equal(toolPauseRender.props.open, false, '思考结束转入工具调用时应立即收起并保留在原处不闪烁')
+  assert.equal(toolPauseRender.children[0].children[0], '思考过程')
+
+  const step2Thinking = {
+    status: 'running',
+    finalNode: { seq: 2 },
+    blocks: [{ kind: 'reasoning', text: '第2步继续分析' }]
+  }
+  const turnTwoSteps = { status: 'open', steps: [{ data: step1CallingTool }, { data: step2Thinking }] }
+  assert.equal(TavernAssistantReasoningSlot({ node: { data: step1CallingTool, location: { kind: 'step', turn: turnTwoSteps } } }), null, '旧步骤应让位给最新的思考步，避免重复渲染')
+  const secondStepRender = TavernAssistantReasoningSlot({ node: { data: step2Thinking, location: { kind: 'step', turn: turnTwoSteps } } })
+  assert.equal(secondStepRender.props.open, true)
+  assert.ok(secondStepRender.children[1].children[0].includes('第1步思考完') && secondStepRender.children[1].children[0].includes('第2步继续分析'))
+
+  const step2WithReply = {
+    status: 'running',
+    finalNode: { seq: 2 },
+    blocks: [{ kind: 'reasoning', text: '第2步继续分析' }, { kind: 'text', text: '正文开始' }]
+  }
+  const turnWithReply = { status: 'open', steps: [{ data: step1CallingTool }, { data: step2WithReply }] }
+  assert.equal(TavernAssistantReasoningSlot({ node: { data: step2WithReply, location: { kind: 'step', turn: turnWithReply } } }), null, '已有正文后步骤槽应彻底让位给回复座位')
+  const replySeatReasoning = TavernTurnReasoning({ turn: turnWithReply, fallbackBlocks: step2WithReply.blocks, streaming: true })
+  assert.equal(replySeatReasoning.props.open, false, '正文开始输出后回复座位上的思维链应立即收起')
+  assert.equal(tavernTurnReasoningIsLive(turnWithReply, step2WithReply.blocks, true), false)
+
+  streamEnabled = false
+  const hostSeat = TavernAssistantReasoningSlot({ node: nodeStep1 })
+  assert.deepEqual(hostSeat, { seat: 'host', props: { blocks: step1Running.blocks, streaming: true } })
+})
+
+test('原生视图流式思维链自动跟随底部并允许上翻暂停', async t => {
+  const { readFileSync } = await import('node:fs')
+  const vm = await import('node:vm')
+  const React = (await import('react')).default
+  const { act } = await import('react')
+  const { createRoot } = await import('react-dom/client')
+  const { JSDOM } = await import('jsdom')
+  const dom = new JSDOM('<main></main>', { pretendToBeVisual: true })
+  const previous = { window: globalThis.window, document: globalThis.document, act: globalThis.IS_REACT_ACT_ENVIRONMENT }
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })
+  const root = createRoot(dom.window.document.querySelector('main'))
+  t.after(async () => {
+    await act(async () => root.unmount())
+    Object.assign(globalThis, { window: previous.window, document: previous.document, IS_REACT_ACT_ENVIRONMENT: previous.act })
+    dom.window.close()
+  })
+
+  const source = readFileSync(new URL('../tavern-plugin/src/client/features/assistant-renderer.js', import.meta.url), 'utf8')
+  const start = source.indexOf('function tavernAssistantStepNode(')
+  const end = source.indexOf('// Third-party plugins:', start)
+  const context = vm.createContext({
+    React,
+    useTavernReasoningStreamEnabled: () => true,
+    tavernReasoningStreamEnabled: () => true
+  })
+  vm.runInContext(source.slice(start, end), context)
+  const { TavernTurnReasoning } = context
+
+  const makeTurn = text => ({ status: 'open', steps: [{ data: { status: 'running', blocks: [{ kind: 'reasoning', text }] } }] })
+  await act(async () => root.render(React.createElement(TavernTurnReasoning, { turn: makeTurn('第一步思考'), streaming: true })))
+  const pre = dom.window.document.querySelector('details.dsh-tavern-stream-reasoning pre')
+  assert.ok(pre)
+  let scrollHeight = 500
+  const clientHeight = 180
+  let scrollTop = 0
+  Object.defineProperty(pre, 'clientHeight', { configurable: true, get: () => clientHeight })
+  Object.defineProperty(pre, 'scrollHeight', { configurable: true, get: () => scrollHeight })
+  Object.defineProperty(pre, 'scrollTop', {
+    configurable: true,
+    get: () => scrollTop,
+    set(value) { scrollTop = Math.max(0, Math.min(Math.max(0, scrollHeight - clientHeight), Number(value) || 0)) }
+  })
+
+  await act(async () => root.render(React.createElement(TavernTurnReasoning, { turn: makeTurn('第一步思考\n增量内容'), streaming: true })))
+  assert.equal(scrollTop, 320, 'TavernTurnReasoning 流式增长时应自动滚到底部')
+
+  scrollTop = 40
+  await act(async () => { pre.dispatchEvent(new dom.window.Event('scroll')) })
+  scrollHeight = 640
+  await act(async () => root.render(React.createElement(TavernTurnReasoning, { turn: makeTurn('第一步思考\n增量内容\n更多内容'), streaming: true })))
+  assert.equal(scrollTop, 40, '手动上翻后应保持在阅读位置')
+})

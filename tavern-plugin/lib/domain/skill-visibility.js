@@ -60,7 +60,7 @@ export function appendWritingSkillState(messages, mode, { session, disabledWriti
   const text = promptSection('writing_skills', [
     PROMPT_PROSE.p001,
     PROMPT_PROSE.p002,
-    disabled.length ? PROMPT_PROSE.p003 + disabled.map(name => '`' + name + '`').join('、') + '。' : PROMPT_PROSE.p004,
+    disabled.length ? PROMPT_PROSE.p003 + disabled.map(name => '`' + name + '`').join('、') + '.' : PROMPT_PROSE.p004,
     ...(disabled.length ? [PROMPT_PROSE.p005] : []),
     PROMPT_PROSE.p006
   ].join('\n'))

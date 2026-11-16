@@ -22,6 +22,7 @@ export async function assetVoiceBinding(tts, declaration, options) {
 export async function figureRefTtsVoice(library, tts, ref, options) {
   if (!ref) return {browser:''}
   const pack = await library.getPackSnapshot({packId:ref.packId}), figure = pack?.figures[ref.figureId]
+  if (figure?.voice?.source === null) return null
   const voice = figure?.voice && pack.manifest.voiceLibrary?.voices[figure.voice.voice]
   if (!voice) throw Object.assign(new Error('VOICE_NOT_FOUND'), {code:'VOICE_NOT_FOUND'})
   const binding = figure.voice
@@ -32,21 +33,4 @@ export async function figureRefTtsVoice(library, tts, ref, options) {
   if (!effective) throw Object.assign(new Error('SERVICE_REQUIRED'), {code:'SERVICE_REQUIRED'})
   return {voice:figureTtsVoice(binding,voice,`${pack.manifest.id}:${figure.id}`),binding:effective,voiceId:binding.voice,revision:pack.revision,
     readReference:async hash => (await library.readMedia({packId:pack.manifest.id,expectedRevision:pack.revision,hash})).bytes}
-}
-
-// 全文朗读's reader (tts.reading().readAloud.voice) uses the library's plain catalogue, not the current card's cast.
-export async function catalogueTtsVoice(library, tts, ref, options) {
-  const item = (await library.listVoiceCatalogue()).voices.find(row => ref.templateId
-    ? row.ref.templateId === ref.templateId : row.ref.packId === ref.packId && row.ref.voiceId === ref.voiceId)
-  if (!item) throw Object.assign(new Error('VOICE_NOT_FOUND'), {code:'VOICE_NOT_FOUND'})
-  const spoken = {...item.binding,language:'zh'}
-  const browser = browserSpeechSource(item.voiceSpec, spoken)
-  if (browser) return {browser:browser.voiceName ?? ''}
-  const binding = await assetVoiceBinding(tts,{voice:item.voiceSpec,binding:spoken},options)
-  if (!binding) throw Object.assign(new Error('SERVICE_REQUIRED'), {code:'SERVICE_REQUIRED'})
-  return {voice:figureTtsVoice(spoken,item.voiceSpec,JSON.stringify(item.ref)),binding,
-    voiceId:spoken.voice,revision:item.revision,
-    readReference:async hash => (await (ref.templateId
-      ? library.readVoiceTemplateMedia({templateId:ref.templateId,expectedRevision:item.revision,hash})
-      : library.readMedia({packId:ref.packId,expectedRevision:item.revision,hash}))).bytes}
 }

@@ -1,6 +1,34 @@
 import { compactionPolicy } from './auto-compaction.js'
 import { normalizeBackgroundModel } from './background-model-selection.js'
 import { applyCardPersonaChange, presentCardPersonas } from './card-personas.js'
+import { normalizeDisabledForegroundTools } from './foreground-tools.js'
+import { normalizeNarrativeDamperConfig, validateNarrativeDamperConfig } from './narrative-damper.js'
+
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+export function normalizeDefaultBodyGeneration(value) {
+  const input = object(value)
+  const mode = ['host', 'plugin-direct', 'plugin-tool-call'].includes(input.mode) ? input.mode : 'inherit'
+  const provider = typeof input.provider === 'string' ? input.provider.slice(0, 300) : ''
+  const hostRegex = typeof input.hostRegex === 'boolean' ? input.hostRegex : null
+  return { mode: mode.startsWith('plugin-') && !provider.trim() ? 'inherit' : mode, provider, hostRegex }
+}
+
+export function normalizeDefaultPluginGameSettings(value) {
+  const result = {}
+  for (const [owner, fields] of Object.entries(object(value))) {
+    if (!owner || owner.length > 200 || RESERVED_KEYS.has(owner) || !fields || typeof fields !== 'object' || Array.isArray(fields)) continue
+    const normalized = {}
+    for (const [key, item] of Object.entries(fields)) {
+      if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key) || RESERVED_KEYS.has(key)) continue
+      if (typeof item === 'boolean' || (typeof item === 'number' && Number.isFinite(item)) || (typeof item === 'string' && item.length <= 500)) {
+        normalized[key] = item
+      }
+    }
+    if (Object.keys(normalized).length > 0) result[owner] = normalized
+  }
+  return result
+}
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -14,13 +42,17 @@ const BLANK_ALLOWED_PROMPTS = new Set(['system-append'])
 // history had a switch of its own. Reads migrate in place: a merged save turns
 // both on, and an old history-only save turns input on while output stays as it
 // was. Explicit new fields always win over the retired ones.
+export const STORY_TOOL_HISTORY_MODES = Object.freeze(['story', 'bodies', 'envelope'])
+
 export function storyToolCallSettings(document) {
   const source = object(document)
   const merged = Object.hasOwn(source, 'storyToolCall') ? source.storyToolCall === true : null
   const history = Object.hasOwn(source, 'storyHistoryToolCall') ? source.storyHistoryToolCall === true : null
   return {
     input: Object.hasOwn(source, 'storyInputToolCall') ? source.storyInputToolCall === true : (history === null ? merged === true : history),
-    output: Object.hasOwn(source, 'storyOutputToolCall') ? source.storyOutputToolCall === true : merged === true
+    output: Object.hasOwn(source, 'storyOutputToolCall') ? source.storyOutputToolCall === true : merged === true,
+    thinking: source.storyToolThinking === true,
+    historyMode: STORY_TOOL_HISTORY_MODES.includes(source.storyToolHistoryMode) ? source.storyToolHistoryMode : 'story'
   }
 }
 
@@ -196,7 +228,7 @@ export function presentPromptSets(document) {
 
 export function normalizeBackgroundTasks(value) {
   const tasks = object(value)
-  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true, worldbookScreening: false }
+  return { posture: tasks.posture !== false, characterDesign: false, variables: tasks.variables !== false, ledger: false, styleReference: tasks.styleReference === true, foregroundCandidates: tasks.foregroundCandidates === true, preset: tasks.preset === true, worldbookScreening: false }
 }
 
 
@@ -233,7 +265,7 @@ export function applyTavernSettingsPatch(current, patch) {
     if (Object.hasOwn(patch, 'webSearchEnabled') && typeof patch.webSearchEnabled !== 'boolean') throw new Error('默认开关必须为布尔值')
     if (Object.hasOwn(patch, 'playerName') && (typeof patch.playerName !== 'string' || patch.playerName.length > 80)) throw new Error('玩家称呼最多 80 字')
     if (Object.hasOwn(patch, 'statusBarPlacement') && !['body', 'sidebar'].includes(patch.statusBarPlacement)) throw new Error('状态栏位置无效')
-    for (const key of ['posture', 'styleReference']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
+    for (const key of ['posture', 'styleReference', 'foregroundCandidates', 'preset']) if (Object.hasOwn(object(patch.backgroundTasks), key) && typeof patch.backgroundTasks[key] !== 'boolean') throw new Error('默认结算开关必须为布尔值')
     const current = normalizePlayDefaults(next.defaultPlaySettings)
     next.defaultPlaySettings = normalizePlayDefaults({ ...current, ...patch, backgroundTasks: { ...current.backgroundTasks, ...object(patch.backgroundTasks) } })
   }
@@ -242,6 +274,29 @@ export function applyTavernSettingsPatch(current, patch) {
     if (typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || typeof enabled !== 'boolean') throw new Error('无效的写作 Skill 配置')
     const disabled = Array.isArray(next.defaultDisabledWritingSkills) ? next.defaultDisabledWritingSkills : []
     next.defaultDisabledWritingSkills = enabled ? disabled.filter(value => value !== name) : [...new Set([...disabled, name])]
+  }
+  if (Object.hasOwn(input, 'defaultDisabledWritingSkills')) {
+    if (!Array.isArray(input.defaultDisabledWritingSkills) || input.defaultDisabledWritingSkills.some(name => typeof name !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name))) throw new Error('无效的写作 Skill 配置')
+    next.defaultDisabledWritingSkills = [...new Set(input.defaultDisabledWritingSkills)]
+  }
+  if (Object.hasOwn(input, 'defaultDisabledForegroundTools')) {
+    if (!Array.isArray(input.defaultDisabledForegroundTools)) throw new Error('前台工具默认配置无效')
+    next.defaultDisabledForegroundTools = normalizeDisabledForegroundTools(input.defaultDisabledForegroundTools)
+  }
+  if (Object.hasOwn(input, 'defaultBodyGeneration')) {
+    const body = input.defaultBodyGeneration
+    if (body !== null && (typeof body !== 'object' || Array.isArray(body))) throw new Error('默认正文生成设置无效')
+    if (body !== null) {
+      if (Object.hasOwn(body, 'mode') && !['inherit', 'host', 'plugin-direct', 'plugin-tool-call'].includes(body.mode)) throw new Error('正文生成方式无效')
+      if (Object.hasOwn(body, 'provider') && (typeof body.provider !== 'string' || body.provider.length > 300)) throw new Error('正文生成插件标识无效')
+      if (Object.hasOwn(body, 'hostRegex') && body.hostRegex !== null && typeof body.hostRegex !== 'boolean') throw new Error('插件正文宿主正则设置无效')
+      if (body.mode?.startsWith('plugin-') && !body.provider?.trim()) throw new Error('请先选择正文生成插件')
+    }
+    next.defaultBodyGeneration = normalizeDefaultBodyGeneration(body)
+  }
+  if (Object.hasOwn(input, 'defaultPluginGameSettings')) {
+    if (input.defaultPluginGameSettings !== null && (typeof input.defaultPluginGameSettings !== 'object' || Array.isArray(input.defaultPluginGameSettings))) throw new Error('默认插件本局设置无效')
+    next.defaultPluginGameSettings = normalizeDefaultPluginGameSettings(input.defaultPluginGameSettings)
   }
   // polishModel: 精修's own model for every game; null follows each game's story model.
   for (const name of ['defaultForegroundModel', 'defaultBackgroundModel', 'defaultWorkbenchModel', 'polishModel']) {
@@ -264,6 +319,11 @@ export function applyTavernSettingsPatch(current, patch) {
   if (Object.hasOwn(input, 'candidateAutoGenerate')) {
     if (typeof input.candidateAutoGenerate !== 'boolean') throw new Error('无效的自动生成候选项设置')
     next.candidateAutoGenerate = input.candidateAutoGenerate
+  }
+  // 设置 › 高级 › 候选多角色 / 全局 Tab：默认关闭，候选项只显示精选一组。
+  if (Object.hasOwn(input, 'candidateTabs')) {
+    if (typeof input.candidateTabs !== 'boolean') throw new Error('无效的候选 Tab 设置')
+    next.candidateTabs = input.candidateTabs
   }
   if (Object.hasOwn(input, 'showPlayProcess')) {
     if (typeof input.showPlayProcess !== 'boolean') throw new Error('无效的游玩过程显示设置')
@@ -325,6 +385,14 @@ export function applyTavernSettingsPatch(current, patch) {
     delete next.storyToolCall
     delete next.storyHistoryToolCall
   }
+  if (Object.hasOwn(input, 'storyToolThinking')) {
+    if (typeof input.storyToolThinking !== 'boolean') throw new Error('工具内思考槽设置必须是布尔值')
+    next.storyToolThinking = input.storyToolThinking
+  }
+  if (Object.hasOwn(input, 'storyToolHistoryMode')) {
+    if (!STORY_TOOL_HISTORY_MODES.includes(input.storyToolHistoryMode)) throw new Error('无效的工具回放结构设置')
+    next.storyToolHistoryMode = input.storyToolHistoryMode
+  }
   if (Object.hasOwn(input, 'retryOnFailure')) {
     if (typeof input.retryOnFailure !== 'boolean') throw new Error('自动重试设置必须是布尔值')
     next.retryOnFailure = input.retryOnFailure
@@ -350,6 +418,12 @@ export function applyTavernSettingsPatch(current, patch) {
   if (Object.hasOwn(input, 'recentReplyFirst')) {
     if (typeof input.recentReplyFirst !== 'boolean') throw new Error('对话排序设置必须是布尔值')
     next.recentReplyFirst = input.recentReplyFirst
+  }
+  // 设置 › 高级 › 只在流式输出时显示思维链：思考行在生成期间自动展开，本次思考写完就收起，
+  // 不改宿主「工作步骤展示」的档位（宿主补丁见 domain/chat-reasoning-fold.js）。
+  if (Object.hasOwn(input, 'reasoningStreamOnly')) {
+    if (typeof input.reasoningStreamOnly !== 'boolean') throw new Error('思维链显示设置必须是布尔值')
+    next.reasoningStreamOnly = input.reasoningStreamOnly
   }
   if (Object.hasOwn(input, 'headerItems')) {
     // null restores the shipped top bar.
@@ -418,6 +492,13 @@ export function applyTavernSettingsPatch(current, patch) {
     if (Object.keys(overrides).length === 0) delete next.promptOverrides
     else next.promptOverrides = overrides
   } else if (input.resetSystemPrompts === true) delete next.promptOverrides
+  if (Object.hasOwn(input, 'narrativeDamper')) {
+    if (!input.narrativeDamper || typeof input.narrativeDamper !== 'object' || Array.isArray(input.narrativeDamper)) {
+      throw new Error('叙事阻尼器设置无效')
+    }
+    const base = normalizeNarrativeDamperConfig(next.narrativeDamper)
+    next.narrativeDamper = validateNarrativeDamperConfig({ ...base, ...input.narrativeDamper })
+  }
   return next
 }
 
@@ -432,6 +513,9 @@ export function presentTavernSettings(document, defaults) {
     defaultPlaySettings: normalizePlayDefaults(object(document).defaultPlaySettings),
     scriptChunkSize: Number.isSafeInteger(object(document).scriptChunkSize) && document.scriptChunkSize >= 100 && document.scriptChunkSize <= 10000 ? document.scriptChunkSize : 500,
     defaultDisabledWritingSkills: Array.isArray(object(document).defaultDisabledWritingSkills) ? object(document).defaultDisabledWritingSkills.filter(name => typeof name === 'string') : [],
+    defaultDisabledForegroundTools: normalizeDisabledForegroundTools(object(document).defaultDisabledForegroundTools),
+    defaultBodyGeneration: normalizeDefaultBodyGeneration(object(document).defaultBodyGeneration),
+    defaultPluginGameSettings: normalizeDefaultPluginGameSettings(object(document).defaultPluginGameSettings),
     modModels: structuredClone(object(document).modModels || {}),
     defaultForegroundModel: normalizeBackgroundModel(object(document).defaultForegroundModel),
     defaultBackgroundModel: normalizeBackgroundModel(object(document).defaultBackgroundModel),
@@ -447,6 +531,8 @@ export function presentTavernSettings(document, defaults) {
     // existing profiles stay manual until explicitly enabled.
 
     candidateAutoGenerate: object(document).candidateAutoGenerate === true,
+    // 设置 › 高级 › 候选多角色 / 全局 Tab：默认关闭，候选卡只显示精选一组。
+    candidateTabs: object(document).candidateTabs === true,
     // 自动精修: off by default, since it reviews and rewords every reply.
     polishPrereview: object(document).polishPrereview === true,
     storyGenerationMode: ['plugin-direct', 'plugin-tool-call'].includes(document?.storyGenerationMode) ? document.storyGenerationMode : 'host',
@@ -456,6 +542,8 @@ export function presentTavernSettings(document, defaults) {
     storyOutputToolCall: storyToolCalls.output,
     // 独立故事视图的接管开关，不影响舞台按人物卡启用。
     storyViewMode: object(document).storyViewMode === true,
+    storyToolThinking: storyToolCalls.thinking,
+    storyToolHistoryMode: storyToolCalls.historyMode,
     // A failed model request is resent once by default (tavern-retry-limiter); off means
     // the turn ends right there and the reply is only remade when the player asks.
     retryOnFailure: object(document).retryOnFailure !== false,
@@ -466,6 +554,8 @@ export function presentTavernSettings(document, defaults) {
     autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     // 设置 › 高级 › 对话按最新回复排序：默认关闭，左侧对话按创建时间固定排列。
     recentReplyFirst: object(document).recentReplyFirst === true,
+    // 设置 › 高级 › 只在流式输出时显示思维链：默认打开——思考内容在生成时铺开、写完即收起。
+    reasoningStreamOnly: object(document).reasoningStreamOnly !== false,
     // Library edits reach a running game on its next turn; only an explicit
     // reload still refreshes the card definition, initvars and MVU state.
     webSearchEnabled: object(document).webSearchEnabled === true,
@@ -477,6 +567,7 @@ export function presentTavernSettings(document, defaults) {
     systemPrompts: prompts,
     promptSets: presentPromptSets(object(document)),
     cardPersonas: presentCardPersonas(object(document)),
+    narrativeDamper: normalizeNarrativeDamperConfig(object(document).narrativeDamper),
     storyPrompt: story.text,
     storyPromptCustomized: story.customized
   }

@@ -43,10 +43,23 @@ export function projectChatSessionState(chat, options = {}) {
     code: chat.foregroundError.code, message: chat.foregroundError.message
   }
   for (const key of ['id', 'sessionId', '_storageRevision', 'mode', 'cardPath', 'cardContextRevision',
-    'backgroundConfigVersion', 'conversationFeaturesVersion', 'disabledWritingSkills', 'contextCompaction', 'updatedAt', 'timeline', 'candidateAgent',
+    'backgroundConfigVersion', 'conversationFeaturesVersion', 'backgroundTasks', 'disabledWritingSkills', 'contextCompaction', 'updatedAt', 'timeline', 'candidateAgent',
     'cardName', 'requestMode', 'statusBarPlacement', 'statusSections', 'webSearchEnabled', 'candidates', 'taskMailbox', 'regenInProgress',
     'settleError', 'scriptState', 'hiddenDshErrorTurns', 'suppressedDshTurns', 'replacingDshTurns', 'failedRegenerationTarget', 'regeneratedDshTurns', 'userInputEdits', 'tavernHelperLifecycleRevision']) {
     if (Object.hasOwn(chat, key)) selected[key] = chat[key]
+  }
+  if (chat.regenInProgress === true && chat.regenRecovery && typeof chat.regenRecovery === 'object') {
+    const damperOutcome = chat.regenRecovery.candidateFrame?.source?.narrativeDamperOutcome ?? chat.regenRecovery.damperOutcome
+    selected.regenRecovery = {
+      ...(typeof chat.regenRecovery.targetMessageUid === 'string' && chat.regenRecovery.targetMessageUid !== ''
+        ? { targetMessageUid: chat.regenRecovery.targetMessageUid } : {}),
+      ...(chat.regenRecovery.unansweredTail === true ? { unansweredTail: true } : {}),
+      ...(Number.isSafeInteger(Number(chat.regenRecovery.storyTurn)) && Number(chat.regenRecovery.storyTurn) > 0
+        ? { storyTurn: Number(chat.regenRecovery.storyTurn) } : {}),
+      ...(Number.isSafeInteger(Number(chat.regenRecovery.temporaryReplacingTurn)) && Number(chat.regenRecovery.temporaryReplacingTurn) > 0
+        ? { temporaryReplacingTurn: Number(chat.regenRecovery.temporaryReplacingTurn) } : {}),
+      ...(damperOutcome && typeof damperOutcome === 'object' ? { damperOutcome } : {}),
+    }
   }
   if (chat.importHistory) selected.importHistory = {
     rescue: Boolean(chat.importHistory.rescue), operationId: chat.importHistory.operationId
@@ -98,8 +111,8 @@ export function settlementTurn(chat) {
     return 0
   }
 
-export function createSessionStateView({ activity: activityOf, evidence: evidenceOf, sharedReceipts = false, sharedMappings = false }) {
-  const receiptIndex = createMvuReceiptIndex({shared:sharedReceipts})
+export function createSessionStateView({ activity: activityOf, evidence: evidenceOf, visibility: visibilityOf, sharedReceipts = false, sharedMappings = false }) {
+  const receiptIndex = createMvuReceiptIndex({shared:sharedReceipts, visibilityOf})
   const rollbackCache = new Map()
   const mappingCache = new Map(), mappingIds = new WeakMap(), mappingFields = createImmutableTurnFields()
   let mappingSequence = 0

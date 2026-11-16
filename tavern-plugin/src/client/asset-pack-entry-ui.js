@@ -4,8 +4,10 @@
   const AUDIO_KINDS=['music','sfx','ambience'];
   // 备注 is the owner's and the card AI's free text (`remark`) on every entry,
   // figure and outfit — sources, ids, to-dos. Never sent to the director; one multi-line row right after the director-facing
-  // text (导演说明 / 人物介绍 / 使用情景 / 正文). Written through the editor's usual pack write; empty removes the key.
+  // text (使用情景 / 人物介绍 / 正文). Written through the editor's usual pack write; empty removes the key.
   const REMARK_HELP='只给你和改卡 AI 看，导演看不到';
+  // 使用情景 is the player's word for directorNote, the same name and meaning as an outfit's 使用情景.
+  const NOTE_LABEL='使用情景',NOTE_PLACEHOLDER='什么情景下用它';
   const withRemark=(value,text)=>{const next={...value};if(text)next.remark=text;else delete next.remark;return next;};
   const remarkField=({value,onCommit,controlLabel,className='',wide,key})=>h(InlineField,{key,kind:'text',multiline:true,lines:true,label:'备注',controlLabel,wide,
     className:('ap-remark-field '+className).trim(),help:h(Help,{text:REMARK_HELP,label:'备注 说明'}),hideEmpty:true,value:value||'',onCommit});
@@ -43,7 +45,7 @@
       h(InlineField,{key:'label',kind:'text',label:'显示名',value:content.label||'',placeholder:reply?'回应时限':'倒计时',help:entryHelp('显示名','计时条上显示的名字，一行，最多 80 字。'),
         validate:v=>/[\r\n]/.test(v)?'只能一行':chars(v)>80?'最多 80 字':'',onCommit:v=>set('label',v.trim()||undefined)}),
       // pauseOnChoices: a story countdown that holds while the player picks from the end-of-round choices.
-      !reply&&h(InlineField,{key:'choices',kind:'menu',label:'选择时',value:content.pauseOnChoices?'pause':'run',help:entryHelp('选择时','轮末选项等你选择、输入时，计时是否继续走。选择期间可暂停计时。'),
+      !reply&&h(InlineField,{key:'choices',kind:'menu',label:'选择时',value:content.pauseOnChoices?'pause':'run',help:entryHelp('选择时','轮末选项等你选择、输入时，计时是否继续走。例如限时审判的时钟可以在你选择时冻结。'),
         options:[{value:'run',label:'继续计时'},{value:'pause',label:'暂停计时'}],onCommit:v=>set('pauseOnChoices',v==='pause'?true:undefined)}),
       reply&&h(InlineField,{key:'timeout',kind:'text',label:'超时回应',value:content.onTimeout||'',placeholder:'不自动回应',
         help:entryHelp('超时回应','时间到而你还没开始输入时，自动替你发出的回应，例如「沉默」。最多 160 字。'),
@@ -95,7 +97,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   const TRIGGER_HELP='名称本身也算触发词。可以再加几个正文里会出现的其他叫法或场景词，每个 2–40 字；不填也行。';
   // `fresh`: an entry the player just added (关闭, no words) — the field stands open with the caret in it and a hint after it.
   const triggerFields=({value,suggest,onCommit,fresh})=>[
-    h(InlineField,{key:'triggers',kind:'chips',label:'触发词',hideEmpty:!fresh,autoEdit:fresh||undefined,help:entryHelp('触发词',TRIGGER_HELP),value,split:splitKeywords,validate:keywordProblem,suggest,onCommit}),
+    h(InlineField,{key:'triggers',kind:'chips',label:'触发词',autoEdit:fresh||undefined,help:entryHelp('触发词',TRIGGER_HELP),value,split:splitKeywords,validate:keywordProblem,suggest,onCommit}),
     fresh&&h('p',{key:'triggers-hint',className:'ap-hint-line ap-trigger-hint',role:'status'},'可以填几个正文里会出现的词，再打开蓝灯/绿灯')];
   function keywordProblem(words){
     if(words.length>16)return '触发词最多 16 个';
@@ -264,19 +266,20 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // above, the items are cut into blocks of whole grid rows (the columns the CSS grid actually laid out, measured by any
   // block on screen) and a block far from its scroll container's view is an empty box of its height (IntersectionObserver
   // rooted at that container, so the margin counts inside a scrolling panel too). Pictures inside still load lazily on
-  // their own (Thumb). `tail`: a last row after the items (the dashed ＋).
+  // their own (Thumb). `head`: a first row before the items (「＋ 新建<种类>」); `tail`: a last row after them.
   const WINDOW_MIN=24,WINDOW_ROWS=6;
   const scrollRoot=el=>{for(let node=el;node&&node.nodeType===1;node=node.parentElement){const y=getComputedStyle(node).overflowY;if(y==='auto'||y==='scroll')return node;}return null;};
-  function WindowedItems({items,render,className,blockClassName=className,label,multi,tail=null}) {
+  function WindowedItems({items,render,className,blockClassName=className,label,multi,head=null,tail=null}) {
     const big=items.length>WINDOW_MIN&&typeof IntersectionObserver!=='undefined'&&typeof ResizeObserver!=='undefined';
     const box=React.useRef(null),[grid,setGrid]=React.useState(null);
     const onMeasure=({columns,row})=>setGrid(g=>g&&g.columns===columns&&Math.abs(g.row-row)<0.5?g:{columns,row,root:g?.root??scrollRoot(box.current)});
     const list={role:'listbox','aria-multiselectable':multi||undefined,'aria-label':label};
-    if(!big)return h('ul',{className,...list},items.map(render),tail);
+    if(!big)return h('ul',{className,...list},head,items.map(render),tail);
     // Until a block is measured only the first shows (no zero-height boxes that would all count as near).
     const size=(grid?.columns||1)*WINDOW_ROWS,blocks=[];
     for(let at=0;at<(grid?items.length:1);at+=size)blocks.push(items.slice(at,at+size));
     return h('div',{ref:box,className:className+' ap-windowed',...list},
+      head&&h('ul',{role:'none',className:blockClassName},head),
       blocks.map((block,index)=>h(WindowBlock,{key:index,className:blockClassName,height:grid?Math.ceil(block.length/grid.columns)*grid.row:0,root:grid?.root,ready:!!grid,start:index===0,block,render,onMeasure})),
       tail&&h('ul',{role:'none',className:blockClassName},tail));
   }
@@ -285,6 +288,8 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // one place that changes it: drag a row with the mouse, long-press then drag on touch, or Alt+↑ / Alt+↓ on a focused row.
   // useListReorder({ids, enabled, onMove}) → row(id): props for that row's <li>, and `dragging` for the list. onMove(id,
   // beforeId) moves `id` in front of `beforeId` (null = to the end) — the caller writes it (one CAS write per drop).
+  // A touch hold released without moving is the row's long press: it reaches the row as a contextmenu event, so the row's
+  // menu (useContextMenu with hold:false) opens.
   const REORDER_HOLD_MS=400,REORDER_SLOP=6,REORDER_EDGE=36;
   function useListReorder({ids,enabled,onMove}) {
     const [drag,setDrag]=React.useState(null),live=React.useRef(null);
@@ -297,8 +302,8 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     function down(e,id) {
       if(!enabled||live.current||e.button!==0||e.target?.closest?.('[aria-haspopup],input,textarea'))return;
       const list=e.currentTarget.closest('[role=listbox]');if(!list)return;
-      const touch=e.pointerType!=='mouse',pointer=e.pointerId,x0=e.clientX,y0=e.clientY,scroller=scrollRoot(list),doc=list.ownerDocument,win=doc.defaultView;
-      const s={active:false,before:undefined,y:y0,timer:0,frame:0};
+      const touch=e.pointerType!=='mouse',pointer=e.pointerId,x0=e.clientX,y0=e.clientY,scroller=scrollRoot(list),doc=list.ownerDocument,win=doc.defaultView,rowEl=e.currentTarget;
+      const s={active:false,moved:false,before:undefined,y:y0,timer:0,frame:0};
       const begin=()=>{s.active=true;s.timer=0;win.getSelection?.()?.removeAllRanges?.();setDrag({id,before:undefined});
         // Near the scroll box's top / bottom edge the list scrolls while the row is held there.
         const tick=()=>{const r=scroller?.getBoundingClientRect();if(r){const d=s.y<r.top+REORDER_EDGE?-1:s.y>r.bottom-REORDER_EDGE?1:0;if(d){scroller.scrollTop+=d*8;aim();}}s.frame=win.requestAnimationFrame(tick);};
@@ -306,14 +311,16 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
       const aim=()=>{const before=beforeAt(list,s.y),shown=changes(id,before)?before:undefined;if(shown!==s.before){s.before=shown;setDrag({id,before:shown});}};
       const move=ev=>{if(ev.pointerId!==pointer)return;s.y=ev.clientY;
         if(!s.active){if(Math.hypot(ev.clientX-x0,ev.clientY-y0)<=REORDER_SLOP)return;if(touch)return stop();begin();}
+        if(Math.hypot(ev.clientX-x0,ev.clientY-y0)>REORDER_SLOP)s.moved=true;
         ev.preventDefault();aim();};
       // Once a touch drag runs the page must not scroll under it; before that a swipe scrolls as usual (and cancels the hold).
       const touchmove=ev=>{if(s.active)ev.preventDefault();};
       const noMenu=ev=>{if(s.active||s.timer)ev.preventDefault();};
-      const up=ev=>{if(ev.pointerId!==pointer)return;const {active,before}=s;stop();if(!active)return;
+      const up=ev=>{if(ev.pointerId!==pointer)return;const {active,before,moved}=s;stop();if(!active)return;
         // The release must not also click the row (select it) or whatever it ends over.
         const swallow=c=>{c.stopPropagation();c.preventDefault();};win.addEventListener('click',swallow,{capture:true,once:true});win.setTimeout(()=>win.removeEventListener('click',swallow,true),0);
-        if(before!==undefined)onMove(id,before);};
+        if(touch&&!moved)rowEl.dispatchEvent(new win.MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:x0,clientY:y0}));
+        else if(before!==undefined)onMove(id,before);};
       const cancel=ev=>{if(ev.pointerId===pointer)stop();};
       const stop=()=>{win.clearTimeout(s.timer);win.cancelAnimationFrame(s.frame);live.current=null;setDrag(null);
         doc.removeEventListener('pointermove',move);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
@@ -359,8 +366,11 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // `onPreview` makes the thumbnail its own button that opens the large view (the row's
   // check and name still toggle it).
   // `reorder`: the row's drag / Alt+↑↓ props from useListReorder, when its list can be reordered.
-  function EntryItem({binding,pack,kind,item,focused,checked,audio,ctx,onSelect,onLamp,onPreview,reorder}) {
+  // `menu(close)`: the row's own menu (useContextMenu: right click, Shift+F10, a long press — which on a reorderable row
+  // is the hold released without dragging); the click still opens the entry.
+  function EntryItem({binding,pack,kind,item,focused,checked,audio,ctx,onSelect,onLamp,onPreview,reorder,menu=null}) {
     const packId=pack.manifest.id,figure=kind==='figures';
+    const rowMenu=useContextMenu({label:item.name+' 操作',content:checked===null?menu:null,hold:!reorder?.['data-reorder-id']});
     // Library thumbnails describe stored art, including disabled figures/outfits.
     const thumbnail=figure?{...item,enabled:true,outfits:item.outfits.map(o=>({...o,enabled:true}))}:null;
     // an 物品 without its own picture shows its pack's icon of its deepest tag (assetTags.icon).
@@ -369,11 +379,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
       kind==='skins'?h(SkinSample,{skin:pack.skins?.[item.id],label:item.name,compact:true}):h('span',{className:'ap-item-glyph'},h(KindIcon,{kind}));
     // a figure row is one line — face and name; no second meta row. r6 (owner
     // 2026-10): no outfit count either (the figure page lists its outfits).
-    return h('li',{role:'option','aria-selected':checked===null?focused:checked,className:'ap-item'+(checked!==null?' is-picking':'')+(figure?' is-figure':''),'data-checked':checked||undefined,'data-disabled':item.enabled===false||undefined,onClick:onSelect,...reorder},
+    return h('li',{role:'option','aria-selected':checked===null?focused:checked,className:'ap-item'+(checked!==null?' is-picking':'')+(figure?' is-figure':''),'data-checked':checked||undefined,'data-disabled':item.enabled===false||undefined,onClick:onSelect,...mergeProps(reorder,rowMenu.target)},
+      rowMenu.layer,
       h('span',{className:'ap-item-lead-box'},
         onPreview?h('button',{type:'button',className:'ap-item-lead','aria-label':'查看大图 '+item.name,title:'查看大图',onClick:e=>{e?.stopPropagation?.();onPreview();}},lead):lead,
         checked!==null&&h('span',{className:'ap-check-mark','aria-hidden':true},checked&&h(Glyph,{name:'check'}))),
-      h('button',{type:'button',className:'ap-item-main',onClick:e=>{e?.stopPropagation?.();onSelect(e);}},h('span',{className:'ap-item-name'},item.name)),
+      h('button',{type:'button',className:'ap-item-main','aria-keyshortcuts':rowMenu.trigger['aria-keyshortcuts'],onClick:e=>{e?.stopPropagation?.();onSelect(e);}},h('span',{className:'ap-item-name'},item.name)),
       // the list dot is the same 蓝灯 / 绿灯 / 关闭 (启用 / 关闭 for 演出风格).
       // the dot is a quick menu (LampMenu) — no need to open the entry.
       !figure&&item.recall&&!STATELESS_KINDS.includes(kind)&&(onLamp?h(LampMenu,{mode:entryLamp(item,LAMPLESS_KINDS.includes(kind)),onOff:LAMPLESS_KINDS.includes(kind),choices:lampChoices(kind),label:item.name+(LAMPLESS_KINDS.includes(kind)?' 的状态':' 的触发策略'),
@@ -428,12 +439,27 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   // the background picture slot. Empty: the dashed ✦ tile (opens the generation sheet — a
   // background needs a description first) and the upload badge. Filled: a quiet ✦ disc in the corner. A request in
   // flight shows on the slot itself (spinner, the candidate with its ring, ⚠); a click opens its sheet.
-  function BackgroundSlot({packId,asset,hash,gen,onUpload,picture,timeSwitch}) {
+  // An entry without its picture / audio yet (新建条目): the dashed picture area (16:9) or player strip with its quiet
+  // actions — 「上传图片」 / 「上传音频」 and, where generation exists (a background), 「生成」. Nothing here is a warning: the
+  // entry is saved as it is and the stage leaves it out until it has its file. `onFile(file)` returns the upload's promise.
+  function MediaEmpty({audio=false,onFile,onGenerate,onError}) {
+    const input=React.useRef(null),[working,setWorking]=React.useState(false);
+    const take=file=>{setWorking(true);onError?.('');Promise.resolve(onFile(file)).catch(e=>onError?.(errorText(e))).finally(()=>setWorking(false));};
+    return h('div',{className:'ap-media-drop'+(audio?' is-audio':''),role:'group','aria-label':audio?'音频':'图片','data-busy':working||undefined},
+      working?h(Spinner,{key:'upload'}):h('span',{className:'ap-media-drop-actions'},
+        onFile&&h(Button,{className:'ap-media-drop-action',onClick:()=>input.current?.click?.()},h(Glyph,{name:'upload'}),audio?'上传音频':'上传图片'),
+        onGenerate&&h(Button,{className:'ap-media-drop-action',onClick:onGenerate},h(Glyph,{name:'spark'}),'生成')),
+      onFile&&h('input',{ref:input,type:'file',hidden:true,tabIndex:-1,accept:audio?AUDIO_ACCEPT:IMAGE_ACCEPT,'aria-label':audio?'选择音频':'选择图片',
+        onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file)take(file);}}));
+  }
+  function BackgroundSlot({packId,asset,hash,gen,onUpload,onError,picture,timeSwitch}) {
     const target={packId,kind:'background',assetId:asset.id},job=gen.jobFor(target),pend=gen.pending[genKey(target)];
     React.useEffect(()=>{if(!asset.media)gen.open();},[asset.media]);
     const state=pend||job?.status==='running'?'running':['candidate','save_failed'].includes(job?.status)?'candidate':job?.status==='failed'?'failed':null;
     const mark=state==='running'?h(Spinner,{key:'gen',fill:true}):state==='candidate'?h(CandidateArt,{gen,jobId:job.jobId,className:'ap-gen-img'}):state==='failed'?h(Glyph,{name:'warning'}):null;
     const aria={running:'背景图：正在生成',candidate:'背景图：有新图待选',failed:'背景图：生成失败'}[state];
+    // no picture and no request: the empty picture area (上传图片 · 生成).
+    if(!hash&&!state)return h('div',{className:'ap-hero-wrap'},h(MediaEmpty,{onFile:onUpload,onGenerate:()=>gen.openSheet(target),onError}),timeSwitch);
     return h('div',{className:'ap-hero-wrap','data-gen':state||undefined},
       hash?picture:h('button',{type:'button',className:'ap-hero ap-gen-hero','data-state':state||'empty','aria-label':aria||'生成背景图',title:state?(job?.error?.message||undefined):'生成背景图',onClick:()=>gen.openSheet(target)},
         mark||h(Glyph,{name:'spark'}),state==='candidate'&&h('span',{className:'ap-gen-dot','aria-hidden':true})),
@@ -450,7 +476,19 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     const match=/copied pack: ([0-9a-f-]{36})/i.exec(String(error?.message||''));
     return match?{packId:match[1]}:null;
   }
-  function WidgetCopyMenu({card,pack,asset,onCopied,onError}) {
+  // 删除单条素材 — the name row's ⋯ › 删除… on every kind (背景 / CG / 物品 / 音乐 / 音效 / 环境音 / 模组 / 舞台皮肤 …). remove(kind, id) is
+  // the one CAS write (PackModal removeEntry). A just-created entry nothing has been put into (no file, no 触发词, no 使用情景)
+  // is removed at once; anything else asks first. Returns close => MenuItem, so a kind's own menu (替换媒体…, 复制…) can list it.
+  const entryIsBlank=asset=>asset.pendingMedia===true&&asset.media==null&&!asset.variants&&!asset.directorNote&&!asset.recall?.keywords?.length;
+  function entryRemoveItem({asset,pack,remove,ask,onError}) {
+    const run=()=>Promise.resolve(remove(asset.kind,asset.id)).catch(e=>onError(errorText(e)));
+    return close=>h(MenuItem,{key:'remove',danger:true,onClick:()=>{close();if(entryIsBlank(asset))run();
+      else askDelete(ask,{title:'删除'+(kinds[asset.kind]||'素材')+'「'+asset.name+'」？',body:'从素材包「'+pack.manifest.name+'」中删除它和它的文件，'+(asset.kind==='skins'?'以它为默认舞台皮肤的卡改回经典皮肤。':'用到它的卡会少掉这条素材，不会自动换成别的。'),confirmLabel:'删除',danger:true},run);}},'删除…');
+  }
+  function EntryMoreMenu({asset,busy,items}) {
+    return h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:toggle}),content:close=>items(close)});
+  }
+  function WidgetCopyMenu({card,pack,asset,extra,onCopied,onError}) {
     const [copying,setCopying]=React.useState(false),[busy,setBusy]=React.useState(false);
     const bound=card.ext.assetBindings.boundPackIds,targets=(card.packs||[]).filter(p=>p?.manifest&&bound.includes(p.manifest.id)&&p.manifest.id!==pack.manifest.id);
     async function copy(target){
@@ -470,46 +508,39 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     }
     return h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:()=>{setCopying(false);toggle();}}),
       content:close=>copying?h(PackTargetMenu,{packs:targets,exclude:pack.manifest.id,close,onPick:copy}):
-        h(MenuItem,{onClick:()=>setCopying(true)},h(Glyph,{name:'copy'}),h('span',null,'复制到本卡素材包…'))});
+        h(React.Fragment,null,h(MenuItem,{onClick:()=>setCopying(true)},h(Glyph,{name:'copy'}),h('span',null,'复制到本卡素材包…')),extra&&extra(close))});
   }
   // one 演出风格 — 名称 (the title), 状态 (启用 / 关闭) and 正文 (an inline field
   // that keeps line breaks), each saved as it is committed. No hero, 触发词 or 详情: nothing reads them for a style.
-  // `asset` null is a new style: a local draft until its text is written (the pack rejects a style without text), then
-  // create({name, text, enabled}) adds it. The ⋯ menu deletes it after a confirmation.
-  const STYLE_NEW_NAME='新演出风格';
+  // A new style is saved at once (新建条目) with empty text and 关闭; the director gets nothing from it until it has text.
+  // The ⋯ menu deletes it after a confirmation.
   const STYLE_TEXT_MAX=2000;
-  function newStyleName(pack){
-    const taken=new Set(pack.manifest.assets.filter(a=>a.kind==='directions').map(a=>a.name));
-    let name=STYLE_NEW_NAME,n=1;while(taken.has(name))name=STYLE_NEW_NAME+' '+(++n);return name;
-  }
-  // The pack's own rule (manifest.js): trimmed text not empty, at most 2000 code points, no control character but line breaks and tabs.
-  const styleTextProblem=value=>!String(value||'').trim()?'请填写正文':chars(value)>STYLE_TEXT_MAX?'正文最多 '+STYLE_TEXT_MAX+' 字':/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value)?'正文不能包含控制字符':'';
+  // The pack's own rule (manifest.js): at most 2000 code points, no control character but line breaks and tabs. Empty
+  // text is allowed (library contract for blank entries).
+  const styleTextProblem=value=>chars(value)>STYLE_TEXT_MAX?'正文最多 '+STYLE_TEXT_MAX+' 字':/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value)?'正文不能包含控制字符':'';
   // ack ({parent, onBack}, a phone's detail) puts the sub-page ‹ at the start of
   // the name row, which then leads the page (the name is the page title, as on a figure's top bar).
-  function StyleDetail({pack,asset,commit,create,remove,busy,back=null}) {
-    const draft=!asset,[error,setError]=React.useState(''),[confirm,setConfirm]=React.useState(null);
-    const [draftName,setDraftName]=React.useState(()=>newStyleName(pack)),[draftOn,setDraftOn]=React.useState(true),textRef=React.useRef(null);
-    const name=draft?draftName:asset.name,on=draft?draftOn:asset.enabled!==false;
-    const [variantChoice,setVariant]=React.useState(undefined),selected=asset?.variants&&(assetVariantRow(asset.variants,variantChoice)||assetVariantRow(asset.variants));
+  function StyleDetail({pack,asset,commit,remove,busy,back=null}) {
+    const [error,setError]=React.useState(''),[confirm,setConfirm]=React.useState(null);
+    const name=asset.name,on=asset.enabled!==false;
+    const [variantChoice,setVariant]=React.useState(undefined),selected=asset.variants&&(assetVariantRow(asset.variants,variantChoice)||assetVariantRow(asset.variants));
     const content=selected?selected.content:asset;
-    React.useEffect(()=>{if(draft)textRef.current?.focus?.({preventScroll:true});},[]);
     const write=update=>{setError('');return commit('directions',asset.id,update).catch(e=>setError(errorText(e)));};
-    const add=text=>{setError('');return create({name:draftName,text,enabled:draftOn}).catch(e=>setError(errorText(e)));};
-    const askRemove=()=>setConfirm({title:'删除演出风格「'+asset.name+'」？',body:'从素材包「'+pack.manifest.name+'」中删除，用到这个素材包的卡都不再发送它。',confirmLabel:'删除',danger:true,onConfirm:()=>remove(asset.id)});
-    const menu=!draft&&remove&&h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:toggle}),
+    const askRemove=()=>askDelete(setConfirm,{title:'删除演出风格「'+asset.name+'」？',body:'从素材包「'+pack.manifest.name+'」中删除，用到这个素材包的卡都不再发送它。',confirmLabel:'删除',danger:true},()=>remove(asset.id));
+    const menu=remove&&h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:toggle}),
       content:close=>h(MenuItem,{danger:true,onClick:()=>{close();askRemove();}},'删除')});
     return h('div',{className:'ap-detail-pane ap-style-detail','data-disabled':!on||undefined},h(ErrorBox,{error}),
       h('div',{className:'ap-detail-title'+(back?' ap-subhead':'')},back&&h(SubpageBack,back),h(CommitInput,{className:'ap-title-input','aria-label':'名称',value:name,validate:v=>!v.trim()?'名称不能为空':chars(v)>256?'名称最多 256 字':'',
-        onCommit:v=>draft?setDraftName(v.trim()):write(c=>({...c,name:v.trim()}))}),menu||null),
+        onCommit:v=>write(c=>({...c,name:v.trim()}))}),menu||null),
       h(InlineGrid,{label:name+' 设置',columns:1,className:'ap-entry-fields'},
         h(InlineRow,{label:'状态',help:entryHelp('状态',LAMPLESS_HELP.directions)},
-          h(LampMenu,{mode:on?'on':'off',onOff:true,named:true,label:'状态',onChange:mode=>draft?setDraftOn(mode==='on'):write(c=>setEntryLamp(c,mode))})),
-        h(InlineField,{kind:'text',multiline:true,lines:true,label:'正文',className:'ap-style-text-field',controlRef:textRef,placeholder:'写给导演的演出要求',value:draft?'':content.text,
+          h(LampMenu,{mode:on?'on':'off',onOff:true,named:true,label:'状态',onChange:mode=>write(c=>setEntryLamp(c,mode))})),
+        h(InlineField,{kind:'text',multiline:true,lines:true,label:'正文',className:'ap-style-text-field',placeholder:'写给导演的演出要求',value:content.text||'',
           help:entryHelp('正文','原样发给导演。Enter 保存，Shift+Enter 换行，最多 '+STYLE_TEXT_MAX+' 字。'),validate:styleTextProblem,
-          onCommit:v=>draft?add(v):write(c=>c.variants?{...c,variants:{...c.variants,entries:c.variants.entries.map(row=>row.id===selected.id?{...row,content:{text:v}}:row)}}:{...c,text:v})}),
-        !draft&&remarkField({value:asset.remark,onCommit:v=>write(c=>withRemark(c,v))}),
-        !draft&&variantAddChip({asset,selected,onSelect:setVariant,write,busy})),
-      !draft&&h(EntryVariants,{asset,selected,onSelect:setVariant,write,busy,onError:setError}),
+          onCommit:v=>write(c=>c.variants?{...c,variants:{...c.variants,entries:c.variants.entries.map(row=>row.id===selected.id?{...row,content:{text:v}}:row)}}:{...c,text:v})}),
+        // a 演出风格 offers no 「＋ 变体」 (variants are not a style concept); a stored table still shows below.
+        remarkField({value:asset.remark,onCommit:v=>write(c=>withRemark(c,v))})),
+      h(EntryVariants,{asset,selected,onSelect:setVariant,write,busy,onError:setError}),
       confirm&&h(ConfirmDialog,{...confirm,onClose:()=>setConfirm(null)}));
   }
   // `card` (the open card's context, or null) only adds the widget ⋯ copy action;
@@ -517,14 +548,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
   const entryHelp=(label,text)=>text?h(Help,{text,label:label+' 说明'}):null;
   function EntryDetail({binding,pack,packs=[],asset,commit,audio,gen,uploadBackground,uploadVariant,card=null,onOpenPack,onCategory,remove,busy,back=null,fresh=false}) {
     const packId=pack.manifest.id,kind=asset.kind,[error,setError]=React.useState(''),lampless=LAMPLESS_KINDS.includes(kind),stateless=STATELESS_KINDS.includes(kind);
-    // ⋯ › 删除 for a standalone 舞台皮肤, after a confirmation (remove(kind, id) is one CAS write).
+    // ⋯ › 删除… on every kind's name row (entryRemoveItem); the confirmation dialog it opens is this one.
     const [confirm,setConfirm]=React.useState(null);
-    const removeMenu=remove&&stateless&&h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:toggle}),
-      content:close=>h(MenuItem,{danger:true,onClick:()=>{close();setConfirm({title:'删除舞台皮肤「'+asset.name+'」？',body:'从素材包「'+pack.manifest.name+'」中删除。以它为默认舞台皮肤的卡改回经典皮肤。',confirmLabel:'删除',danger:true,
-        onConfirm:()=>Promise.resolve(remove(kind,asset.id)).catch(e=>setError(errorText(e)))});}},'删除')});
+    const removeItem=remove&&entryRemoveItem({asset,pack,remove,ask:setConfirm,onError:message=>setError(message)});
     const write=update=>{setError('');return commit(kind,asset.id,update).catch(e=>setError(errorText(e)));};
     const [copyIssue,setCopyIssue]=React.useState(null);
-    const copyMenu=kind==='widgets'&&card?.writer?.cardOp&&card.path&&card.ext?.assetBindings&&h(WidgetCopyMenu,{card,pack,asset,
+    const copyMenu=kind==='widgets'&&card?.writer?.cardOp&&card.path&&card.ext?.assetBindings&&h(WidgetCopyMenu,{card,pack,asset,extra:removeItem,
       onCopied:(packId,itemId)=>{setCopyIssue(null);onOpenPack?.(packId,'widgets',itemId);},onError:(text,packId)=>setCopyIssue(text?{text,packId}:null)});
     const [variantChoice,setVariant]=React.useState(undefined),selected=asset.variants&&(assetVariantRow(asset.variants,variantChoice)||assetVariantRow(asset.variants));
     const content=selected?selected.content:asset,view={...asset,...content};delete view.variants;
@@ -537,8 +566,12 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     const [big,setBig]=React.useState(false);
     const enlarge=node=>h('button',{type:'button',className:'ap-hero-view','aria-label':'查看大图 '+asset.name,title:'查看大图',onClick:()=>setBig(true)},node);
     const picture=hash&&enlarge(h(Thumb,{key:hash,binding,packId,hash,label:asset.name,className:'ap-hero'}));
-    const hero=kind==='backgrounds'?(gen&&!asset.variants?h(BackgroundSlot,{packId,asset,hash,gen,picture,timeSwitch,onUpload:uploadBackground&&(file=>{setError('');uploadBackground(asset.id,file).catch(e=>setError(errorText(e)));})}):
-        h('div',{className:'ap-hero-wrap'},picture||h('span',{className:'ap-hero','data-empty':true}),timeSwitch)):
+    // an entry (or the previewed variant) still without its file (新建条目) offers the upload in the hero's place.
+    const blank=!hash,attach=blank&&uploadVariant?(file=>uploadVariant(kind,asset.id,selected?.id,file)):null;
+    const attachBackground=asset.variants?attach:blank&&uploadBackground?(file=>uploadBackground(asset.id,file)):null;
+    const hero=kind==='backgrounds'?(gen&&!asset.variants?h(BackgroundSlot,{packId,asset,hash,gen,picture,timeSwitch,onError:setError,onUpload:uploadBackground&&(file=>uploadBackground(asset.id,file))}):
+        h('div',{className:'ap-hero-wrap'},picture||(attachBackground?h(MediaEmpty,{onFile:attachBackground,onError:setError}):h('span',{className:'ap-hero','data-empty':true})),timeSwitch)):
+      AUDIO_KINDS.includes(kind)&&attach?h(MediaEmpty,{audio:true,onFile:attach,onError:setError}):
       AUDIO_KINDS.includes(kind)?h('div',{className:'ap-player','data-kind':kind,'data-playing':status?.status==='playing'||undefined},h(PlayButton,{audio,asset:view,big:true}),
         // the card has no title of its own — the pane's name heading above it is the one name.
         h('div',{className:'ap-player-main'},h('div',{className:'ap-progress',role:'progressbar','aria-label':'播放进度','aria-valuemin':0,'aria-valuemax':100,'aria-valuenow':Math.round(pct)},h('span',{style:{width:pct+'%'}})),
@@ -546,7 +579,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
             h(PlayerVolume,{value:entryVolume(content),onDraft:v=>audio.level?.(view,v),onCommit:v=>writeContent(c=>({...c,volume:v}))})))):
       kind==='skins'?h(SkinSample,{skin:document,label:asset.name,className:'ap-hero'}):
       // an 物品 previews its own picture (the list thumbnail's image), whole.
-      ['props'].includes(kind)?h('div',{className:'ap-hero-wrap'},hash?enlarge(h(Thumb,{key:hash,binding,packId,hash,label:asset.name,className:'ap-hero ap-item-hero'})):h('span',{className:'ap-hero','data-empty':true})):
+      ['props'].includes(kind)?h('div',{className:'ap-hero-wrap'},hash?enlarge(h(Thumb,{key:hash,binding,packId,hash,label:asset.name,className:'ap-hero ap-item-hero'})):attach?h(MediaEmpty,{onFile:attach,onError:setError}):h('span',{className:'ap-hero','data-empty':true})):
       h('div',{className:'ap-hero-glyph','data-kind':kind},h(KindIcon,{kind}));
     const note=asset.directorNote||'';
     const keywordSuggest=React.useMemo(()=>entryWordCandidates(pack,kind,a=>a.recall?.keywords),[pack,kind]);
@@ -556,11 +589,11 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     const performancePacks=useFullPacksOfKinds(binding,kind==='timers'?(packs.length?packs:[pack]).map(p=>p?.manifest?.id===packId?pack:p):[],['performances']);
     // on a phone (ack) the name row carries the sub-page ‹ and leads the page.
     const title=h('div',{className:'ap-detail-title'+(back?' ap-subhead':'')},back&&h(SubpageBack,back),h(CommitInput,{className:'ap-title-input','aria-label':'名称',value:asset.name,validate:v=>!v.trim()?'名称不能为空':chars(v)>256?'名称最多 256 字':'',onCommit:v=>write(c=>({...c,name:v.trim()}))}),
-        copyMenu||removeMenu||(!asset.variants&&VARIANT_MEDIA_KINDS.includes(kind)&&uploadVariant&&h(MediaReplaceMenu,{asset,busy,onError:setError,upload:(id,file)=>uploadVariant(kind,asset.id,id,file)}))||null);
+        copyMenu||((!asset.variants&&!!hash&&VARIANT_MEDIA_KINDS.includes(kind)&&uploadVariant)?h(MediaReplaceMenu,{asset,busy,onError:setError,extra:removeItem,upload:(id,file)=>uploadVariant(kind,asset.id,id,file)}):removeItem&&h(EntryMoreMenu,{asset,busy,items:removeItem})));
     // on every size the name row leads the pane, above the preview / player,
     // and is the only place the name is shown (the player card dropped its own title).
     return h('div',{className:'ap-detail-pane','data-disabled':asset.enabled===false||undefined},title,h(ErrorBox,{error}),hero,
-      h(EntryVariants,{binding,packId,asset,selected,onSelect:id=>{audio.stop();setVariant(id);},write,busy,upload:uploadVariant&&((id,file)=>uploadVariant(kind,asset.id,id,file)),onError:setError}),
+      h(EntryVariants,{always:true,binding,packId,asset,selected,onSelect:id=>{audio.stop();setVariant(id);},write,busy,upload:uploadVariant&&((id,file)=>uploadVariant(kind,asset.id,id,file)),onError:setError}),
       copyIssue&&h('div',{role:'alert',className:'ap-alert ap-hint-chip'},'\u26a0 ',copyIssue.text,copyIssue.packId&&onOpenPack&&h(Button,{onClick:()=>onOpenPack(copyIssue.packId,'widgets')},'打开副本')),
       // the settings are one column of inline rows — 「label value」, the
       // value read as text and edited in place (InlineField); switches, the slider and the 详情 text sit in the same rows.
@@ -574,8 +607,9 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
           onCommit:keywords=>write(c=>applyEntryFields(c,{recall:{keywords},top:{}}))}),
         // 详情 is an inline multi-line field (no underline, no grip, grows with
         // its text, one paragraph like the stored note); no counter — only the over-limit message.
-        !UNDIRECTED_KINDS.includes(kind)&&h(InlineField,{kind:'text',multiline:true,label:'导演说明',className:'ap-note-field',hideEmpty:true,help:entryHelp('导演说明',NOTE_HELP[kind]),placeholder:'适用情景',value:note,
-          validate:v=>chars(v)>300?'导演说明最多 300 字':'',onCommit:v=>write(c=>({...c,directorNote:v}))}),
+        // 使用情景 stands open with 触发词 on every entry.
+        !UNDIRECTED_KINDS.includes(kind)&&h(InlineField,{kind:'text',multiline:true,label:NOTE_LABEL,className:'ap-note-field',help:entryHelp(NOTE_LABEL,NOTE_HELP[kind]),placeholder:NOTE_PLACEHOLDER,value:note,
+          validate:v=>chars(v)>300?NOTE_LABEL+'最多 300 字':'',onCommit:v=>write(c=>({...c,directorNote:v}))}),
         remarkField({value:asset.remark,onCommit:v=>write(c=>withRemark(c,v))}),
         kind==='performances'&&h(InlineField,{kind:'menu',label:'背景',value:content.background||'',
           help:entryHelp('背景','演出期间覆盖场景背景，结束后恢复；没有图片的背景不生效。'),
@@ -594,8 +628,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
           onCommit:list=>write(c=>applyEntryFields(c,{recall:{},top:{category:assetTags.normalize(list)}}))}),
         // an 物品's 库存标识 (shared by its variants) links it to the 背包 row with the same id.
         kind==='props'&&h(InlineField,{kind:'text',label:'库存标识',hideEmpty:true,help:entryHelp('库存标识',INVENTORY_ID_HELP),value:asset.inventoryId||'',maxLength:256,
-          onCommit:v=>write(c=>{const next={...c},id=v.trim();if(id)next.inventoryId=id;else delete next.inventoryId;return next;})}),
-        variantAddChip({asset,selected,onSelect:id=>{audio.stop();setVariant(id);},write,busy})),
+          onCommit:v=>write(c=>{const next={...c},id=v.trim();if(id)next.inventoryId=id;else delete next.inventoryId;return next;})})),
       kind==='backgrounds'&&h(BackgroundStageTheme,{asset:view,onCommit:writeContent}),
       kind==='widgets'&&h(WidgetSettingsForm,{declaration:document,defaults:content.settingsDefaults,binding,packs:packs.length?packs:[pack],
         onChange:(key,_type,value)=>writeContent(current=>{const settingsDefaults={...current.settingsDefaults};if(_type)settingsDefaults[key]=value;else delete settingsDefaults[key];return {...current,settingsDefaults};}),
@@ -610,7 +643,7 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
     const identity=new Set(['kind','id','name','enabled','recall','directorNote','remark','description','category','inventoryId','aliases','author','license','credits','extensions']);
     if(asset.kind==='cg')identity.delete('description');
     const content=Object.fromEntries(Object.entries(asset).filter(([key])=>!identity.has(key)));
-    return {default:'base',entries:[{id:'base',name:'原图',content}]};
+    return {default:'base',entries:[{id:'base',name:['backgrounds','props','cg'].includes(asset.kind)?'原图':'原版',content}]};
   }
   function entryWithVariants(asset,variants) {
     const next={...asset};
@@ -640,37 +673,34 @@ const LAMP_HELP='同 SillyTavern 世界书：蓝灯始终可选，绿灯在名�
       trigger:({toggle,open})=>button({'aria-haspopup':'menu','aria-expanded':open,disabled:busy,onClick:toggle}),
       content:close=>[...times.map(([id,name])=>h(MenuItem,{key:id,onClick:()=>{close();add(id);}},name)),h(MenuItem,{key:'new',onClick:()=>{close();add();}},'新变体')]});
   }
-  // an entry without a table shows no 变体 section; its add is the
-  // 「＋ 变体」 chip at the end of the entry's field grid (InlineAdd), like every other empty optional.
-  const variantAddChip=props=>!props.asset.variants&&h(InlineSectionAdd,{key:'@variants',label:'变体',
-    render:chip=>h(VariantAdd,{...props,button:p=>h('button',{...chip.props,...p,disabled:chip.props.disabled||p.disabled},...chip.children)})});
   // A media entry without a table replaces its one file from the name row's ⋯ (替换媒体…); with a table each chip has its own.
-  function MediaReplaceMenu({asset,busy,upload,onError}) {
+  function MediaReplaceMenu({asset,busy,upload,onError,extra}) {
     const input=React.useRef(null);
     return h(React.Fragment,null,
       h(Popover,{label:asset.name+' 操作',className:'ap-entry-menu',trigger:({toggle,open})=>h(IconButton,{icon:'more',label:'更多操作 '+asset.name,'aria-expanded':open,disabled:busy,onClick:toggle}),
-        content:close=>h(MenuItem,{onClick:()=>{close();input.current?.click?.();}},'替换媒体…')}),
-      h('input',{ref:input,type:'file',hidden:true,tabIndex:-1,accept:AUDIO_KINDS.includes(asset.kind)?'audio/*,.mp3,.ogg,.wav,.m4a,.flac':CG_IMAGE_TYPES,
+        content:close=>h(React.Fragment,null,h(MenuItem,{onClick:()=>{close();input.current?.click?.();}},'替换媒体…'),extra&&extra(close))}),
+      h('input',{ref:input,type:'file',hidden:true,tabIndex:-1,accept:AUDIO_KINDS.includes(asset.kind)?AUDIO_ACCEPT:IMAGE_ACCEPT,
         onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file)Promise.resolve(upload(undefined,file)).catch(error=>onError(errorText(error)));}}));
   }
-  function EntryVariants({binding,packId,asset,selected,onSelect,write,busy,upload,onError}) {
+  function EntryVariants({always,binding,packId,asset,selected,onSelect,write,busy,upload,onError}) {
     const input=React.useRef(null),target=React.useRef(null),[confirm,setConfirm]=React.useState(null),[renaming,setRenaming]=React.useState(null);
-    const table=asset.variants;
+    // a media entry without a table shows its one file as 「原图」 with the ＋.
+    const own=asset.variants,table=own||(always?entryVariantTable(asset):null);
     if(!table)return null;
     const rows=table.entries,current=selected||rows[0];
     const media=VARIANT_MEDIA_KINDS.includes(asset.kind),picture=VARIANT_PICTURE_KINDS.includes(asset.kind)&&!!binding;
-    const save=action=>write(entry=>({...entry,variants:editAssetVariantTable(entry.variants,action)}));
+    const save=action=>write(entry=>entryWithVariants(entry,editAssetVariantTable(entry.variants||entryVariantTable(entry),action)));
     const rename=(row,name)=>{setRenaming(null);const v=name.trim();if(!v||v===row.name)return;if(chars(v)>256){onError('名称最多 256 字');return;}save({type:'rename',id:row.id,name:v});};
-    const replace=row=>{target.current=row.id;input.current?.click?.();};
+    const replace=row=>{target.current=own?row.id:undefined;input.current?.click?.();};
     const askRemove=row=>setConfirm({title:'删除变体「'+row.name+'」？',body:'仅删除这个变体，保留条目与其它变体。',confirmLabel:'删除',danger:true,onConfirm:()=>save({type:'remove',id:row.id})});
     const addControl=h(VariantAdd,{asset,selected,onSelect,write,busy,
       button:p=>h('button',{type:'button',className:'ap-cg-add-chip ap-variant-add','aria-label':'添加变体',title:'添加变体',...p},h(Glyph,{name:'plus'}))});
-    const fileInput=media&&h('input',{ref:input,type:'file',hidden:true,tabIndex:-1,accept:AUDIO_KINDS.includes(asset.kind)?'audio/*,.mp3,.ogg,.wav,.m4a,.flac':CG_IMAGE_TYPES,onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file&&upload)Promise.resolve(upload(target.current,file)).catch(error=>onError(errorText(error)));}});
+    const fileInput=media&&h('input',{ref:input,type:'file',hidden:true,tabIndex:-1,accept:AUDIO_KINDS.includes(asset.kind)?AUDIO_ACCEPT:IMAGE_ACCEPT,onChange:e=>{const file=e.target.files?.[0];e.target.value='';if(file&&upload)Promise.resolve(upload(target.current,file)).catch(error=>onError(errorText(error)));}});
     return h(StageSection,{title:'变体',meta:rows.length,foldKey:'entry-variants:'+asset.kind+'/'+asset.id},
       h('div',{className:'ap-variant-strip',role:'list','aria-label':'变体'},
-        rows.map((row,i)=>h(VariantChip,{key:row.id,binding,packId,row,picture,chosen:row.id===current?.id,isDefault:!!table&&rows.length>1&&row.id===table.default,first:i===0,last:i===rows.length-1,
-          only:rows.length===1,inTable:!!table,busy,renaming:renaming===row.id,canReplace:media&&!!upload,
-          onSelect:()=>onSelect(table?row.id:undefined),onRename:()=>setRenaming(row.id),onRenameDone:name=>rename(row,name),onRenameCancel:()=>setRenaming(null),
+        rows.map((row,i)=>h(VariantChip,{key:row.id,binding,packId,row,picture,chosen:row.id===current?.id,isDefault:!!own&&rows.length>1&&row.id===table.default,first:i===0,last:i===rows.length-1,
+          only:rows.length===1,inTable:!!own,busy,renaming:renaming===row.id,canReplace:media&&!!upload,
+          onSelect:()=>onSelect(own?row.id:undefined),onRename:()=>setRenaming(row.id),onRenameDone:name=>rename(row,name),onRenameCancel:()=>setRenaming(null),
           onDefault:()=>save({type:'default',id:row.id}),onMove:delta=>save({type:'move',id:row.id,delta}),onReplace:()=>replace(row),onRemove:()=>askRemove(row)})),
         h('div',{role:'listitem',className:'ap-variant-cell'},addControl)),
       fileInput,

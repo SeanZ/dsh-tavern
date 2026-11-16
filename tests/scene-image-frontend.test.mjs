@@ -127,7 +127,7 @@ test('gallery deletes the selected plugin image in its session', async t => {
   assert.ok(galleryImages.some(node => node.props.src.includes('game-B-plugin')))
 
   const removePluginButton = walk(h.tree, node => node.type === 'figure' && node.props.title === 'game-B plugin')[0]
-  const deleteButton = walk(removePluginButton, node => node.type === 'button')[0]
+  const deleteButton = walk(removePluginButton, node => node.props['aria-label'] === '删除这张图片')[0]
   deleteButton.props.onClick()
   await new Promise(resolve => setImmediate(resolve))
   const deletion = calls.find(call => call.method === 'removeSceneImageHistory')
@@ -159,7 +159,7 @@ test('gallery sends selected plugin pictures with their session scope', async t 
   assert.equal(checkboxes.length, 1)
   checkboxes.forEach(node => node.props.onChange({ target: { checked: true } }))
   h.render({ gallerySessionId: 'mixed-session' })
-  const removeSelected = walk(h.tree, node => node.type === 'button' && node.children[0]?.startsWith('删除选中的'))[0]
+  const removeSelected = walk(h.tree, node => node.type === 'button' && typeof node.children[0] === 'string' && node.children[0].startsWith('删除选中的'))[0]
   removeSelected.props.onClick()
   await new Promise(resolve => setImmediate(resolve))
 
@@ -179,3 +179,13 @@ function hReact() {
     useEffect() {}
   }
 }
+
+// The inline preview buttons carry .dsh-tavern-image-preview; no rule for that class may lift them out of the page
+// (the retired full-screen viewer once used the same class with position: fixed and a 100vw x 100dvh cover).
+test('the inline image preview button stays in the page flow', async () => {
+  const css = await readFile(new URL('../tavern-plugin/lib/client-assets/tavern.css', import.meta.url), 'utf8')
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selector]) => /\.dsh-tavern-image-preview(?![\w-])/.test(selector))
+  assert.ok(rules.length > 0, 'tavern.css styles the preview button')
+  for (const [, selector, body] of rules) assert.doesNotMatch(body, /position:\s*(fixed|absolute)/, selector.trim())
+})

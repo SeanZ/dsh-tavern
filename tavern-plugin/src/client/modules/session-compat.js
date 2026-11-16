@@ -38,8 +38,11 @@ function createTavernRecentSessionRetention(sessions, options) {
 	const existing = TAVERN_RECENT_SESSION_RETENTIONS.get(sessions)
 	if (existing) return existing
 	const settings = options || {}
-	const limit = Number.isSafeInteger(settings.limit) ? Math.max(1, settings.limit) : 4
-	const durationMs = Number.isSafeInteger(settings.durationMs) ? Math.max(1000, settings.durationMs) : 60 * 1000
+	// 手机在 5~8 个对话之间来回切：只留 4 个宿主会话时，第 5 个一起就要把最早那个
+	// 拆掉，再切回去等于重开整条事件流 + 重读 page，切一次卡一次。窗口提到 8 个/3 分钟，
+	// 仍然是显式可配置参数（保留参数优先）。
+	const limit = Number.isSafeInteger(settings.limit) ? Math.max(1, settings.limit) : 8
+	const durationMs = Number.isSafeInteger(settings.durationMs) ? Math.max(1000, settings.durationMs) : 180 * 1000
 	const busyRetryMs = Number.isSafeInteger(settings.busyRetryMs) ? Math.max(1000, settings.busyRetryMs) : 5 * 1000
 	const records = new Map()
 	const setTimer = function (run, ms) {
@@ -108,7 +111,22 @@ function createTavernRecentSessionRetention(sessions, options) {
 		schedule(record, durationMs)
 		prune()
 	}
+	let observedMain = mainSessionId(sessions.list && typeof sessions.list.getSnapshot === 'function' ? sessions.list.getSnapshot() : null)
+	// 从宿主原生会话栏切走时不会经过 compat.open：若切走的那局仍在后台生成，立刻补挂
+	// tavern:recent，保证切回来时能直接拿到热事件流与流式尾部。
+	const unsubscribeList = sessions.list && typeof sessions.list.subscribe === 'function'
+		? sessions.list.subscribe(function () {
+			const nextMain = mainSessionId(sessions.list && typeof sessions.list.getSnapshot === 'function' ? sessions.list.getSnapshot() : null)
+			if (nextMain === observedMain) return
+			const previousMain = observedMain
+			observedMain = nextMain
+			if (previousMain && previousMain !== nextMain && snapshotRow(previousMain) && busy(previousMain)) {
+				hold(previousMain)
+			}
+		})
+		: null
 	function dispose() {
+		if (typeof unsubscribeList === 'function') unsubscribeList()
 		for (const id of Array.from(records.keys())) release(id)
 		TAVERN_RECENT_SESSION_RETENTIONS.delete(sessions)
 	}

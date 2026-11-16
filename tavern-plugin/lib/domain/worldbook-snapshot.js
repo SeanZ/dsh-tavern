@@ -56,6 +56,6 @@ export function worldbookSnapshot(session, entries, pendingMessages = []) {
   })
   if (!changed.size) return null
   const delta = renderDelta(entries, changed)
-  const rendered = promptSection('worldbook_context', delta.text)
+  const rendered = promptSection('lorebook_activated', delta.text)
   return { schemaVersion: 2, ...delta, rendered }
 }

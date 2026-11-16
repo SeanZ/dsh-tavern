@@ -4,15 +4,15 @@ import { worldBookViewForWire } from '../domain/worldbook-resource.js'
 
 // Records handed to the client keep only what the panels render: the server-side `rawEntry`
 // and `raw` copies of the source text stay here (they triple a large book's payload).
-function worldBookForClient(record) {
+function worldBookForClient(record, options) {
   if (!record || typeof record !== 'object' || !record.view) return record
-  return Object.assign({}, record, { view: worldBookViewForWire(record.view) })
+  return Object.assign({}, record, { view: worldBookViewForWire(record.view, options) })
 }
 
 // World books, presets, skills, scripts, regex and guide libraries.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createResourceHandlers(deps) {
-  const { agentRegistry, bindScript, chatForSession, chatHeaderForSession, dataRoot, deletePreset,
+  const { agentRegistry, bindScript, chatForSession, chatHeaderForSession, ctx, dataRoot, deletePreset,
     deleteResource, deleteScript, exportSettingsBundle, fileResources, groupOfMode, guideLibrary,
     importPreset, importScript, importSettingsBundle, importSource, listTavernResources, presetLibrary,
     previewPreset, readScript, readTavernSettings, renameResource, runtimePresets,
@@ -20,6 +20,16 @@ export function createResourceHandlers(deps) {
     updateTavernSettings, worldBooks } = deps
   return {
     async getResourceWorkspace(args) {
+      const workspaceId = args?.workspaceId
+      if (typeof workspaceId === 'string' && workspaceId) {
+        const registry = ctx.get('workspaceRegistry')
+        const workspace = registry?.get(workspaceId)
+        if (!workspace) return { workspaceId }
+        // A directory junction can leave the stored path behind after relocation.
+        // Use the host's canonical lookup before session.create can publish an unattached session.
+        const resolved = await registry.resolveByPath(workspace.path)
+        return resolved ? { workspaceId: resolved.id } : { path: workspace.path }
+      }
       return { path: dataRoot + '/resources' }
     },
     async listResources(args) {
@@ -32,6 +42,11 @@ export function createResourceHandlers(deps) {
       return { path: resourcePath, text }
     },
     async setGlobalWorldBook(args) {
+      // 快捷面板开关全局生效：只回身份与 revision，视图用客户端的乐观结果。
+      if (args && args.lean === true) {
+        const result = await worldBooks.setGlobal(args.source, args.enabled, { lean: true })
+        return { source: result.source, revision: result.revision === undefined ? null : result.revision, globalEnabled: result.globalEnabled, lean: true }
+      }
       return worldBookForClient(await worldBooks.setGlobal(args && args.source, args && args.enabled))
     },
     async listWorldBooks(args) {
@@ -59,6 +74,10 @@ export function createResourceHandlers(deps) {
       if (ifRevision !== undefined && ifRevision !== null && record && record.revision !== undefined && record.revision !== null
         && String(record.revision) === String(ifRevision)) {
         return { unchanged: true, source: record.source, revision: record.revision }
+      }
+      // 列表只要元数据：摘要视图省掉每条正文，几 MB 的书也能秒回。
+      if (args && args.summaryOnly === true) {
+        return Object.assign(worldBookForClient(record, { summaryOnly: true }), { summaryOnly: true })
       }
       return worldBookForClient(record)
     },

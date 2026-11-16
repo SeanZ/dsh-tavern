@@ -1,6 +1,6 @@
 'use strict';
 
-function createStageResourceRunnerModule({stageResourceMatches, stageRuntimeErrorText, createPerformanceTimeline, performanceSustained}) {
+function createStageResourceRunnerModule({stageResourceMatches, stageRuntimeErrorText, createPerformanceTimeline, performanceSustained, packFigureStill = () => undefined}) {
 const stageResourceAuthority = source => JSON.stringify([source.sessionId,source.authorityEpoch]);
 const stageResourceErrorText = stageRuntimeErrorText;
 // conflicts that resolve on a re-read (the stage moved on, a lease went stale).
@@ -43,13 +43,14 @@ function stageResourceDescriptors(value, seen) {
     return out;
 }
 
-// Faces use avatar media, never the portrait's unused sprite/mouth catalogue.
+// Faces use avatar media, never the portrait's unused sprite/mouth catalogue. still: the speaker's whole static picture
+// (packFigureStill: hash and head box, no descriptor - nothing pinned) for a skin whose portrait source lists sprite.
 function stageAvatarResources(value) {
     return (value || []).map(figure => figure.media?.avatar ? {
         alias:figure.alias,ref:figure.ref,revision:figure.revision,outfitKey:figure.outfitKey,
         avatarOutfitKey:figure.avatarOutfitKey,avatarStateId:figure.avatarStateId,state:{id:figure.state?.id},
         avatarCrop:figure.avatarCrop,avatarUrl:figure.avatarUrl,media:{avatar:figure.media.avatar},
-        views:{stage:false,portrait:true},form:'avatar'
+        views:{stage:false,portrait:true},form:'avatar',still:figure.still === undefined ? packFigureStill(figure) : figure.still
     } : figure);
 }
 
@@ -741,7 +742,12 @@ function createStageResourceRunner({read, owner, clock = globalThis, foreground 
             state.timeline?.dispose(intent.type); state.finishPerformance?.();
             state.musicLock?.handle?.release({token:state.musicLock.token,reason:intent.type,snap:true}); state.musicLock=null;
             state.jobs.clear(); releaseWarm(state); releaseAccepted(state); present(sessionId,intent);
-            if (state.authority) owner.revoke({authority:true},state.authority);
+            // The presentation belongs to the story context; the bytes belong to the resource authority. A context change
+            // under the same authority (a new stage branch: a card or worldbook write, a regenerated or withdrawn round) keeps
+            // them: destroying them revoked the Blob URLs other holders still draw (the card skin's bundle, held by
+            // useStageConfigSkin under an unchanged key, lost its art mid-game until a later page). A changed authority revokes.
+            const kept = intent.type === 'revoke-presentation' && intent.next && stageResourceAuthority(intent.next) === state.authority;
+            if (state.authority && !kept) owner.revoke({authority:true},state.authority);
             if (intent.type === 'release-presentation') sessions.delete(sessionId);
             break;
         }
@@ -777,7 +783,7 @@ function createStageResourceRunner({read, owner, clock = globalThis, foreground 
         ]), () => owner.dispose()]);
     }};
 }
-return {createStageResourceRunner, stageResourceAuthority, stagePlaybackVisual, stageAvatarResources, stageVisibleAvatars, stageBoundedAvatars, stagePrepareIdleAvatars};
+return {createStageResourceRunner, stageResourceAuthority, stagePlaybackVisual, stageResourceDescriptors, stageAvatarResources, stageVisibleAvatars, stageBoundedAvatars, stagePrepareIdleAvatars};
 }
 
 if (typeof module !== 'undefined' && typeof window === 'undefined') module.exports = {createStageResourceRunnerModule};

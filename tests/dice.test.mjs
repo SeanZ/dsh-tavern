@@ -3,8 +3,9 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { DICE_TARGETS, diceTier, rollDice } from '../tavern-plugin/mods/dice/dice.js'
 import { createDiceTool } from '../tavern-plugin/mods/dice/tools.js'
-import { modTools } from '../tavern-plugin/lib/mod-tools.js'
+import { cardGoverns, cardOffer as cardOfferOf, modTools } from '../tavern-plugin/lib/mod-tools.js'
 import { registerGameplayTools } from '../tavern-plugin/lib/tools/gameplay.js'
 import { createTurnOrchestrator } from '../tavern-plugin/lib/domain/turn-orchestration.js'
 import { prompt } from '../tavern-plugin/lib/prompt-catalog.js'
@@ -21,7 +22,7 @@ test('registered tool returns full hidden record, gates execution and keeps sche
   const registered = []
   const authorized = []
   registerGameplayTools({ ...deps, modTools, authorizeMod: async (modId, chat) => authorized.push([modId, chat.mode]) > 0, markModToolUsed: async () => {}, tools: { register: tool => registered.push(tool) } })
-  assert.deepEqual(modTools.map(tool => [tool.modId, tool.name]), [['dsh.dice', 'tavern_roll']], 'the dice mod declares its tool in its folder')
+  assert.deepEqual(modTools.map(tool => [tool.modId, tool.name]), [['dsh.dice', 'tavern_roll'], ['dsh.dice', 'tavern_check']], 'the dice mod declares its tools in its folder')
   assert.equal(JSON.stringify(registered.find(tool => tool.name === 'tavern_roll')), JSON.stringify(defineTool(createDiceTool(deps))), 'registered from the mod with the same schema')
   await registered.find(tool => tool.name === 'tavern_roll').execute(args, exec)
   assert.deepEqual(authorized, [['dsh.dice', 'story']], 'authorized under its own mod')
@@ -48,6 +49,18 @@ test('registered tool returns full hidden record, gates execution and keeps sche
       assert.equal((await orchestrator.visibleTools('front')).includes('tavern_roll'), mode !== 'card' && (enabled || Boolean(usedModTools)))
     }
   }
+  // A card declaring its rules (extensions["dsh.rules"]) gets tavern_check whatever the mod switch says, and no tavern_roll:
+  // its games have one ruling tool. Other cards follow the switch; a history that already calls tavern_roll keeps it.
+  const cardOffer = async chat => tool => cardOfferOf(tool, chat.card)
+  for (const [card, enabled, usedModTools, expected] of [[{ extensions: { 'dsh.rules': {} } }, false, undefined, [true, false]], [{ extensions: { 'dsh.rules': {} } }, true, undefined, [true, false]],
+    [{ extensions: { 'dsh.rules': {} } }, true, ['tavern_roll'], [true, true]], [{ extensions: {} }, false, undefined, [false, false]], [{ extensions: {} }, true, undefined, [true, true]]]) {
+    const orchestrator = createTurnOrchestrator({ store: { chatForSession: async () => ({ mode: 'story', cardPath: 'cards/a.json', card, usedModTools }) },
+      modTools, modEnabled: async () => enabled, cardOffer, frameBuilder: { build() {} } })
+    const visible = await orchestrator.visibleTools('front')
+    assert.deepEqual([visible.includes('tavern_check'), visible.includes('tavern_roll')], expected)
+  }
+  assert.equal(cardGoverns('dsh.dice', { extensions: { 'dsh.rules': {} } }), true)
+  assert.equal(cardGoverns('dsh.dice', { extensions: {} }), false)
   mode = 'story'
   const marked = []
   await createDiceTool({ ...deps, markUsed: async chat => marked.push(chat) }).execute(args, exec)

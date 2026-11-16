@@ -61,6 +61,7 @@ window.__ModuleLoader__.load({
 
 
 		// @include foreground.js
+		// @include-domain mvu-visibility.js
 		// @include tab-icons.js
 		// @include variable-bindings.cjs
 		// @include pack-transport.js
@@ -103,6 +104,7 @@ window.__ModuleLoader__.load({
 		// @include download.js
 
 		// @include modules/card-password.js
+		// @include modules/task-poll.js
 		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
 		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
 		async function importTavernCardFile(file, call, onProgress = () => {}, replacePath) {
@@ -157,8 +159,11 @@ window.__ModuleLoader__.load({
 		}
 
 		async function importTavernCardSelection(picked, call, { cardZip, onProgress, onTransfer } = {}) {
-			const { cards, zips } = cardZip ? await splitCardFiles(picked) : { cards: picked, zips: [] };
 			const failures = [], notices = [];
+			const misplaced = picked.filter(function (file) { return misplacedFileHint(file, false); });
+			for (const file of misplaced) failures.push({ name: file.name, plain: true, message: misplacedFileHint(file, false) });
+			picked = picked.filter(function (file) { return misplaced.indexOf(file) < 0; });
+			const { cards, zips } = cardZip ? await splitCardFiles(picked) : { cards: picked, zips: [] };
 			let imported = 0, existing = 0, lastPath = "";
 			for (const [index, file] of cards.entries()) {
 				onProgress?.("正在导入 " + (index + 1) + "/" + cards.length + "：" + file.name);
@@ -188,9 +193,17 @@ window.__ModuleLoader__.load({
 				+ (existing ? "，" + existing + " 张已在卡库中" : "")
 				+ (failures.length ? "，" + failures.length + " 个文件失败" : "") : "";
 			if (failures.length) notices.unshift("失败文件：" + failures.map(file => file.name).join("、"));
-			return { lastPath, failures: failures.map(file => file.name + "：" + file.message), summary: [summary, ...notices].filter(Boolean).join("\n") };
+			return { lastPath, failures: failures.map(file => file.plain ? file.message : file.name + "：" + file.message), summary: [summary, ...notices].filter(Boolean).join("\n") };
 		}
 
+		// A save or chat log picked in 「导入人物卡」 (and a card in 「导入存档」, sidebar.js) is told where it belongs, in one plain line.
+		function misplacedFileHint(file, wantsSave) {
+			const name = String(file && file.name || "").toLowerCase();
+			if (wantsSave) return /\.(png|json|charx|dshcard|zip)$/.test(name) ? "这是人物卡文件，不是存档。请关闭后点「导入人物卡」导入。" : "";
+			if (name.endsWith(".dshsave") || name.endsWith(".jsonl")) return "这是存档或聊天记录，不是人物卡。请改用「导入存档」导入。";
+			if (name.endsWith(".dshtransfer")) return "这是备份包，不是人物卡。请在侧栏「导出与导入」里导入。";
+			return "";
+		}
 		// No file filter on card import: macOS file dialogs (Chrome, Safari) grey out .dshcard and
 		// .charx however the accept list names them, since the system knows no type for them.
 		// The import checks the format and says what it accepts.
@@ -304,6 +317,7 @@ window.__ModuleLoader__.load({
 		function MobileCardImportButton(props) {
 			const [catalog, setCatalog] = React.useState(null);
 			const [open, setOpen] = React.useState(false);
+			useWindowFullscreen(open); // the import sheet covers the window (inline-field.js)
 			const [busy, setBusy] = React.useState(false);
 			const [error, setError] = React.useState("");
 			const [filter, setFilter] = React.useState("");
@@ -553,6 +567,7 @@ window.__ModuleLoader__.load({
 			if (sessionId) payload.sessionId = sessionId;
 			const viewRead = method === "getSession" ? beginSessionViewRead(payload.sessionId) : null;
 			if (viewRead) { payload.viewSync = 1; payload.resourceSync = 1; payload.helperWorldbookSync = 1; payload.openingWindow = 1; if (historyFromSessions.has(payload.sessionId)) payload.historyFrom = historyFromSessions.get(payload.sessionId); payload.viewCursor = viewRead.cursor; if (viewRead.receiptSync) payload.receiptSync = 1; }
+			if (method === "getStoryTranscript") { payload.resourceSync = 1; payload.helperWorldbookSync = 1; }
 			if (method === "getTavernHelperContext" && !payload.eventId && !payload.fullView) payload.openingWindow = 1;
 			const requestBody = JSON.stringify(payload);
 			if (trace) {
@@ -811,7 +826,8 @@ window.__ModuleLoader__.load({
 				task: tasks.candidate || sync.task || null,
 				tasks: tasks,
 				mailboxVersion: Number(sync.mailboxVersion) || 0,
-				projectionRevision: Number(sync.projectionRevision) || 0
+				projectionRevision: Number(sync.projectionRevision) || 0,
+				storageRevision: Number(sync.storageRevision) || 0
 			};
 		}
 
@@ -929,6 +945,8 @@ window.__ModuleLoader__.load({
 
 // @include runtime/conversation-lifecycle.js
 
+// @include features/reasoning-stream.js
+
 // @include features/play-events.js
 
 // @include ui/error-center.js
@@ -986,7 +1004,6 @@ window.__ModuleLoader__.load({
 // @include features/reply-observer.js
 
 // @include features/speech.js
-// @include features/read-aloud.js
 
 // @include features/music.js
 
@@ -998,9 +1015,11 @@ window.__ModuleLoader__.load({
 // @include features/message-deletion.js
 // @include features/assistant-renderer.js
 
+// @include features/narrative-damper-status.js
 // @include features/story-transcript-data.js
 // @include modules/story-external-history.js
 // @include host/chat-flow.js
+// @include modules/turn-rail.js
 // @include features/story-transcript-list.js
 
 // @include features/card-list.js
@@ -1054,7 +1073,6 @@ window.__ModuleLoader__.load({
 // @include features/conversation-header.js
 // @include-domain play-interaction-flow.js
 // @include features/play-interaction-panels.js
-// @include modules/turn-rail.js
 // @include features/play-controls.js
 // @include story/bindings.js
 
@@ -1078,8 +1096,8 @@ function clipReplayCore() {
 
 		const storyTranscriptFeature = createTavernStoryTranscriptFeature({
 			replyActions: {
-				useReadAloudState: useTavernReadAloudState,
-				ReadAloud: TavernReplyReadAloudAction,
+				useSpeechVoiced: useTavernBodySpeechVoiced,
+				Speech: TavernReplySpeechAction,
 				Receipt: playControlsFeature.TurnReceiptButton,
 				Latest: playControlsFeature.LatestReplyActions,
 				RollbackTo: playControlsFeature.RollbackToTurnButton,
@@ -1154,6 +1172,22 @@ function clipReplayCore() {
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
+			// Public browser API for third-party plugins (docs/plugin-api.md). Provided before the
+			// slot-renderer guard: on a host without the slot service this apply returns early, and
+			// every client plugin that injects `tavernUi` (worldbook panel, runninghub, …) then stays
+			// pending forever — one pending entry fails the whole web boot audit and the page dies
+			// with "Failed to load plugins".
+			tavernUiExtensions.service.ctx = ctx;
+			tavernUiExtensions.attachHost(ctx);
+			tavernUiExtensions.attachPanelOpener(function (tabId, sessionId) {
+				return openTavernSidebarTab(ctx, { type: tabId }, { sessionId: sessionId });
+			});
+			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
+			// The asset workbench is a plain render endpoint this plugin owns (the library tab body).
+			// Provide it here as well: `dsh-asset-library` injects it, and when only the play session
+			// registered it the library stayed pending until a chat was opened — a pending client entry
+			// fails the whole web boot audit.
+			if (typeof ctx.provide === "function") provideAssetPackWorkbench(ctx);
 			const slots = ctx.slots;
 			if (slots === undefined) return;
 			if (ctx.betterSidebar) stageEffect(() => registerTab(ctx.betterSidebar, {
@@ -1189,11 +1223,6 @@ function clipReplayCore() {
                 return dispose;
             }, "dsh-tavern: view tab catalog");
             ctx.effect(function () { return installTavernViewTabLayout({ document: document, slots: slots }); }, "dsh-tavern: view tab layout");
-			// Public browser API for third-party plugins (docs/plugin-api.md).
-			tavernUiExtensions.service.ctx = ctx;
-			tavernUiExtensions.attachHost(ctx);
-			if (typeof ctx.provide === "function") ctx.provide("tavernUi", tavernUiExtensions.service);
-			// Fork contract C5/C7: the story-view plugin's service (docs/plugin-api-ui.md「故事视图契约」).
 			registerTavernStoryContract(ctx);
 			const signals = ctx.tavernSessionSignals;
 			if (!signals || typeof signals.subscribe !== "function") throw new Error("DSH Tavern Remote 状态流不可用");
@@ -1246,17 +1275,22 @@ function clipReplayCore() {
 				visit(state.bottomSplits);
 				if (typeof ctx.betterSidebar.closeTab === "function") retiredTabs.forEach(function (tabId) { ctx.betterSidebar.closeTab(tabId, snapshot.sessionId ? { sessionId: snapshot.sessionId } : undefined); });
 			}
+			function resourceMention(kind, path, label) {
+				const safePath = String(path || "").replace(/\\/g, "/").replace(/["\r\n]/g, "");
+				const safeLabel = String(label || safePath.split("/").pop() || "世界书").replace(/[\]\r\n]/g, "");
+				return kind === "worldbook" ? "@[" + safeLabel + "](tavern-worldbook:" + encodeURIComponent(safePath) + ")" : "@\"" + safePath + "\"";
+			}
+			function withMention(draft, mention) {
+				if (!mention) return draft;
+				return draft.trim() === "" ? mention : draft + (/\s$/.test(draft) ? "" : " ") + mention;
+			}
 			function appendMention(sessionId, kind, path, label) {
 				try {
 					const actx = ctx.sessions.scope(sessionId);
 					const conversation = ctx.get("conversation");
 					if (!actx || !conversation) throw new Error("当前对话输入框不可用");
 					const input = conversation.input.for(actx);
-					const safePath = String(path || "").replace(/\\/g, "/").replace(/["\r\n]/g, "");
-					const safeLabel = String(label || safePath.split("/").pop() || "世界书").replace(/[\]\r\n]/g, "");
-					const mention = kind === "worldbook" ? "@[" + safeLabel + "](tavern-worldbook:" + encodeURIComponent(safePath) + ")" : "@\"" + safePath + "\"";
-					const draft = input.state.getSnapshot().draft;
-					input.setDraft(draft.trim() === "" ? mention : draft + (/\s$/.test(draft) ? "" : " ") + mention);
+					input.setDraft(withMention(input.state.getSnapshot().draft, resourceMention(kind, path, label)));
 				} catch (err) {
 					console.warn("dsh-tavern: resource mention failed", err);
 					tavernErrorHub.report("在对话中引用", err);
@@ -1267,7 +1301,8 @@ function clipReplayCore() {
 				let busy = false, stopped = false;
 				async function clean() {
 					const draft = String(input.state.getSnapshot().draft || "");
-					const taskStart = draft.indexOf("【卡片任务：");
+					// Drafts saved before the tags begin the task with the original heading.
+					const taskStart = [draft.indexOf("<card_task>"), draft.indexOf("【卡片任务：")].find(index => index >= 0) ?? -1;
 					if (busy || stopped || !(draft.startsWith("<card_workspace>\n") || draft.startsWith("【当前 Tavern 资源工作区】")) || taskStart < 0) return;
 					busy = true;
 					try {
@@ -1281,47 +1316,57 @@ function clipReplayCore() {
 				void clean();
 				return function () { stopped = true; unsubscribe(); };
 			}
-			async function injectTaskPrompt(sessionId, task, label, card, hasInitialResources, taskSupplement) {
+			// The selected resources are written into the task text: inside its <edit_target> /
+			// <initial_script> / <reference_materials> block, otherwise at the end as before.
+			async function injectTaskPrompt(sessionId, task, label, card, resources, taskSupplement) {
 				const actx = ctx.sessions.scope(sessionId);
 				const conversation = ctx.get("conversation");
 				if (!actx || !conversation) throw new Error("当前对话输入框不可用");
 				const input = conversation.input.for(actx);
 				const targetPath = card && card.path ? String(card.path).replace(/\\/g, "/").replace(/["\r\n]/g, "") : "";
+				const mentions = (resources || []).map(function (resource) { return resourceMention(resource.kind, resource.path, resource.title); }).join(" ");
+				const tagged = function (tag, text) { return "<" + tag + ">\n" + text + "\n</" + tag + ">"; };
+				const appendMentions = function () { if (mentions) input.setDraft(withMention(String(input.state.getSnapshot().draft || ""), mentions)); };
 				if (task === "writing-skill") {
 					const references = String(input.state.getSnapshot().draft || "");
-					input.setDraft("/create-writing-skill\n\n请从已引用的素材中提炼写作 Skill，用于前台正文写作。先与我确认适用场景、禁用场景和写作要求，再编写自包含的提示词；成品不依赖原素材或参考文件。\n\n【参考素材】\n" + references);
+					input.setDraft("/create-writing-skill\n\n请从已引用的素材中提炼写作 Skill，用于前台正文写作。先与我确认适用场景、禁用场景和写作要求，再编写自包含的提示词；成品不依赖原素材或参考文件。\n\n" + tagged("reference_materials", withMention(references, mentions)));
 					return;
 				}
 				if (task === "gentle") {
 					if (!targetPath) throw new Error("温和改写缺少目标人物卡");
 					input.setDraft("/gentle-rewrite\n\n@\"" + targetPath + "\"\n\n先调用 tavern_copy_card 创建保留原卡图片的独立副本，再按温和改写 skill 完成改写，交付副本路径与改写摘要。");
+					appendMentions();
 					return;
 				}
 				if (task === "mvu") {
 					if (!targetPath) throw new Error("MVU 转换缺少目标人物卡");
 					input.setDraft(
-						"/card-to-mvu\n\n【目标人物卡】\n@\"" + targetPath + "\"\n\n" +
+						"/card-to-mvu\n\n" + tagged("target_card", "@\"" + targetPath + "\"") + "\n\n" +
 						"先用 tavern_copy_card 建一份副本，在副本上改成 MVU 版，原卡保持不变；保留剧情设定与状态栏视觉风格。原卡自带的候选项（生成提示、按钮、正则和专用脚本）移除，统一使用 DSH Tavern 内置候选项；手机、开场主页等与状态栏和候选项无关的美化与脚本原样保留。"
 					);
+					appendMentions();
 					return;
 				}
 				if (task === "create") {
 					input.setDraft("/create-card\n\n我想新建一张人物卡。请逐题问我，每次一个问题并给参考选项；问清角色、玩家身份、世界和开场，再问我是否需要 MVU 变量和前端美化。选了美化先给 HTML 草图让我挑，确认设定后再创建。\n\n我的初步想法：");
+					appendMentions();
 					return;
 				}
 				if (task === "user-profile") {
 					input.setDraft(
 						"/user-profile\n\n通过分批提问了解我的长期游玩与写作偏好。可以提供差异明确的参考选项，也允许我自由回答或跳过；信息足够后形成长期偏好草案让我核对，只有我明确确认后才保存。"
 					);
+					appendMentions();
 					return;
 				}
 				const result = await rpc("getCardTaskPrompt", { task: task }, sessionId);
 				const draft = String(input.state.getSnapshot().draft || "");
 				const supplement = draft + (taskSupplement ? "\n\n" + taskSupplement : "");
-				const targetSection = targetPath ? "\n\n【目标人物卡】\n@\"" + targetPath + "\"" : "";
-				const resourceSection = hasInitialResources ? (task === "worldbook" || task === "preset" || task === "script" ? "\n\n【编辑目标】\n" : "\n\n【初始剧本】\n") : "";
+				const targetSection = targetPath ? "\n\n" + tagged("target_card", "@\"" + targetPath + "\"") : "";
+				const resourceSection = mentions ? "\n\n" + tagged(task === "worldbook" || task === "preset" || task === "script" ? "edit_target" : "initial_script", mentions) : "";
 				if (task === "debug-play") {
 					input.setDraft("/debug-card" + targetSection + "\n\n" + supplement.trim() + "\n\n请结合已引用的游玩记录，检查这张人物卡的异常表现，按需读取相关日志和状态，说明原因并给出修改建议。");
+					appendMentions();
 					return;
 				}
 				if (task === "edit") {
@@ -1330,7 +1375,7 @@ function clipReplayCore() {
 					input.setDraft(editPrompt.replace("/edit-card", "/edit-card" + target) + resourceSection + (supplement ? "\n\n" + supplement : ""));
 					return;
 				}
-				const taskText = "【卡片任务：" + label + "】" + targetSection + "\n\n" + String(result && result.text || "").trim() + resourceSection;
+				const taskText = "<card_task>" + label + "</card_task>" + targetSection + "\n\n" + String(result && result.text || "").trim() + resourceSection;
 				input.setDraft(taskText + supplement);
 			}
 			registerTavernStartPage(ctx, slots);
@@ -1359,6 +1404,9 @@ function clipReplayCore() {
 			// The voice plugin's 配音 page lists browser speech as a 语音服务 row; the 🔊 line button speaks through the voice
 			// service, so the Tavern has no speech settings of its own.
 			ctx.provide("ttsBrowserSpeech", browserSpeechService);
+            ctx.effect(function () {
+                return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-narrative-damper", order:112, label:() => "叙事阻尼器" }, TavernNarrativeDamperSettingsSection); });
+            }, "dsh-tavern: narrative damper settings section");
             ctx.effect(function () {
                 return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-plugins", order:113, label:() => "酒馆插件" }, TavernPluginsSettingsSection); });
             }, "dsh-tavern: plugins settings section");

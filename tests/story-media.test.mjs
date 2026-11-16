@@ -1,8 +1,10 @@
+import { omitUnsupportedSidebarRule } from './fixtures/jsdom-story-styles.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import React, { act } from 'react'
+import * as ReactDOM from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { JSDOM } from 'jsdom'
 
@@ -26,8 +28,9 @@ async function setup(t) {
   win.fetch = fetch
   vm.runInContext(source, vm.createContext({ requestAnimationFrame: win.requestAnimationFrame.bind(win), cancelAnimationFrame: win.cancelAnimationFrame.bind(win), location: win.location, URL, Blob, window: win, document: win.document, navigator: win.navigator, fetch, performance, console, setTimeout, clearTimeout, AbortController, URLSearchParams, CustomEvent: win.CustomEvent }))
   const ui = { MarkdownText: props => React.createElement('p', { className: 'markdown' }, props.text), Tooltip: props => props.children }
-  const client = descriptor.factory(name => name === 'react' ? React : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
+  const client = descriptor.factory(name => name === 'react' ? React : name === 'react-dom' ? ReactDOM : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
   const stop = client.fixtureUi.registerIllustrator({ kinds: ['fixture/image'], draw: async value => { draws.push(value) }, redraw: async () => {} })
+  omitUnsupportedSidebarRule(win.document)
   const render = client.createTavernStoryRender({}), root = createRoot(win.document.querySelector('main'))
   t.after(() => { act(() => { root.unmount(); stop() }); Object.assign(globalThis, previous); win.close() })
   const view = parts => ({ mode: 'story', replyProjections: [{ turn: 2, version: 2, parts }], tavernRuntimePolicy: { trustedCardMode: false }, tavernHelper: { messages: [] } })
@@ -39,6 +42,15 @@ async function setup(t) {
     await act(async () => root.render(React.createElement(render.IllustrateAction, { sessionId: 'story', storyTurn: 2, disabled })))
   } }
 }
+// 静态正文位于 Shadow DOM；查询同时覆盖正文内媒体与楼层尾部媒体。
+function allWithin(root, selector) {
+  return [...root.querySelectorAll(selector), ...[...root.querySelectorAll('*')]
+    .flatMap(node => node.shadowRoot ? allWithin(node.shadowRoot, selector) : [])]
+}
+function textWithin(root) {
+  return [...root.childNodes].map(node => node.nodeType === 3 ? node.textContent
+    : textWithin(node.shadowRoot || node)).join('')
+}
 const item = (id, anchor = '') => ({ id, kind: 'fixture/image', owner: 'fixture', status: 'ready', anchor, attachment: 'local.png', caption: id, updatedAt: 1 })
 
 test('故事楼层复用上游媒体：正文锚点、未命中兜底与快照不重复', async t => {
@@ -46,10 +58,10 @@ test('故事楼层复用上游媒体：正文锚点、未命中兜底与快照�
   f.setItems([item('anchored', '掌柜递来金币。'), item('trailing', '没有这句')])
   await f.show([{ kind: 'markdown', text: '掌柜递来金币。\n\n旅人接过奖励。' }])
   const body = f.win.document.querySelector('[data-tavern-floor]')
-  assert.equal(body.querySelectorAll('.dsh-tavern-plugin-media').length, 2)
-  assert.equal(body.querySelectorAll('img').length, 2)
-  assert.match(body.textContent, /掌柜递来金币。[\s\S]*anchored[\s\S]*旅人接过奖励。[\s\S]*trailing/)
-  assert.equal(body.querySelectorAll('button').length > 0, true, '保留上游图片操作')
+  assert.equal(allWithin(body, '.dsh-tavern-plugin-media').length, 2)
+  assert.equal(allWithin(body, 'img').length, 2)
+  assert.match(textWithin(body), /掌柜递来金币。[\s\S]*anchored[\s\S]*旅人接过奖励。[\s\S]*trailing/)
+  assert.equal(allWithin(body, 'button').length > 0, true, '保留上游图片操作')
   const snapshot = await f.render.captureFloorSnapshot(body)
   assert.doesNotMatch(snapshot.html, /plugin-media|anchored|trailing/, '媒体保持动态，不固化进正文快照')
   await f.show([], { snapshotHtml: snapshot.html })

@@ -1,3 +1,4 @@
+import { omitUnsupportedSidebarRule } from './fixtures/jsdom-story-styles.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -23,6 +24,7 @@ function setup(t, { retained = false } = {}) {
   vm.runInContext(source, context)
   const ui = { MarkdownText: props => React.createElement('p', { className: 'markdown' }, props.text) }
   const client = descriptor.factory(name => name === 'react' ? React : name === 'react-dom' ? ReactDOM : name === '@deepseek-ai/dsh-client-ui-primitives' ? ui : {})
+  omitUnsupportedSidebarRule(win.document)
   const render = client.createTavernStoryRender({ executeSlash: async () => {} })
   const root = createRoot(win.document.querySelector('main'))
   t.after(() => { act(() => root.unmount()); Object.assign(globalThis, previous); win.close() })

@@ -349,6 +349,13 @@ for (const outcome of ['成功', '失败']) test(`变量未重算标记：重新
   run.sandbox.mvuSettlement.settleVariables = async () => ({ receipt: { version: 1, status: 'unchanged', changes: [] } })
   await run.sandbox.queueSettlement('chat')
   await run.store.updateChat('chat', chat => { chat.messages[1].variablesStale = { replySeq: 7 }; chat.messages[1].mvuBaseline = { swipeId: 0, variables: { stat_data: { hp: 10 } } }; return chat })
+  // 真实显示窗口省略 mvuBaseline；重算必须回读完整权威存档。
+  run.sandbox.readOpeningWindow = async () => {
+    const chat = await run.store.readChat('chat')
+    chat.timeline.operations = {}
+    for (const message of chat.messages) delete message.mvuBaseline
+    return { chat, from: 0, messageCount: chat.messages.length }
+  }
   const staleOf = chat => createSessionStateView({ activity: c => run.tasks.activity(c), evidence: () => ({}) }).volatile(projectChatSessionState(chat), run.tasks.activity(chat)).staleVariables
   let release
   const gate = new Promise(resolve => { release = resolve })

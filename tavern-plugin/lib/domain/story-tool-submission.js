@@ -1,21 +1,23 @@
 import { bodyGenerationFailure } from './body-generation-failure.js'
+import { getCapturedThoughtSignature } from './tool-protocol-enforcement.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { sessionEvents } from './session-events.js'
 import { createSessionSurfaceMutator } from './session-surface-mutations.js'
-import { producerSource } from './message-source.js'
-import { isTurnInput } from './session-turn-input.js'
 import { toolResultsOf } from './tool-result-message.js'
 
 export const STORY_SUBMIT_TOOL_NAME = 'submit_story'
 export const STORY_GENERATE_TOOL_NAME = 'tavern_generate_body'
+export const STORY_CONTEXT_TOOL_NAME = 'read_story_context'
+
+export const STORY_THINK_DESCRIPTION = '正式落笔前的剧情推演与构思草稿：围绕当前人物神态、场景细节、情节衔接与文风要求进行充分构思。'
+export const STORY_CONTENT_DESCRIPTION = '完整最终输出：保留原有格式和标签，写全，不省略、不改写'
+
 export const STORY_SUBMIT_PROMPT = [
   '<output_method>',
-  '本轮所有面向玩家的输出都必须通过工具调用完成：最终输出必须调用 submit_story，完整放入 content 字符串参数。',
-  '除已开放的其他工具调用外，不要输出任何普通文本、摘要、说明或收尾语；写在 content 之外的文字会被丢弃。',
-  '可以先使用已开放的其他工具查询资料；submit_story 必须是本轮最后一次工具调用。',
-  '每轮只调用一次 submit_story；content 必须包含完整最终输出，保留全部标签、格式和内容要求，不要省略、缩写或用占位符代替。',
-  '提交成功即结束本轮，不要再输出任何消息。',
-  '请按上述规则完成本轮；最后必须调用 submit_story 提交全部输出，不要先输出普通文本。',
+  '本轮写给玩家的全部内容通过 submit_story 提交：把完整输出放进 content 参数。content 之外的文字会被丢弃、玩家看不到，所以不在 content 外写摘要、说明或收尾语。',
+  '需要查资料时可以先调用已开放的其他工具，最后再调用 submit_story；每轮只提交一次。',
+  'content 就是玩家看到的最终版本：保留全部标签、格式和内容要求，写全，不用省略或占位符代替。',
+  '提交成功后本轮结束，不再输出消息。',
   '</output_method>'
 ].join('\n')
 
@@ -23,14 +25,14 @@ export const STORY_SUBMIT_PROMPT = [
 // the request cannot serve.
 export const STORY_SUBMIT_PROMPT_STRICT = [
   '<output_method>',
-  '本轮所有面向玩家的输出都必须通过 submit_story 工具完成，完整放入 content 字符串参数。',
-  '不要调用任何其他工具，也不要先查询资料；submit_story 是本轮唯一允许的工具调用。',
-  '除 submit_story 调用外，不要输出任何普通文本、摘要、说明或收尾语；写在 content 之外的文字会被丢弃。',
-  '每轮只调用一次 submit_story；content 必须包含完整最终输出，保留全部标签、格式和内容要求，不要省略、缩写或用占位符代替。',
-  '提交成功即结束本轮，不要再输出任何消息。',
-  '现在直接生成完整输出并调用 submit_story 提交，不要先输出普通文本，也不要调用其他工具。',
+  '本轮写给玩家的全部内容通过 submit_story 提交：把完整输出放进 content 参数。本轮只开放这一个工具，不需要先查资料。',
+  'content 之外的文字会被丢弃、玩家看不到，所以不在 content 外写摘要、说明或收尾语。',
+  '每轮只提交一次；content 就是玩家看到的最终版本：保留全部标签、格式和内容要求，写全，不用省略或占位符代替。',
+  '提交成功后本轮结束，不再输出消息。',
   '</output_method>'
 ].join('\n')
+
+export const STORY_SUBMIT_THINK_NOTE = '调用 submit_story 时，先在 think 参数中完成充分的剧情构思与细节推演，再在 content 参数中写入完整的正式正文。'
 
 // Input-only: the tool is declared solely so the replayed history's calls name a
 // tool the provider knows about. It is not this turn's output channel.
@@ -41,34 +43,36 @@ export const STORY_INPUT_ONLY_PROMPT = [
   '</output_method>'
 ].join('\n')
 
-// A real assistant turn before the input, not a trailing prefill: the model
-// sees its own accepted commitment, while the request still ends on the player's
-// message. Request-only; never written to the save.
-export const STORY_SUBMIT_ACK_TEXT = '收到。本轮所有面向玩家的输出都通过工具调用完成，最终输出放入 submit_story 的 content，不直接输出普通文本。'
-
-export function withStorySubmitAck(messages, turn) {
-  if (!Array.isArray(messages)) return messages
-  let inputIndex = -1
-  for (let index = messages.length - 1; index >= 0; index--) {
-    if (isTurnInput(messages[index])) { inputIndex = index; break }
+export function buildStorySubmitWireSchema({ includeThink = false, extraParts = [] } = {}) {
+  const properties = {}
+  const order = []
+  const required = []
+  if (includeThink) {
+    properties.think = { type: 'string', description: STORY_THINK_DESCRIPTION }
+    order.push('think')
+    required.push('think')
   }
-  // No room before the input (or it is the very first message): leave the
-  // request alone rather than making the provider start on an assistant turn.
-  if (inputIndex <= 0) return messages
-  const ack = {
-    id: 'tavern-submit-ack:' + (Number(turn) || 0),
-    role: 'assistant',
-    source: producerSource('dsh-tavern', { form: 'submit-ack' }),
-    content: [{ type: 'text', text: STORY_SUBMIT_ACK_TEXT }]
+  properties.content = { type: 'string', description: STORY_CONTENT_DESCRIPTION }
+  order.push('content')
+  required.push('content')
+  for (const part of Array.isArray(extraParts) ? extraParts : []) {
+    const name = typeof part?.name === 'string' ? part.name.trim() : ''
+    if (!name || Object.hasOwn(properties, name)) continue
+    properties[name] = {
+      type: 'string',
+      description: typeof part.description === 'string' && part.description.trim() !== '' ? part.description.trim() : `${name} 内容`
+    }
+    order.push(name)
+    if (part.optional !== true && name !== 'extra') required.push(name)
   }
-  return [...messages.slice(0, inputIndex), ack, ...messages.slice(inputIndex)]
+  return { order, required, properties }
 }
 
 // Appended after third-party sections so the last instruction in the system
-// prompt is still the submission contract, regardless of how long they are.
+// prompt is the submission contract without rewriting the message history.
 export const STORY_SUBMIT_REMINDER = [
   '<output_method_reminder>',
-  '最后提醒：本轮所有面向玩家输出的唯一出口是 submit_story；最终输出必须放入 content，不要输出普通文本，也不要重复上面的确认。',
+  '请通过 submit_story 提交本轮完整正文，将写给玩家的全部内容放进 content 参数。',
   '</output_method_reminder>'
 ].join('\n')
 
@@ -89,15 +93,34 @@ function validContent(content) {
   return content
 }
 
+function extractToolReplayMetadata(message, toolCallId) {
+  const source = message?.source
+  if (!source || typeof source !== 'object') return null
+  const provider = typeof source.provider === 'string' ? source.provider : ''
+  const model = typeof source.model === 'string' ? source.model : ''
+  const replayState = source.replayState
+  const api = typeof replayState?.response?.api === 'string' ? replayState.response.api : ''
+  let thoughtSignature = ''
+  if (Array.isArray(message?.content) && Array.isArray(replayState?.blocks) && message.content.length === replayState.blocks.length) {
+    const callIdx = message.content.findIndex(block => block?.type === 'tool-call' && (!toolCallId || block.id === toolCallId))
+    if (callIdx >= 0 && typeof replayState.blocks[callIdx]?.thoughtSignature === 'string') {
+      thoughtSignature = replayState.blocks[callIdx].thoughtSignature
+    }
+  }
+  if (!thoughtSignature && toolCallId) {
+    thoughtSignature = getCapturedThoughtSignature(toolCallId) || ''
+  }
+  if (!provider && !model && !thoughtSignature) return null
+  return {
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    ...(api ? { api } : {}),
+    ...(thoughtSignature ? { thoughtSignature } : {})
+  }
+}
+
 /**
  * The body a submission carried, whether or not its receipt came back verbatim.
- *
- * Hosts differ in what they store for a tool result: some echo the returned
- * string, some wrap or truncate it, some route it through a projector first.
- * Requiring an exact echo made a successful submission invisible whenever the
- * host reformatted the receipt, and the round then failed with "模型本轮没有返回
- * 正文" while the body sat in the call arguments the whole time. A non-error
- * receipt for this call is the proof of success; the text comes from the call.
  */
 export function storySubmissionForTurn(session, turn) {
   const events = sessionEvents(session)
@@ -126,11 +149,12 @@ export function storySubmissionForTurn(session, turn) {
       if (block.isError) continue
       const model = calls.get(block.toolCallId)
       if (!model) continue
-      let content, operationId
+      const receiptText = (block.content || []).filter(item => item?.type === 'text').map(item => item.text).join('')
+      let content, operationId, toolThinkText = ''
       const generated = model.block.name === STORY_GENERATE_TOOL_NAME
       try {
         if (generated) {
-          const receipt = JSON.parse(block.content.filter(item => item.type === 'text').map(item => item.text).join(''))
+          const receipt = JSON.parse(receiptText)
           if (receipt.version === 1 && receipt.status === 'failed') return {
             index: model.index, event: model.event, text: '', content: '', pluginBodyGeneration: true,
             generationError: bodyGenerationFailure(receipt.failure || receipt.message || '插件正文生成失败').message,
@@ -140,51 +164,68 @@ export function storySubmissionForTurn(session, turn) {
           if (receipt.version !== 1 || typeof receipt.operationId !== 'string' || !receipt.operationId
             || receipt.digest !== createHash('sha256').update(JSON.stringify(content)).digest('hex')) continue
           operationId = receipt.operationId
-        } else content = validContent(JSON.parse(model.block.arguments).content)
+        } else {
+          const parsedArgs = JSON.parse(model.block.arguments)
+          content = validContent(parsedArgs.content)
+          if (typeof parsedArgs.think === 'string' && parsedArgs.think.trim() !== '') {
+            toolThinkText = parsedArgs.think.trim()
+          }
+        }
       } catch { continue }
-      return { index: model.index, receiptIndex: Number(event.seq ?? index), event: model.event, text: content.trim(), content, toolCallId: block.toolCallId, storyToolSubmission: true, ...(generated ? { pluginBodyGeneration: true, operationId } : {}) }
+      return {
+        index: model.index,
+        receiptIndex: Number(event.seq ?? index),
+        event: model.event,
+        text: content.trim(),
+        content,
+        ...(toolThinkText ? { toolThinkText } : {}),
+        toolCallId: block.toolCallId,
+        storyToolSubmission: true,
+        ...(generated ? { pluginBodyGeneration: true, operationId } : {})
+      }
     }
   }
   return null
 }
 
 /**
- * Turn a finished submission into an ordinary reply. The appended text lets the
- * chat view show the step as an answer (it ignores surface replacements); the
- * replacement then leaves that one text where the call, receipt and copy were,
- * so the model sees the body once and rollback/regeneration see a normal round.
+ * Turn a finished submission into an ordinary reply while preserving reasoning
+ * blocks and genuine provider thoughtSignature metadata for subsequent turns.
  */
-export function foldStorySubmission(session, result, bodyText) {
+export function foldStorySubmission(session, result, bodyText, messageId) {
   const data = result.event.data
   const turn = Number(data.turn) || 0
   const step = Number(data.step) || 1
   const surface = createSessionSurfaceMutator(session)
-  // `submission.index` is the events-array position while the receipt is an
-  // event seq; the surface is a seq list, so the call is located by its own seq.
-  // A filtered or compacted log makes the two differ, and a positional lookup
-  // then fails with "消息替换目标已变化".
   const start = Number(result.event?.seq ?? result.index)
   const receipt = Number(result.receiptIndex)
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.map(Number) : []
   const from = nodes.indexOf(start)
   const to = nodes.indexOf(receipt)
-  // A step may dispatch several tools, so other receipts can sit between the
-  // call and this submission's receipt. The range must cite every node it
-  // removes or the replacement is refused with "缺少有效的来源引用".
   if (from < 0 || to < from) return
-  // The appended copy and the replacement are one message. The chat view keys a
-  // round's actions by the message id it rendered and the fork map reads the id
-  // of the newest projection event, so two ids here hide the fork action.
+
+  const nativeReasoningBlocks = (data.message?.content || [])
+    .filter(block => block?.type === 'reasoning' && typeof block.text === 'string' && block.text.trim() !== '')
+    .map(block => ({ type: 'reasoning', text: block.text }))
+
+  const toolThinkText = typeof result.toolThinkText === 'string' ? result.toolThinkText.trim() : ''
+  const combinedReasoningBlocks = [...nativeReasoningBlocks]
+  if (toolThinkText !== '') {
+    combinedReasoningBlocks.push({ type: 'reasoning', text: toolThinkText })
+  }
+
+  const toolReplay = extractToolReplayMetadata(data.message, result.toolCallId)
   const reply = {
     ...data.message,
-    // The client marks a tool-submitted body by this prefix: it arrives whole in
-    // one commit, so the reader must land on its first line instead of its end.
-    id: 'tavern-tool-reply:' + randomUUID(),
-    source: { kind: 'model', provider: 'dsh-tavern', model: 'reply-projection' },
-    content: [{ type: 'text', text: bodyText }]
+    id: typeof messageId === 'string' && messageId.startsWith('tavern-tool-reply:') ? messageId : 'tavern-tool-reply:' + randomUUID(),
+    source: {
+      kind: 'model',
+      provider: 'dsh-tavern',
+      model: 'reply-projection',
+      ...(toolReplay ? { toolReplay } : {})
+    },
+    content: [...combinedReasoningBlocks, { type: 'text', text: bodyText }]
   }
-  // Settlement runs after the submission's step closed: the copy and its replacement
-  // share one edit step, so the log stays loadable and the step still shows the answer.
   surface.editStep(() => {
     const shown = surface.append('assistant/message', { turn, step, message: reply }, { surfaceOp: 'append', sourceEventSeqs: [] })
     const shownSeq = Number(typeof shown === 'number' ? shown : shown.seq)
@@ -208,8 +249,13 @@ export function activeStoryTurn(session) {
 export function createStorySubmissionTool({ chatForSession, enabled, isBackground = () => false, pluginGeneration = async () => false }) {
   return {
     name: STORY_SUBMIT_TOOL_NAME,
-    description: '提交本轮全部最终输出，是所有面向玩家文本的唯一出口。全部输出放入 content，不要省略；成功后结束本轮，不再补充回复。',
-    parameters: { content: { type: 'string', required: true, description: '完整最终输出，必须包含全部内容并保留原有格式和标签，不要省略或改写' } },
+    description: '提交本轮写给玩家的全部最终输出（content 之外的文字会被丢弃）。全部输出放入 content，不要省略；成功后结束本轮，不再补充回复。',
+    parameters: {
+      // Host schema compiler (dsh-tools) rejects `required` present with a non-true
+      // value; omitting the key is how a parameter stays optional.
+      think: { type: 'string', description: STORY_THINK_DESCRIPTION },
+      content: { type: 'string', required: true, description: STORY_CONTENT_DESCRIPTION }
+    },
     output: { schema: { type: 'string' }, render(_args, value) { return [{ type: 'text', text: value }] } },
     isConcurrencySafe() { return false },
     async execute(args, exec) {
@@ -224,13 +270,29 @@ export function createStorySubmissionTool({ chatForSession, enabled, isBackgroun
       if (turn === null) throw new Error('当前没有正在生成的游玩回合')
       const content = validContent(args?.content)
       const previous = storySubmissionForTurn(session, turn)
-      // The same body twice is the model repeating itself after a lost receipt;
-      // returning it again is harmless and keeps the round from failing.
-      if (previous && previous.content !== content) throw new Error('本轮已提交正文，不允许重复覆盖')
+      if (previous && previous.content !== content) {
+        throw new Error('本轮已提交正文，不允许重复覆盖')
+      }
       if (typeof exec.concludeTurn !== 'function') throw new Error('当前 DSH 版本不支持工具提交后结束回合，请关闭输出走工具调用或更新 DSH')
       exec.signal?.throwIfAborted()
       exec.concludeTurn()
       return content
+    }
+  }
+}
+
+/** Passive read-only container tool declared for `envelope` context & sync receipts. */
+export function createStoryContextTool() {
+  return {
+    name: STORY_CONTEXT_TOOL_NAME,
+    description: '读取故事世界设定、角色档案与当前回合状态同步记录的容器工具。',
+    parameters: {
+      query: { type: 'string', description: '上下文分区标识（init_world / sync）' }
+    },
+    output: { schema: { type: 'string' }, render(_args, value) { return [{ type: 'text', text: value }] } },
+    isConcurrencySafe() { return true },
+    async execute() {
+      throw new Error('世界设定与最新回合状态已在历史工具记录中同步完毕，无需再次读取；请直接调用 submit_story 提交本轮完整正文。')
     }
   }
 }

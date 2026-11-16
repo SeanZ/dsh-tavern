@@ -33,6 +33,66 @@ function tavernStoryTranscriptHistoryFrom(value) {
 	return Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+// 侧栏（features/sidebar.js）与故事历史模块之间不直接引用：第一次创建的 store 把
+// 自己的 prefetch 挂在这里，侧栏点击会话时调用它，切换瞬间就把正文读起来。
+// 未注册、模块未包含或预取失败时一律静默返回 null，侧栏行为不受影响。
+let TAVERN_STORY_TRANSCRIPT_PREFETCH = null
+function registerTavernStoryTranscriptPrefetch(fn) {
+	TAVERN_STORY_TRANSCRIPT_PREFETCH = typeof fn === 'function' ? fn : null
+}
+function prefetchTavernStoryTranscript(sessionId, options) {
+	if (typeof TAVERN_STORY_TRANSCRIPT_PREFETCH !== 'function') return null
+	try {
+		const result = TAVERN_STORY_TRANSCRIPT_PREFETCH(String(sessionId || ''), options)
+		return result && typeof result.then === 'function' ? result.catch(function () { return null }) : result
+	} catch (_) { return null }
+}
+
+const TAVERN_HIDDEN_PROTOCOL_TAGS = new Set([
+	'think', 'thinking', 'analysis', 'reasoning',
+	'updatevariable', 'updatevariables', 'update_variable', 'update_variables', 'update-variable', 'update-variables',
+	'initvar',
+	'variable-update', 'variables-update', 'variable_update', 'variables_update', 'variables', 'variable',
+	'jsonpatch', 'json_patch', 'json-patch',
+	'mvu', 'mvu_update', 'mvu-update',
+	'story_choices',
+	'ta_hub', 'tw_hub'
+])
+
+function tavernStripHiddenProtocolBlocks(value, allowUnclosed) {
+	const source = typeof value === 'string' ? value : ''
+	if (!source || source.indexOf('<') < 0) return source
+	let out = ''
+	let cursor = 0
+	const tokens = /^[ \t]{0,3}(`{3,}|~{3,})[^\r\n]*(?:\r?\n[\s\S]*?(?:\r?\n[ \t]{0,3}\1[ \t]*(?=\r?\n|$)|(?![\s\S])))?|(`+)[\s\S]*?\2|<\/?([a-z][\w:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*?>/gim
+	let match
+	while ((match = tokens.exec(source))) {
+		if (!match[3]) continue
+		const tag = match[3].toLowerCase()
+		if ((tag === 'script' || tag === 'style' || tag === 'textarea' || tag === 'template') && !/^<\//.test(match[0]) && !/\/\s*>$/.test(match[0])) {
+			const end = new RegExp('<\\/' + tag + '\\s*>', 'gi')
+			end.lastIndex = tokens.lastIndex
+			const found = end.exec(source)
+			tokens.lastIndex = found ? end.lastIndex : source.length
+			continue
+		}
+		if (!TAVERN_HIDDEN_PROTOCOL_TAGS.has(tag)) continue
+		out += source.slice(cursor, match.index)
+		if (!/^<\//.test(match[0]) && !/\/\s*>$/.test(match[0])) {
+			const boundary = new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi')
+			boundary.lastIndex = tokens.lastIndex
+			let depth = 1, next
+			while (depth && (next = boundary.exec(source))) {
+				if (/^<\//.test(next[0])) depth--
+				else if (!/\/\s*>$/.test(next[0])) depth++
+			}
+			tokens.lastIndex = depth ? source.length : boundary.lastIndex
+		}
+		cursor = tokens.lastIndex
+	}
+	return cursor === 0 ? source : out + source.slice(cursor)
+}
+
 // A transcript object is immutable while one stream is being published. Reuse
 // its base rows so a new partial only allocates the single overlaid tail row;
 // without this every published partial rebuilt every row object and defeated
@@ -48,6 +108,7 @@ function tavernStoryTranscriptRows(transcript) {
 		if (cached && cached.messages === entries) return cached.rows
 	}
 	const rows = []
+	let previousUser = null
 	for (let position = 0; position < entries.length; position++) {
 		const entry = entries[position] && typeof entries[position] === 'object' ? entries[position] : {}
 		const message = entry.message && typeof entry.message === 'object' ? entry.message : {}
@@ -60,11 +121,21 @@ function tavernStoryTranscriptRows(transcript) {
 			: 'index:' + (absoluteIndex === null ? position : absoluteIndex)
 		const floorNo = role === 'assistant' && Number.isInteger(entry.floorNo) && entry.floorNo > 0 ? entry.floorNo : null
 		const legacyTurn = Number.isInteger(entry.legacyTurn) && entry.legacyTurn > 0 ? entry.legacyTurn : null
-		const text = tavernStoryTranscriptMessageText(message)
+		const rawText = tavernStoryTranscriptMessageText(message)
 		const streaming = role === 'assistant' && message.placeholder === true
+		const text = role === 'assistant' ? tavernStripHiddenProtocolBlocks(rawText, streaming) : rawText
 		const source = message.source && typeof message.source === 'object' ? message.source
 			: entry.source && typeof entry.source === 'object' ? entry.source : null
 		const requestId = source && typeof source.rpcId === 'string' && source.rpcId ? source.rpcId : null
+		const nextEntry = entries[position + 1]
+		const nextMessage = nextEntry && nextEntry.message && typeof nextEntry.message === 'object' ? nextEntry.message : null
+		const nextReplyTurn = role === 'user' && nextMessage && nextMessage.role === 'assistant' && Number.isSafeInteger(nextMessage.turn) && nextMessage.turn > 0
+			? String(nextMessage.turn) : null
+		// 旧存档里同一条提交（同一个请求号）可能被写了两行：一次准备、一次补写。
+		// 视图只画第一行，否则玩家看到两个一模一样的输入气泡。
+		if (role === 'user' && requestId !== null && previousUser !== null
+			&& previousUser.requestId === requestId && previousUser.text === text) continue
+		if (role === 'user' && requestId !== null) previousUser = { requestId: requestId, text: text }
 		rows.push({
 			key: key,
 			position: position,
@@ -74,6 +145,7 @@ function tavernStoryTranscriptRows(transcript) {
 			greeting: message.greeting === true,
 			legacyTurn: legacyTurn,
 			nativeTurn: Number.isSafeInteger(entry.nativeTurn) && entry.nativeTurn > 0 ? entry.nativeTurn : null,
+			inputTurnKey: nextReplyTurn,
 			absoluteIndex: absoluteIndex,
 			messageUid: typeof entry.messageUid === 'string' && entry.messageUid ? entry.messageUid
 				: (typeof message.messageUid === 'string' && message.messageUid ? message.messageUid : null),
@@ -88,7 +160,7 @@ function tavernStoryTranscriptRows(transcript) {
 				text: text,
 				mode: streaming ? 'markdown' : (typeof message.displayMode === 'string' && message.displayMode ? message.displayMode : 'markdown'),
 				warnings: Array.isArray(message.projectionWarnings) ? message.projectionWarnings : [],
-				...(Array.isArray(entry.displayParts) ? { parts: entry.displayParts } : {})
+				...(!streaming && Array.isArray(message.displayParts || entry.displayParts) ? { parts: message.displayParts || entry.displayParts } : {})
 			} : null,
 			message: message
 		})
@@ -100,7 +172,7 @@ function tavernStoryTranscriptRows(transcript) {
 // 失败尾重新生成时，存档末尾只有玩家输入，没有旧 assistant 行可供流式覆盖。
 // 在这次生成期间补一个纯视图占位行；它使用即将提交的故事轮次与绝对位置，
 // 所以正式正文落盘后会复用同一 DOM。生成失败则随视图标记结束自然消失。
-function tavernStoryTranscriptRegenerationDraftRows(rows, transcript, storyTurn) {
+function tavernStoryTranscriptRegenerationDraftRows(rows, transcript, storyTurn, damperOutcome) {
 	if (!Number.isInteger(storyTurn) || storyTurn <= 0 || !transcript || !Array.isArray(transcript.messages)) return rows
 	const messageCount = Number(transcript.messageCount)
 	// 只有包含存档尾部的窗口才能追加这一轮，往前翻历史时不把新行插进旧页。
@@ -109,7 +181,10 @@ function tavernStoryTranscriptRegenerationDraftRows(rows, transcript, storyTurn)
 		return row && row.role === 'assistant' && (row.legacyTurn === storyTurn || Number(row.message && row.message.turn) === storyTurn)
 	})) return rows
 	const key = 'turn:' + String(storyTurn)
-	const message = { role: 'assistant', turn: storyTurn, text: '', placeholder: true }
+	const message = {
+		role: 'assistant', turn: storyTurn, text: '', placeholder: true,
+		...(damperOutcome && typeof damperOutcome === 'object' ? { narrativeDamper: [damperOutcome] } : {})
+	}
 	return rows.concat({
 		key: key,
 		position: rows.length,
@@ -127,6 +202,80 @@ function tavernStoryTranscriptRegenerationDraftRows(rows, transcript, storyTurn)
 	})
 }
 
+function sameDamperOutcomeValue(left, right) {
+	if (left === right) return true
+	if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false
+	try { return JSON.stringify(left) === JSON.stringify(right) }
+	catch { return false }
+}
+
+function tavernStoryTranscriptDamperRows(rows, options) {
+	const source = Array.isArray(rows) ? rows : []
+	if (!options || typeof options !== 'object' || source.length === 0) return source
+	const live = options.live && options.live.active === true && options.live.outcome && typeof options.live.outcome === 'object'
+		? options.live : null
+	const regenOutcome = options.regenOutcome && typeof options.regenOutcome === 'object' ? options.regenOutcome : null
+	const regenerating = options.regenerating === true
+	const targetUid = typeof options.targetUid === 'string' && options.targetUid !== '' ? options.targetUid : null
+	const targetStoryTurn = Number.isInteger(options.storyTurn) && options.storyTurn > 0 ? options.storyTurn : null
+	let index = -1
+	let desiredOutcome = null
+	if (regenerating) {
+		if (targetUid !== null) {
+			index = source.findLastIndex(function (row) {
+				return row && row.role === 'assistant' && row.messageUid === targetUid
+			})
+		} else if (targetStoryTurn !== null) {
+			index = source.findLastIndex(function (row) {
+				return row && row.role === 'assistant' && (row.legacyTurn === targetStoryTurn || Number(row.message && row.message.turn) === targetStoryTurn)
+			})
+		}
+		if (index >= 0) {
+			const liveMatches = live && (
+				live.targetMessageUid ? live.targetMessageUid === targetUid
+					: (targetStoryTurn !== null && Number(live.storyTurn) === targetStoryTurn)
+						|| live.regeneration === true
+			)
+			desiredOutcome = liveMatches ? live.outcome : regenOutcome
+		}
+	} else if (live && live.regeneration !== true) {
+		const liveTurn = Number.isInteger(live.storyTurn) && live.storyTurn > 0 ? live.storyTurn : null
+		index = source.findLastIndex(function (row) {
+			if (!row || row.role !== 'assistant' || row.greeting || row.streaming !== true) return false
+			if (live.targetMessageUid && row.messageUid === live.targetMessageUid) return true
+			return liveTurn !== null && (row.legacyTurn === liveTurn || Number(row.message && row.message.turn) === liveTurn)
+		})
+		if (index < 0) {
+			index = source.findLastIndex(function (row) {
+				return Boolean(row && row.role === 'assistant' && !row.greeting && row.streaming === true)
+			})
+		}
+		if (index >= 0) desiredOutcome = live.outcome
+	}
+	if (index < 0) return source
+	const row = source[index]
+	if (!row || !row.message || row.streaming !== true) return source
+	const existingList = Array.isArray(row.message.narrativeDamper) ? row.message.narrativeDamper : null
+	const swipeId = Math.max(0, Number(row.message.swipeId) || 0)
+	const existing = existingList ? (existingList[swipeId] || existingList[0] || null) : null
+	if (desiredOutcome) {
+		if (sameDamperOutcomeValue(existing, desiredOutcome)) return source
+		const nextMessage = Object.assign({}, row.message, { narrativeDamper: [desiredOutcome] })
+		const next = source.slice()
+		next[index] = Object.assign({}, row, { message: nextMessage })
+		return next
+	}
+	if (regenerating && existingList) {
+		const nextMessage = Object.assign({}, row.message)
+		delete nextMessage.narrativeDamper
+		delete nextMessage.damperState
+		const next = source.slice()
+		next[index] = Object.assign({}, row, { message: nextMessage })
+		return next
+	}
+	return source
+}
+
 function tavernStoryTranscriptStreamText(partial) {
 	const blocks = Array.isArray(partial && partial.blocks) ? partial.blocks : []
 	const texts = []
@@ -137,6 +286,62 @@ function tavernStoryTranscriptStreamText(partial) {
 	return texts.join('\n')
 }
 
+function tavernStoryTranscriptReasoningState(blocks, streaming) {
+	const list = Array.isArray(blocks) ? blocks : []
+	const parts = []
+	let lastMeaningfulKind = ''
+	for (let index = 0; index < list.length; index++) {
+		const block = list[index]
+		if (!block || typeof block !== 'object') continue
+		if (block.kind === 'reasoning') {
+			if (typeof block.text === 'string' && block.text.trim() !== '') {
+				parts.push(block.text)
+				lastMeaningfulKind = 'reasoning'
+			}
+		} else if (block.kind === 'text') {
+			if (typeof block.text === 'string' && block.text.trim() !== '') {
+				lastMeaningfulKind = 'text'
+			}
+		} else {
+			lastMeaningfulKind = String(block.kind || 'other')
+		}
+	}
+	return {
+		text: parts.join('\n\n'),
+		live: streaming === true && parts.length > 0 && lastMeaningfulKind === 'reasoning'
+	}
+}
+
+function tavernStoryTranscriptTurnReasoning(turn) {
+	const steps = turn && Array.isArray(turn.steps) ? turn.steps : []
+	const parts = []
+	let live = false
+	for (let index = 0; index < steps.length; index++) {
+		const data = steps[index] && steps[index].data
+		const node = data && typeof data.get === 'function' ? data.get('assistant-step') : data
+		if (!node) continue
+		const state = tavernStoryTranscriptReasoningState(node.blocks, node.status === 'running')
+		if (state.text !== '') parts.push(state.text)
+		if (state.live) live = true
+	}
+	return { text: parts.join('\n\n'), live: live }
+}
+
+function tavernStoryTranscriptSummarizeSteps(stepsMap, activeStep, active) {
+	if (!(stepsMap instanceof Map) || stepsMap.size === 0) return { text: '', live: false }
+	const keys = Array.from(stepsMap.keys()).sort(function (a, b) { return a - b })
+	const parts = []
+	let live = false
+	for (let index = 0; index < keys.length; index++) {
+		const key = keys[index]
+		const entry = stepsMap.get(key)
+		if (!entry || !entry.text) continue
+		parts.push(entry.text)
+		if (active === true && key === activeStep && entry.live === true) live = true
+	}
+	return { text: parts.join('\n\n'), live: live }
+}
+
 // Stream text is an overlay on the real assistant placeholder, never another
 // message. Missing rows stay missing: the prepare revision must create them.
 // A live partial may also overlay a regenerated committed row; a retained
@@ -145,7 +350,7 @@ function tavernStoryTranscriptStreamText(partial) {
 // regeneratedDshTurns, so the native partial turn cannot identify the row. When
 // messageUid is given only that exact row may be overlaid — rows sharing the
 // story turn, and the turn hint itself, stay untouched.
-function tavernStoryTranscriptStreamRows(rows, partial, runningCalls, storyTurn, allowCommitted, messageUid) {
+function tavernStoryTranscriptStreamRows(rows, partial, runningCalls, storyTurn, allowCommitted, messageUid, reasoningOverride) {
 	if (!partial) return rows
 	const source = Array.isArray(rows) ? rows : []
 	const streamUid = typeof messageUid === 'string' && messageUid !== '' ? messageUid : null
@@ -162,16 +367,31 @@ function tavernStoryTranscriptStreamRows(rows, partial, runningCalls, storyTurn,
 	if (index < 0 || (!allowCommitted && source[index].streaming !== true)) return rows
 	const calls = Array.isArray(runningCalls) ? runningCalls : []
 	const latestCall = calls.length ? calls[calls.length - 1] : null
-	const streamed = tavernStoryTranscriptStreamText(partial)
+	const rawStreamed = tavernStoryTranscriptStreamText(partial)
+	const streamed = rawStreamed !== '' ? tavernStripHiddenProtocolBlocks(rawStreamed, true) : ''
+	const streamedReasoning = reasoningOverride && typeof reasoningOverride === 'object'
+		? { text: typeof reasoningOverride.text === 'string' ? reasoningOverride.text : '', live: reasoningOverride.live === true }
+		: tavernStoryTranscriptReasoningState(partial && partial.blocks, Boolean(partial))
 	const row = source[index]
-	const text = streamed !== '' ? streamed : row.text
+	const text = rawStreamed !== '' ? streamed : row.text
+	const reasoningText = streamedReasoning.text !== '' ? streamedReasoning.text : (row.reasoningText || '')
+	const reasoningLive = streamedReasoning.text !== '' ? streamedReasoning.live : false
+	const streamingNativeTurn = reasoningOverride && Number.isInteger(reasoningOverride.nativeTurn) && reasoningOverride.nativeTurn > 0
+		? reasoningOverride.nativeTurn
+		: (Number.isInteger(partial && partial.turn) && partial.turn > 0 ? partial.turn : (row.streamingNativeTurn || null))
 	const tool = latestCall && typeof latestCall.name === 'string' ? latestCall.name : row.tool || null
-	// Reasoning-only partials and repeated text should not allocate a new row.
-	if (row.streaming === true && row.text === text && row.tool === tool) return rows
+	// 仅在文本、工具和思维链均未变化时跳过复制，纯思维链增量仍需刷新行状态。
+	if (row.streaming === true && row.text === text && row.tool === tool
+		&& (row.reasoningText || '') === reasoningText
+		&& Boolean(row.reasoningLive) === reasoningLive
+		&& (row.streamingNativeTurn || null) === streamingNativeTurn) return rows
 	const next = source.slice()
 	next[index] = Object.assign({}, row, {
 		streaming: true,
 		text: text,
+		reasoningText: reasoningText,
+		reasoningLive: reasoningLive,
+		streamingNativeTurn: streamingNativeTurn,
 		tool: tool,
 		projection: row.projection ? Object.assign({}, row.projection, { text: text, mode: 'markdown' }) : null
 	})
@@ -253,12 +473,34 @@ function useTavernStoryTranscript(store, sessionId, hookOptions) {
 
 // Story windows and live views are separate projections. Coordinate reads here
 // so rendering does not have to order their refresh triggers.
+function useTavernStoryLiveDamper(sessionId) {
+	const [damper, setDamper] = React.useState(null)
+	React.useEffect(function () {
+		setDamper(null)
+		if (!sessionId || typeof tavernSessionSignals === 'undefined' || typeof tavernSessionSignals?.subscribe !== 'function') {
+			return undefined
+		}
+		return tavernSessionSignals.subscribe(sessionId, 'narrative-damper', function (signal) {
+			const snap = signal && signal.snapshot && typeof signal.snapshot === 'object' ? signal.snapshot : null
+			if (snap && snap.active === true && snap.outcome && typeof snap.outcome === 'object') {
+				setDamper(snap)
+			} else {
+				setDamper(null)
+			}
+		})
+	}, [sessionId])
+	return damper
+}
+
 function useTavernStoryProjectionRefresh(store, sessionId, {
 	historyFrom, enabled, active, running, partial, transcript, view, externalHistory
 }) {
 	const live = typeof useLiveTavernView === 'function'
 		? useLiveTavernView(sessionId, 'story-transcript-revision', undefined, { deferLoad: !view }) : null
-	const liveRevision = Number(live?.view?.tavernHelper?.stateRevision ?? view?.tavernHelper?.stateRevision)
+	const liveRevision = Number(
+		live?.view?.storageRevision ?? live?.view?.tavernHelper?.stateRevision
+		?? view?.storageRevision ?? view?.tavernHelper?.stateRevision
+	)
 	const storyRevision = Number(transcript?.revision)
 	const nativeTurn = Number.isInteger(partial?.turn) ? partial.turn : null
 	const storyTurn = nativeTurn !== null && typeof tavernStoryTurnForDshTurn === 'function'
@@ -272,23 +514,28 @@ function useTavernStoryProjectionRefresh(store, sessionId, {
 		// Local invalidations have no revision. Remember any that arrive during a read.
 		let requestedRead = 0, acceptedRead = 0
 		const snapshot = () => store.snapshotFor(sessionId, historyFrom)
-		const reached = read => (read.status === 'ready' || read.status === 'empty') && read.revision >= wantedRevision
+		const reached = (read, target = wantedRevision) => (read.status === 'ready' || read.status === 'empty')
+			&& (target <= 0 || (Number.isSafeInteger(read.revision) && read.revision >= target))
 		const refresh = createSessionRefreshController({
 			loadTimeoutMs: 10000,
 			retryDelaysMs: TAVERN_PROJECTION_RETRY_DELAYS_MS,
 			async load({ signal }) {
 				const requested = requestedRead
-				if (requested !== acceptedRead || !reached(snapshot())) {
-					await store.read(sessionId, { historyFrom, force: true, signal, minimumRevision: wantedRevision })
+				const targetRevision = wantedRevision
+				if (requested !== acceptedRead || !reached(snapshot(), targetRevision)) {
+					await store.read(sessionId, { historyFrom, force: true, signal, minimumRevision: targetRevision })
 				}
-				return requested
+				return { requested, targetRevision }
 			},
-			onResult(requested) {
+			onResult(outcome) {
 				const read = snapshot()
-				if (!reached(read)) {
+				if (!reached(read, outcome.targetRevision)) {
 					throw read.error || new Error('故事历史尚未读到已提交版本')
 				}
-				acceptedRead = requested
+				acceptedRead = outcome.requested
+				if (requestedRead !== acceptedRead || !reached(read, wantedRevision)) {
+					return { delay: 0 }
+				}
 			},
 			onError() {}
 		})
@@ -296,7 +543,8 @@ function useTavernStoryProjectionRefresh(store, sessionId, {
 		function request(revision, committed = false) {
 			if (revision === undefined) requestedRead++
 			else {
-				if (!Number.isSafeInteger(revision) || revision <= snapshot().revision || revision < wantedRevision) return
+				const currentRevision = snapshot().revision
+				if (!Number.isSafeInteger(revision) || (Number.isSafeInteger(currentRevision) && revision <= currentRevision) || revision < wantedRevision) return
 				if (revision === wantedRevision && !committed) return
 				wantedRevision = revision
 				// A durable commit can overtake a read started while the model was still finishing.
@@ -312,11 +560,18 @@ function useTavernStoryProjectionRefresh(store, sessionId, {
 		const unsubscribe = typeof tavernSessionSignals !== 'undefined' && tavernSessionSignals?.subscribe(sessionId, 'story-regenerated', signal => {
 			request(Number(signal.version), true)
 		})
+		// tavern-state 也会因后台结算、姿态、候选和模板同步持续推进 storageRevision：
+		// 排队跟进而不强行中断当前读取，避免切回刚生成完的会话时反复打断首屏正文读取。
+		const unsubscribeState = typeof tavernSessionSignals !== 'undefined' && tavernSessionSignals?.subscribe(sessionId, 'tavern-state', signal => {
+			const revision = Number(signal && signal.snapshot && signal.snapshot.storageRevision)
+			if (Number.isSafeInteger(revision) && revision > 0) request(revision, false)
+		})
 		return function () {
 			requestRefresh.current = null
 			refresh.stop()
 			window.removeEventListener('dsh-tavern-story-mutated', changed)
 			if (unsubscribe) unsubscribe()
+			if (unsubscribeState) unsubscribeState()
 		}
 	}, [store, sessionId, historyFrom, active])
 
@@ -397,13 +652,19 @@ function createTavernStoryTranscriptDataModule(deps) {
 		const historyFrom = tavernStoryTranscriptHistoryFrom(readOptions && readOptions.historyFrom)
 		const args = historyFrom === null ? { sessionId: id } : { sessionId: id, historyFrom: historyFrom }
 		if (readOptions?.includeToolCalls === true) args.includeToolCalls = true
+		// 上次读到的版本与窗口签名一起带回去，服务端能毫秒级判定「屏幕上那份就是这份」，
+		// 免得每次切回来都整条重投影再整条传回来。
+		if (Number.isSafeInteger(readOptions?.knownRevision) && readOptions.knownRevision >= 0) args.knownRevision = readOptions.knownRevision
+		if (typeof readOptions?.knownStorySignature === 'string' && readOptions.knownStorySignature !== '') args.knownStorySignature = readOptions.knownStorySignature
 		const result = await request('getStoryTranscript', args, id, readOptions?.signal ? { signal: readOptions.signal } : undefined)
 		return {
 			sessionId: id,
 			historyFrom: historyFrom,
 			transcript: result && result.storyTranscript ? result.storyTranscript : null,
 			view: result && result.view ? result.view : null,
-			revision: result && result.revision !== undefined ? result.revision : null
+			revision: result && result.revision !== undefined ? result.revision : null,
+			storySignature: result && typeof result.storySignature === 'string' ? result.storySignature : null,
+			unchanged: result ? result.unchanged === true : false
 		}
 	}
 
@@ -415,15 +676,91 @@ function createTavernStoryTranscriptDataModule(deps) {
 		const load = typeof settings.load === 'function' ? settings.load : fetchStoryTranscript
 		const preferences = options.displayPreferences || (typeof displayPreferences === 'undefined' ? null : displayPreferences)
 		const showPlayProcess = () => preferences?.snapshot()?.showPlayProcess === true
+		const showDamperStatus = () => preferences?.snapshot()?.showDamperStatus !== false
 		const subscribeProcess = preferences ? preferences.subscribe : TAVERN_STORY_TRANSCRIPT_NOOP_SUBSCRIBE
 		const listeners = new Set()
 		// The visible store is single-slot, but switching sessions must not throw away
 		// every transcript it already downloaded. Keep a small LRU by session+window;
 		// force/read-after-mutation still bypasses it and replaces the cached revision.
-		const cacheSize = Number.isSafeInteger(settings.cacheSize) ? Math.max(0, settings.cacheSize) : 4
+		// 手机在 5~12 个对话之间来回切：窗口缓存只留 4 份时刚切一圈就全被踢光，每次切回
+		// 都要重新走一遍 getStoryTranscript（整条正文重传 + 重投影）。
+		const cacheSize = Number.isSafeInteger(settings.cacheSize) ? Math.max(0, settings.cacheSize) : 12
 		const cache = new Map()
+		const prefetches = new Map()
 		let ticket = 0
+		let inflight = null
 		let state = IDLE
+
+		function requestTargetKey(id, historyFrom, includeToolCalls) {
+			return JSON.stringify([id, historyFrom, Boolean(includeToolCalls)])
+		}
+		function linkAbortSignal(externalSignal, controller) {
+			if (!externalSignal || !controller) return function () {}
+			if (externalSignal.aborted) {
+				try { controller.abort() } catch (_) {}
+				return function () {}
+			}
+			if (typeof externalSignal.addEventListener !== 'function') return function () {}
+			const listener = function () { try { controller.abort() } catch (_) {} }
+			externalSignal.addEventListener('abort', listener)
+			return function () {
+				try { externalSignal.removeEventListener('abort', listener) } catch (_) {}
+			}
+		}
+		function raceAbortSignal(promise, signal) {
+			if (!signal) return promise
+			if (signal.aborted) {
+				return Promise.reject(Object.assign(new Error('故事读取已取消'), { name: 'AbortError' }))
+			}
+			if (typeof signal.addEventListener !== 'function') return promise
+			return new Promise(function (resolve, reject) {
+				const onAbort = function () {
+					reject(Object.assign(new Error('故事读取已取消'), { name: 'AbortError' }))
+				}
+				signal.addEventListener('abort', onAbort, { once: true })
+				Promise.resolve(promise).then(function (value) {
+					signal.removeEventListener('abort', onAbort)
+					resolve(value)
+				}, function (error) {
+					signal.removeEventListener('abort', onAbort)
+					reject(error)
+				})
+			})
+		}
+
+		// 快速连切时，上一局还没回来的读已经没有意义：直接中断，别让它继续占着主线程
+		// 和内存。取消只发生在客户端；服务端故事窗口缓存照旧命中，下次切换是毫秒级的。
+		function abortInflight() {
+			const previous = inflight
+			inflight = null
+			if (!previous) return
+			try { previous.controller && previous.controller.abort() } catch (_) {}
+		}
+		// 外部传了 signal 就跟着外部取消，没传就由内部接管；切换会话或显式强制重读抢占旧请求。
+		function beginRequest(externalSignal, targetKey, baseline) {
+			if (typeof AbortController !== 'function') {
+				const fallbackEntry = { controller: null, targetKey: targetKey, baseline: baseline || null, loadPromise: null }
+				inflight = fallbackEntry
+				return {
+					entry: fallbackEntry,
+					signal: externalSignal,
+					done: function () { if (inflight === fallbackEntry) inflight = null }
+				}
+			}
+			abortInflight()
+			const controller = new AbortController()
+			const entry = { controller: controller, targetKey: targetKey, baseline: baseline || null, loadPromise: null }
+			inflight = entry
+			const unlink = linkAbortSignal(externalSignal, controller)
+			return {
+				entry: entry,
+				signal: controller.signal,
+				done: function () {
+					unlink()
+					if (inflight === entry) inflight = null
+				}
+			}
+		}
 
 		function cacheKey(sessionId, historyFrom) { return JSON.stringify([sessionId, historyFrom]) }
 		function touch(key) {
@@ -471,7 +808,6 @@ function createTavernStoryTranscriptDataModule(deps) {
 			const id = String(sessionId || '')
 			const historyFrom = tavernStoryTranscriptHistoryFrom(readOptions && readOptions.historyFrom)
 			const force = readOptions && readOptions.force === true
-			const signal = readOptions?.signal
 			const includeToolCalls = showPlayProcess()
 			const key = cacheKey(id, historyFrom)
 			const sameSession = state.sessionId === id
@@ -512,13 +848,62 @@ function createTavernStoryTranscriptDataModule(deps) {
 					ticket: current
 				})
 			}
+			const targetKey = requestTargetKey(id, historyFrom, includeToolCalls)
+			const minimumRevision = Number.isSafeInteger(readOptions?.minimumRevision) && readOptions.minimumRevision > 0
+				? readOptions.minimumRevision : 0
+			let pendingRequest = null
+			let unlinkJoined = null
 			try {
-				const result = await load(id, { historyFrom: historyFrom === null ? undefined : historyFrom,
-					...(includeToolCalls ? { includeToolCalls: true } : {}), ...(signal ? { signal } : {}) })
+				let result
+				let effectiveHit = cacheHit
+				let signal = readOptions?.signal
+				// 切换会话时首读已经在途，随后视图或信号带着目标版本跟进：同一目标直接复用这趟在途读，
+				// 避免刚发出去的请求被自己打断重发；若返回版本仍低于目标版本再补读一次。
+				const joinable = force && minimumRevision > 0 && inflight && inflight.targetKey === targetKey
+					&& inflight.loadPromise && !(inflight.controller && inflight.controller.signal && inflight.controller.signal.aborted)
+					? inflight : null
+				if (joinable) {
+					unlinkJoined = linkAbortSignal(readOptions?.signal, joinable.controller)
+					signal = joinable.controller ? joinable.controller.signal : readOptions?.signal
+					const joined = await raceAbortSignal(joinable.loadPromise, signal)
+					unlinkJoined()
+					unlinkJoined = null
+					if (current !== ticket) return state
+					signal?.throwIfAborted()
+					if (joined && Number.isSafeInteger(joined.revision) && joined.revision >= minimumRevision) {
+						result = joined
+						effectiveHit = cacheHit || joinable.baseline
+					}
+				}
+				if (result === undefined) {
+					pendingRequest = beginRequest(readOptions?.signal, targetKey, cacheHit)
+					signal = pendingRequest.signal
+					const activePrefetch = !force ? prefetches.get(targetKey) : null
+					const loadWork = activePrefetch && activePrefetch.baseline === cacheHit
+						? activePrefetch.loadPromise
+						: load(id, { historyFrom: historyFrom === null ? undefined : historyFrom,
+							...(includeToolCalls ? { includeToolCalls: true } : {}),
+							// 缓存命中时把上次的版本与窗口签名带回去：服务端据此判定正文没变就只回
+							// { unchanged: true }，既不重投影也不整条重传。
+							...(cacheHit && Number.isSafeInteger(cacheHit.revision) && cacheHit.revision >= 0 ? { knownRevision: cacheHit.revision } : {}),
+							...(cacheHit && typeof cacheHit.storySignature === 'string' && cacheHit.storySignature !== '' ? { knownStorySignature: cacheHit.storySignature } : {}),
+							...(signal ? { signal } : {}) })
+					pendingRequest.entry.loadPromise = loadWork
+					result = await raceAbortSignal(loadWork, signal)
+				}
 				if (current !== ticket) return state
 				signal?.throwIfAborted()
-				if (readOptions?.minimumRevision && !(result?.revision >= readOptions.minimumRevision)) {
+				if (minimumRevision > 0 && !(result?.revision >= minimumRevision)) {
 					throw new Error('故事历史尚未读到已提交版本')
+				}
+				if (result && result.unchanged === true && effectiveHit) {
+					// 屏幕上这份就是服务端当前这份：只把它放回 LRU 前排，不重新 publish，
+					// 免得一次切回白白触发整棵故事列表重绘。
+					remember(key, effectiveHit)
+					if (state.sessionId !== id || state.historyFrom !== historyFrom || state.revision !== effectiveHit.revision || state.status !== effectiveHit.status) {
+						publish(Object.assign({}, effectiveHit, { ticket: current }))
+					}
+					return state
 				}
 				const transcript = result && result.transcript ? result.transcript : null
 				const next = {
@@ -527,6 +912,7 @@ function createTavernStoryTranscriptDataModule(deps) {
 					transcript: transcript,
 					view: result && result.view ? result.view : null,
 					revision: result && result.revision !== undefined ? result.revision : null,
+					storySignature: result && typeof result.storySignature === 'string' ? result.storySignature : null,
 					error: null, ticket: current
 				}
 				remember(key, next)
@@ -538,29 +924,99 @@ function createTavernStoryTranscriptDataModule(deps) {
 				if (cacheHit) return state
 				const preserve = state.sessionId === id && state.transcript
 				publish({ sessionId: id, historyFrom: historyFrom, status: 'error', transcript: preserve ? state.transcript : null,
-					view: preserve ? state.view : null, revision: preserve ? state.revision : null, error: error, ticket: current })
+					view: preserve ? state.view : null, revision: preserve ? state.revision : null,
+					storySignature: preserve ? state.storySignature : null, error: error, ticket: current })
+			} finally {
+				if (unlinkJoined) unlinkJoined()
+				if (pendingRequest) pendingRequest.done()
 			}
 			return state
 		}
 
+		// 点击会话或后台会话结束生成时先把正文读起来（后台会话不改可见状态），切过去时
+		// 服务端与本地窗口缓存都已经拿到最新楼层，不用再等 getSession 落地才发第一次读。
+		async function prefetch(sessionId, prefetchOptions) {
+			const id = String(sessionId || '')
+			if (id === '') return null
+			const historyFrom = tavernStoryTranscriptHistoryFrom(prefetchOptions && prefetchOptions.historyFrom)
+			const includeToolCalls = showPlayProcess()
+			const key = cacheKey(id, historyFrom)
+			if (state.sessionId === id && state.historyFrom === historyFrom && state.transcript
+				&& (!includeToolCalls || state.includeToolCalls)) return state
+			const targetKey = requestTargetKey(id, historyFrom, includeToolCalls)
+			const existingPrefetch = prefetches.get(targetKey)
+			if (existingPrefetch) return existingPrefetch.promise
+			const known = cache.get(key)
+			const baseline = known && (!includeToolCalls || known.includeToolCalls) ? known : null
+			const loadPromise = Promise.resolve().then(function () {
+				return load(id, { historyFrom: historyFrom === null ? undefined : historyFrom,
+					...(includeToolCalls ? { includeToolCalls: true } : {}),
+					...(baseline && Number.isSafeInteger(baseline.revision) && baseline.revision >= 0 ? { knownRevision: baseline.revision } : {}),
+					...(baseline && typeof baseline.storySignature === 'string' && baseline.storySignature !== '' ? { knownStorySignature: baseline.storySignature } : {}) })
+			})
+			const entry = { baseline: baseline, loadPromise: loadPromise, promise: null }
+			entry.promise = loadPromise.then(function (result) {
+				if (result && result.unchanged === true) {
+					if (baseline) remember(key, baseline)
+					return baseline || null
+				}
+				const transcript = result && result.transcript ? result.transcript : null
+				if (!transcript) return null
+				const next = {
+					sessionId: id, historyFrom: historyFrom, includeToolCalls: includeToolCalls,
+					status: 'ready', transcript: transcript,
+					view: result && result.view ? result.view : null,
+					revision: result && result.revision !== undefined ? result.revision : null,
+					storySignature: result && typeof result.storySignature === 'string' ? result.storySignature : null,
+					error: null, ticket: ticket
+				}
+				// 预取只写缓存，不抢其他会话的可见槽位；比它新的读已经落盘时以新的为准。
+				const current = cache.get(key)
+				if (current && Number.isSafeInteger(current.revision) && Number.isSafeInteger(next.revision)
+					&& current.revision > next.revision) return current
+				remember(key, next)
+				if (state.sessionId === id && state.historyFrom === historyFrom
+					&& (!includeToolCalls || state.includeToolCalls === includeToolCalls)
+					&& (!state.transcript || (Number.isSafeInteger(next.revision) && (!Number.isSafeInteger(state.revision) || next.revision > state.revision)))) {
+					const shown = ++ticket
+					publish(Object.assign({}, next, { ticket: shown }))
+				}
+				return next
+			}, function () { return null }).finally(function () {
+				if (prefetches.get(targetKey) === entry) prefetches.delete(targetKey)
+			})
+			prefetches.set(targetKey, entry)
+			return entry.promise
+		}
 		function reset() {
 			ticket += 1
+			abortInflight()
+			prefetches.clear()
 			cache.clear()
 			publish(IDLE)
 		}
 
-		return Object.freeze({ subscribe: subscribe, getSnapshot: getSnapshot, snapshotFor: snapshotFor, peek: peek, read: read, reset: reset, subscribeProcess, showPlayProcess })
+		// 侧栏点会话时用它预热：只写缓存，不改可见槽位，失败静默。
+		if (!TAVERN_STORY_TRANSCRIPT_PREFETCH) {
+			registerTavernStoryTranscriptPrefetch(function (sessionId) { return prefetch(sessionId) })
+		}
+
+		return Object.freeze({ subscribe: subscribe, getSnapshot: getSnapshot, snapshotFor: snapshotFor, peek: peek, read: read,
+			prefetch: prefetch, reset: reset, subscribeProcess, showPlayProcess, showDamperStatus })
 	}
 
 	return Object.freeze({
 		fetchStoryTranscript: fetchStoryTranscript,
 		createStoryTranscriptStore: createStoryTranscriptStore,
 		useStoryTranscript: useTavernStoryTranscript,
+		useLiveDamper: useTavernStoryLiveDamper,
 		useProjectionRefresh: useTavernStoryProjectionRefresh,
 		createModeStore: createTavernStoryTranscriptModeStore,
 		useMode: useTavernStoryTranscriptMode,
 		// 纯投影，列表组件与本模块的测试共用（顶层同名函数）。
 		storyTranscriptRows: tavernStoryTranscriptRows,
+		storyTranscriptRegenerationDraftRows: tavernStoryTranscriptRegenerationDraftRows,
+		storyTranscriptDamperRows: tavernStoryTranscriptDamperRows,
 		storyTranscriptStreamRows: tavernStoryTranscriptStreamRows,
 		storyTranscriptPendingRows: tavernStoryTranscriptPendingRows,
 		storyTranscriptStreamText: tavernStoryTranscriptStreamText,

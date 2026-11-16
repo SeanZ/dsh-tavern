@@ -61,7 +61,7 @@ test('interruptQueued 转调原生回合限定的契约，拒绝无效参数', a
   const { client, calls } = loadClient({ interruptStoryQueue: {interrupted:true} })
   const service = serviceOf(client, {})
   assert.equal((await service.interruptQueued('s1', 4)).interrupted, true)
-  assert.deepEqual(calls[0], {method:'interruptStoryQueue',args:{turn:4,sessionId:'s1'}})
+  assert.deepEqual(calls.find(call => call.method === 'interruptStoryQueue'), {method:'interruptStoryQueue',args:{turn:4,sessionId:'s1'}})
   assert.throws(() => service.interruptQueued('s1', 0), /正整数/)
   assert.throws(() => service.interruptQueued('', 4), /sessionId/)
 })

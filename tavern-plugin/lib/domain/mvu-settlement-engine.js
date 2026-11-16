@@ -1,9 +1,12 @@
 import { settlementTurn } from './chat-session-state.js'
 import { collectMvuHelperContext } from './mvu-background-settlement.js'
 import { applyMvuSettlementEffect } from './mvu-settlement-effect.js'
+import { cardMvuLimits } from './mvu-limits.js'
 import { projectAgentMessageText } from './runtime-content-projection.js'
 import { pendingMvuTarget } from './settlement-turn.js'
+import { settledVariables } from './read-variables.js'
 import { normalizeBackgroundTasks } from './tavern-settings.js'
+import { settlementBudgetRuleText } from './narrative-damper.js'
 
 function str(value) {
   return typeof value === 'string' ? value : (value === undefined || value === null ? '' : String(value))
@@ -62,6 +65,15 @@ export function createMvuSettlementEngine(deps) {
         }
       })
     }
+    const turnNumber = settlementTurn(snapshot)
+    const persistedDamper = Object.values(snapshot.foregroundFrames || {})
+      .filter(item => item && item.kind === 'foreground' && Number(item.turn) === Number(turnNumber) && (!taskRun.basedOn.branchId || item.branchId === taskRun.basedOn.branchId))
+      .at(-1)?.source?.narrativeDamper || null
+    const activeDamper = deps.narrativeDamper?.activeRuling?.(snapshot.id, turnNumber)?.ruling || persistedDamper
+    const baseUpdateRules = await mvuUpdateRules(snapshot, card, mvuTarget)
+    const damperBudgetRule = activeDamper ? settlementBudgetRuleText(activeDamper) : ''
+    const baseline = settledVariables(snapshot, mvuTarget.messageId)
+    const toolTurns = { after: baseline.turn, upTo: Number(mvuTarget.message.turn) }
     const settlementInput = {
       onSubmission: submission => saveDelivery(submission),
       onPrepared: prepared => saveDelivery(prepared.submission, prepared),
@@ -73,18 +85,26 @@ export function createMvuSettlementEngine(deps) {
       branchId: taskRun.basedOn.branchId,
       basedOnRevision: taskRun.basedOn.revision,
       sessionId: snapshot.sessionId,
-      turn: settlementTurn(snapshot),
+      turn: turnNumber,
       messageId: mvuTarget.messageId,
       swipeId: mvuTarget.swipeId,
       expectedLifecycleRevision: Math.max(0, Number(snapshot.tavernHelperLifecycleRevision) || 0),
       storyText: projectAgentMessageText(mvuTarget.message, { charName: card && card.name, macroState: snapshot.macroState }),
       currentVariables: mvuTarget.variables,
       helperContext: collectMvuHelperContext(snapshot.messages, mvuTarget.messageId),
+      // The reply's baseline holds the variables of the last settled reply: tool results of the turns after it are written
+      // now, so a reply whose settlement never saved has its values written with the next one.
+      toolResults: await deps.turnToolResults?.(snapshot, toolTurns) || [],
+      // The tools the background may use to record what the story shows but the reply did not submit (lib/mod-tools.js).
+      backfillTools: await deps.turnBackfillTools?.(snapshot, { ...toolTurns, variables: baseline }) || [],
       guides: Array.isArray(snapshot.guides) ? snapshot.guides : [],
       variableSchema: mvuTarget.variables.schema,
+      variableLimits: cardMvuLimits(card) || [],
       charName: card && card.name,
       macroState: snapshot.macroState,
-      updateRules: await mvuUpdateRules(snapshot, card, mvuTarget),
+      updateRules: damperBudgetRule ? [...(Array.isArray(baseUpdateRules) ? baseUpdateRules : []), damperBudgetRule] : baseUpdateRules,
+      narrativeDamperRuling: activeDamper,
+      previousDamperReport: mvuTarget.message.mvu?.receipt?.damper || null,
       webSearchEnabled: snapshot.webSearchEnabled === true
     }
     const pendingSubmission = mvuTarget.message.mvu && mvuTarget.message.mvu.pendingSubmission
@@ -167,13 +187,28 @@ export function createMvuSettlementEngine(deps) {
       } else {
         const selection = backgroundModelSelection(snapshot)
         if (selection === null) throw new Error('没有可用的模型配置，请先在当前会话的模型选择器中选择模型')
-        mvuResult = await mvuSettlement.settleVariables({
-          ...settlementInput,
-          system: backgroundTasksSettings.posture ? postureItem.requirement() : '',
-          selection,
-          persistentSessionId: trace.sessionId,
-          signal
-        })
+        let failure = null
+        try {
+          mvuResult = await mvuSettlement.settleVariables({
+            ...settlementInput,
+            system: backgroundTasksSettings.posture ? postureItem.requirement() : '',
+            selection,
+            persistentSessionId: trace.sessionId,
+            signal
+          })
+          if (['error', 'partial'].includes(mvuResult.receipt?.status)) failure = mvuResult.receipt.summary || mvuResult.receipt.failures?.[0]?.message || ''
+        } catch (error) {
+          if (signal?.aborted || !settlementInput.toolResults.length) throw error
+          failure = str(error?.message || error)
+        }
+        // The background failed: what the tools settled is written alone; the story's own variables wait for a retry.
+        if (failure !== null && settlementInput.toolResults.length) {
+          mvuResult = await mvuSettlement.resumeVariables({ ...settlementInput, submission: { operations: [] } })
+          if (['updated', 'unchanged'].includes(mvuResult.receipt?.status)) {
+            mvuResult.receipt.summary = '后台结算没有完成（' + failure + '）：只写入了工具算定的值，其余变量可以重试结算。'
+            mvuResult.receipt.toolOnly = true
+          }
+        }
       }
     }
     if (mvuResult.posture === undefined && delivery?.posture !== undefined) mvuResult.posture = delivery.posture
@@ -224,7 +259,8 @@ export function createMvuSettlementEngine(deps) {
             target.mvu = {
               pending: false,
               modified: receipt.status === 'updated',
-              diagnostics: receipt.status === 'stale' ? [{ message: receipt.summary }] : [],
+              diagnostics: [...(receipt.status === 'stale' || receipt.toolOnly ? [{ message: receipt.summary }] : []),
+                ...(receipt.backfillRefused || []).map(message => ({ message: '正文与规则不一致：' + message }))],
               events: receipt.status === 'stale' ? [] : ['MESSAGE_RECEIVED'],
               receipt
             }

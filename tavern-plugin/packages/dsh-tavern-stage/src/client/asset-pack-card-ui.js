@@ -117,11 +117,23 @@ function useStageWriter(binding,path,state,sessionId) {
   const store=React.useRef(null),queue=React.useRef(Promise.resolve()),[,bump]=React.useState(0),[status,setStatus]=React.useState('idle');
   // `rows` are the list summaries (every installed pack); `packs` the full documents
   // of the packs this page reads entries of (lit for this card, or holding 模组: stageDetailRows), read per pack by revision.
-  if(state.value&&store.current?.loadedFrom!==state.value)store.current={loadedFrom:state.value,server:state.value.card,engine:state.value.engine,reading:state.value.reading,autoCast:state.value.autoCast,pending:[],rows:state.value.packs.filter(p=>!p.error),
+  if(state.value&&store.current?.loadedFrom!==state.value)store.current={loadedFrom:state.value,server:state.value.card,engine:state.value.engine,reading:state.value.reading,autoCast:state.value.autoCast,pending:[],layers:[],rows:state.value.packs.filter(p=>!p.error),
     packs:new Map((state.value.details||[]).map(p=>[p.manifest.id,p])),asked:new Map((state.value.details||[]).map(p=>[p.manifest.id,p.revision]))};
   const s=store.current,render=()=>bump(n=>n+1);
   const conflict=e=>e?.code==='REVISION_CONFLICT'||/REVISION_CONFLICT|Card changed/i.test(String(e?.message||''));
   const apply=(base,fn)=>({...base,...fn(base)});
+  // Global-layer writes show at once like card writes: the unsaved patches sit on top of the last saved value and drop
+  // away when their write settles (saved: the server value replaces them; failed: the page falls back to the saved value).
+  const layered=(kind,base,merge)=>base&&s.layers.some(layer=>layer.kind===kind)?{...base,values:s.layers.reduce((values,layer)=>layer.kind===kind?merge(values,layer.patch):values,base.values??base)}:base;
+  const mergeValues=(values,patch)=>({...values,...patch});
+  const mergeEngine=(values,patch)=>{const next={...values,...patch};for(const key of ['dimensions','actionCaps','stageToggles'])if(key in patch)next[key]={...values[key],...patch[key]};return next;};
+  const mergeReading=(reading,patch)=>({...reading,...patch,...(patch.narrator?{narrator:{...reading.narrator,...patch.narrator}}:{})});
+  // job runs on the write queue; the patch is shown until it settles.
+  function writeLayer(kind,patch,job){
+    const layer={kind,patch};s.layers.push(layer);render();
+    const done=enqueue(job).finally(()=>{s.layers=s.layers.filter(item=>item!==layer);render();});
+    done.catch(()=>{});return done;
+  }
   async function refetchCard(){const fresh=await binding.rpc('getCardAssetBindings',{path});s.server={...s.server,...fresh};render();return fresh;}
   async function refetchRows(){const list=await loadPackRows(binding);s.rows=list.filter(p=>!p.error);render();return list;}
   // Mark revisions before awaiting so re-renders share the same bounded read.
@@ -146,27 +158,27 @@ function useStageWriter(binding,path,state,sessionId) {
     return run;
   }
   return {status,
-    get engine(){return s?.engine;},
+    get engine(){return s&&layered('engine',s.engine,mergeEngine);},
     global(patch,key='stageToggles'){
-      return enqueue(async()=>{
+      return writeLayer('engine',{[key]:patch},async()=>{
         const save=engine=>binding.rpc('saveAssetEngineSettings',{expectedRevision:engine.revision,patch:{[key]:patch}});
         try{s.engine=await save(s.engine);}catch(e){if(!conflict(e))throw e;s.engine=await save(await binding.rpc('getAssetEngineSettings'));}
         render();return s.engine;
       });
     },
-    // 自动选角's global layer: the stage's own settings section (getAutoCastSettings), {values:{enabled,level},revision}.
-    get autoCast(){return s?.autoCast;},
+    // 自动素材's global layer: the stage's own settings section (getAutoCastSettings), {values:{enabled,level},revision}.
+    get autoCast(){return s&&layered('autoCast',s.autoCast,mergeValues);},
     autoCastGlobal(patch){
-      return enqueue(async()=>{
+      return writeLayer('autoCast',patch,async()=>{
         const save=current=>binding.rpc('saveAutoCastSettings',{expectedRevision:current.revision,patch});
         try{s.autoCast=await save(s.autoCast);}catch(e){if(!conflict(e))throw e;s.autoCast=await save(await binding.rpc('getAutoCastSettings'));}
         render();return s.autoCast;
       });
     },
     // 旁白配音's global layer lives in the tts plugin (tts.reading.narrator), written through its control call.
-    get reading(){return s?.reading;},
+    get reading(){return s?.reading&&s.layers.some(layer=>layer.kind==='reading')?s.layers.reduce((reading,layer)=>layer.kind==='reading'?mergeReading(reading,layer.patch):reading,s.reading):s?.reading;},
     setReading(patch){
-      return enqueue(async()=>{
+      return writeLayer('reading',patch,async()=>{
         if(!binding.tts)throw new Error('配音插件未启用');
         s.reading=await binding.tts.call('setReading',patch);render();return s.reading;
       });
@@ -348,7 +360,7 @@ function StageFirstRun({writer,cardName}) {
   // The optimistic write swaps this page for the full one while it saves; a refused save brings this page back as a new
   // instance, so the reason is the writer's own (status.error), not local state.
   const [busy,setBusy]=React.useState(false),error=typeof writer.status==='object'?writer.status.error:'';
-  async function start(){setBusy(true);try{await writer.write(()=>({assetBindings:{boundPackIds:[]},stage:{enabled:true}}));}catch(_){}finally{setBusy(false);}}
+  async function start(){setBusy(true);try{await writer.write(current=>({assetBindings:current.assetBindings,stage:{enabled:true}}));}catch(_){}finally{setBusy(false);}}
   return h('div',{className:'ap-first-run'},
     h('p',{className:'ap-first-title'},'这张卡还没有舞台设置'),
     h('div',{className:'ap-inline-actions is-start'},h(Button,{primary:true,disabled:busy,onClick:start},h(Glyph,{name:'bubble'}),busy?'正在开启…':'启用舞台（对话气泡）'),
@@ -459,7 +471,6 @@ function StageSwitches({ctx}) {
     row('dialogue'),
     h(StageVoiceRow,{key:'voice',ctx}),
     row('stage',h(StageModeJump,{ctx}),ctx.onEngine?()=>ctx.onEngine():undefined),
-    h(StageAutoChoicesRow,{key:'auto-choices',ctx}),
     h(StageAutoCastRow,{key:'auto-cast',ctx}),
     AUDIO_ROWS.map(sound),
     h(StageItemsRow,{key:'items',ctx}),
@@ -499,22 +510,47 @@ function useStagePointed(ctx) {
     return {ref,pack,figure:pack?.figures[ref.figureId]||null};
   })),[ctx.binding,JSON.stringify(refs),!!reading],{keep:true});
   const rows=state.value&&STAGE_POINTERS.map(([id,label],i)=>({id,label,...state.value[i]}));
-  return {rows,revisions:rows?.map(row=>row.pack?.revision??null)};
+  return {rows,revisions:rows?.map(row=>row.pack?.revision??null),reload:state.reload};
 }
 const VOICE_HELP={
   page:'通用声音和旁白声音对所有卡生效，各用素材库里一个人物的声音；旁白的开关可以只对这张卡设置。',
-  general:'没有单独配声音的角色和临时 NPC 统一用这个人物的声音。想换成别的人物：在素材库打开它的声音页，⋯ › 用作通用声音。',
-  narr:'读出气泡外的叙述，用这个人物的声音。想换成别的人物：在素材库打开它的声音页，⋯ › 用作旁白声音。',
+  general:'没有单独配声音的角色和临时 NPC 都用这个声音。点声音名换一个；› 打开它所在的人物。',
+  narr:'读出气泡外的叙述。点声音名换一个；› 打开它所在的人物。',
   cast:'本卡用到的人物；点一行在素材库里改它的声音。',
   needBubble:'角色配音和旁白配音在对话气泡里播放，要先打开对话气泡。'};
-// 通用声音 / 旁白's one row: the figure it points at, the same row as 角色声音's (CastVoiceList); none chosen = the
-// browser's default voice, a figure gone = silent; both open the 素材库's 人物 to choose one there.
-function StagePointedVoice({ctx,row}) {
+// 通用声音 / 旁白's one row: ▶ · its voice's name ⌄ — the same 选择声音 list (no 「通用声音」 row), which
+// writes the voice of the figure it points at — · where that voice comes from · › (that figure's 声音 tab). Pointing at none:
+// the browser's default voice; at a figure gone: silent. Both open the 素材库's 人物.
+function StagePointedVoice({ctx,row,onChanged}) {
   if(!row)return null;
-  const library=()=>ctx.nav?.openLibrary?.({kind:'figures'}),face=h(Silhouette,{figure:{},className:'ap-avatar is-mini',empty:true});
-  const rows=row.figure?[{ref:row.ref,pack:row.pack,figure:row.figure,face:h(FigureCastFace,{binding:ctx.binding,packId:row.ref.packId,pack:row.pack,figure:row.figure,sprites:row.pack.sprites,avatar:figureAvatar(row.figure,row.pack.sprites),label:'',className:'ap-avatar is-mini',frame:'face'})}]:
-    [{key:'none',name:row.ref?'找不到所选人物':'未选择人物',text:row.ref?'不出声':'浏览器默认声音',face,onOpen:library}];
-  return h(CastVoiceList,{binding:ctx.binding,rows,label:row.label,unvoiced:'这个人物没有声音，不出声',onOpen:ref=>ctx.openPack(ref.packId,'figures',ref.figureId,'voice')});
+  const library=()=>ctx.nav?.openLibrary?.({kind:'figures'});
+  if(!row.figure)return h('div',{className:'ap-vx-stage-row'},h('span',{className:'ap-vx-row-pad','aria-hidden':true}),
+    h('span',{className:'ap-vx-stage-name is-quiet'},row.ref?'找不到所选人物':'浏览器默认声音'),
+    h(IconButton,{icon:'chevRight',label:row.label+'：去素材库选人物',className:'ap-vx-go',onClick:library}));
+  return h(StagePointedChoice,{ctx,row,onChanged});
+}
+function StagePointedChoice({ctx,row,onChanged}) {
+  const {binding}=ctx,{pack,figure,ref}=row,spec=figureVoiceSpec(pack,figure),muted=figure.voice?.source===null;
+  const [error,setError]=React.useState(''),[adding,setAdding]=React.useState(false),preview=useVoicePreview(binding,null),readiness=useVoiceReadiness(binding);
+  const commitVoice=async job=>{const result=await job(await binding.service.getPackSnapshot({packId:ref.packId}));onChanged?.();return result;};
+  const writer=useVoiceWriter({binding,pack,figure,commitVoice,setError,askShared:async()=>'all'});
+  const source=spec&&!muted?spec.sources[voiceSourceId(spec,figure.voice)]:null,language=figureVoiceLanguage(spec,figure.voice);
+  const key='stage:'+row.id,name=spec?spec.name:'没有声音';
+  const candidate=voiceSpec=>({packId:ref.packId,figureId:ref.figureId,expectedRevision:pack.revision,voiceSpec});
+  const play=()=>source.provider==='browser'?preview.playBrowser(key,{voice:source.voiceName,language,text:sampleText(language)}):
+    preview.play(key,{packId:ref.packId,figureId:ref.figureId,expectedRevision:pack.revision},{label:row.label});
+  const meta=muted?'不配音':source?[voiceServiceName(readiness.services,source),voiceLanguageName(primaryLanguage(language))].join(' · '):'';
+  const openSettings=ctx.nav?.openTab?(provider,options)=>openVoiceSettings(ctx.nav,provider,options):null;
+  return h(React.Fragment,null,h('div',{className:'ap-vx-stage-row'},
+      h(VoiceRowPlay,{state:preview.of(key),label:'试听「'+row.label+'」',disabled:!source||!!voiceSourceUnset(source)||!binding.tts,onClick:play}),
+      h(VoicePicker,{binding,pack,figure,current:spec?figure.voice.voice:null,preview,candidate,setError,label:row.label,
+        trigger:({open,toggle})=>h('button',{type:'button',className:'ap-vx-name','aria-label':row.label+'：'+name,'aria-expanded':open,onClick:toggle},h('span',null,name),h(Glyph,{name:'chevDown'})),
+        onPick:choice=>{preview.stop();return writer.pick(choice);},onAdd:()=>setAdding(true)}),
+      h('span',{className:'ap-vx-row-meta'},meta),
+      h(IconButton,{icon:'chevRight',label:'打开「'+figure.name+'」的声音',className:'ap-vx-go',onClick:()=>{preview.stop();ctx.openPack(ref.packId,'figures',ref.figureId,'voice');}})),
+    error&&h('p',{className:'ap-alert',role:'alert'},error),
+    adding&&h(VoiceAddDialog,{binding,pack,figure,language,readiness,preview,candidate,writer,openSettings,onClose:()=>{preview.stop();setAdding(false);},onDone:()=>setAdding(false)}),
+    preview.dialog);
 }
 function StageVoicePage({ctx,onBack}) {
   const root=React.useRef(null),pointed=useStagePointed(ctx);
@@ -525,13 +561,12 @@ function StageVoicePage({ctx,onBack}) {
   return h('article',{ref:root,className:'ap-mod-detail ap-voice-page',onKeyDown:subpageKeys(onBack)},
     h(SubpageHead,{parent:'舞台设置',title:'配音',help:h(Help,{text:VOICE_HELP.page,label:'配音 说明'}),onBack}),
     h(StageVoiceProblems,{ctx}),
-    // 通用声音 · 旁白声音 · 角色声音: three sections side by side (owner 11-09), each row a figure and its voice (owner 11-11:
-    // 通用 / 旁白 only point at a figure).
+    // 通用声音 · 旁白声音 · 角色声音: three sections side by side, each row a figure and its voice.
     h(StageSection,{title:'通用声音',foldKey:'voice/general',help:VOICE_HELP.general,action:stageVoiceBackendLink(ctx)},
-      h(StagePointedVoice,{ctx,row:pointed.rows?.[0]})),
+      h(StagePointedVoice,{ctx,row:pointed.rows?.[0],onChanged:pointed.reload})),
     // 旁白's four-state switch sits in its section head; its figure under it while it speaks.
     h(StageSection,{title:'旁白声音',foldKey:'voice/narrator',help:bubble?VOICE_HELP.narr:VOICE_HELP.needBubble,action:narratorTag},
-      narrator.effective.enabled?h(StagePointedVoice,{ctx,row:pointed.rows?.[1]}):null),
+      narrator.effective.enabled?h(StagePointedVoice,{ctx,row:pointed.rows?.[1],onChanged:pointed.reload}):null),
     h(StageCastVoices,{ctx}));
 }
 // 「语音后端 ›」 at the right of a section head (the TTS plugin's tab), like the 素材库 voice page's.
@@ -577,45 +612,42 @@ function StageModeJump({ctx}) {
   React.useEffect(()=>{if(ctx.takeEngineFocus?.())jump.current?.focus?.();},[]);
   return ctx.onEngine?h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'舞台模式设置',title:'舞台模式设置',onClick:()=>ctx.onEngine()},h(Glyph,{name:'chevRight'})):null;
 }
-// 「自动生成选项」 is a basic, every-card setting and lives only here (moved out of 酒馆设置 ›
-// 候选项 and the stage CONFIG): the global candidateAutoGenerate through the one hook (auto-choices-preference.js). Needs no stage
-// switch: it also serves the chat view. A save failure is the row's ⚠.
-const STAGE_AUTO_CHOICES_HELP='每轮正文完成后自动生成选项；不补生成旧回复，失败可手动重试。';
-// Four-state like the rest: the global layer is candidateAutoGenerate, the card layer stage.switches.autoChoices (the host
-// decides per chat with effectiveAutoChoices).
-function StageAutoChoicesRow({ctx}) {
-  if(typeof autoChoices!=='function')return null;
-  return h(StageAutoChoicesSwitch,{ctx});
-}
-function StageAutoChoicesSwitch({ctx}) {
-  const {enabled,loading,busy,error,save}=autoChoices('getTavernSettings');
-  const tag=h(StageSwitchTag,{name:'自动生成选项',global:enabled===true,card:ctx.ext?.stage?.switches?.autoChoices,busy,disabled:loading,
-    writeCard:value=>ctx.writer.write(ext=>stageSwitchPatch(ext,{autoChoices:value})),writeGlobal:value=>save(value)});
-  return h(SwitchRow,{label:'自动生成选项',icon:'select',help:STAGE_AUTO_CHOICES_HELP,tag,
-    status:error?h(HintLine,{compact:true,text:error}):null});
-}
-// 「自动选角 ›」: a stage core feature, not a mod. Four-state like the rest: the global layer is the stage's
+// 「自动素材 ›」: a stage core feature, not a mod. Four-state like the rest: the global layer is the stage's
 // tavern-auto-cast section (getAutoCastSettings), the card layer stage.switches.autoCast; the host decides with
-// effectiveAutoCast. It casts for the bubbles, so it is greyed while 对话气泡 is off. The 「›」 opens its page (激进程度).
-const AUTO_CAST_HELP='正文里出现还没有素材的人物时，在后台给他找人设、配声音、画立绘和表情，放进这张卡的自动生成素材包；会用到生图和后台模型。';
-const AUTO_CAST_NEED='自动选角给对话气泡里的人物配图和声音，要先打开对话气泡。';
-const AUTO_CAST_LEVELS=[['late','晚一轮'],['eager','积极'],['all','全部']];
-const AUTO_CAST_LEVEL_HELP='晚一轮：只画正文用到的人和表情，下一轮可用。积极：另外开局就画开场白里的人，空闲时补常用表情。全部：开局建好卡里可能出场的所有人物，空闲时一直画。';
+// effectiveAutoCast. It casts for the bubbles, so it is greyed while 对话气泡 is off. The 「›」 opens its page (生成策略).
+const AUTO_CAST_HELP='正文出现未准备素材的人物时，后台自动搜库或实时生成人设、立绘与声音，放进这张卡的「自动素材」包；会用到生图和后台模型。';
+const AUTO_CAST_NEED='自动素材给对话气泡里的人物配图和声音，要先打开对话气泡。';
+const AUTO_CAST_LEVELS=[['late','用到才生成'],['eager','常用预备'],['all','整卡补全']];
+const AUTO_CAST_LEVEL_HELP='控制后台什么时候为未备素材的人物生成立绘与声音。用到才生成：只生成正文用到的人物和表情，下一轮可用，最省额度。常用预备：开场白里的人物开局就生成，空闲时补齐登场人物的常用表情。整卡补全：开局梳理全卡可能出场的所有人物，空闲时一直生成到全员齐备。';
 const AUTO_CAST_DEFAULT={enabled:false,level:'late'};
 function autoCastLayers(ctx) { return {global:{...AUTO_CAST_DEFAULT,...ctx.writer.autoCast?.values},card:ctx.ext?.stage||{}}; }
 function StageAutoCastRow({ctx}) {
   const jump=React.useRef(null),blocked=!ctx.active.dialogue,{global,card}=autoCastLayers(ctx),loading=!ctx.writer.autoCast;
   React.useEffect(()=>{if(ctx.takeAutoCastFocus?.())jump.current?.focus?.();},[]);
-  const tag=h(StageSwitchTag,{name:'自动选角',global:global.enabled===true,card:card.switches?.autoCast,disabled:blocked||loading,
+  const tag=h(StageSwitchTag,{name:'自动素材',global:global.enabled===true,card:card.switches?.autoCast,disabled:blocked||loading,
     writeCard:value=>ctx.writer.write(ext=>stageSwitchPatch(ext,{autoCast:value})),writeGlobal:value=>ctx.writer.autoCastGlobal({enabled:value})});
-  return h(SwitchRow,{label:'自动选角',icon:'figures',disabled:blocked,help:blocked?AUTO_CAST_NEED:AUTO_CAST_HELP,tag,onOpen:pressRowJump,
-    status:h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'自动选角设置',title:'自动选角设置',disabled:blocked,onClick:()=>ctx.onAutoCast()},h(Glyph,{name:'chevRight'}))});
+  return h(SwitchRow,{label:'自动素材',icon:'figures',disabled:blocked,help:blocked?AUTO_CAST_NEED:AUTO_CAST_HELP,tag,onOpen:pressRowJump,
+    status:h('button',{type:'button',ref:jump,className:'ap-kind-jump','aria-label':'自动素材设置',title:'自动素材设置',disabled:blocked,onClick:()=>ctx.onAutoCast()},h(Glyph,{name:'chevRight'}))});
 }
-// 自动选角's page: 「全局 | 本卡」 (ScopeSwitch) picks the layer a change goes to, like a mod's settings (ui-design §三.25–26);
-// 激进程度 is one menu row with its override dot and reset. 本卡 writes stage.autoCast.level, 全局 the section's level.
+// 自动素材's page: 「全局 | 本卡」 (ScopeSwitch) picks the layer a change goes to, like a mod's settings (ui-design §三.25–26);
+// 生成策略 is one menu row with its override dot and reset. 本卡 writes stage.autoCast.level, 全局 the section's level.
+// What 自动素材 tells the player on its page (getAutoCastStatus): bound packs that are not installed, and the latest thing that
+// did not work, in words (11-12: a refused write showed only in the host log).
+const AUTO_CAST_PROBLEM={cast:'选角助理没跑成，这一轮的新人物都按新建处理',write:'没能写进自动素材包',draw:'有一张图没画成'};
+const AUTO_CAST_REASON={REVISION_CONFLICT:'素材在别处改动过，下一轮会重新写',ASSET_UNAVAILABLE:'要用的素材包读不到',LIMIT_EXCEEDED:'自动素材包超过了大小上限',NOT_AUTHORIZED_WRITER:'素材库没有开放自动写入'};
+function autoCastNotes(status) {
+  if(!status)return [];
+  const notes=status.missingPacks?['本卡绑定的 '+status.missingPacks+' 个素材包没有安装：这些包里的人物会当作新人物自动生成。']:[];
+  const p=status.problem;
+  if(p){const when=new Date(p.at).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    notes.push(when+' '+AUTO_CAST_PROBLEM[p.kind]+(p.error?'：'+(AUTO_CAST_REASON[p.error.split(/[:：]/)[0].trim()]||p.error):''));}
+  return notes;
+}
 function StageAutoCastPage({ctx,onBack}) {
-  const root=React.useRef(null),[scope,setScope]=React.useState(ctx.ext?.stage?.autoCast?.level?'card':'global');
+  const root=React.useRef(null),[scope,setScope]=React.useState(ctx.ext?.stage?.autoCast?.level?'card':'global'),[status,setStatus]=React.useState(null);
   React.useEffect(()=>{root.current?.querySelector('button')?.focus();},[]);
+  React.useEffect(()=>{let live=true;ctx.binding.rpc('getAutoCastStatus',{path:ctx.path}).then(value=>{if(live)setStatus(value);},()=>{});return ()=>{live=false;};},[ctx.path]);
+  const notes=autoCastNotes(status);
   const {global,card}=autoCastLayers(ctx),own=scope==='card'?card.autoCast?.level!==undefined:global.level!==AUTO_CAST_DEFAULT.level;
   const value=scope==='card'?card.autoCast?.level??global.level:global.level,loading=!ctx.writer.autoCast;
   const writeCard=level=>ctx.writer.write(ext=>stagePatch(ext,{autoCast:level===undefined?undefined:{...(ext?.stage?.autoCast||{}),level}}));
@@ -623,12 +655,50 @@ function StageAutoCastPage({ctx,onBack}) {
   const reset=()=>scope==='card'?writeCard(undefined):ctx.writer.autoCastGlobal({level:AUTO_CAST_DEFAULT.level});
   const dot=own?h(OverrideDot,{layer:scope}):null;
   return h('article',{ref:root,className:'ap-mod-detail ap-auto-cast-page',onKeyDown:subpageKeys(onBack)},
-    h(SubpageHead,{parent:'舞台设置',title:'自动选角',help:h(Help,{text:AUTO_CAST_HELP,label:'自动选角 说明'}),onBack}),
+    h(SubpageHead,{parent:'舞台设置',title:'自动素材',help:h(Help,{text:AUTO_CAST_HELP,label:'自动素材 说明'}),onBack}),
     h('div',{className:'fork-cfg-scope-row'},h(ScopeSwitch,{value:scope,onChange:setScope,cardName:ctx.cardName})),
-    loading?h(Loading,{shape:'fields'}):h(InlineGrid,{columns:1,label:'自动选角设置',className:'fork-cfg-list'},
-      h(InlineField,{kind:'menu',label:'激进程度',className:'fork-cfg-field',value,options:AUTO_CAST_LEVELS.map(([v,label])=>({value:v,label})),
-        help:h(React.Fragment,null,h(Help,{text:AUTO_CAST_LEVEL_HELP,label:'激进程度 说明'}),dot),onCommit:set,
-        trail:own?[h(ResetButton,{key:'reset',label:scope==='card'?'恢复为全局':'恢复默认',onClick:reset})]:[]})));
+    loading?h(Loading,{shape:'fields'}):h(InlineGrid,{columns:1,label:'自动素材设置',className:'fork-cfg-list'},
+      h(InlineField,{kind:'menu',label:'生成策略',className:'fork-cfg-field',value,options:AUTO_CAST_LEVELS.map(([v,label])=>({value:v,label})),
+        help:h(React.Fragment,null,h(Help,{text:AUTO_CAST_LEVEL_HELP,label:'生成策略 说明'}),dot),onCommit:set,
+        trail:own?[h(ResetButton,{key:'reset',label:scope==='card'?'恢复为全局':'恢复默认',onClick:reset})]:[]})),
+    loading?null:h(AutoCastVoices,{ctx}),
+    notes.map((text,index)=>h('p',{key:index,className:'ap-reading-note',role:'status'},h('span',null,text))));
+}
+// 可选声音: the voices the casting assistant may give a new figure. Preset 「默认」: every installed
+// voice with a 使用情景 or 「通用」 in its name (defaultCastVoices → voiceAutoCast, the one rule library-search.js also reads). A row: ▶ · name +
+// 语言 · its 使用情景 on a second line, edited in place (R23; one not written is a grey placeholder). The 使用情景 is the voice's
+// own `guidance` (≤ 60 字), saved in its pack.
+const AUTO_CAST_VOICES_HELP='素材助手给新人物配声音时，只从这里的声音里挑。「默认」自动包含写了使用情景的声音和名字带「通用」的声音，不能逐个开关；想自己增减，先复制成新预设再改。';
+function AutoCastVoices({ctx}) {
+  const {binding}=ctx,[error,setError]=React.useState('');
+  const list=useVoiceLoad(()=>binding.service.listVoiceCatalogue(),[binding],{keep:true}),preview=useVoicePreview(binding,null);
+  const rows=list.value?defaultCastVoices(list.value):null;
+  // Two voices of one name (each pack may have its own 「通用男性声音」) are told apart by their pack.
+  const shared=new Set((rows||[]).map(v=>v.name).filter((name,i,all)=>all.indexOf(name)!==i));
+  const save=async(v,text)=>{
+    setError('');
+    try{
+      const pack=await binding.service.getPackSnapshot({packId:v.ref.packId}),spec={...pack.manifest.voiceLibrary.voices[v.ref.voiceId]};
+      if(text)spec.guidance=text;else delete spec.guidance;
+      await binding.service.savePackVoice({packId:v.ref.packId,expectedRevision:pack.revision,voiceId:v.ref.voiceId,voiceSpec:spec,confirmShared:true});
+      list.reload();
+    }catch(e){setError(voiceErrorText(e));}
+  };
+  const row=v=>{const key='auto:'+v.ref.packId+':'+v.ref.voiceId,spec=v.voiceSpec,src=spec.sources?.[spec.defaultSource],pack=shared.has(v.name)?v.packName:'';
+    const play=src?.provider==='browser'?()=>preview.playBrowser(key,{voice:src.voiceName,language:spec.language,text:sampleText(spec.language)}):
+      v.previewFigureId?()=>preview.play(key,{packId:v.ref.packId,figureId:v.previewFigureId,expectedRevision:v.revision,voiceSpec:spec},{label:v.name}):null;
+    return h('li',{key,className:'ap-vx-auto-row'},
+      h(VoiceRowPlay,{state:preview.of(key),label:'试听「'+v.name+'」',disabled:!play||!binding.tts||!!voiceSourceUnset(src||{}),onClick:play||(()=>{})}),
+      h('div',{className:'ap-vx-auto-main'},
+        h('div',{className:'ap-vx-auto-name'},h('span',{className:'ap-vx-row-name'},v.name),h(VoiceLangChip,{tag:spec.language}),pack&&h('span',{className:'ap-vx-row-meta'},pack)),
+        h(CommitInput,{className:'ap-vx-auto-guidance','aria-label':v.name+(pack?'（'+pack+'）':'')+'：使用情景',value:spec.guidance||'',placeholder:'适合什么样的人',maxLength:60,onCommit:text=>save(v,text.trim())})));};
+  const presets=h(VoiceOptionPick,{label:'可选声音预设',value:'default',options:[{id:'default',label:'默认'}],onPick:()=>{}});
+  return h(StageSection,{title:'可选声音',meta:rows?.length||undefined,foldKey:'auto-cast/voices',help:AUTO_CAST_VOICES_HELP,action:presets,className:'ap-vx-auto'},
+    error&&h('p',{className:'ap-alert',role:'alert'},error),
+    list.error&&!list.value?h(VoiceLoadError,{error:voiceErrorText(list.error),retry:list.reload}):
+    rows===null?h(VoiceLoading,{count:3}):rows.length?h('ul',{className:'ap-vx-rows','aria-label':'可选声音'},rows.map(row)):
+      h(EmptyState,{compact:true,text:'还没有可选声音：给声音写上使用情景，或在名字里带「通用」'}),
+    preview.dialog);
 }
 // the quiet 「›」 on a 基础设置 row — the 素材库 at that kind's tab (nav.openLibrary, the same
 // deep link the library consumes) for the packs this card uses (全局 first, then 本卡). One pack opens directly; several

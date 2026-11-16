@@ -1,7 +1,19 @@
+// @include-protocol candidate-tabs.cjs
 // Presentation and composer draft lifetime; async transitions belong to interactions.
 function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandidateGuidePanel, useRegenPanel, dismissCandidateError }) {
     const setCandidatePanel = interactions.candidates.set;
     const setRegenPanel = interactions.regeneration.set;
+		function buildCandidateTabs(items, isScript) {
+            return candidateTabs.buildCandidateChoiceTabs(items, { isScript });
+        }
+        function formatCandidateDraftText(item) {
+            return candidateTabs.formatCandidateChoiceText(item);
+        }
+        function candidateItemBadges(item, tabKind) {
+            return candidateTabs.candidateChoiceBadges(item, { tabKind }).map(function (badge) {
+                return { className: "dsh-tavern-question-tag dsh-tavern-question-tag-" + badge.kind, label: badge.label };
+            });
+        }
 		function CandidateQuestion(props) {
         // 宿主输入器可由 textarea 升级为 contenteditable，两种入口共享聚焦与收起逻辑。
         const inputSelector = "[data-composer-card] :is(textarea, [contenteditable='true'])";
@@ -13,7 +25,13 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         const sessionMode = useTavernSessionMode(props.sessionId);
         const running = props.useSession(function (snapshot) { return snapshot.running; });
         const latestMessageId = props.useChat(latestTavernAssistantMessageId);
+        const canDirectSend = Boolean(props.inputActions && typeof props.inputActions.submit === "function");
+        const [sendOnPick, setSendOnPick] = React.useState(false);
         const [added, setAdded] = React.useState([]);
+        const [activeTab, setActiveTab] = React.useState("featured");
+        // 设置 › 高级 › 候选多角色 / 全局 Tab（默认关闭）。必须留在下面「没有候选项就 return null」的早退之前：
+        // 早退那一版渲染不经过这里，hook 数就会在候选项到手时多出两个，React 会以 #310 崩掉整个输入区槽位。
+        const showTabs = typeof useCandidateTabPreference === "function" ? useCandidateTabPreference() === true : false;
         const expanded = Boolean(panel && panel.expanded);
         function setExpanded(value) {
             if (panel) setCandidatePanel(Object.assign({}, panel, { expanded: value }));
@@ -30,8 +48,11 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             }, [panel]);
         React.useEffect(function () {
                 setAdded([]);
+                setActiveTab("featured");
             }, [panel?.choices]);
-        if (!isPlayMode(sessionMode) || !panel || panel.sessionId !== props.sessionId || panel.messageId !== latestMessageId || running) {
+        // 候选项属于这一局最近一轮（服务端只留那一份）。页面手里的消息 id 可能为空（宿主
+        // 没有投影节点）或另一套 id，判断只认这一局，不认两个 id 是否相等。
+        if (!isPlayMode(sessionMode) || !panel || panel.sessionId !== props.sessionId || running) {
             return null;
         }
         const h = React.createElement;
@@ -48,17 +69,23 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         const summary = panel.phase === "loading" ? "正在生成…" : (isScript ? "跟随剧本" : count + " 个");
         // decode double-escaped model output for choices stored before the host fix.
         const decode = typeof decodeUnicodeEscapes === "function" ? decodeUnicodeEscapes : String;
-        const items = (panel.choices || []).map(function (choice) {
-            return choice !== null && typeof choice === "object" ? { ...choice, text: decode(choice.text) } : { type: "action", text: decode(String(choice)) };
+        const items = (panel.choices || []).map(function (choice, index) {
+            return candidateTabs.normalizeCandidateChoice(choice, index, decode);
         });
-        // 点选项即追加到输入框，再点一次取消并从输入框移除；发送前仍可修改。
+        const tabState = buildCandidateTabs(items, isScript);
+        // 开关已在函数顶部读好（hook 不能落在早退之后）：关闭时退回精选平铺，不渲染 Tab 条。
+        const tabs = showTabs || !tabState.hasTabs ? tabState : { hasTabs: false, tabs: [], current: { key: "featured", kind: "featured", items: tabState.tabs[0].items } };
+        const currentTab = tabs.hasTabs ? (tabs.tabs.find(function (tab) { return tab.key === activeTab; }) || tabs.tabs[0]) : tabs.current;
+        const visibleItems = currentTab.items;
+        // 默认点击选项追加到输入框，再点一次移除；开启「直发」模式时直接入队发送。
         function pick(index) {
             const item = items[index];
             const isAdded = added.includes(index);
-            const marked = item.type === "scene" ? "【场景变化】" + item.text : item.text;
+            const marked = formatCandidateDraftText(item);
             const current = String(draftRef.current || "");
+            const directMode = sendOnPick && canDirectSend;
             let next;
-            if (isAdded) {
+            if (!directMode && isAdded) {
                 // 只移除原样追加的那一行；用户改过的文字保留不动。
                 const lines = current.split("\n");
                 const at = lines.lastIndexOf(marked);
@@ -67,20 +94,56 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             } else next = current + (current && !current.endsWith("\n") ? "\n" : "") + marked;
             draftRef.current = next;
             props.inputActions.setDraft(next);
+            if (directMode) {
+                tavernPlayEvents.emit("choice", props.sessionId, { choiceIndex: index });
+                setCandidatePanel(null);
+                Promise.resolve(props.inputActions.submit("queue")).catch(function () {});
+                return;
+            }
             if (!isAdded) tavernPlayEvents.emit("choice", props.sessionId, { choiceIndex: index });
             if (!isAdded && dismissMode !== "after-send") setCandidatePanel(null);
             else setAdded(list => isAdded ? list.filter(value => value !== index) : list.concat(index));
         }
+        function onTabKeyDown(event) {
+            if (!tabs.hasTabs || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+            event.preventDefault();
+            const at = tabs.tabs.findIndex(function (tab) { return tab.key === currentTab.key; });
+            const nextIndex = (at + (event.key === "ArrowRight" ? 1 : tabs.tabs.length - 1)) % tabs.tabs.length;
+            const nextTab = tabs.tabs[nextIndex];
+            setActiveTab(nextTab.key);
+            const buttons = event.currentTarget.querySelectorAll("[role='tab']");
+            if (buttons[nextIndex]) buttons[nextIndex].focus();
+        }
         return h("div", { className: "dsh-tavern-question dsh-tavern-candidate-question" + (expanded ? "" : " collapsed") },
-            h("div", { className: "dsh-tavern-question-head", role: "button", tabIndex: 0, "aria-expanded": expanded ? "true" : "false", onClick: function () { setExpanded(!expanded); }, onKeyDown: function (event) { if (event.target === event.currentTarget && !event.isComposing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setExpanded(!expanded); } } }, h("span", null, heading), h("span", { className: "dsh-tavern-question-sub" }, summary), h("button", { type: "button", className: "dsh-tavern-question-close", title: expanded ? "收起行动列表" : "展开行动列表", "aria-label": expanded ? "收起行动列表" : "展开行动列表", onClick: function (event) { event.stopPropagation(); setExpanded(!expanded); } }, expanded ? "⌃" : "⌄")),
+            h("div", { className: "dsh-tavern-question-head", role: "button", tabIndex: 0, "aria-expanded": expanded ? "true" : "false", onClick: function () { setExpanded(!expanded); }, onKeyDown: function (event) { if (event.target === event.currentTarget && !event.isComposing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); setExpanded(!expanded); } } },
+                h("span", null, heading),
+                canDirectSend ? h("button", {
+                    type: "button",
+                    className: "dsh-tavern-question-mode-pill" + (sendOnPick ? " is-send" : ""),
+                    "aria-pressed": sendOnPick ? "true" : "false",
+                    title: sendOnPick ? "当前：点击行动直接发送（点此切回先填入输入框）" : "当前：点击行动先填入输入框微调（点此切为点击即发送）",
+                    onClick: function (event) { event.stopPropagation(); setSendOnPick(function (prev) { return !prev; }); }
+                }, sendOnPick ? "⚡ 直发" : "✎ 填入") : null,
+                h("span", { className: "dsh-tavern-question-sub" }, summary),
+                h("button", { type: "button", className: "dsh-tavern-question-close", title: expanded ? "收起行动列表" : "展开行动列表", "aria-label": expanded ? "收起行动列表" : "展开行动列表", onClick: function (event) { event.stopPropagation(); setExpanded(!expanded); } }, expanded ? "⌃" : "⌄")),
             expanded && panel.phase === "loading" ? h("div", { className: "dsh-tavern-question-sub" }, "正在生成候选项…") : null,
-            // one click appends the choice; only scene choices carry a marker.
-            expanded ? h("div", { className: "dsh-tavern-question-body" }, items.map(function (item, index) {
-                        const isAdded = added.includes(index);
-                        return h("button", { key: index, className: "dsh-tavern-question-option" + (isAdded ? " selected" : ""), "data-type": item.type, "aria-pressed": isAdded, title: isAdded ? "从输入框移除" : "追加到输入框", onClick: function () { pick(index); } },
-                            h("span", { className: "dsh-tavern-question-index", "aria-hidden": true }, isAdded ? "✓" : String(index + 1)),
+            expanded && tabs.hasTabs ? h("div", { className: "dsh-tavern-question-tabs", role: "tablist", "aria-label": "行动视角切换", onKeyDown: onTabKeyDown }, tabs.tabs.map(function (tab) {
+                const isSelectedTab = tab.key === currentTab.key;
+                const pickedCount = (tab.kind === "featured" && !tab.custom) ? 0 : tab.items.filter(function (item) { return added.includes(item.index); }).length;
+                return h("button", { key: tab.key, type: "button", role: "tab", "data-tab": tab.key, "data-kind": tab.kind, className: "dsh-tavern-question-tab" + (isSelectedTab ? " active" : "") + (pickedCount > 0 ? " has-picked" : ""), "aria-selected": isSelectedTab ? "true" : "false", tabIndex: isSelectedTab ? 0 : -1, onClick: function () { setActiveTab(tab.key); } },
+                    h("span", { className: "dsh-tavern-question-tab-label" }, tab.label),
+                    h("span", { className: "dsh-tavern-question-tab-count" }, pickedCount > 0 ? "✓" + pickedCount : String(tab.items.length)));
+            })) : null,
+            expanded ? h("div", { className: "dsh-tavern-question-body" }, visibleItems.map(function (item, visibleIndex) {
+                        const isAdded = added.includes(item.index);
+                        const badges = candidateItemBadges(item, currentTab.kind);
+                        const actorAttr = item.actor || (Array.isArray(item.actors) && item.actors.length > 0 ? item.actors.join(",") : undefined);
+                        return h("button", { key: item.index, className: "dsh-tavern-question-option" + (isAdded ? " selected" : ""), "data-type": item.type, "data-actor": actorAttr, "aria-pressed": isAdded, title: (sendOnPick && canDirectSend) ? "立即发送此行动" : (isAdded ? "从输入框移除" : "追加到输入框"), onClick: function () { pick(item.index); } },
+                            h("span", { className: "dsh-tavern-question-index", "aria-hidden": true }, isAdded ? "✓" : String(visibleIndex + 1)),
                             h("span", { className: "dsh-tavern-question-text" },
-                                item.type === "scene" ? h("span", { className: "dsh-tavern-question-tag dsh-tavern-question-tag-scene" }, "场景变化") : null,
+                                badges.length > 0 ? h("span", { className: "dsh-tavern-question-tags" }, badges.map(function (badge, badgeIndex) {
+                                    return h("span", { key: badgeIndex, className: badge.className }, badge.label);
+                                })) : null,
                                 h("span", null, item.text)
                             )
                         );
@@ -96,7 +159,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
 			const [guidance, setGuidance] = React.useState("");
             React.useEffect(() => setGuidance(""), [props.sessionId, panel?.messageId]);
 			const h = React.createElement;
-			if (!isPlayMode(sessionMode) || running || !panel || panel.sessionId !== props.sessionId || panel.messageId !== latestMessageId) {
+			if (!isPlayMode(sessionMode) || running || !panel || panel.sessionId !== props.sessionId) {
 				return null;
 			}
 			const isScript = sessionMode === "script";
@@ -104,13 +167,13 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
             function cancel() { interactions.cancelGuide(panel); }
 			return h(RegenGuideForm, {
 				title: "重新生成候选项",
-				hint: isScript ? "跟随剧本，只重新生成一个推荐候选" : "行动候选与场景候选通用",
+				hint: isScript ? "跟随剧本，只重新生成一个推荐候选" : "角色与全局候选项通用",
 				loading: panel.phase === "loading" ? "正在重新生成候选项…" : "",
 				error: panel.error,
 				value: guidance,
 				onChange: setGuidance,
 				placeholder: "对候选的要求（可选）",
-				examples: isScript ? ["侧重角色行动", "直接开新场景"] : ["多点暧昧动作", "场景换到白天户外", "新场景换一批人物"],
+				examples: isScript ? ["侧重角色行动", "直接开新场景"] : ["让对手戏角色更主动", "多点暧昧动作", "增加突发插曲", "场景换到白天户外"],
 				submitLabel: "重新生成",
 				onSubmit: generateGuided,
 				onCancel: cancel
@@ -251,9 +314,19 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         const opened = panel && panel.sessionId === props.sessionId && panel.phase === "input";
         React.useEffect(function () { if (opened) setGuidance(interactions.guidance(props.sessionId)); }, [opened, props.sessionId]);
         const h = React.createElement;
+        // 面板上这一行字就是「请求已经被接住了」的唯一凭据：留空则重新生成没有可显示的理由，
+        // 表单会原样留在原地（输入框、生成并替换正文都在），玩家以为刚才那一下没被接住。
+        const loadingText = reviewing
+            ? "正在精修正文… " + reviewSeconds + " 秒" + (reviewProgress?.edits?.length ? " · 已修 " + reviewProgress.edits.length + " 处" : "")
+            : panel && panel.phase === "loading"
+                ? (panel.restyle ? "正在换文风联想并重新生成…" : panel.rewrite ? "正在按意见改写正文…" : "")
+                : "";
         // 重新生成一提交，宿主就把会话报成运行中（页面上的发送键要立刻换成停止）；
         // 这次还在等正文落盘的面板不能跟着消失，否则「正在重新生成正文…」只剩一瞬。
         if (!isPlayMode(sessionMode) || !panel || panel.sessionId !== props.sessionId || (running && panel.phase !== "loading")) return null;
+        // 没填意见的普通重新生成不等面板收尾：这一步没有要玩家跟踪的进度（按钮上已写「重生成中…」，
+        // 正文区也在等新正文），表单留在原地只会让人再点一次「生成并替换正文」。
+        if (panel.phase === "loading" && !loadingText) return null;
         function generate() {
             return interactions.regenerateBody(panel, guidance, { restyle: styleEnabled && Boolean(guidance.trim()) });
         }
@@ -289,7 +362,7 @@ function createPlayInteractionPanels({ interactions, useCandidatePanel, useCandi
         }
         return h(RegenGuideForm, {
                 title: "重新生成正文",
-                loading: reviewing ? "正在精修正文… " + reviewSeconds + " 秒" + (reviewProgress?.edits?.length ? " · 已修 " + reviewProgress.edits.length + " 处" : "") : panel.phase === "loading" ? (panel.restyle ? "正在换文风联想并重新生成…" : panel.rewrite ? "正在按意见改写正文…" : "") : "",
+                loading: loadingText,
                 loadingExtra: reviewing && reviewProgress?.edits?.length ? h("div", { className: "dsh-tavern-settings-desc", role: "status" },
                     h("p", null, "逐处生成中，完成后统一保存："),
                     reviewProgress.edits.map(function (edit, index) { return h("details", { key: index },

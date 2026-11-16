@@ -82,6 +82,11 @@ body {
   color: #0f1115;
 }
 
+/* The window's own top band, which a layer covering the window keeps its controls out of: the Windows Desktop draws its
+   native minimise / maximise / close over the top --dsh-windows-titlebar-height, above any page layer (hidden in full
+   screen); a phone has its notch. */
+:root { --fork-safe-top: env(safe-area-inset-top, 0px); }
+:root[data-windows-titlebar]:not(:fullscreen) { --fork-safe-top: max(env(safe-area-inset-top, 0px), var(--dsh-windows-titlebar-height, 40px)); }
 /* ==== fork UI standard tokens ==== */
 /* the semantic tokens of the UI standard that had no single name.
    Declared on every context root so var() resolves against that context's re-pointed --fork-* inks. Values only alias
@@ -287,7 +292,7 @@ body.dsh-tavern-shell-active [data-turn-tail] [data-slot="conversation.chat.assi
 .dsh-fork-inline-actions [data-fork-action="more"] { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='1'/%3E%3Ccircle cx='19' cy='12' r='1'/%3E%3Ccircle cx='5' cy='12' r='1'/%3E%3C/svg%3E"); }
 /* Scene illustration: full column width; tools float over the picture's corner on hover. */
 [data-dsh-fork-session="play"] .dsh-tavern-illustration { position: relative; align-items: stretch; gap: 8px; margin: 4px 0 2px; }
-[data-dsh-fork-session="play"] .dsh-tavern-illustration > a { display: block; overflow: hidden; border-radius: 14px; }
+[data-dsh-fork-session="play"] .dsh-tavern-illustration > .dsh-tavern-image-preview { overflow: hidden; border-radius: 14px; }
 [data-dsh-fork-session="play"] .dsh-tavern-illustration img { width: 100%; max-width: 100%; height: auto; max-height: 70svh; object-fit: cover; border-radius: 14px; }
 [data-dsh-fork-session="play"] .dsh-tavern-illustration[data-running] img { filter: saturate(.6) brightness(.85); transition: filter .3s; }
 [data-dsh-fork-session="play"] .dsh-tavern-image-actions {
@@ -374,6 +379,14 @@ body.dsh-tavern-shell-active [data-turn-tail] [data-slot="conversation.chat.assi
 .dsh-tavern-question-radio { display: none; }
 .dsh-tavern-question-text { display: block; flex: 1; min-width: 0; }
 .dsh-tavern-question-option[data-type="scene"] .dsh-tavern-question-text { color: var(--fork-ink-2); font-style: italic; }
+.dsh-tavern-question-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  vertical-align: 1px;
+}
 .dsh-tavern-question-tag {
   display: inline-block;
   margin-right: 8px;
@@ -386,6 +399,9 @@ body.dsh-tavern-shell-active [data-turn-tail] [data-slot="conversation.chat.assi
   line-height: 18px;
   vertical-align: 1px;
 }
+.dsh-tavern-question-tags .dsh-tavern-question-tag { margin-right: 0; vertical-align: 0; }
+.dsh-tavern-question-tag-actor { background: color-mix(in srgb, var(--fork-accent) 13%, var(--fk-current-bgSolid, Canvas)); color: var(--fork-ink-2); font-style: normal; }
+.dsh-tavern-question-tag-event { background: color-mix(in srgb, #d97706 15%, var(--fk-current-bgSolid, Canvas)); color: color-mix(in srgb, #b45309 78%, var(--fork-ink)); font-style: normal; }
 .dsh-tavern-question-tag-scene { background: color-mix(in srgb, var(--fork-accent) 14%, var(--fk-current-bgSolid, Canvas)); color: var(--fork-accent); font-style: normal; }
 .dsh-tavern-candidate-question .dsh-tavern-question-head { margin-bottom: 2px; font-size: var(--fork-fs-meta); font-weight: 500; color: var(--fork-ink-3); }
 .dsh-tavern-candidate-question .dsh-tavern-question-head > span:first-child { color: var(--fork-ink-2); }
@@ -393,8 +409,12 @@ body.dsh-tavern-shell-active [data-turn-tail] [data-slot="conversation.chat.assi
 /* Free action, trace link and the append button share one footer row. */
 .dsh-tavern-question.dsh-tavern-candidate-question:not(.collapsed) { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; }
 .dsh-tavern-candidate-question > .dsh-tavern-question-head,
+.dsh-tavern-candidate-question > .dsh-tavern-question-tabs,
 .dsh-tavern-candidate-question > .dsh-tavern-question-body,
 .dsh-tavern-candidate-question > .dsh-tavern-question-sub { flex: 1 0 100%; }
+.dsh-tavern-candidate-question .dsh-tavern-question-tab { font-size: var(--fork-fs-meta); border-color: var(--fork-line); background: var(--fk-current-bgSolid, Canvas); color: var(--fork-ink-3); }
+.dsh-tavern-candidate-question .dsh-tavern-question-tab:hover { background: var(--fork-hover); color: var(--fork-ink); }
+.dsh-tavern-candidate-question .dsh-tavern-question-tab.active { border-color: color-mix(in srgb, var(--fork-accent) 52%, var(--fork-line)); background: color-mix(in srgb, var(--fork-accent) 14%, var(--fk-current-bgSolid, Canvas)); color: var(--fork-accent); }
 .dsh-tavern-question-free {
   width: auto;
   margin-top: 6px;
@@ -485,6 +505,14 @@ body.dsh-tavern-shell-active [role="status"][class*="_turnStatus"] {
 textarea.fork-status-guide-input { box-sizing: border-box; display: block; width: 100%; min-height: 32px; padding: 6px 10px; resize: none; field-sizing: content; max-height: 120px;
   border: 1px solid var(--fork-hairline); border-radius: 8px; background: transparent; color: var(--fork-ink); font: 12px/1.5 var(--fork-font-ui); }
 textarea.fork-status-guide-input:focus { outline: none; border-color: color-mix(in srgb, var(--fork-accent) 60%, transparent); box-shadow: 0 0 0 3px var(--fork-accent-soft); }
+/* 手机输入法没有可用的回车：添加按钮与输入框同排，按钮常驻不随草稿消失。 */
+.fork-status-guide-row { display: flex; align-items: flex-end; gap: 6px; }
+.fork-status-guide-row > textarea.fork-status-guide-input { flex: 1 1 auto; width: auto; min-width: 0; }
+.fork-status-guide-row > .fork-status-guide-save { flex: none; min-height: 32px; padding: 0 12px; border: 1px solid var(--fork-hairline); border-radius: 8px;
+  background: var(--fork-hover); color: var(--fork-ink); font: 12px/1 var(--fork-font-ui); cursor: pointer; }
+.fork-status-guide-row > .fork-status-guide-save:hover:not(:disabled) { border-color: color-mix(in srgb, var(--fork-accent) 55%, var(--fork-hairline)); color: var(--fork-accent); }
+.fork-status-guide-row > .fork-status-guide-save:disabled { cursor: default; opacity: .45; }
+@media (hover: none) { .fork-status-guide-row > textarea.fork-status-guide-input, .fork-status-guide-row > .fork-status-guide-save { min-height: 38px; } }
 .fork-status-people { display: flex; flex-direction: column; }
 .fork-status-people details > summary { display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; list-style: none; cursor: pointer; font-size: var(--fork-fs-meta); }
 .fork-status-people details > summary::-webkit-details-marker { display: none; }
@@ -873,6 +901,7 @@ textarea.fork-status-guide-input:focus { outline: none; border-color: color-mix(
 .fork-var-tag { flex: none; align-self: center; padding: 0 5px; border-radius: 4px; background: var(--fork-hover); color: var(--fork-ink-3); font: 500 11px/16px var(--fork-font-ui); letter-spacing: 0; }
 :is(.fork-var-group-name, .fork-var-sub-name) > .fork-var-tag { display: inline-block; margin-left: 8px; vertical-align: 1px; }
 .fork-var-tag[data-mark="added"] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #22a55a) 14%, var(--fk-current-bgSolid, Canvas)); color: var(--dsw-alias-state-success-primary, #22a55a); }
+.fork-var-tag[data-mark="masked"] { background: color-mix(in srgb, var(--fork-ink-3, #888) 14%, var(--fk-current-bgSolid, Canvas)); color: var(--fork-ink-2, inherit); }
 .fork-var-delta { font-size: var(--fork-ui-small, 12px); font-weight: 600; font-variant-numeric: tabular-nums; }
 .fork-var-delta[data-sign="up"] { color: var(--dsw-alias-state-success-primary, #22a55a); }
 .fork-var-delta[data-sign="down"] { color: var(--dsh-tavern-accent-error, #e5534b); }
@@ -1983,7 +2012,7 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
   min-height: 100%;
   /* The host tab host is a fixed-height flex column; an explicit min-height drops the flex item's automatic minimum,
      so a shrinkable panel was squeezed to one viewport and its base paint stopped there while the rest of the page
-     overflowed onto the host frame (owner screenshot, 2026-10). The panel is one surface for its full length. */
+     overflowed onto the host frame. The panel is one surface for its full length. */
   flex-shrink: 0;
   container-type: inline-size;
 }
@@ -2071,8 +2100,8 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
 }
 .ap-ui select:focus { outline: none; box-shadow: none; }
 /* Search / filter boxes stay boxes (the pill-shaped .ap-search restyles them further below). */
-.ap-ui :is(input[type=search], .ap-voice-search input, input.ap-voice-filter):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]) { padding: 5px 10px; border: .5px solid var(--ap-border-strong); border-radius: 8px; background: var(--ap-field); }
-.ap-ui :is(input[type=search], .ap-voice-search input, input.ap-voice-filter):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]):focus { border-color: var(--fork-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fork-accent) 16%, transparent); }
+.ap-ui :is(input[type=search], .ap-voice-search input):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]) { padding: 5px 10px; border: .5px solid var(--ap-border-strong); border-radius: 8px; background: var(--ap-field); }
+.ap-ui :is(input[type=search], .ap-voice-search input):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]):focus { border-color: var(--fork-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fork-accent) 16%, transparent); }
 .ap-ui input::placeholder, .ap-ui textarea::placeholder { color: var(--ap-ink-3); }
 /* a multi-line text (详情, prompts, director notes) is no box: text on the
    page (the shared inline edit look). */
@@ -2237,7 +2266,7 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
    top-layer popover (undo the UA popover box) and starts below the Windows title bar's native window buttons. */
 .dsh-tavern-frame-sheet-scrim[popover] { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border: 0; overflow: hidden; color: inherit; }
 .dsh-tavern-frame-sheet-scrim { display: flex; align-items: center; justify-content: center; padding: 24px; }
-[data-windows-titlebar] .dsh-tavern-frame-sheet-scrim { padding-top: calc(var(--dsh-windows-titlebar-height, 40px) + 16px); }
+[data-windows-titlebar]:not(:fullscreen) .dsh-tavern-frame-sheet-scrim { padding-top: calc(var(--dsh-windows-titlebar-height, 40px) + 16px); }
 .dsh-tavern-frame-sheet { display: flex; flex-direction: column; box-sizing: border-box; width: min(760px, 100%); max-height: 100%; overflow: hidden; padding: 16px 20px 20px; }
 .dsh-tavern-frame-sheet.is-wide { width: 100%; height: 100%; }
 .dsh-tavern-frame-sheet > header { flex: none; margin: 0 0 12px; }
@@ -2245,7 +2274,7 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
 .dsh-tavern-frame-sheet.is-wide .dsh-tavern-frame-sheet-body { height: auto; }
 @media (max-width: 480px) {
   .dsh-tavern-frame-sheet-scrim { padding: 0; }
-  [data-windows-titlebar] .dsh-tavern-frame-sheet-scrim { padding-top: var(--dsh-windows-titlebar-height, 40px); }
+  [data-windows-titlebar]:not(:fullscreen) .dsh-tavern-frame-sheet-scrim { padding-top: var(--dsh-windows-titlebar-height, 40px); }
   .dsh-tavern-frame-sheet { width: 100%; height: 100%; border: 0; border-radius: 0; padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
 }
 @container (max-width: 560px) {
@@ -2331,6 +2360,8 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
 .ap-pill { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px; background: var(--fork-accent-soft, var(--fk-current-selected, var(--fork-accent-soft, Canvas))); color: var(--fork-accent); font-size: var(--fork-fs-meta); font-weight: 600; letter-spacing: .04em; }
 .ap-ui button.ap-more { width: 28px; height: 28px; font-size: 16px; letter-spacing: .05em; }
 .ap-popover-anchor { position: relative; display: inline-block; }
+/* useContextMenu: a long press opens the row's / tile's own menu, so it never starts the system's text selection or callout. */
+.ap-ui [data-hold-menu], .ap-ui [data-hold-menu] * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .ap-popover { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; min-width: 200px; max-width: min(340px, 86vw); max-height: 320px; overflow: auto; padding: 4px;
   border: .5px solid var(--ap-border-strong); border-radius: 10px; background: linear-gradient(var(--fork-surface, transparent), var(--fork-surface, transparent)), Canvas; box-shadow: 0 10px 32px #0000002e; }
 .ap-ui .ap-menu-item { display: flex; justify-content: flex-start; width: 100%; min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; font-size: var(--fork-fs-body); }
@@ -2426,11 +2457,6 @@ body[data-ds-dark-theme] .fork-popover { color-scheme: dark; }
 .ap-switch-main > .ap-kind-jump-anchor { display: inline-flex; flex: none; width: auto; min-width: 0; margin-left: -10px; }
 .ap-switch-main > .ap-kind-jump-anchor > button.ap-kind-jump { margin-left: 0; }
 .ap-ui .ap-switch-main > button.ap-kind-jump { margin-right: auto; }
-/* 「配音 › ⚠」 — the ⚠ of a current failure follows the 「›」 beside the name,
-   never on the right; the name itself opens 声音设置 (pointer only; the 「›」 is the keyboard route). */
-.ap-switch-main > .ap-switch-warn { order: 1; margin: 0 auto 0 -10px; cursor: default; }
-.ap-ui .ap-switch-main > button.ap-kind-jump:has(+ .ap-switch-warn) { margin-right: 0; }
-.ap-switch-main:has(> .ap-switch-warn) > .ap-switch-name { margin-right: 0; }
 /* a row with a page (SwitchRow onOpen, 舞台模式) opens it from anywhere but
    the switch: the row paints on hover (not while the pointer is on the switch, which gets its own halo), its 「›」 darkens,
    and the 「›」's keyboard focus rings the whole row. The switch's hit area grows to 30px around the 36×20 track. */
@@ -3773,8 +3799,6 @@ body { --fork-accent-fill: var(--fk-s-base-fill, var(--fork-accent)); --fork-on-
 .ap-hex-row > .ap-field-error { flex-basis: 100%; margin: 0; }
 .ap-ui input.ap-hex-input:not([data-ap-a]):not([data-ap-b]):not([data-ap-c]) { width: 120px; min-height: 0; height: 30px; font-family: var(--ap-mono); text-transform: uppercase; }
 .ap-voice-anchor .ap-popover { min-width: 220px; }
-.ap-voice-langs { margin-left: auto; color: var(--fork-ink-2); font-size: var(--fork-fs-meta); letter-spacing: .08em; }
-.ap-voice-langs + .ap-state-check { margin-left: 4px; }
 .ap-ui button.ap-voice-play { width: 30px; height: 30px; border: .5px solid var(--ap-border-strong); color: var(--fork-ink); }
 .ap-ui button.ap-voice-play[aria-pressed=true] { border-color: transparent; }
 .ap-voice-play .fork-spinner { --fork-spinner-size: 14px; }
@@ -3980,7 +4004,6 @@ body { --fork-accent-fill: var(--fk-s-base-fill, var(--fork-accent)); --fork-on-
 /* A request in flight turns the shared Spinner (no ring of its own), a little above the time. */
 .fork-spinner.is-fill.ap-gen-spin { --fork-spinner-max: 22px; top: calc(50% - 5px); color: var(--fork-accent); }
 .ap-gen-stage-wait > .fork-spinner { --fork-spinner-size: 36px; color: var(--fork-accent); }
-.ap-gen-progress > .fork-spinner { --fork-spinner-size: 13px; }
 .ap-gen-face-time { position: absolute; left: 0; right: 0; bottom: 3px; z-index: 2; color: var(--fork-ink-2); font-size: var(--fork-fs-meta); font-variant-numeric: tabular-nums; line-height: 1; text-align: center; }
 .ap-gen-queue { position: absolute; left: 50%; top: 50%; z-index: 2; padding: 1px 6px; border-radius: 8px; background: var(--fork-hover); color: var(--fork-ink-2); font-size: var(--fork-fs-meta); line-height: 16px; transform: translate(-50%, -50%); white-space: nowrap; }
 .ap-gen-badge { position: absolute; left: 50%; bottom: 3px; z-index: 2; padding: 0 5px; border-radius: 6px; background: var(--fork-accent-fill, var(--fork-accent)); color: var(--fork-on-accent, Canvas);
@@ -4250,13 +4273,10 @@ body { --fork-accent-fill: var(--fk-s-base-fill, var(--fork-accent)); --fork-on-
 .ap-ui .ap-gen-foot button .ap-glyph { width: 14px; height: 14px; }
 .ap-gen-foot > .ap-busy { margin-right: auto; }
 /* ==== gen-ui r12: pictures are made where they go ==== */
-/* The 差分 heading's tools: 「✦ 生成缺失立绘」 / 「✦ 生成缺失头像」 (no count), 「正在画 a/b · 停止」, 「N 张待采用 · 全部采用」 — quiet, before the ⋯. */
+/* The 差分 heading's tools: 生图's one tool (✦ⁿ / ✓ⁿ / n/m ■, .ap-gw-badged) in 立绘 and 头像; 模型's 「导入模型」 — quiet, before the ⋯. */
 .ap-gen-tools { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 12px; min-width: 0; font-size: var(--fork-fs-meta); font-weight: 500; letter-spacing: 0; }
 .ap-ui button.ap-gen-fill { display: inline-flex; align-items: center; gap: 5px; min-height: 0; height: 28px; padding: 0 10px 0 8px; font-size: var(--fork-fs-meta); }
-.ap-ui button.ap-gen-fill[aria-disabled=true] { color: var(--fork-ink-3, var(--fork-ink-2)); cursor: not-allowed; }
 .ap-gen-fill > .ap-glyph { width: 13px; height: 13px; color: var(--fork-accent); }
-.ap-gen-progress, .ap-gen-waiting { display: inline-flex; align-items: center; gap: 6px; color: var(--fork-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ap-gen-tools .ap-inline-link { font-size: inherit; font-weight: 600; }
 .ap-gen-notices { display: grid; gap: 6px; margin: 0 0 8px; }
 .ap-gen-notices > * { margin: 0; }
 /* The tile menu (mock E2): the app's popover with a head (差分 · view · state), menu items, a ⚠ row for a failure or a
@@ -4387,6 +4407,10 @@ body { --fork-accent-fill: var(--fk-s-base-fill, var(--fork-accent)); --fork-on-
 .ap-ui .ap-gw-decide button.ap-icon-button { width: 36px; height: 28px; min-height: 0; border-radius: 999px; color: var(--fork-ink-2); }
 .ap-ui .ap-gw-decide button.ap-icon-button:hover:not(:disabled) { background: var(--fork-hover); color: var(--fork-ink); }
 .ap-ui .ap-gw-decide button.ap-icon-button.ap-gw-yes, .ap-ui .ap-gw-decide button.ap-icon-button.ap-gw-yes:hover:not(:disabled) { background: var(--fk-current-fill, var(--fork-accent)); color: var(--fk-current-onAccent, Canvas); }
+/* 编辑's 56px 差分 tiles: the same pill on the lower half of the face, its buttons ≥ 30px (375: 36px). */
+.ap-emotion-cell > .ap-gw-decide { top: 26px; bottom: auto; }
+.ap-ui .ap-emotion-cell > .ap-gw-decide button.ap-icon-button { width: 30px; height: 30px; }
+.ap-ui .ap-emotion-cell > button.ap-icon-button.ap-gw-sheet { top: 17px; bottom: auto; }
 /* The heading's tool with its count (R4 exception): ✦ⁿ 生成缺少的差分, ✓ⁿ 全部采用; or the batch's n/m ■. */
 .ap-gw-badged { position: relative; display: inline-flex; }
 .ap-ui button.ap-icon-button.ap-gw-accent { border-radius: 50%; background: var(--fork-accent-soft); color: var(--fork-accent); }
@@ -4498,6 +4522,8 @@ body { --fork-accent-fill: var(--fk-s-base-fill, var(--fork-accent)); --fork-on-
   .ap-gw-slot-art { width: 84px; }
   .ap-ui button.ap-icon-button.ap-gw-round, .ap-ui .ap-gw-slot-tools button.ap-icon-button.ap-gw-round, .ap-ui button.ap-icon-button.ap-gw-round.ap-gw-fallback-btn { width: 36px; height: 36px; }
   .ap-ui .ap-gw-decide button.ap-icon-button { width: 44px; height: 36px; }
+  .ap-emotion-cell > .ap-gw-decide { top: 20px; }
+  .ap-ui .ap-emotion-cell > .ap-gw-decide button.ap-icon-button { width: 36px; height: 36px; }
   .ap-gw-wall { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 8px; }
   .ap-gw-outfits { gap: 4px; }
 }
@@ -4985,7 +5011,6 @@ body.dsh-tavern-shell-active [data-sidebar-right-panel="fullscreen"][data-sideba
 
 /* 参考音频 / 本地引擎 clips: № · ▶ · what it says · language · length / size · ⋯; the dashed ＋ row adds clips. */
 .ap-clips-wrap { display: grid; gap: 6px; min-width: 0; }
-.ap-clips-sum { margin: 0; color: var(--fork-ink-2); font-size: var(--fork-fs-body); font-variant-numeric: tabular-nums; }
 .ap-clips { margin: 0; padding: 0; list-style: none; }
 .ap-clip { display: grid; grid-template-columns: 22px 32px minmax(0, 1fr) auto 104px 32px; align-items: center; gap: 8px; min-height: 48px; padding: 6px 0; border-bottom: 1px solid var(--ap-border); }
 .ap-clip-no { color: var(--fork-ink-2); font-size: var(--fork-fs-meta); font-variant-numeric: tabular-nums; text-align: right; }
@@ -5040,12 +5065,158 @@ body.dsh-tavern-shell-active [data-sidebar-right-panel="fullscreen"][data-sideba
 .ap-voice-mood-row > .ap-popover-anchor { margin-left: auto; }
 .ap-voice-dialog { width: min(460px, 100%); }
 
+/* ---- 声音 tab: 配音 · the voice (▶ · name ⌄ · one line of where it comes from · 试听) · 参考音频;
+   选择声音 (a floating list), 添加声音 (services | what one offers), 舞台设置 › 配音 rows. One voice row (.ap-vx-row) for all. */
+.ap-vx-tab { display: flex; flex-direction: column; min-width: 0; }
+.ap-vx-onoff { margin: 0 0 12px; }
+.ap-vx-onoff .ap-switch-row { padding: 0; border: 0; }
+.ap-vx-onoff .ap-switch-name { font-size: var(--fork-fs-heading); font-weight: 600; color: var(--fork-ink); }
+.ap-vx-hero { display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 16px; align-items: center; padding: 4px 0 24px; }
+.ap-vx-hero > .ap-vx-say, .ap-vx-hero > .ap-vx-try-error { grid-column: 2; }
+/* 不配音: the voice stays, greyed out — quiet ink, no accent (no translucency: ui-surfaces). */
+.ap-vx-hero[data-off] { filter: grayscale(1); }
+.ap-vx-hero[data-off], .ap-vx-hero[data-off] * { color: color-mix(in srgb, var(--fork-ink) 40%, var(--fork-surface)) !important; }
+.ap-vx-disc { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 50%; background: var(--fork-accent-soft); color: var(--fork-accent); }
+.ap-vx-disc .ap-glyph { width: 24px; height: 24px; }
+.ap-vx-disc[data-state="off"] { background: var(--fork-hover); color: var(--fork-ink-3); }
+.ap-vx-hero-main { display: grid; gap: 2px; min-width: 0; }
+.ap-vx-hero-line { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; }
+.ap-ui button.ap-vx-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 32px; padding: 0 6px 0 8px; border: 0; border-radius: var(--fork-radius); background: none; color: var(--fork-ink); font-size: var(--fork-fs-title); font-weight: 600; cursor: pointer; }
+.ap-ui button.ap-vx-name > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ap-ui button.ap-vx-name .ap-glyph { flex: none; width: 14px; height: 14px; color: var(--fork-ink-2); }
+.ap-ui button.ap-vx-name:hover, .ap-ui button.ap-vx-name[aria-expanded="true"] { background: var(--fork-hover); }
+.ap-vx-hero-line > .ap-vx-pick-anchor, .ap-vx-stage-row > .ap-vx-pick-anchor { display: inline-flex; flex: 0 1 auto; min-width: 0; }
+/* the name's hover ground reaches past its text: the anchor (not the button, whose max-width is the anchor's) sits 8 px left. */
+.ap-vx-hero-line > .ap-vx-pick-anchor { margin-left: -8px; }
+/* ▶ / ■ read as solid shapes. */
+.ap-ui button.ap-vx-say-play .ap-glyph path, .ap-ui button.ap-vx-row-play .ap-glyph path { fill: currentColor; }
+.ap-ui input.ap-vx-name-input { font-size: var(--fork-fs-title); font-weight: 600; }
+.ap-vx-spark { display: inline-flex; color: var(--fork-accent); }
+.ap-vx-spark .ap-glyph { width: 14px; height: 14px; }
+.ap-vx-tag { flex: none; padding: 0 7px; border-radius: 9px; background: var(--fork-hover); color: var(--fork-ink-2); font-size: var(--fork-fs-meta); font-weight: 400; line-height: 18px; }
+.ap-vx-name-tools { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: -4px; }
+.ap-vx-hero-tools { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; --fork-spinner-size: 16px; }
+.ap-vx-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0 6px; min-height: 28px; color: var(--fork-ink-2); font-size: var(--fork-fs-body); }
+.ap-vx-meta > i { font-style: normal; color: var(--fork-ink-3); }
+.ap-ui .ap-vx-meta button.ap-pick-pill { height: 26px; padding: 0 4px 0 6px; gap: 4px; color: var(--fork-ink-2); }
+.ap-ui .ap-vx-meta button.ap-pick-pill > .ap-glyph:first-child { width: 13px; height: 13px; color: var(--fork-ink-3); }
+/* 试听 is one field: the frame is the field's edge (as fork-edit draws it), the ▶ 试听 button and the 语气 pick sit inside. */
+.ap-vx-say { display: flex; align-items: center; gap: 4px; min-height: 40px; margin-top: 10px; padding: 0 4px; border-radius: 6px; background: var(--dsw-alias-bg-base); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fork-ink) 28%, transparent); }
+.ap-vx-say:focus-within { box-shadow: inset 0 0 0 1px var(--fork-accent); }
+.ap-ui button.ap-vx-say-play { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 30px; min-height: 0; padding: 0 12px 0 10px; border: 0; border-radius: 15px; background: var(--fork-accent-soft); color: var(--fork-accent); font-size: var(--fork-fs-body); cursor: pointer; --fork-spinner-size: 14px; }
+.ap-ui button.ap-vx-say-play .ap-glyph { width: 14px; height: 14px; }
+.ap-ui button.ap-vx-say-play[data-state="playing"] { background: var(--fork-accent); color: var(--fork-surface); }
+.ap-ui button.ap-vx-say-play:disabled { background: var(--fork-hover); color: var(--fork-ink-3); cursor: default; }
+/* the line is the field's text, not a field in a field: the shared edit edge (global .ap-ui input) is the frame's. */
+.ap-ui .ap-vx-say input.ap-vx-say-text { flex: 1; min-width: 0; height: 36px; padding: 0 6px !important; border: 0; background: none !important; box-shadow: none !important; color: var(--fork-ink); font-size: var(--fork-fs-body); }
+.ap-ui .ap-vx-say button.ap-pick-pill { flex: none; height: 30px; color: var(--fork-ink-2); }
+.ap-voice-mood-prefix { color: var(--fork-ink-3); }
+.ap-vx-filter-head { padding: 6px 12px 2px; color: var(--fork-ink-3); font-size: var(--fork-fs-meta); }
+.ap-vx-warn { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 28px; margin: 0; color: var(--fork-ink); font-size: var(--fork-fs-body); }
+.ap-vx-warn > .ap-glyph { flex: none; width: 15px; height: 15px; color: var(--fork-warn); }
+.ap-vx-try-error { margin: 6px 0 0; }
+
+.ap-vx-faces { display: inline-flex; align-items: center; flex: none; }
+.ap-vx-face { position: relative; display: block; flex: none; width: 20px; height: 20px; border-radius: 50%; overflow: hidden; background: var(--fork-hover); box-shadow: 0 0 0 1.5px var(--fork-surface); }
+.ap-vx-face + .ap-vx-face { margin-left: -5px; }
+.ap-vx-face > * { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.ap-vx-rows { margin: 0; padding: 0; list-style: none; }
+.ap-vx-row { display: flex; align-items: center; gap: 4px; min-height: 38px; padding: 0 4px; border-radius: var(--fork-radius); }
+.ap-vx-row:hover { background: var(--fork-hover); }
+.ap-vx-row[data-picked] { background: var(--fork-accent-soft); }
+.ap-ui button.ap-vx-row-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 36px; padding: 0 4px; border: 0; background: none; color: var(--fork-ink); font-size: var(--fork-fs-body); text-align: left; cursor: pointer; }
+.ap-ui button.ap-vx-row-play { display: grid; place-items: center; flex: none; width: 28px; height: 28px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--fork-ink-2); cursor: pointer; --fork-spinner-size: 14px; }
+.ap-ui button.ap-vx-row-play .ap-glyph { width: 14px; height: 14px; }
+.ap-vx-row:hover button.ap-vx-row-play, .ap-ui button.ap-vx-row-play[aria-pressed="true"] { background: var(--fork-accent-soft); color: var(--fork-accent); }
+.ap-ui button.ap-vx-row-play[data-state="error"] { color: var(--fork-warn); }
+.ap-vx-row-pad { flex: none; width: 28px; }
+.ap-vx-row-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ap-vx-row-name mark, .ap-vx-row-name mark { background: none; color: var(--fork-accent); }
+.ap-vx-row[data-current] .ap-vx-row-name { color: var(--fork-accent); font-weight: 600; }
+.ap-vx-lang { flex: none; min-width: 18px; padding: 0 3px; border-radius: 4px; box-shadow: inset 0 0 0 1px var(--fork-hairline); color: var(--fork-ink-2); font-size: var(--fork-fs-meta); line-height: 16px; text-align: center; }
+.ap-vx-row-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fork-ink-2); }
+/* 选择声音: the meta is the short service name; the voice name gives way first. */
+.ap-vx-pick .ap-vx-row-meta { flex: none; max-width: 40%; font-size: var(--fork-fs-meta); }
+.ap-vx-row-end { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; flex: none; color: var(--fork-ink-2); font-size: var(--fork-fs-meta); font-variant-numeric: tabular-nums; }
+.ap-vx-row-check { display: inline-flex; color: var(--fork-accent); }
+.ap-vx-row-check .ap-glyph { width: 16px; height: 16px; }
+.ap-vx-group { margin: 0; padding: 10px 8px 4px; color: var(--fork-ink-2); font-size: var(--fork-fs-meta); font-weight: 400; }
+.ap-ui button.ap-vx-group.is-fold { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 40px; padding: 0 8px; border: 0; border-top: 1px solid var(--fork-hairline); border-radius: 0; background: none; color: var(--fork-ink); font-size: var(--fork-fs-body); cursor: pointer; }
+.ap-vx-fold-count { color: var(--fork-ink-3); font-size: var(--fork-fs-meta); }
+.ap-ui button.ap-vx-group.is-fold > .ap-glyph { width: 12px; height: 12px; margin-left: auto; color: var(--fork-ink-3); }
+
+.ap-ui .ap-popover:has(> .ap-vx-pick) { max-width: calc(100vw - 16px); max-height: min(560px, calc(100dvh - 24px)); padding: 4px; overflow: hidden; display: flex; }
+/* in place (no portal layer): opens under the name, from its left edge */
+.ap-vx-pick-anchor > .ap-popover:not(.is-floating) { left: 0; right: auto; }
+.ap-vx-pick { display: flex; flex-direction: column; width: 392px; max-width: calc(100vw - 24px); max-height: inherit; padding: 4px; }
+.ap-vx-pick > .ap-search { flex: none; margin-bottom: 6px; }
+.ap-vx-pick-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ap-vx-pick-foot { flex: none; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--fork-hairline); }
+.ap-ui button.ap-cat-add.ap-vx-add { width: 100%; height: 36px; }
+
+.ap-ui .ap-modal.ap-vx-add-modal { display: flex; flex-direction: column; width: min(820px, 100%); height: min(600px, calc(100dvh - 32px)); padding: 0; overflow: hidden; }
+.ap-ui .ap-modal.ap-vx-add-modal > header { display: flex; align-items: center; justify-content: space-between; margin: 0; padding: 14px 16px 12px 24px; }
+.ap-vx-add-modal > .ap-modal-body { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; overflow: hidden; }
+.ap-vx-add-cols { display: grid; grid-template-columns: 184px minmax(0, 1fr); flex: 1; min-height: 0; border-top: 1px solid var(--fork-hairline); }
+.ap-vx-nav { display: flex; flex-direction: column; min-height: 0; padding: 12px; border-right: 1px solid var(--fork-hairline); }
+.ap-vx-nav-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; }
+.ap-ui button.ap-vx-nav-item { display: flex; align-items: center; justify-content: flex-start; gap: 8px; height: 36px; padding: 0 10px; border: 0; border-radius: var(--fork-radius); background: none; color: var(--fork-ink); font-size: var(--fork-fs-body); text-align: left; cursor: pointer; }
+.ap-ui button.ap-vx-nav-item:hover { background: var(--fork-hover); }
+.ap-ui button.ap-vx-nav-item[data-current] { background: var(--fork-accent-soft); color: var(--fork-accent); font-weight: 600; }
+.ap-vx-nav-warn { display: inline-flex; margin-left: auto; color: var(--fork-warn); }
+.ap-vx-nav-warn .ap-glyph { width: 15px; height: 15px; }
+.ap-ui button.ap-vx-nav-foot { margin-top: auto; align-self: flex-start; padding: 0 10px; color: var(--fork-ink-2); }
+.ap-vx-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 14px 20px 0 16px; overflow-y: auto; }
+.ap-vx-pane-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ap-vx-pane-tools > .ap-search { flex: 1; min-width: 0; }
+.ap-vx-pane-tools.is-head:not(:has(.ap-vx-ways)) { display: none; }
+.ap-vx-service-pick { display: none; }
+.ap-vx-pane-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ap-vx-pane .ap-vx-row { min-height: 42px; }
+.ap-vx-heat { color: var(--fork-ink-2); }
+.ap-vx-add-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--fork-hairline); }
+.ap-ui .ap-vx-add-foot button.ap-primary { min-width: 96px; height: 34px; border-radius: 17px; font-weight: 600; }
+.ap-vx-clone { display: grid; gap: 14px; padding-top: 2px; }
+.ap-vx-params { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); align-items: center; gap: 2px 14px; margin-top: auto; padding: 10px 0 12px; border-top: 1px solid var(--fork-hairline); font-size: var(--fork-fs-body); }
+.ap-vx-params.is-form { margin-top: 4px; padding-top: 0; border-top: 0; grid-template-columns: max-content minmax(0, 1fr); }
+.ap-vx-param-label { color: var(--fork-ink-2); }
+.ap-vx-params .ap-slider { max-width: 340px; }
+
+.ap-vx-auto-row { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 8px 0; border-bottom: 1px solid var(--fork-hairline); }
+.ap-ui .ap-vx-auto-row > button.ap-vx-row-play { width: 36px; height: 36px; background: var(--fork-accent-soft); color: var(--fork-accent); }
+.ap-vx-auto-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.ap-vx-auto-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; }
+.ap-vx-auto-name > .ap-vx-row-meta { font-weight: 400; }
+.ap-ui input.ap-vx-auto-guidance:not([data-ap-a]):not([data-ap-b]):not([data-ap-c]) { width: 100%; height: 28px; padding: 0 4px; margin-left: -4px; color: var(--fork-ink-2); font-size: var(--fork-fs-body); }
+.ap-vx-stage-row { display: flex; align-items: center; gap: 8px; min-height: 48px; }
+.ap-vx-stage-row > .ap-vx-row-play, .ap-ui .ap-vx-stage-row > button.ap-vx-row-play { width: 30px; height: 30px; background: var(--fork-accent-soft); color: var(--fork-accent); }
+.ap-ui .ap-vx-stage-row button.ap-vx-name { height: 30px; font-size: var(--fork-fs-body); }
+.ap-vx-stage-row > .ap-vx-row-meta { flex: 1; }
+.ap-vx-stage-name.is-quiet { flex: 1; color: var(--fork-ink-2); font-size: var(--fork-fs-body); }
+.ap-ui .ap-vx-stage-row button.ap-vx-go { margin-left: auto; border: 0; background: none; color: var(--fork-ink-2); }
+.ap-ui .ap-vx-stage-row button.ap-vx-go:hover { background: var(--fork-hover); }
+
 @media (max-width: 720px) {
-  /* Phone: the voice page is a full-screen sub-page — its sub-page header (‹ · 声音, .ap-subhead, the same as on a desktop)
-     replaces the figure's top bar. */
-  .ap-figure-editor[data-voice] > .ap-figure-stage, .ap-figure-editor[data-voice] > .ap-fe-topbar { display: none; }
+  /* 声音 tab on a phone: the 试听 line under the whole hero; 选择声音 a bottom sheet; 添加声音 full screen with its services
+     as one 「服务名 ⌄」 at the top of the pane. */
+  .ap-vx-hero > .ap-vx-say, .ap-vx-hero > .ap-vx-try-error { grid-column: 1 / -1; margin-top: 10px; }
+  .ap-ui .ap-popover.is-floating:has(> .ap-vx-pick) { top: auto !important; bottom: 0; left: 0 !important; right: 0; width: auto !important; max-width: none !important; max-height: 85dvh !important; border-radius: 16px 16px 0 0; padding: 12px 12px 20px; }
+  .ap-vx-pick { flex: 1; width: auto; max-width: none; }
+  .ap-vx-row { min-height: 44px; }
+  .ap-modal-scrim:has(> .ap-vx-add-modal) { padding: 0; }
+  .ap-ui .ap-modal.ap-vx-add-modal { width: 100%; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+  .ap-vx-add-cols { grid-template-columns: minmax(0, 1fr); }
+  .ap-vx-nav { display: none; }
+  .ap-vx-pane-tools.is-head:not(:has(.ap-vx-ways)) { display: flex; }
+  .ap-vx-service-pick { display: inline-flex; margin-right: auto; }
+  .ap-vx-pane { padding: 12px 12px 0; }
+  .ap-vx-pane-tools { flex-wrap: wrap; }
+  .ap-vx-params { grid-template-columns: max-content minmax(0, 1fr); }
+  /* Phone: the 声音 tab is the figure's top bar, its tabs and the voice — no preview stage. */
+  .ap-figure-editor[data-tab="voice"] > .ap-figure-stage { display: none; }
   .ap-voice-page > .ap-voice-error { top: 60px; }
-  /* m5 (owner 11-08): as compact as the approved mockup — 44 px rows, one-line clips, the 试听 line on one row. */
+  /* m5: as compact as the approved mockup — 44 px rows, one-line clips, the 试听 line on one row. */
   .ap-voice-hero { grid-template-columns: 44px minmax(0, 1fr); gap: 8px 12px; padding-bottom: 14px; }
   .ap-voice-disc { width: 44px; height: 44px; }
   .ap-voice-name { font-size: 16px; }
@@ -5592,7 +5763,7 @@ body.dsh-tavern-shell-active [data-sidebar-right-panel="fullscreen"][data-sideba
 .ap-ui .ap-clip-lang button.ap-pick-pill.ap-quiet-pick:not([data-ap-a]):not([data-ap-b]) { height: 28px; font-size: var(--fork-fs-meta); }
 .ap-voice-mood-row > .ap-popover-anchor { min-width: 0; margin-left: 8px; }
 .ap-voice-mood-row .ap-voice-mood-name { min-width: 4em; }
-.ap-ui :is(input.ap-voice-lang-input, input.ap-voice-preset-name-input):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]):not([data-fi-a]) { padding: 0 6px; }
+.ap-ui :is(input.ap-voice-preset-name-input):not([data-ap-a]):not([data-ap-b]):not([data-ap-c]):not([data-fi-a]) { padding: 0 6px; }
 /* a switch in a 「label value」 row sits right after its label, in the value
    column like every other inline value — never pushed to the far edge. */
 .fork-inline-value > .ap-inline-switch, .fork-inline-value > label.ap-inline-switch { margin-left: 0; }
@@ -5851,16 +6022,10 @@ body.dsh-tavern-shell-active [data-sidebar-right-panel="fullscreen"][data-sideba
    per-差分 rainbow. */
 .ap-figure-editor, .ap-gen-sheet { --emotion-color: var(--fork-accent); --chip-color: var(--fork-accent); --detail-color: var(--fork-accent); }
 /* The prompt ✦ would send, verbatim and read-only: plain wrapped text, no box. */
-.ap-gen-prompt { display: grid; gap: 4px; justify-items: start; min-width: 0; }
 .ap-gen-prompt-text { box-sizing: border-box; width: 100%; max-height: 240px; margin: 0; overflow: auto; color: var(--fork-ink-2); font: inherit; font-size: var(--fork-fs-meta); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ap-gen-prompt-text:focus-visible { outline: 2px solid var(--fork-accent); outline-offset: 2px; }
-/* what 设置 → 生图 changed, marked in 「查看全文」; and that page itself (one folded section per kind). */
-.ap-gen-prompt-edited { padding: 0 1px; border-radius: 2px; background: var(--fork-accent-soft); box-shadow: inset 0 -2px 0 var(--fork-accent); color: var(--fork-ink); }
+/* the line above it naming the 画风 the 配图 plugin adds. */
 .ap-gen-prompt-legend { margin: 0 0 4px; color: var(--fork-ink-3); font-size: var(--fork-fs-meta); }
-.ap-gen-prompts { display: grid; gap: 8px; min-width: 0; }
-.ap-gen-prompts > .ap-save-state { justify-self: end; min-height: 1.5em; margin: 0; }
-.ap-gen-prompts .ap-gen-prompt-field { min-width: 0; line-height: 1.6; }
-.ap-gen-prompt-open { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 30px; }
 /* ===== =====
    舞台设置: list rows must not read like their section heading (15px / 650). Item names in the 素材包 and 人物 lists are body
    text — regular weight, a slightly softer ink than the heading — and every section leaves a clear gap below its heading rule
@@ -6244,6 +6409,57 @@ textarea:is(input.fork-edit, textarea.fork-edit, .ap-ui input:not([type=checkbox
 .fork-roll-details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; padding: 0 12px 8px 34px; }
 .fork-roll-details dt { font-size: var(--fork-fs-meta); font-weight: 600; line-height: inherit; }
 .fork-roll-details dd { margin: 0; overflow-wrap: anywhere; }
+/* A card rule check (mods/dice/client/check.js): the roll card with its dice, the engine's report, what changed and,
+   while it waits for the player, the choices. */
+.fork-check { padding-bottom: 6px; }
+.fork-check-dice { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 4px 34px; }
+.fork-check-die { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 4px; background: var(--fork-surface); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fork-check-die.is-marked { background: var(--fork-check-mark, var(--fork-accent-fill)); color: var(--fork-on-accent); }
+/* d4 read from its top face (client/check.js CheckDie): a face in the muted ink with surface numbers; a marked face has a band in
+   the rules' markColor (else the accent) around a window in the on-accent colour. */
+.fork-check-d4 { width: 54px; height: 47px; flex: none; overflow: visible; }
+.fork-check-d4-face { fill: var(--fork-ink-3); }
+.fork-check-d4-band { fill: var(--fork-check-mark, var(--fork-accent-fill)); }
+.fork-check-d4-window { fill: var(--fork-on-accent); }
+.fork-check-d4 text { fill: var(--fork-surface); font-weight: 800; text-anchor: middle; font-family: var(--fork-font-ui, sans-serif); }
+.fork-check-d4.is-marked .fork-check-d4-top { fill: var(--fork-check-mark, var(--fork-accent-fill)); }
+.fork-check-d8 { width: 44px; height: 44px; flex: none; overflow: visible; }
+.fork-check-d8-body { fill: var(--fork-hover); stroke: var(--fork-ink-3); stroke-width: 3; stroke-linejoin: round; }
+.fork-check-d8-face { fill: var(--fork-ink-3); }
+.fork-check-d8.is-marked .fork-check-d8-face { fill: var(--fork-check-mark, var(--fork-accent-fill)); }
+.fork-check-d8 text { fill: var(--fork-surface); font-weight: 800; text-anchor: middle; font-family: var(--fork-font-ui, sans-serif); }
+.fork-check-d8.is-marked text { fill: var(--fork-on-accent); }
+@media (max-width: 480px) { .fork-check-dice { padding-left: 12px; } .fork-check-d4 { width: 46px; height: 40px; } .fork-check-d8 { width: 38px; height: 38px; } }
+/* A die's state when the rules read its group (faces.<group>.flags): one that does not count steps back; one the
+   player's choice turned shows its new face inside a dashed outline. */
+.fork-check-dice > .is-dropped { filter: var(--fk-current-dim, grayscale(1)); }
+.fork-check-dice > .is-changed { outline: 1.5px dashed var(--fork-ink-3); outline-offset: 2px; border-radius: 4px; }
+/* The outcome's tone (outcomes[].tone) in the roll card's tier colours: the same five as tavern_roll's. */
+.fork-check[data-tone="great"] { --roll-tier: var(--roll-critical); }
+.fork-check[data-tone="good"] { --roll-tier: var(--roll-success); }
+.fork-check[data-tone="mixed"] { --roll-tier: var(--roll-costly); }
+.fork-check[data-tone="bad"] { --roll-tier: var(--roll-failure); }
+.fork-check[data-tone="terrible"] { --roll-tier: var(--roll-fumble); }
+/* The main number (report main), large, in the outcome's colour. */
+.fork-check-headline > b { color: var(--roll-tier, var(--fork-ink)); font-size: var(--fork-fs-heading); font-variant-numeric: tabular-nums; }
+.fork-check-line, .fork-check-choices { padding: 0 12px 0 34px; overflow-wrap: anywhere; }
+.fork-check-choice-label { font-weight: 600; }
+.fork-check-hint { font-size: var(--fork-fs-meta); }
+/* A ruling without dice (a v2 rules action): one small line of what the player may see changed, no card. */
+.fork-check-note { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 0 2px; color: var(--fork-ink); font: 400 var(--fork-fs-meta)/1.5 var(--fork-font-ui); overflow-wrap: anywhere; }
+.fork-check-note > .fork-icon { flex: none; color: var(--fork-ink-3); }
+/* The answer buttons of an awaiting record (check.js): quiet tiles, the chosen one in the accent; the confirm button only when several picks go together. */
+.fork-check-choice + .fork-check-choice { margin-top: 6px; }
+.fork-check-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.fork-check-button, .fork-check-confirm { box-sizing: border-box; min-height: 30px; max-width: 100%; margin: 0; padding: 4px 10px; border: 1px solid transparent; border-radius: var(--fork-radius); background: var(--fork-surface); color: var(--fork-ink); font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.fork-check-button:hover:not(:disabled), .fork-check-confirm:hover:not(:disabled) { background: var(--fork-hover); }
+.fork-check-button.is-on { border-color: var(--fork-accent); background: var(--fork-accent-soft); }
+.fork-check-button:focus-visible, .fork-check-confirm:focus-visible { outline: var(--fork-focus); outline-offset: 2px; }
+.fork-check-button:disabled, .fork-check-confirm:disabled { color: var(--fork-ink-3); cursor: default; }
+.fork-check-confirm { margin-top: 6px; border-color: var(--fork-accent); font-weight: 600; }
+@media (max-width: 720px) { .fork-check-button, .fork-check-confirm { min-height: 36px; } }
+/* An outcome the rules stage (outcomes[].show; its stage performance is mods/dice/client/show.js): on the chat floor only its name, in the mark colour. */
+.fork-check[data-show] .fork-roll-tier { color: color-mix(in srgb, var(--fork-check-mark, var(--fork-accent)) 82%, var(--fork-ink)); font-weight: 700; }
 /* ==== round dice throw (mods/dice/client/throw.js) ==== */
 /* A roll arriving live: two d10s thrown into the band just above the stage text box, centred on it (placed by the script
    from the box, out of every flow; it never takes pointer events and may pass over the figures). The round's card waits
@@ -6273,7 +6489,7 @@ textarea:is(input.fork-edit, textarea.fork-edit, .ap-ui input:not([type=checkbox
 .fork-viewer-img.is-gliding { transition: transform 180ms cubic-bezier(.2, .7, .2, 1); }
 .fork-viewer-stage > .fork-spinner.is-fill { color: var(--fork-viewer-ink); }
 .fork-viewer-error { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--fork-viewer-ink); font-size: var(--fork-fs-body); }
-.fork-viewer-tools { position: absolute; top: calc(var(--dsh-title-bar-strip, 0px) + 12px); right: 12px; display: flex; gap: 8px; }
+.fork-viewer-tools { position: absolute; top: calc(var(--fork-safe-top, 0px) + 12px); right: 12px; display: flex; gap: 8px; }
 .fork-viewer-button { display: grid; place-items: center; width: 36px; height: 36px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: var(--fork-viewer-control); color: var(--fork-viewer-ink); cursor: pointer; }
 .fork-viewer-button:hover:not(:disabled) { background: var(--fork-viewer-control-hover); }
 .fork-viewer-button:focus-visible { outline: 2px solid var(--fork-viewer-ink); outline-offset: 2px; }
@@ -6305,6 +6521,22 @@ textarea:is(input.fork-edit, textarea.fork-edit, .ap-ui input:not([type=checkbox
 /* 「配音 ›」: no switch; its read-only summary (分角色 / 全文朗读 / 关) and 「›」 sit where the tag would. */
 .ap-switch-row.has-tag .ap-switch-main > .ap-voice-summary { order: 3; display: inline-flex; align-items: center; gap: 2px; flex: none; color: var(--fork-ink-2); font-weight: 400; }
 .fork-mod-notices { display: grid; gap: 6px; margin: 0 0 12px; }
+/* 舞台设置 › 配音: one ⚠ line per figure that cannot speak, each with its 「去设置」. */
+.ap-voice-problems { display: grid; gap: 6px; margin: 0 0 12px; }
+.ap-voice-problems > .ap-hint-line { margin: 0; }
+.ap-voice-problems-more { margin: 0; }
+/* 配音 › 角色声音 (CastVoiceList): face · name · 来源 · 音色 · 语言 · ▶ · ›; the whole row opens the figure's 声音 page. */
+.ap-cast-voices { display: grid; margin: 0; padding: 0; list-style: none; }
+.ap-cast-voice { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 4px 0 0; border-radius: var(--fork-radius); }
+.ap-cast-voice:hover { background: var(--fork-hover); }
+.ap-ui button.ap-cast-voice-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; min-height: 44px; padding: 0 6px; border: 0; border-radius: var(--fork-radius); background: none; color: var(--fork-ink); font: inherit; text-align: left; cursor: pointer; }
+.ap-ui button.ap-cast-voice-main:focus-visible { outline: var(--fork-focus); outline-offset: -2px; }
+.ap-cast-voice-main > .ap-avatar { flex: none; }
+.ap-cast-voice-name { flex: 0 1 7em; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-cast-voice-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fork-ink-2); }
+.ap-cast-voice-sum.is-quiet { color: var(--fork-ink-3); }
+.ap-cast-voice-go { display: inline-flex; flex: none; color: var(--fork-ink-3); cursor: pointer; }
+.ap-cast-voice-go .ap-glyph { width: 14px; height: 14px; }
 .fork-mod-section > .ap-section-body > .ap-hint-line, .fork-mod-section > .ap-section-body > .ap-notice { margin: 0 0 8px; }
 
 button.fork-mod-manager-open { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 0 4px 0 8px; border: 0; border-radius: var(--fork-radius); background: none; color: var(--fork-ink); font: inherit; font-size: var(--fork-fs-body); cursor: pointer; }
@@ -6383,15 +6615,15 @@ html.dsh-fork-phone-play body [data-dsh-fork-session="play"] [data-conversation-
    stand above the line even with no attachments. */
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-seat] :has(> [data-composer-card]) { padding-inline: 10px; }
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card][data-composer-card] { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: end; gap: 0 2px !important; padding: 7px 6px 7px 4px !important; }
-html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [data-slot="conversation.input.attachments"] > * { margin-bottom: 6px; }
+html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_accessory"] { grid-column: 1 / -1; grid-row: 1; }
+html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [data-slot="conversation.input.attachments"] > * { grid-column: 1 / -1; grid-row: 2; margin-bottom: 6px; }
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] > :is([class*="_tools"], [class*="_trailing"]) { height: auto; min-height: 36px; align-items: center; }
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] :is([class*="_trailing"] > [class*="_primary"], .fork-phone-plus-trigger) { width: 36px; min-width: 36px; height: 36px; min-height: 36px; }
-html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [data-slot="conversation.input.attachments"] > * { grid-column: 1 / -1; grid-row: 1; }
-html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [data-input-scroll] { grid-column: 2; grid-row: 2; margin: 0; align-self: center; }
+html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > :is([data-input-scroll], [class*="_scroll"]) { grid-column: 2; grid-row: 3; margin: 0; align-self: center; }
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] [data-composer-input] { padding: 6px 6px 6px 4px; }
 html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] { display: contents; }
-html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] > [class*="_tools"] { grid-column: 1; grid-row: 2; gap: 0; }
-html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] > [class*="_trailing"] { grid-column: 3; grid-row: 2; gap: 0; }
+html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] > [class*="_tools"] { grid-column: 1; grid-row: 3; gap: 0; }
+html.dsh-fork-phone-play [data-dsh-fork-session="play"] [data-composer-card] > [class*="_row"] > [class*="_trailing"] { grid-column: 3; grid-row: 3; gap: 0; }
 .fork-phone-plus { position: relative; display: inline-flex; }
 .fork-phone-plus-trigger { display: grid; place-items: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--fork-ink-2); cursor: pointer; }
 .fork-phone-plus-trigger:hover, .fork-phone-plus-trigger[aria-expanded="true"] { background: var(--fork-hover); color: var(--fork-ink); }
@@ -6529,3 +6761,12 @@ body.dsh-tavern-shell-active [data-sidebar-right-panel] [data-dockkit-tab-title]
 .ap-cast-voice-sum.is-quiet { color: var(--fork-ink-3); }
 .ap-cast-voice-go { display: inline-flex; flex: none; color: var(--fork-ink-3); cursor: pointer; }
 .ap-cast-voice-go .ap-glyph { width: 14px; height: 14px; }
+
+/* 设置 › 叙事阻尼器 */
+.dsh-tavern-damper-key-actions,
+.dsh-tavern-damper-key-edit,
+.dsh-tavern-damper-test { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dsh-tavern-damper-status { color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.dsh-tavern-damper-test-badge { font-size: 12px; line-height: 1.4; }
+.dsh-tavern-damper-test-badge.is-ok { color: var(--dsw-static-green-600, #238636); }
+.dsh-tavern-damper-test-badge.is-error { color: var(--dsh-tavern-accent-error, #c64545); }

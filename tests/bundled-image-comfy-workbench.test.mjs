@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { access, mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { imagePluginFixture, IMAGE_PNG, imageJson } from './fixtures/image-plugin-runtime.mjs'
 import { scanWorkflowLoras, applyWorkflowLora, loraOrderPairs } from '../tavern-plugin/packages/dsh-tavern-image-bundled/lib/comfy-lora.js'
 
@@ -38,6 +40,34 @@ test('LoRA stack slots retain their graph shape and independent model/CLIP weigh
   assert.deepEqual(loraOrderPairs(graph.prompt, scanWorkflowLoras(graph.prompt)), [['2', '3']])
 })
 
+test('multiple unnamed ComfyUI API imports keep separate files, bindings and the original default after restart', async t => {
+  const fixture = await imagePluginFixture(t, { config: { imageBackend: 'comfyui', comfyMode: 'workflow' } })
+  const runtime = await fixture.start()
+  globalThis.fetch = async () => imageJson({})
+  const makeGraph = text => ({ ...graph.prompt, '1': { class_type: 'CLIPTextEncode', inputs: { text: '%prompt ' + text } } })
+  const first = await runtime.request('workflow-import', { workflow: makeGraph('original') })
+  assert.equal(first.status, 200, JSON.stringify(first.body))
+  const original = (await runtime.request('state')).body.workflows.find(item => item.current)
+  const others = await Promise.all(['second', 'third'].map(text => runtime.request('workflow-import', { workflow: makeGraph(text) })))
+  for (const imported of others) assert.equal(imported.status, 200, JSON.stringify(imported.body))
+  const files = [first, ...others].map(result => result.body.file)
+  assert.equal(new Set(files).size, 3)
+  assert.match((await fixture.read('workflows/' + files[0])).prompt['1'].inputs.text, /original/)
+  const detail = await runtime.request('workflow-graph', { file: files[1] })
+  const save = await runtime.request('workflow-graph', { file: files[1], revision: detail.body.revision, patch: { outputNode: '10' } })
+  assert.equal(save.status, 200, JSON.stringify(save.body))
+  runtime.close()
+  const reopened = await fixture.start()
+  const state = (await reopened.request('state')).body
+  assert.equal(state.workflows.length, 3)
+  assert.equal(new Set(state.workflows.map(item => item.id)).size, 3)
+  assert.equal(new Set(state.workflows.map(item => item.label)).size, 3)
+  assert.equal(state.workflows.find(item => item.current).id, original.id)
+  assert.equal((await fixture.read('workflows/' + files[0])).outputNode, '9')
+  assert.equal((await fixture.read('workflows/' + files[1])).outputNode, '10')
+  assert.equal((await fixture.read('workflows/' + files[2])).outputNode, '9')
+})
+
 test('workflow preflight does not write files; LoRA ordering and series compile through real job routes', async t => {
   const fixture = await imagePluginFixture(t, {
     config: { imageBackend: 'comfyui', comfyMode: 'workflow', generationMode: 'text',
@@ -54,8 +84,9 @@ test('workflow preflight does not write files; LoRA ordering and series compile 
     }
     return imageJson({ queue_running: [], queue_pending: [] })
   }
-  const preflight = await runtime.request('workflow-import', { workflow: graph, preview: true })
+  const preflight = await runtime.request('workflow-import', { workflow: graph.prompt, filename: 'LoRA试跑.json', preview: true })
   assert.equal(preflight.status, 200, JSON.stringify(preflight.body))
+  assert.equal(preflight.body.name, 'LoRA试跑')
   assert.equal(preflight.body.outputs.length, 2)
   assert.deepEqual((await fixture.read('workflows/series.json')).prompt, graph.prompt)
   const swap = await runtime.request('workflow-bindings', { file: 'series.json', patch: { loraSwap: ['2', '3'] } })
@@ -96,4 +127,59 @@ test('gallery trash and favorites persist and restore without deleting the image
   assert.equal((await restarted.request('gallery-item', { id: job.id, operation: 'restore' })).status, 200)
   assert.equal((await restarted.request('history?gallery=favorite')).body.jobs[0].id, job.id)
   assert.equal((await restarted.request('history?gallery=trash')).body.jobs.length, 0)
+})
+
+
+test('gallery permanently deletes single, selected and all trash beyond the history page, without resurrection', async t => {
+  const fixture = await imagePluginFixture(t)
+  const cache = join(fixture.pluginRoot, 'cache')
+  await mkdir(cache, { recursive: true })
+  const stored = {}
+  for (let index = 0; index < 67; index++) {
+    const id = '00000000-0000-4000-8000-' + String(index).padStart(12, '0')
+    const file = join(cache, id + '.img')
+    await writeFile(file, IMAGE_PNG)
+    stored[id] = { id, file, state: 'done', byteLength: IMAGE_PNG.length, createdAt: index + 1,
+      source: index === 66 ? 'card' : 'play', key: 'gallery-' + index, positive: 'tree',
+      trashedAt: index === 65 ? null : 1, favorite: index === 65 }
+  }
+  const ids = Object.keys(stored), trash = ids.slice(0, 65)
+  await writeFile(join(fixture.pluginRoot, 'jobs-store.json'), JSON.stringify(stored))
+  await writeFile(join(fixture.pluginRoot, 'plans-store.json'), JSON.stringify({ scene: { plans: ids.map(jobId => ({ jobId })) } }))
+  const runtime = await fixture.start()
+  assert.equal((await runtime.request('history?source=play&gallery=trash')).body.jobs.length, 60)
+  // Ordinary gallery images and card workbench images must remain untouched.
+  assert.equal((await runtime.request('gallery-delete', { ids: [ids[65]] })).status, 409)
+  assert.equal((await runtime.request('gallery-delete', { ids: [ids[66]] })).status, 409)
+  const single = await runtime.request('gallery-delete', { ids: [trash[0]] })
+  assert.deepEqual(single.body, { ok: true, deleted: [trash[0]], failed: [] })
+  assert.equal((await runtime.request('jobs?id=' + trash[0] + '&image=1')).status, 404)
+  assert.equal((await runtime.request('jobs?key=gallery-0')).status, 404)
+  const batch = await runtime.request('gallery-delete', { ids: trash.slice(1, 3) })
+  assert.deepEqual(batch.body.deleted, trash.slice(1, 3))
+  const clear = await runtime.request('gallery-delete', { all: true })
+  assert.equal(clear.body.deleted.length, 62, 'clear includes trash outside the first 60 history entries')
+  assert.deepEqual(clear.body.failed, [])
+  for (const id of trash) await assert.rejects(access(stored[id].file), { code: 'ENOENT' })
+  assert.deepEqual(Object.keys(await fixture.read('jobs-store.json')).sort(), ids.slice(65).sort())
+  assert.deepEqual((await fixture.read('plans-store.json')).scene.plans.map(item => item.jobId), ids.slice(65))
+  runtime.close()
+  const restarted = await fixture.start()
+  assert.equal((await restarted.request('history?source=play&gallery=trash')).body.jobs.length, 0)
+  assert.equal((await restarted.request('history?source=play&gallery=favorite')).body.jobs[0].id, ids[65])
+  assert.equal((await restarted.request('jobs?id=' + ids[66] + '&image=1')).status, 200)
+})
+
+test('gallery deletion keeps failed items available instead of reporting false success', async t => {
+  const fixture = await imagePluginFixture(t)
+  const file = join(fixture.pluginRoot, 'cache', 'blocked.img')
+  await mkdir(file, { recursive: true })
+  const job = { id: 'blocked', file, state: 'done', source: 'play', trashedAt: 1, positive: 'tree' }
+  await writeFile(join(fixture.pluginRoot, 'jobs-store.json'), JSON.stringify({ blocked: job }))
+  const runtime = await fixture.start()
+  const result = await runtime.request('gallery-delete', { ids: ['blocked'] })
+  assert.deepEqual(result.body.deleted, [])
+  assert.equal(result.body.failed[0].id, 'blocked')
+  assert.ok(result.body.failed[0].error)
+  assert.equal((await runtime.request('history?source=play&gallery=trash')).body.jobs[0].id, 'blocked')
 })
