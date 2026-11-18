@@ -36,6 +36,15 @@ test('widget controller reads plugin session context and releases geometry and p
  act(()=>late());assert.equal(f.jobs.size,0)
  }finally{f.close()}
 })
+test('outside a secure context (http on a LAN address, no crypto.randomUUID) the stage widgets still mount',()=>{
+ const draws=[]
+ const f=fixture({prepare:window=>Object.defineProperty(window,'crypto',{configurable:true,value:{getRandomValues:bytes=>{draws.push(bytes.length);return globalThis.crypto.getRandomValues(bytes)}}})})
+ function View(){f.plugin.useStage({sessionId:'s',rootRef:{current:f.mount},config:{characters:[]},widgets:[],pages:[],turn:1,page:0,enabled:true,mode:'live'});return null}
+ try {
+ act(()=>f.root.render(React.createElement(View)))
+ assert.ok(draws.includes(16),'the widget owner id comes from getRandomValues')
+ }finally{f.close()}
+})
 test('stopping phone settings prevents queued writes after an in-flight config read',async()=>{
  let finish;const calls=[]
  const f=fixture({rpc:(method,args)=>{calls.push(method);if(method==='getModConfig')return new Promise(resolve=>finish=resolve);return Promise.resolve({sources:[]})}})
@@ -157,5 +166,23 @@ test('the stage exports its widget placement and the handheld phone decision',()
  const clear=f.plugin.place({width:800,height:600,size:{width:200,height:100},blocked:[{x:250,y:0,width:300,height:120}],anchor:'top-center'})
  assert.ok(clear.y>=132 || clear.x+clear.width<=238 || clear.x>=562,'it keeps clear of a blocked control')
  assert.equal(f.plugin.place({width:100,height:100,size:{width:200,height:100}}),null,'no safe space places nothing')
+ }finally{f.close()}
+})
+test('a page asks for its phone window once: settling re-renders and showing the page again share the answer',async()=>{
+ const phoneProtocol=require('../tavern-plugin/mods/phone/stage-phone.cjs'),reads=[]
+ const f=fixture({phoneProtocol,sessions:()=>({owner:{getWidgetContext:()=>null}}),
+  rpc:(method,args)=>{if(method==='getStagePhonePresentation'){reads.push(args.turn+':'+args.at);return Promise.resolve({status:'ready',widgets:[]})}return Promise.resolve(null)}})
+ const phone={ref:{modId:'dsh.phone'},modSource:true,sourceOnly:true,state:{},definition:{contentIdentity:'phone',document:{presentation:{open:{width:280,anchor:'corner-right'}}}}}
+ const record={phase:'done',through:1,assetRevision:3,token:{bindingKey:'b',sourceKey:'k2',generation:1},entries:[]}
+ const earlier={turn:1,pages:[],record:{phase:'done',through:0,token:{bindingKey:'b',sourceKey:'k1',generation:1},entries:[]}}
+ function View({rows}){f.plugin.useStage({sessionId:'s',rootRef:{current:f.mount},config:{characters:[]},widgets:[phone],turn:2,page:0,record,assetRevision:3,
+  pages:[{kind:'line',para:1,name:'Alice',text:'hi'}],enabled:true,mode:'live',readHistory:()=>Promise.resolve({rows}),phoneThreadsRpc:()=>Promise.resolve(null)});return null}
+ const settle=()=>act(async()=>{for(let i=0;i<4;i++)await new Promise(resolve=>setTimeout(resolve,0))})
+ try {
+ act(()=>f.root.render(React.createElement(View,{rows:[earlier]})));await settle()
+ act(()=>f.root.render(React.createElement(View,{rows:[{...earlier}]})));await settle()
+ act(()=>f.root.render(React.createElement('div')));await settle()
+ act(()=>f.root.render(React.createElement(View,{rows:[earlier]})));await settle()
+ assert.deepEqual(reads,['2:1'])
  }finally{f.close()}
 })

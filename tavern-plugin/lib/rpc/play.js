@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto'
 export function createPlayHandlers(deps) {
   const { agentCompaction, agentRegistry, autoChoices, backgroundAgentRunner, backgroundCatalog, storyEvents, workflow, pluginApi, bodyEditor, branchOrigin, polishPrereview, polishRecords, polishReviewer, cardUpdates,
     candidateGenerator, candidateTasks, chatForSession, compactionAbort, conversationBackgroundSettings, conversationGuides, ctx,
-    ledgerEditor, manualCharacterDesign, manualLedger, messageDeletion, notifyPluginTimeline, phoneChat,
+    ledgerEditor, manualCharacterDesign, manualLedger, messageDeletion, notifyPluginTimeline,
     pluginSettlementProgress, readBackgroundSuppression, readTavernSettings,
     reconcileStory, reconcileWhenIdle, regenBody, requestPerformance, retrySettlement,
     retryStyleReference, rollbackTurn, rollbackToTurn, runtimeGeneration, sessionActivity, sessionOperation, sessionSignals,
@@ -56,7 +56,11 @@ export function createPlayHandlers(deps) {
   }
   return {
     async appendPlayerInput(args) {
-      return await turnOrchestrator.appendUser({ sessionId: str(args?.sessionId), requestId: str(args?.requestId),
+      const sessionId = str(args?.sessionId)
+      // 运行中追加的输入由宿主队列持有，等它真正进入 prepare 再持久化。
+      // 提前追加会改变当前准备事务的消息布局，导致打断请求到达前先报冲突。
+      if (agentRegistry?.get(sessionId)?.phase?.kind === 'running') return { saved: false, queued: true }
+      return await turnOrchestrator.appendUser({ sessionId, requestId: str(args?.requestId),
         userText: str(args?.text ?? args?.userText), userContent: args?.userContent })
     },
     // For tools: send a player input as the page does; the turn runs like any other.
@@ -103,9 +107,6 @@ export function createPlayHandlers(deps) {
     },
     async consolidateLedger(args) {
       return await manualLedger.start(args || {})
-    },
-    async sendPhoneMessage(args) {
-      return { phoneChat: await phoneChat.send(args || {}) }
     },
     async runCompaction(args) {
       const id = str(args && args.sessionId), chat = await chatForSession(id)

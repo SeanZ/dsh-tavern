@@ -17,6 +17,12 @@
 			const illustrators = [];
 			const replyPresenters = [];
 			const composerSlots = [];
+			// Compact composer tools (apiVersion 10): icon-sized entries in the host's
+			// trailing control row (conversation.input.right), where the model seat and the
+			// submit action already live. Unlike composerSlots these never claim a dock row
+			// above the input card, so they cannot push the transcript up or sit on top of it.
+			const composerTools = [];
+			const headerTools = [];
 			// Latest reply per session, fed by the observer in the composer dock (reply-observer.js):
 			// the card workbench has no transcript in Tavern's session view, so DSH's own Chat
 			// snapshot (running step blocks + finalized nodes) is the source for every mode.
@@ -420,7 +426,35 @@
 
 			const service = {
 				ctx: undefined,
-				apiVersion: 8,
+				apiVersion: 10,
+				// Tavern's own controls (apiVersion 9), so a plugin's UI looks and behaves like Tavern's: Slider, Segmented,
+				// Switch, SearchBox, Icon (Tavern's icon names), Spinner, EmptyState. Same props as Tavern uses (inline-field.js).
+				get components() { return Object.freeze({ Slider: Slider, Segmented: Segmented, Switch: Switch, SearchBox: SearchBox, Icon: Icon, Spinner: Spinner, EmptyState: EmptyState }); },
+				// A small tool in a game's header (apiVersion 9), beside the music player: render({ gameId, menu }) returns
+				// React; on a phone the header folds into the ⋯ menu, where render runs with menu: true and draws a menu row.
+				registerHeaderTool(input) {
+					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerHeaderTool 的 id 只能用小写字母、数字、点、下划线和连字符");
+					if (typeof input.render !== "function") throw new TypeError("registerHeaderTool 需要 render 函数");
+					const owner = ownerOf(this), entry = { key: owner + ":" + input.id, owner: owner, render: input.render };
+					return owned(this, function () {
+						if (headerTools.some(function (tool) { return tool.key === entry.key; })) throw new Error("顶栏工具 " + input.id + " 已注册");
+						return addTo(headerTools, entry);
+					}, "tavernUi.registerHeaderTool()");
+				},
+				// The story read aloud (apiVersion 9), the stage's own reading (story-reading.js): readingUnits lists every
+				// finished reply as units { key, row, floor, n, para, kind: 'line' | 'narration', text, speaker }; playReading
+				// says one in Tavern's voice player and resolves when it ends ({ ended }), is stopped ({ stopped }) or cannot be
+				// said ({ error }); options { voice, lines: 'figure' | 'reader', volume, rate }. holdVoice() keeps the stage and the
+				// bubbles from voicing until its release (or the plugin unloads).
+				readingUnits(gameId) { return tavernReading.units(gameId); },
+				readingVoices() { return tavernReading.voices(); },
+				prepareReading(gameId, key, options) { return tavernReading.prepare(gameId, key, options); },
+				playReading(gameId, key, options) { return tavernReading.play(gameId, key, options); },
+				pauseReading() { return tavernReading.pause(); },
+				resumeReading() { return tavernReading.resume(); },
+				stopReading() { tavernReading.stop(); },
+				tuneReading(options) { tavernReading.tune(options); },
+				holdVoice() { return owned(this, function () { return voiceChannel.hold(); }, "tavernUi.holdVoice()"); },
 				registerMediaRenderer(kind, render) {
 					if (typeof kind !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/.test(kind)) throw new TypeError("只能为插件自定义的 <插件名>/<类型> 注册显示方式");
 					if (typeof render !== "function") throw new TypeError("registerMediaRenderer 需要 render 函数");
@@ -717,6 +751,20 @@
 						return addTo(composerSlots, entry);
 					}, "tavernUi.registerComposerSlot()");
 				},
+				// An icon-sized tool in the composer's trailing control row (apiVersion 10), next
+				// to the model seat and the submit action: render({ sessionId, busy, gameId }) returns
+				// React. Keep it to a glyph — the host row is one compact line and hides itself while
+				// the activity panel is expanded — and put the words in title/aria-label.
+				registerComposerTool(input) {
+					if (!input || typeof input.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.id)) throw new TypeError("registerComposerTool 的 id 只能用小写字母、数字、点、下划线和连字符");
+					if (typeof input.render !== "function") throw new TypeError("registerComposerTool 需要 render 函数");
+					const owner = ownerOf(this);
+					const entry = { key: owner + ":" + input.id, owner: owner, modes: modesOf(input.modes, "registerComposerTool"), render: input.render };
+					return owned(this, function () {
+						if (composerTools.some(function (tool) { return tool.key === entry.key; })) throw new Error("输入栏工具 " + input.id + " 已注册");
+						return addTo(composerTools, entry);
+					}, "tavernUi.registerComposerTool()");
+				},
 				// What the stage shows (apiVersion 2): the latest turns with their dialogue annotations, and the card's characters.
 				getStage(gameId, options) {
 					if (typeof gameId !== "string" || !gameId) return Promise.reject(new TypeError("getStage 需要 gameId"));
@@ -988,7 +1036,9 @@
 				replyPresenters: function () { return replyPresenters.slice(); },
 				composerSlotFor: function (mode) { for (const slot of composerSlots) if (slot.modes.indexOf(mode) >= 0 || (mode === "story" || mode === "script") && slot.modes.indexOf("play") >= 0) return slot; return null; },
 				gameModeView: function (key) { return gameModeViews.get(key); },
-				composerSlots: function () { return composerSlots.slice(); }
+				composerSlots: function () { return composerSlots.slice(); },
+				composerTools: function () { return composerTools.slice(); },
+				headerTools: function () { return headerTools.slice(); }
 			};
 		}
 		const tavernUiExtensions = createTavernUiExtensions();
@@ -1080,6 +1130,15 @@
 						h(tavernPluginBoundary(), { owner: section.owner, fallback: h("div", { className: "dsh-tavern-plugin-error" }, "插件 " + section.owner + " 的内容出错了") },
 							h(TavernPluginStatusSection, { section: section, sessionId: props.sessionId })));
 				}));
+		}
+		/** Plugins' header tools of a game (registerHeaderTool): in the header, or as rows of the phone's ⋯ menu (menu). */
+		function TavernPluginHeaderTool(props) { return props.tool.render({ gameId: props.sessionId, menu: props.menu === true }) || null; }
+		function TavernPluginHeaderTools(props) {
+			const h = React.createElement;
+			useTavernUiExtensions();
+			return h(React.Fragment, null, tavernUiExtensions.headerTools().filter(function (tool) { return tavernPluginAllowed(tool.owner, props.sessionId); }).map(function (tool) {
+				return h(tavernPluginBoundary(), { key: tool.key + ":" + props.sessionId, owner: tool.owner, fallback: null }, h(TavernPluginHeaderTool, { tool: tool, sessionId: props.sessionId, menu: props.menu }));
+			}));
 		}
 		function useTavernUiExtensions() {
 			// Which plugins a game shows waits on the card plugin scopes (tavernPluginAllowed).

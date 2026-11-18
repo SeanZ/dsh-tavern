@@ -603,7 +603,7 @@ export function apply(ctx) {
 
 Tavern 内置配图插件 3.8.0 支持素材库「人物 → 生图 → 配图人物库」直接编辑同一条人物记录。可新建记录或选择已有记录，编辑名字、别名、分视角外貌、当前服装，并把素材包设定图写入配图参考图。多个人物库并存时需要选择来源。
 
-共用接口通过 `registerImageLibrary` 注册 `schemaVersion: 4` 与 `getCharacter/patchCharacter/createCharacter/putReferenceImage`。读取返回 `{version: 4, character}`。修改带上完整的 `expected` 人物快照，`traits` 按字段合并，`outfits` 按 ID 合并；未修改的字段与未列出的服装保留。允许编辑名字、别名、一致性文字、外貌、服装及参考图，不能修改人物卡绑定等插件专有字段。
+共用接口通过 `registerImageLibrary` 注册 `schemaVersion: 4` 与 `getCharacter/patchCharacter/createCharacter/putReferenceImage`。读取返回 `{version: 4, character}`。修改带上完整的 `expected` 人物快照，`traits` 按字段合并，`outfits` 按 ID 合并；未修改的字段与未列出的服装保留。允许编辑名字、别名、一致性文字、外貌、服装及参考图，不能修改人物卡绑定等插件专有字段。素材库人物被删除时，宿主用同样带 `expected` 的 `deleteCharacter` 一并删除记录，或把 `figureId` 与 `figurePackId` 都设为 `null` 断开关联、保留外貌；`deleteCharacter` 是可选接口，宿主从 `recordLibraries()` 的 `deletes` 得知是否可用。
 
 可选接口 `deleteCharacter({characterId, expected})` 删除一条记录（`expected` 与当前记录不一致时报 `REVISION_CONFLICT`），返回 `{deleted: characterId}`。`patchCharacter` 把 `figureId` 与 `figurePackId` 同时设为 `null` 即断开与素材库人物的关联；只设其一报 `INVALID_ARGUMENT`，记录本身保留。
 
@@ -618,7 +618,7 @@ Tavern 内置配图插件 3.8.0 支持素材库「人物 → 生图 → 配图�
 
 在 DSH 0.2.1-rc.2 + Tavern 3.0.0 上核对过：插件 bundle 正常加载（宿主加载器返回 0 个被跳过的包），本插件调用的 14 个 Tavern 接口（`attach`、`update`、`remove`、`list`、`getTurn`、`readTurnData`、`saveTurnData`、`promptSection`、`onTurnSettled`、`onGameRemoved`、`onTimelineChanged`、`getCardContext`、`backgroundModel`、`apiVersion`）在 Tavern 3.0 中全部保留，3.0 相对 2.7 的接口变化是纯新增（例如 `versionSignal`）。
 
-另有两个可选的宿主放行口子，宿主没有提供时插件照旧：`tavern.beforeImagePlan({gameId, turn, manual, signal})` 在规划某一轮的配图之前调用，插件等它返回后重读这一轮再规划；`tavern.beforeImageGenerate({gameId, turn, anchor, subjects, manual, signal})` 在出每一张图之前调用（`subjects` 是这张图规划出的人物），返回 `{skip: true, reason}` 时不出这张，`reason` 写进这一轮的提示；返回 `{outfits: {人物 id: 服装 id}}` 时，规划省略这个人的 outfitId 时，这张图就用挂载句 anchor 所在段落的这套服装，参考图和服装文字随之切换；明确填空字符串则不选图库服装。宿主用它告诉插件人物此刻穿哪套。宿主用它们让配图等自己准备好的东西（例如刚出场人物的人物库记录和参考图），什么时候放行由宿主决定。
+另有两个可选的宿主放行口子，宿主没有提供时插件照旧：`tavern.beforeImagePlan({gameId, turn, manual, signal})` 在规划某一轮的配图之前调用，插件等它返回后重读这一轮再规划；`tavern.beforeImageGenerate({gameId, turn, anchor, subjects, manual, signal})` 在出每一张图之前调用（`subjects` 是这张图规划出的人物），返回 `{skip: true, reason}` 时不出这张，`reason` 写进这一轮的提示；返回 `{outfits: {人物 id: 服装 id}}` 时，规划没给这个人写服装（省略 outfitId 或填空字符串）时，这张图就用挂载句 anchor 所在段落的这套服装，参考图和服装文字随之切换；规划写了具体服装 ID 时用规划的。宿主用它告诉插件人物此刻穿哪套。宿主用它们让配图等自己准备好的东西（例如刚出场人物的人物库记录和参考图），什么时候放行由宿主决定。
 
 新包名、浏览器模块加载键、bundle 名称和插件 ID 统一为 `dsh-tavern-image`。旧包名 `dsh-tavern-comfy` 仅用于兼容读取和迁移现有 Profile 注册。
 

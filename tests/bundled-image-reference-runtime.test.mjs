@@ -134,6 +134,8 @@ test('规划只收文字及清单，结构化subjects到实际图片编号绑定
   assert.equal(prompts[0].messages.length, 1)
   assert.ok(prompts[0].messages[0].content.every(part => part.type === 'text'))
   assert.match(prompts[0].system, /subjects/)
+  // The fixed output template shows <subjects> too; a template without it is copied and the picture loses its references.
+  assert.match(prompts[0].system, /<size>\.\.\.<\/size><subjects>\[\{"characterId"/)
   assert.match(prompts[0].system, /不再描述年龄、性别、面部、发型或固有体型等固定身份属性/)
   assert.match(prompts[0].system, /一个可同时成立的定格姿态/)
   assert.match(prompts[0].system, /不为解释光线新增窗帘、开口、掀布或光源/)
@@ -269,7 +271,7 @@ test('beforeImageGenerate: the host releases each picture with its subjects, or 
     if (skip) assert.ok(JSON.stringify(result.body).includes('not ready yet'), 'the reason reaches the turn warnings')
   })
 })
-test('beforeImageGenerate: inherit omitted outfits at the picture anchor, preserving explicit empty and selected outfits', async t => {
+test('beforeImageGenerate: a person the plan leaves undressed (omitted or empty outfitId) wears the host outfit at the picture anchor; a selected outfit stays', async t => {
   for (const mode of ['inherit', 'empty', 'explicit', 'legacy']) await t.test(mode, async t => {
     const calls = [], asked = []
     const subject = { characterId: 'lin', ...(mode === 'empty' ? { outfitId: '' } : mode === 'explicit' ? { outfitId: 'shirt' } : {}) }
@@ -286,7 +288,7 @@ test('beforeImageGenerate: inherit omitted outfits at the picture anchor, preser
     assert.equal(result.status, 200, JSON.stringify(result.body))
     const job = await runtime.terminal(result.body.plans[0].jobId)
     assert.equal(job.state, 'done', job.error)
-    const inherited = mode === 'inherit' || mode === 'legacy'
+    const inherited = mode !== 'explicit'
     assert.deepEqual(job.references.map(reference => reference.image.id), [inherited ? kimono.id : identity.id])
     if (inherited) assert.match(job.submittedPrompt, /林月／红和服/)
     else assert.doesNotMatch(job.submittedPrompt, /红和服|red kimono/)

@@ -41,7 +41,7 @@ async function harness({ beginRunning = true, mvu = true } = {}) {
   const running = beginRunning ? await tasks.begin(current, 'settlement') : null
   // The settlement's dependencies. The factories read them on every call, so tests swap services here.
   const sandbox = {
-    storyEvents: createStoryEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, serverScripts: null,
+    storyEvents: createStoryEvents(), chatPersistence: { readWindow: async () => null }, readOpeningWindow: async () => null, projectOpeningWindow: async window => window.chat, readSlice: async (_id, indices) => { const chat = await store.readChat(); chat.messages = indices.map(i => chat.messages[i]); return { chat } }, serverScripts: null,
     taskStateReader: { forSession: async () => projectChatSessionState(await store.readChat()) },
     backgroundTasks: tasks, storyTimeline: timeline,
     readChat: store.readChat, chatForSession: store.readChat, writeChat: store.writeChat,

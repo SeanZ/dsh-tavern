@@ -29,12 +29,10 @@ export function createSettlementControls(deps) {
   // `messageUid`（可选）：故事视图传来的目标正文身份，每次（含 CAS 冲突后重读）都要与实际结算的
   // 最新正文一致；同一轮号下的另一份正文或失效身份都拒绝。旧调用不带它时只按轮号核对。
   async function retrySettlement(sessionId, turn, guidance, messageUid) {
-    const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, storyTimeline, view } = deps
+    const { backgroundTasks, chatForSession, mvuSettlementEngine, patchChat, projectOpeningWindow, queueSettlement, readChatCard, readOpeningWindow, readSlice, storyTimeline, view } = deps
     for (let attempt=0;attempt<5;attempt++) {
       const recent = await readOpeningWindow(sessionId)
-      // MVU 重算需要结算前快照及参与者状态，显示窗口有意省略这些字段。
-      // 仅这条显式写操作读取完整存档，日常显示继续使用有界窗口。
-      const window = recent && recent.chat.mvu?.enabled !== true && recent.chat.timeline?.schemaVersion === 1
+      const window = recent && recent.chat.timeline?.schemaVersion === 1
         && !Object.values(recent.chat.timeline.operations || {}).some(op => op?.kind === 'body' && op.status === 'foreground-completed')
         && recent.chat.messages.some(message => message.role === 'assistant' && message.greeting !== true) ? recent : null
       const chat = window ? window.chat : await chatForSession(sessionId)
@@ -54,6 +52,14 @@ export function createSettlementControls(deps) {
       }
       if (target === null || Math.max(0, Number(target.message.turn) || 0) !== Math.max(0, Number(turn) || 0)) {
         throw new Error('只能重试当前最新正文的后台结算')
+      }
+      if (window) {
+        // The display window omits settlement baselines and participant records.
+        // Read only this reply in full, and restart if the window is already stale.
+        const selected = await readSlice(chat.id, [target.messageId], ['id', '_storageRevision'])
+        if (!selected || selected.chat._storageRevision !== chat._storageRevision) continue
+        target.message = selected.chat.messages[0]
+        chat.messages[target.messageId - window.from] = target.message
       }
       if (messageUid !== undefined && messageUid !== null && legacyMessageUid(target.message, target.messageId) !== str(messageUid)) {
         throw new Error('目标消息已变化，请刷新故事页')

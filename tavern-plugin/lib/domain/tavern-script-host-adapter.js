@@ -352,7 +352,7 @@ export function createTavernScriptHostAdapter(options = {}) {
     const updated = replaceTavernHelperMessages(chat, patches, await replyProjection(chat))
     // (MVU's opening build writes the floor's swipes_data through here)
     for (const { messageId } of updated) if (layOpeningStartValues(chat, { type: 'message', messageId })) break
-    if (chat.mvu && chat.mvu.owner === 'official') {
+    if (!settlement.isVariableEdit(sessionId) && chat.mvu && chat.mvu.owner === 'official') {
       const opening = Array.isArray(chat.messages) ? chat.messages[0] : null
       const snapshots = opening && Array.isArray(opening.variables) ? opening.variables : []
       if (snapshots.length > 0 && snapshots.every(isOfficialMvuData)) {
@@ -403,8 +403,10 @@ export function createTavernScriptHostAdapter(options = {}) {
   }
 
   async function worldbookRecord(sessionId, requestedName, template = false, suppliedChat, readOnly = false) {
-    const selected = readOnly && !suppliedChat && await options.resolveChatSlice?.(sessionId, [], 'settlement')
-    const chat = suppliedChat || selected?.chat || await resolveChat(sessionId)
+    const transaction = settlement.worldbookDraft(sessionId)
+    const draft = transaction?.draft
+    const selected = readOnly && !suppliedChat && !draft && await options.resolveChatSlice?.(sessionId, [], 'settlement')
+    const chat = suppliedChat || draft || selected?.chat || await resolveChat(sessionId)
     if (template) assertTemplateChat(chat); else await assertScriptEnabled(chat)
     const card = await options.readCard(chat)
     const record = await options.worldBooks.bound(chat.cardPath, card, chat)
@@ -413,14 +415,14 @@ export function createTavernScriptHostAdapter(options = {}) {
     if (name !== '' && name !== 'current' && name !== str(record.view.displayName)) {
       throw new Error('当前兼容层只能访问人物卡绑定的世界书: ' + name)
     }
-    const written = writtenWorldbooks.get(str(sessionId))
-    if (written === undefined) return { chat, record }
+    // A settlement transaction reads its own draft; the written-book cache only holds committed writes.
+    const written = transaction ? undefined : writtenWorldbooks.get(str(sessionId))
+    if (written === undefined) return { chat, record, transaction, sessionId }
     // The storage counter says nothing about the book: a library edit or a card
-    // update rewrites the file without touching the chat, so comparing revisions
-    // handed scripts a copy they had already replaced. Compare the content itself.
-    if (written.key === worldbookKey(record) && written.version === scriptWorldbookVersion(record)) return { chat, record: written.record }
+    // update rewrites the file without touching the chat. Compare the content itself.
+    if (written.key === worldbookKey(record) && written.version === scriptWorldbookVersion(record)) return { chat, record: written.record, transaction, sessionId }
     writtenWorldbooks.delete(str(sessionId))
-    return { chat, record }
+    return { chat, record, transaction, sessionId }
   }
 
   async function serializeWorldbook(cardPath, work) {
@@ -454,7 +456,8 @@ export function createTavernScriptHostAdapter(options = {}) {
       const before = projectTavernHelperWorldbook(resolved.record.view).entries
       const entries = requestedFrom(before, scriptWorldbookVersion(resolved.record))
       const operations = replaceTavernHelperWorldbookOperations(resolved.record.view, entries)
-      if (settlement.has(sessionId) && operations.length > 0) throw new Error('MVU 结算事务不能修改跨存储的世界书')
+      const transaction = settlement.worldbookDraft(sessionId)
+      if (transaction && !resolved.record.localChatId && operations.length > 0) throw new Error('MVU 结算事务不能修改跨存储的世界书')
       const updated = operations.length === 0
         ? resolved.record
         : await observeResourceSave(resourceSaveSummary('worldbook', resolved.record.localChatId ? 'session' : resolved.record.source.kind === 'card' ? 'card' : 'worldbook', before, entries), () => updateBoundWorldbook(resolved, { operations }), summary => options.recordResourceSave?.(sessionId, summary))
@@ -462,7 +465,7 @@ export function createTavernScriptHostAdapter(options = {}) {
       const plugins = updated === resolved.record ? [] : resolved.record.view.entries.filter(entry => entry.plugin)
       const version = scriptWorldbookVersion(updated)
       const revision = Number(resolved.chat?._storageRevision)
-      if (operations.length > 0 && Number.isFinite(revision)) writtenWorldbooks.set(str(sessionId), { key: worldbookKey(updated), revision, version: scriptWorldbookVersion(updated), record: { ...updated, view: { ...updated.view, entries: [...updated.view.entries, ...plugins] } } })
+      if (!transaction && operations.length > 0 && Number.isFinite(revision)) writtenWorldbooks.set(str(sessionId), { key: worldbookKey(updated), revision, version: scriptWorldbookVersion(updated), record: { ...updated, view: { ...updated.view, entries: [...updated.view.entries, ...plugins] } } })
       return { updated: operations.length > 0, before, version, worldbook: projectTavernHelperWorldbook({ ...updated.view, entries: [...updated.view.entries, ...plugins] }) }
     })
   }
@@ -502,6 +505,7 @@ export function createTavernScriptHostAdapter(options = {}) {
     // Reuse native worldbook validation before publishing the chat-local version.
     const view = inspectWorldBookDocument(document)
     replaceTavernHelperWorldbookOperations(view, projectTavernHelperWorldbook(view).entries)
+    const transaction = resolved.transaction
     // Legacy chats have no opening snapshot; first merged-book write makes a private copy.
     const snapshot = {
       ...(resolved.chat.openingWorldbookSnapshot || { version: 1, source: structuredClone(resolved.record.source) }), document
@@ -511,8 +515,12 @@ export function createTavernScriptHostAdapter(options = {}) {
     if (snapshot.libraryDigest === undefined) {
       snapshot.libraryDigest = worldbookContentDigest({ source: resolved.record.source, document: resolved.record.document })
     }
-    resolved.chat.openingWorldbookSnapshot = snapshot
-    await options.writeChat(resolved.chat, { source: 'tavern-helper.local-worldbook' })
+    if (transaction) {
+      settlement.writeWorldbookDraft(resolved.sessionId, transaction, snapshot)
+    } else {
+      resolved.chat.openingWorldbookSnapshot = snapshot
+      await options.writeChat(resolved.chat, { source: 'tavern-helper.local-worldbook' })
+    }
     return { ...resolved.record, document, view }
   }
 
@@ -538,12 +546,11 @@ export function createTavernScriptHostAdapter(options = {}) {
       const resolved = await worldbookRecord(sessionId, name)
       if (worldbookKey(resolved.record) !== worldbookKey(initial.record)) throw new Error('世界书绑定已变化，请重新读取后重试')
       const current = await exportBoundWorldbook(resolved.record)
-      // The caller only wants its own edits written. A library edit or an auto-swap
-      // that touched other entries must not fail the whole save, and an entry both
-      // sides rewrote must not be silently overwritten.
+      // The caller only wants its own edits written; an entry both sides rewrote must not be silently overwritten.
       const merged = isDeepStrictEqual(current, expectedWorldInfo) ? worldInfo : mergeWorldbookWrite(expectedWorldInfo, current, worldInfo)
       if (!merged) throw new Error('世界书已被其他操作修改，请重新读取后重试')
-      if (settlement.has(sessionId)) throw new Error('MVU 结算事务不能修改跨存储的世界书')
+      const transaction = settlement.worldbookDraft(sessionId)
+      if (transaction && !resolved.record.localChatId) throw new Error('MVU 结算事务不能修改跨存储的世界书')
       const updated = await observeResourceSave(resourceSaveSummary('worldbook', resolved.record.localChatId ? 'session' : resolved.record.source.kind === 'card' ? 'card' : 'worldbook', current.entries, merged.entries, true), () => updateBoundWorldbook(resolved, {}, merged), summary => options.recordResourceSave?.(sessionId, summary))
       return { updated: true, worldbook: projectTavernHelperWorldbook(updated.view), worldInfo: await exportBoundWorldbook(updated) }
     })
@@ -583,7 +590,8 @@ export function createTavernScriptHostAdapter(options = {}) {
     if (!changed?.denseMessages || changed.chat.id !== reader?.chatId
       || changed.chat.sessionId !== reader?.sessionId
       || (changed.chat.tavernHelperLifecycleRevision || 0) !== reader?.lifecycle) changed = undefined
-    const chat = window?.chat || (reuse ? selected.chat : changed ? changed.chat : await resolveChat(sessionId))
+    const template = !window && !reuse && !changed ? await options.resolveTemplateChat?.(sessionId) : undefined
+    const chat = window?.chat || (reuse ? selected.chat : changed ? changed.chat : template?.chat || await resolveChat(sessionId))
     assertTemplateChat(chat)
     const card = await options.readCard(chat)
     let templateBook
@@ -603,7 +611,7 @@ export function createTavernScriptHostAdapter(options = {}) {
     })
     const snapshot = {
       capabilities: {statePatch:1},
-      state: projectFullPromptTemplateState(chat),
+      state: projectFullPromptTemplateState(chat, template?.helper),
       environment: { characters, name1: str(chat.macroState?.userName) || '你', name2: str(card.name),
         this_chid: '0', extension_settings: extensionSettings,
         world_names: worldName ? [worldName] : [], selected_world_info: [],
@@ -793,6 +801,7 @@ export function createTavernScriptHostAdapter(options = {}) {
     context,
     dispatchEvent,
     settleMvuUpdate: settlement.settle,
+    editMvuVariables: input => settlement.settle({ ...input, variableEdit: true, durable: false, preserveForeground: true, compactResult: true, baselineVariables: undefined, validate: undefined }),
     updatePrompts,
     updateVariables,
     updateMessages,

@@ -25,6 +25,9 @@ window.__ModuleLoader__.load({
         // @include body-group.js
 
 		// @include crypto-digest.js
+		// http on a LAN address is not a secure context: no crypto.subtle, no crypto.randomUUID.
+		if (typeof window !== "undefined") installTavernCryptoSubtlePolyfill(window);
+		// @include-protocol random-id.cjs
 		// @include stylesheet.js
         // @include surfaces.cjs
 		// @include hscroll.js
@@ -34,12 +37,10 @@ window.__ModuleLoader__.load({
 		// @include wait-lines.js
 		// @include jump-latest.js
 		// @include inline-field.js
-		// @include spine-runtime-entry.js
-        // @include pixi-runtime.js
 		// @include image-viewer.js
 		// @include data-picker.js
 		// @include mod-config-ui.js
-
+		// @include spine-runtime-entry.js
 
 		// `dsh-tavern-shell-active` gates every Tavern rule that touches host chrome.
 		// It used to be added only when the left sidebar mounted. On a phone that
@@ -105,33 +106,68 @@ window.__ModuleLoader__.load({
 
 		// @include modules/card-password.js
 		// @include modules/task-poll.js
-		/** Import one card file: PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other
-		 * formats (a plugin's importer, tavern.cardImporter) go up as raw files. */
-		async function importTavernCardFile(file, call, onProgress = () => {}, replacePath) {
+		/** Import one card file. PNG and JSON go as parsed JSON; archives (CHARX, DSH cards) and other formats (a plugin's
+		 * importer, tavern.cardImporter) go up as raw files. A card carrying another version of an installed pack asks first
+		 * (导入人物卡, card-update-dialog.js). */
+		async function importTavernCardFile(file, call, onProgress = () => {}) {
 			if (/\.(dshcard|charx)\.png$/i.test(String(file.name || ''))) throw new Error('卡包请使用 .dshcard 文件');
-			const progress = beginTavernCardImportProgress(file.name);
-			const report = value => { progress.update(value); onProgress(value); };
+			let progress = beginTavernCardImportProgress(file.name);
+			const report = value => { progress?.update(value); onProgress(value); };
 			try {
-			const archive = !/\.(png|json)$/i.test(String(file.name || "")) && /\.[^./\\]+$/.test(String(file.name || ""));
-			if (archive) {
-				report('正在上传卡包…');
-				const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
-				let reply = null;
-				try { reply = await response.json(); } catch (_error) {}
-				if (!reply || !reply.ok) throw new Error(reply && reply.error || "上传失败（HTTP " + response.status + "）");
-				return await importTavernPasswordCard(password => {
-					report(password === undefined ? '正在读取卡包并导入素材…' : '正在校验密码并导入素材…');
-					return call("importCardUpload", { uploadId: reply.uploadId, name: file.name, ...(replacePath ? { replacePath } : {}), ...(password === undefined ? {} : { password }) });
-				}, file.name, () => call("discardCardUpload", { uploadId: reply.uploadId }), options => {
+				if (!isTavernCardArchive(file)) { report('正在读取人物卡…'); return await commitTavernCardFile(file, null, call); }
+				if (!isTavernCardPackArchive(file)) { const uploadId = await uploadTavernCardFile(file, report); report('正在导入…'); return await commitTavernCardFile(file, { uploadId }, call); }
+				const staged = await previewTavernCardArchive(file, call, report);
+				let packDecisions = {};
+				if (staged.packs.length) {
+					progress.close(); progress = null;
+					const way = await askTavernCardPackWay(file, staged);
+					if (!way) {
+						await call("discardCardUpload", { uploadId: staged.uploadId }).catch(() => {});
+						throw Object.assign(new Error('已取消人物卡导入'), { code: 'TAVERN_CARD_IMPORT_CANCELLED' });
+					}
+					packDecisions = tavernCardPackDecisions(staged.packs, way);
+					progress = beginTavernCardImportProgress(file.name);
+				}
+				report('正在导入素材…');
+				return await commitTavernCardFile(file, staged, call, { packDecisions });
+			} finally { progress?.close(); }
+		}
+		function isTavernCardArchive(file) {
+			const name = String(file.name || "");
+			return !/\.(png|json)$/i.test(name) && /\.[^./\\]+$/.test(name);
+		}
+		/** CHARX and DSH cards: archives that can carry packs, read by the server before they are imported. */
+		function isTavernCardPackArchive(file) { return /\.(dshcard|charx)$/i.test(String(file.name || "")); }
+		async function uploadTavernCardFile(file, report) {
+			report('正在上传卡包…');
+			const response = await fetch("/api/dsh-tavern/card-upload", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+			let reply = null;
+			try { reply = await response.json(); } catch (_error) {}
+			if (!reply || !reply.ok) throw new Error(reply && reply.error || "上传失败（HTTP " + response.status + "）");
+			return reply.uploadId;
+		}
+		/** A CHARX or DSH card uploaded and read before it is imported or replaces a card: {uploadId, password?, card: {name,
+		 * version, cover}, packs: the installed packs it carries another version of}. The upload is discarded on failure or cancel. */
+		async function previewTavernCardArchive(file, call, report = () => {}) {
+			const uploadId = await uploadTavernCardFile(file, report);
+			let password;
+			try {
+				const preview = await importTavernPasswordCard(value => {
+					password = value;
+					report(value === undefined ? '正在读取卡包…' : '正在校验密码…');
+					return call("previewCardUpload", { uploadId, name: file.name, ...(value === undefined ? {} : { password: value }) });
+				}, file.name, null, options => {
 					report('等待输入密码…');
 					return askTavernCardPassword(options);
 				});
-			}
-			report('正在读取人物卡…');
-			return await call("importCard", { payload: await parseCardFile(file), ...(replacePath ? { replacePath } : {}) });
-			} finally { progress.close(); }
+				return { uploadId, ...(password === undefined ? {} : { password }), card: preview.card, packs: preview.packs };
+			} catch (error) { await call("discardCardUpload", { uploadId }).catch(() => {}); throw error; }
 		}
-
+		/** The card file into the library, or in place of replacePath: staged is the upload (and preview) of an archive, null for PNG / JSON. */
+		async function commitTavernCardFile(file, staged, call, { replacePath, packDecisions } = {}) {
+			if (staged) return await call("importCardUpload", { uploadId: staged.uploadId, name: file.name, ...(replacePath ? { replacePath } : {}), ...(staged.password === undefined ? {} : { password: staged.password }), packDecisions: packDecisions || {} });
+			return await call("importCard", { payload: await parseCardFile(file), ...(replacePath ? { replacePath } : {}) });
+		}
 		/** What a card file brought into its character material, for the import notice. */
 		function tavernCardAssetNotice(assets, card) {
 			const extra = [];
@@ -511,6 +547,18 @@ window.__ModuleLoader__.load({
 
         // @include rpc-transport.cjs
         const presentationRequest = createPresentationQueue();
+        let tavernWsRpc = null;
+        function openTavernWsSocket(connectionService) {
+            if (connectionService && typeof connectionService.openWebSocket === "function") {
+                return connectionService.openWebSocket(TAVERN_WS_RPC_PATH);
+            }
+            if (typeof window === "undefined" || typeof window.WebSocket !== "function") return null;
+            const base = (typeof document !== "undefined" && document.baseURI) || (window.location && window.location.href) || "";
+            if (!/^https?:/i.test(base)) return null;
+            const url = new URL(TAVERN_WS_RPC_PATH, base);
+            url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+            return new window.WebSocket(url.href);
+        }
         // The isolated clip export page answers every request from its frozen export snapshot (clipReplayCore below).
         let clipExportTransport = null;
 		// A save whose session log cannot be upgraded may not open at all, so this works from the
@@ -535,9 +583,10 @@ window.__ModuleLoader__.load({
 				}
 			}
 			const runtimeControl = ["claimTavernScriptWork", "startTavernScriptWork", "getTavernScriptWorkState", "heartbeatTavernScriptRuntime", "completeTavernHelperEvent", "releaseTavernHelperRuntime"].includes(method);
-            // 页面卸载的租约释放须走 HTTP keepalive；Remote 连接会随旧页面关闭。
-            // 舞台读取仍使用带源身份的 HTTP，Remote 只声明脚本控制请求。
-			const controlChannel = runtimeControl && requestOptions?.keepalive !== true && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
+            // Only small/light reads ride the mux: getStageDirection without readOnly may run and save the director,
+            // and getStoryTranscript carries MB-scale story windows whose double-JSON frame stalls the 2s mux heartbeat.
+            const multiplexedRead = ['syncSession', 'pluginTurnState', 'pluginState', 'getStageModHistory', 'getDialogueBubbles'].includes(method) || method === 'getStageDirection' && args?.readOnly === true;
+			const controlChannel = (runtimeControl || multiplexedRead) && requestOptions?.keepalive !== true && typeof tavernSessionSignals !== "undefined" && typeof tavernSessionSignals.control === "function" ? tavernSessionSignals : null;
 			const started = Date.now();
             const clockStart = performance.now();
             const roundKey = method + ':' + (sessionId || args?.sessionId || '');
@@ -545,7 +594,10 @@ window.__ModuleLoader__.load({
                 && roundLoadCounts.size < 64 && (roundLoadCounts.get(roundKey) || 0) < 3;
             if (roundTrace) {
                 roundLoadCounts.set(roundKey, (roundLoadCounts.get(roundKey) || 0) + 1);
-                roundLoadTrace.mark('rpc.begin', {method, sessionId:sessionId || args?.sessionId, channel:controlChannel ? 'mux' : 'http'});
+                const previewChannel = controlChannel
+                    ? 'mux'
+                    : (typeof tavernWsRpc !== "undefined" && tavernWsRpc && typeof tavernWsRpc.canCarry === "function" && tavernWsRpc.canCarry(method, 0, requestOptions) ? 'ws' : 'http');
+                roundLoadTrace.mark('rpc.begin', {method, sessionId:sessionId || args?.sessionId, channel:previewChannel});
             }
             const traced = ["getSession", "syncSession", "getCardOpenings", "initializeOpeningTemplate", "preparePlayStart", "startChat"].includes(method);
             const trace = traced ? { id: window.crypto?.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const n = Math.floor(Math.random() * 16); return (c === "x" ? n : (n & 3) | 8).toString(16); }), method, sentAt: started, active: ++performanceActiveRequests } : null;
@@ -560,7 +612,12 @@ window.__ModuleLoader__.load({
 			}
 			if (!runtimeControl && (started - performanceReportAt >= 60000 || /diagnostic|export/i.test(method))) {
 				pagePerformance.observedMs = started - pagePerformanceStarted;
-				payload._performance = Object.assign({}, pagePerformance, { requests: performanceRequests.slice(), openingRequests: typeof openingPerformance !== "undefined" ? openingPerformance.requests() : [], openings: typeof openingPerformance !== "undefined" ? openingPerformance.read() : [] });
+				payload._performance = Object.assign({}, pagePerformance, {
+					requests: performanceRequests.slice(),
+					openingRequests: typeof openingPerformance !== "undefined" ? openingPerformance.requests() : [],
+					openings: typeof openingPerformance !== "undefined" ? openingPerformance.read() : [],
+					...(typeof tavernWsRpc !== "undefined" && tavernWsRpc && typeof tavernWsRpc.stats === "function" ? { wsRpc: tavernWsRpc.stats() } : {})
+				});
 				performanceReportAt = started;
 			}
 			if (trace) payload._traceId = trace.id;
@@ -605,11 +662,33 @@ window.__ModuleLoader__.load({
                 return result;
                 });
             };
-            // Projections retain their HTTP authority and origin-bound media lease checks.
+            // The authenticated Remote mux carries small control reads; Tavern's own /api/dsh-tavern/ws
+            // channel multiplexes general JSON RPCs with relaxed keepalive outside the 6-socket HTTP/1.1 pool.
+            // Projections mint origin-bound media leases, so retain their HTTP authority checks.
+            const wsChannel = !controlChannel
+                && typeof tavernWsRpc !== "undefined"
+                && tavernWsRpc
+                && typeof tavernWsRpc.canCarry === "function"
+                && tavernWsRpc.canCarry(method, requestBody.length, requestOptions)
+                ? tavernWsRpc : null;
+            const httpFallback = () => ['getAssetPackPresentation', 'getStagePhonePresentation'].includes(method)
+                ? presentationRequest(httpRead, request.signal) : httpRead();
             const responsePromise = controlChannel
                 ? Promise.resolve().then(() => controlChannel.control(method, JSON.parse(requestBody), requestOptions && requestOptions.signal))
-                : ['getAssetPackPresentation', 'getStagePhonePresentation'].includes(method)
-                    ? presentationRequest(httpRead, request.signal) : httpRead();
+                : wsChannel
+                    ? wsChannel.call(method, requestBody, {
+                        signal: request.signal,
+                        fallback: httpFallback,
+                        onBody: trace ? function (body) {
+                            trace.transport = "ws";
+                            trace.headersMs = Math.round(performance.now() - clockStart);
+                            trace.bodyChars = body.length;
+                        } : undefined,
+                        onParsed: trace ? function () {
+                            trace.parsedMs = Math.round(performance.now() - clockStart);
+                        } : undefined
+                    })
+                    : httpFallback();
 			function checkCancelled() {
 				if (request.signal && request.signal.aborted) {
 					if (typeof request.signal.throwIfAborted === "function") request.signal.throwIfAborted();
@@ -1096,8 +1175,6 @@ function clipReplayCore() {
 
 		const storyTranscriptFeature = createTavernStoryTranscriptFeature({
 			replyActions: {
-				useSpeechVoiced: useTavernBodySpeechVoiced,
-				Speech: TavernReplySpeechAction,
 				Receipt: playControlsFeature.TurnReceiptButton,
 				Latest: playControlsFeature.LatestReplyActions,
 				RollbackTo: playControlsFeature.RollbackToTurnButton,
@@ -1170,6 +1247,29 @@ function clipReplayCore() {
 			ctx.effect(() => displayPreferences.start(), "dsh-tavern: global display preferences");
 			ctx.effect(() => tavernStoryViewMode.start(), "dsh-tavern: story view mode setting");
 			ctx.effect(() => tavernInteractionDiagnostics.start(), "dsh-tavern: interaction diagnostics");
+			if (!window.__dshTavernHeadless && window.location?.hostname !== "clip-export.invalid") {
+				ctx.effect(() => {
+					const client = createTavernWsRpcClient({
+						openSocket: () => openTavernWsSocket(ctx.connection)
+					}).start();
+					tavernWsRpc = client;
+					const onWake = () => {
+						if (typeof document === "undefined" || document.visibilityState !== "hidden") client.poke();
+					};
+					if (typeof window.addEventListener === "function") window.addEventListener("online", onWake);
+					if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+						document.addEventListener("visibilitychange", onWake);
+					}
+					return () => {
+						if (typeof window.removeEventListener === "function") window.removeEventListener("online", onWake);
+						if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+							document.removeEventListener("visibilitychange", onWake);
+						}
+						if (tavernWsRpc === client) tavernWsRpc = null;
+						client.dispose();
+					};
+				}, "dsh-tavern: dedicated websocket rpc");
+			}
 			ctx.effect(() => syncTavernSubagentCatalogs(ctx.sessions, ctx.tavernSessionSignals), "dsh-tavern: subagent catalog synchronization");
 			ctx.effect(() => syncTavernCardAgentResources(ctx.sessions), "dsh-tavern: card Agent resource refresh");
 			// Public browser API for third-party plugins (docs/plugin-api.md). Provided before the
@@ -1404,9 +1504,8 @@ function clipReplayCore() {
 			// The voice plugin's 配音 page lists browser speech as a 语音服务 row; the 🔊 line button speaks through the voice
 			// service, so the Tavern has no speech settings of its own.
 			ctx.provide("ttsBrowserSpeech", browserSpeechService);
-            ctx.effect(function () {
-                return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-narrative-damper", order:112, label:() => "叙事阻尼器" }, TavernNarrativeDamperSettingsSection); });
-            }, "dsh-tavern: narrative damper settings section");
+            // 叙事阻尼器的设置面板不在这里：它是内置插件 dsh-tavern-narrative-damper 的侧栏面板，
+            // 宿主设置里不再有这一页（宿主只管引擎，面板随插件启停）。
             ctx.effect(function () {
                 return slots.inject("settings.section", function () { return slots.register({ name:"settings.section", id:"dsh-tavern-plugins", order:113, label:() => "酒馆插件" }, TavernPluginsSettingsSection); });
             }, "dsh-tavern: plugins settings section");

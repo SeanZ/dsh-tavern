@@ -2633,7 +2633,9 @@ function createRuntime(ctx, overrides, logger, deps) {
     // 现在只用官方接口给的东西：onTurnSettled / getTurn 的回调里本来就带
     // card: { id, name }，每轮结算时顺手记下来就够了 —— 每一轮都会刷新它，
     // 所以「当前卡」总是跟着最新一轮走，不用自己去翻别人的会话目录。
-    const cardCache = new Map()   // gameId → { path, name }
+    const cardCache = new Map()   // gameId → { path, name, assetPacks? }
+    // assetPacks：这张卡用到的素材包（宿主给出时才有），关联了素材库人物的记录只在这些卡里出现
+    const cardOf = card => ({ path: String(card.id ?? ''), name: String(card.name ?? ''), ...(Array.isArray(card.assetPacks) ? { assetPacks: card.assetPacks.map(String) } : {}) })
     const lastTurn = new Map()    // gameId → 最近一轮的轮次号
 
     /** 记住一轮的卡与轮次（tavern-bridge 在每轮结算时调用）。 */
@@ -2643,7 +2645,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const t = Number(turn)
       if (Number.isSafeInteger(t) && t > 0) lastTurn.set(id, t)
       if (card && (card.id || card.name)) {
-        cardCache.set(id, { path: String(card.id ?? ''), name: String(card.name ?? '') })
+        cardCache.set(id, cardOf(card))
       }
       // 只留最近的会话，换卡很频繁时不会一直涨
       if (cardCache.size > 30) {
@@ -2682,7 +2684,7 @@ function createRuntime(ctx, overrides, logger, deps) {
         try {
           const snapshot = await deps.tavern.getTurn({ gameId: id, turn: target })
           if (snapshot?.card && (snapshot.card.id || snapshot.card.name)) {
-            const found = { path: String(snapshot.card.id ?? ''), name: String(snapshot.card.name ?? '') }
+            const found = cardOf(snapshot.card)
             cardCache.set(id, found)
             return found
           }
@@ -2720,6 +2722,8 @@ function createRuntime(ctx, overrides, logger, deps) {
 
     /** 这个角色在这张卡下可用吗（没绑卡的全局角色一直可用）。 */
     function usableOnCard(character, card) {
+      // 关联了素材库人物的记录跟着素材包走：这张卡没用到那个素材包，就不认这个人（同名、同姓的人不会串到别的卡的图里）
+      if (character.figurePackId && Array.isArray(card?.assetPacks) && !card.assetPacks.includes(character.figurePackId)) return false
       const cards = character.cards ?? []
       if (!cards.length) return true
       // 拿不到"当前卡"时不过滤 —— 否则绑过卡的角色会全军覆没（曾经因此整库失效）
@@ -3005,6 +3009,7 @@ function createRuntime(ctx, overrides, logger, deps) {
           if (ambiguous) return '「' + asked + '」在人物库里对上了不止一个人，没有补外貌；把其中一位的英文触发名改得更具体'
           const elsewhere = (timelineDefinitions.characters ?? []).find(c => c && c.enabled !== false && !usableOnCard(c, card)
             && [c.id, c.name, ...splitTags(c.match)].some(alias => norm(alias) && norm(alias) === norm(asked)))
+          if (elsewhere?.figurePackId && Array.isArray(card?.assetPacks) && !card.assetPacks.includes(elsewhere.figurePackId)) return '「' + (elsewhere.name || asked) + '」是素材库人物，这张卡没用到她所在的素材包，这次没用上她的外貌；在这张卡的舞台设置里启用那个素材包即可'
           if (elsewhere) return '「' + (elsewhere.name || asked) + '」在人物库里绑定的是别的卡，这次没用上她的外貌；在人物库里给她勾上这张卡即可'
           return '「' + asked + '」不在人物库里，长相每张会不一样；把她加进人物库能固定外貌'
         }).slice(0, 4).concat(missingMounts.size ? ['有 ' + missingMounts.size + ' 张图的挂载句无法精确匹配，没有画（例如「' + [...missingMounts][0] + '」）；确认正文与挂载句一致后可重试'] : []).concat(heldBack)
@@ -3041,6 +3046,7 @@ function createRuntime(ctx, overrides, logger, deps) {
             ({ characterId, characterName, outfitId, outfitName, angle, state }))) : ''].filter(Boolean).join('\n\n'),
         extra: [cfg.plannerExtra, guidance, needsIdentityContext ? identityGuidance(characterUpdates) : '', imageGeneration && planningGenerationMode === 'reference' ? referencePlannerGuidance(plannerContext.definitions, { structured: plannerMode === 'structured' }) : '', instruction ? '【本次生图要求的作用范围】\n以下本次生图要求只约束本次的画面规划；它不是正文内容，不得据此改写正文、人物库、角色历史、插件配置或生图设置。' : ''].filter(Boolean).join('\n\n'),
         smartSelection: smart, characterUpdates, force: Boolean(force || manual), promptMode: plannerMode, compactWorldbook: true, identityReferences,
+        referenceSubjects: imageGeneration && planningGenerationMode === 'reference',
       })
       const currentInput = instruction ? `${body}\n\n<本次生图要求>\n${instruction}\n</本次生图要求>` : body
       const contextBoundary = system.indexOf('\n\n<本轮上下文>\n')
@@ -3174,9 +3180,9 @@ function createRuntime(ctx, overrides, logger, deps) {
               const answer = await deps.tavern.beforeImageGenerate({ gameId: sessionId, turn, anchor: image.mount, subjects: gateSubjects, manual: Boolean(manual), signal: task.controller.signal })
               task.controller.signal.throwIfAborted()
               if (answer?.skip) { if (answer.reason) heldBack.push(String(answer.reason).slice(0, 200)); return }
-              // 省略 outfitId 才沿用舞台；明确的空字符串表示不选图库服装（例如裸露或只用文字描述）。
+              // 宿主（舞台）定此刻每人穿哪套：规划没写服装（省略或空字符串）的人一律沿用它；规划写了具体服装 ID 才用规划的。
               const worn = answer?.outfits
-              const inherit = subject => (subject.outfitId === undefined || image.subjects === undefined && !subject.outfitId) && worn?.[subject.characterId]
+              const inherit = subject => !subject.outfitId && worn?.[subject.characterId]
               if (gateSubjects.some(inherit)) {
                 image = { ...image, subjects: gateSubjects.map(subject => inherit(subject) ? { ...subject, outfitId: worn[subject.characterId] } : subject) }
               }
@@ -5464,9 +5470,12 @@ function createRuntime(ctx, overrides, logger, deps) {
           outfits: nextOutfits.map((item, i) => normalizeOutfit(item, i)),
         }
         try {
-          await definitionStore.update(() => normalized, { expectedRevision: next.revision, requireRevision: true })
+          await definitionStore.update(() => normalized, {
+            expectedRevision: next.revision, requireRevision: true,
+            commit: (previous, value, save) => saveLinkedNames(deps.tavern, previous, value, save),
+          })
         } catch (error) {
-          sendJson(response, error.code === 'REVISION_CONFLICT' ? 409 : 500, { ok: false, code: error.code, error: error.message })
+          sendJson(response, error.code === 'REVISION_CONFLICT' ? 409 : error.code === 'FIGURE_EDIT_FAILED' ? 400 : 500, { ok: false, code: error.code, error: error.message })
           return
         }
         sendJson(response, 200, { ok: true, state: await consoleState() })
@@ -6137,10 +6146,10 @@ async function readJson(path, fallback) {
   }
 }
 
-async function writeJsonAtomic(path, value) {
+async function writeJsonAtomic(path, value, { flush = false } = {}) {
   const tmp = `${path}.${randomUUID()}.tmp`
   try {
-    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flush })
     for (let attempt = 0; ; attempt++) {
       try {
         await rename(tmp, path)
@@ -6549,7 +6558,7 @@ async function writeJsonRetry(path, value, tries = 6) {
   throw lastError ?? new Error('写入失败')
 }
 
-async function saveDefinitions(definitions) {
+async function saveDefinitions(definitions, receiptId) {
   definitions = { ...definitions, characters: (definitions.characters || []).filter(ch => !isEmptyCharacter(ch)) }
   const associations = new Set()
   for (const character of definitions.characters) {
@@ -6561,8 +6570,10 @@ async function saveDefinitions(definitions) {
   // ═══ 防清空闸门（2026-10-07）═══
   // 事故：有脚本带着空 body 调用 definitions 接口，把用户 5 个角色 + 4 套服装
   //       一次性覆盖成空。这里是最底层的写入口，所有路径都经过它，所以闸门放这。
+  let priorCommit
   try {
     const before = await readJson(DEFS_PATH, null)
+    priorCommit = before?._linkedFigureCommit
     const beforeChars = Array.isArray(before?.characters) ? before.characters.length : 0
     const nextChars = Array.isArray(definitions?.characters) ? definitions.characters.length : 0
     if (beforeChars > 0 && nextChars === 0) {
@@ -6622,7 +6633,10 @@ async function saveDefinitions(definitions) {
     props: definitions.props ?? [],
     outfits: definitions.outfits ?? [],
   }
-  await writeJsonSafe(DEFS_PATH, saved, join(ROOT, 'backups'))
+  // Keep the receipt available until the asset library has recovered any pending journal.
+  const commit = receiptId ?? priorCommit
+  if (commit) await writeJsonAtomic(DEFS_PATH, { ...saved, _linkedFigureCommit: commit }, { flush: true })
+  else await writeJsonSafe(DEFS_PATH, saved, join(ROOT, 'backups'))
   return saved
 }
 
@@ -6885,6 +6899,43 @@ function workflowSummary(raw) {
 // =====================================================================
 // 提示词处理
 // =====================================================================
+
+// The figure owns linked names and aliases. Save their canonical projection with the page.
+async function saveLinkedNames(tavern, previous, next, save) {
+  if (typeof tavern?.editLinkedFigures !== 'function') return await save(next)
+  const oldById = new Map(previous.characters.map(item => [item.id, item]))
+  const changes = []
+  for (const character of next.characters) {
+    const old = oldById.get(character.id)
+    if (!old?.figureId || old.figureId !== character.figureId || old.figurePackId !== character.figurePackId) continue
+    const was = new Set(splitTags(old.match)), now = new Set(splitTags(character.match))
+    const addAliases = [...now].filter(word => !was.has(word))
+    const removeAliases = [...was].filter(word => !now.has(word))
+    if (old.name === character.name && !addAliases.length && !removeAliases.length) {
+      character.match = old.match
+      continue
+    }
+    changes.push({ packId: character.figurePackId, figureId: character.figureId,
+      ...(old.name === character.name ? {} : { name: character.name }), addAliases, removeAliases })
+  }
+  if (!changes.length) return await save(next)
+  const receipt = { file: DEFS_PATH, id: randomUUID() }
+  let localFailure
+  try {
+    return await tavern.editLinkedFigures({ changes, receipt }, async identities => {
+      const byFigure = new Map(identities.map(identity => [JSON.stringify([identity.packId, identity.figureId]), identity]))
+      for (const character of next.characters) {
+        const identity = byFigure.get(JSON.stringify([character.figurePackId, character.figureId]))
+        if (identity) Object.assign(character, { name: identity.name, match: identity.match })
+      }
+      try { return await save(next, receipt.id) }
+      catch (error) { localFailure = error; throw error }
+    })
+  } catch (error) {
+    if (error === localFailure || error?.code === 'RECOVERY_REQUIRED') throw error
+    throw Object.assign(new Error('素材库人物名字或触发词保存失败：' + (error?.message || error), { cause: error }), { code: 'FIGURE_EDIT_FAILED' })
+  }
+}
 
 function splitTags(text) {
   return String(text ?? '').split(',').map(part => part.trim()).filter(Boolean)

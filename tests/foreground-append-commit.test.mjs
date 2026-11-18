@@ -1,3 +1,4 @@
+import { createPlayHandlers } from '../tavern-plugin/lib/rpc/play.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { replyProseProblems } from '../tavern-plugin/lib/domain/reply-prose.js'
@@ -275,4 +276,25 @@ test('丢弃过的回合补写正文时，存档里那条玩家输入不再写�
   ])
   assert.equal(saved.messages.filter(row => row.role === 'user' && row.text === '继续').length, 1,
     '同一请求号只留一条玩家输入')
+})
+
+
+test('准备期间队列输入不提前改变存档，执行下一轮时只保存一次', async t => {
+  const run = await app(t, base(history(2, () => true)), true, true)
+  const registry = new Map([['s', { phase: { kind: 'running' } }]])
+  const handlers = createPlayHandlers({ agentRegistry: registry, str: value => String(value ?? ''), turnOrchestrator: run.turns })
+  const first = { sessionId: 's', turn: 3, requestId: 'first', userText: '当前输入' }
+  const next = { sessionId: 's', turn: 4, requestId: 'next', userText: '队列输入' }
+  run.beforePlan(async () => {
+    const before = (await run.stored()).messages.length
+    assert.deepEqual(await handlers.appendPlayerInput(next), { saved: false, queued: true })
+    assert.equal((await run.stored()).messages.length, before)
+  })
+  assert.equal((await run.turns.prepare(first)).ready, true)
+  await run.turns.finalize({ ...first, assistantText: '当前回复' })
+  assert.equal((await run.turns.prepare(next)).ready, true)
+  await run.turns.finalize({ ...next, assistantText: '队列回复' })
+  assert.equal((await run.stored()).messages.filter(row => row.source?.rpcId === 'next').length, 1)
+  registry.set('s', { phase: { kind: 'idle' } })
+  assert.equal((await handlers.appendPlayerInput({ sessionId: 's', requestId: 'idle', text: '闲时输入' })).saved, true)
 })

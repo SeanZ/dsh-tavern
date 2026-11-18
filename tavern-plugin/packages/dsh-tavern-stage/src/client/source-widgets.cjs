@@ -1,4 +1,5 @@
 // Stage widget placement, reading projection, phone settings and avatar preparation.
+const stageRandomId = typeof randomId === 'function' ? randomId : require('../../../dsh-presentation-protocol/src/random-id.cjs').randomId;
 function createStageSourceWidgets({React:react,window,document,views,sessions,storage:localStorage,foreground:forkForeground,rpc:hostRpc,signals:tavernSessionSignals,characters,avatarCache,phoneProtocol,figureResolution,sandbox,playerErrorText,fetch,createImageBitmap}) {
 const {Image,FileReader,ResizeObserver,CustomEvent,crypto,performance,Blob,AbortController}=window;
 const {character:bubbleCharacter,actor:stageActorCharacter,face:bubbleCardFace}=characters || {};
@@ -70,6 +71,21 @@ function stageWidgetFacePx(width,dpr) {
 // ephemeral reading UI, never a director state or a persisted preference.
 const isPhoneRef=ref=>!!phoneDevice && ref?.modId===phoneDevice.modId;
 const stageWidgetRefKey = ref => isPhoneRef(ref) ? JSON.stringify([ref.modId,'source']) : JSON.stringify([ref.packId,ref.kind,ref.assetId]);
+// A page asks for each source window once: its re-renders while it settles (the record arriving, the history loading,
+// the asset revision catching up) ask the same window again, and the answer to the same arguments at the same asset
+// revisions is shared. Only ready answers are kept.
+const sourceWindowReads=new Map();
+function readSourceWindow(ref,args,revisions){
+    const method=isPhoneRef(ref)?phoneDevice.presentation:'getAssetPackPresentation',key=JSON.stringify([method,args,revisions]);
+    let read=sourceWindowReads.get(key);
+    if(!read){
+        read=rpc(method,args,args.sessionId).then(result=>{if(result?.status!=='ready' && sourceWindowReads.get(key)===read)sourceWindowReads.delete(key);return result;},
+            error=>{if(sourceWindowReads.get(key)===read)sourceWindowReads.delete(key);throw error;});
+        sourceWindowReads.set(key,read);
+        while(sourceWindowReads.size>32)sourceWindowReads.delete(sourceWindowReads.keys().next().value);
+    }
+    return read;
+}
 function stageWidgetPresentationState() { return {entries:new Map(), cursor:null, serial:0, liveVisit:false}; }
 function reduceWidgetPresentation(previous, action) {
     const state = {...previous, entries:new Map([...previous.entries].map(([key,item]) => [key,{...item,seen:[...item.seen],pending:[...item.pending]}]))};
@@ -900,7 +916,8 @@ function useWidgetStage(props) {
         (async()=>{
             const items=[];
             for (const ref of missing) {
-                const result=await (props.readWindow || ((args)=>rpc(isPhoneRef(ref)?phoneDevice.presentation:'getAssetPackPresentation',args,props.sessionId)))({sessionId:props.sessionId,turn:props.turn,at:cursor.para,expectedDirectionToken:props.record.token,...(ref.modId?{}:{widgetWindow:{ref}})}).catch(()=>null);
+                const args={sessionId:props.sessionId,turn:props.turn,at:cursor.para,expectedDirectionToken:props.record.token,...(ref.modId?{}:{widgetWindow:{ref}})};
+                const result=await (props.readWindow ? props.readWindow(args) : readSourceWindow(ref,args,[props.record.assetRevision,props.assetRevision])).catch(()=>null);
                 if (!live) return;
                 if (result?.status==='ready') items.push(...result.widgets);
             }
@@ -1332,7 +1349,7 @@ function useWidgetSettingsFeedback(props,items,context) {
 // Committed signals wake bounded reads; navigation clears values synchronously, never by polling.
 function useWidgetVariables(props,items) {
     const owner=React.useRef(null), [values,setValues]=React.useState({key:'',items:{}});
-    if (!owner.current) owner.current={id:crypto.randomUUID(),epoch:0,key:'',busy:new Map(),requests:new Map(),proposals:new Map()};
+    if (!owner.current) owner.current={id:stageRandomId(crypto),epoch:0,key:'',busy:new Map(),requests:new Map(),proposals:new Map()};
     const state=owner.current, hasReads=item=>item.definition.document.variables || Object.keys(item.definition.settingsOverride?.bindings || {}).length,
         active=items.filter(item=>hasReads(item) && !item.presentation.suspended);
     const key=JSON.stringify([props.sessionId,props.source,props.turn,props.page,props.revealed,props.mode,active.map(item=>[item.identity,item.presentation.state,item.definition.settingsOverride,item.definition.settingsDefaults])]);
@@ -1399,7 +1416,7 @@ function useWidgetVariables(props,items) {
             const requestKey=item.identity+':'+request.requestId,digest=JSON.stringify([request.contextKey,request.revision,request.operations]),previous=state.proposals.get(requestKey);
             if(previous)return previous.digest===digest ? call('widgetVariableStatus',{...state.requests.get(previous.operationId)?.input,operationId:previous.operationId}) : {status:'rejected',reason:'request-id-reused'};
             if([...state.busy.values()].some(work=>work.sessionId===props.sessionId))return {status:'rejected',reason:'operation-pending'};
-            const operationId=crypto.randomUUID(),query={...input,contextKey:request.contextKey,revision:request.revision};
+            const operationId=stageRandomId(crypto),query={...input,contextKey:request.contextKey,revision:request.revision};
             state.requests.set(operationId,{mount:item.identity,input:query});state.busy.set(operationId,query);
             state.proposals.set(requestKey,{digest,operationId});while(state.proposals.size>16)state.proposals.delete(state.proposals.keys().next().value);
             while(state.requests.size>16)state.requests.delete(state.requests.keys().next().value);
