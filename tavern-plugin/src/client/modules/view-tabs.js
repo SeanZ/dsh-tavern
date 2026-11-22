@@ -85,9 +85,11 @@
 			});
 		}
 
-		function applyTavernViewTabRow(row, entries, items) {
+		function applyTavernViewTabRow(row, entries, items, { polishEnabled, galleryEnabled } = {}) {
 			const buttons = Array.from(row.querySelectorAll('button[role="tab"]'));
-			const plan = tavernViewTabPlan(buttons, entries, items);
+			const available = items.filter(id => (id !== "dsh-tavern:polish" || polishEnabled === true)
+				&& (id !== "dsh-tavern:gallery" || galleryEnabled === true));
+			const plan = tavernViewTabPlan(buttons, entries, available);
 			if (!plan.length) return 0;
 			let visible = 0;
 			for (const item of plan) {
@@ -125,8 +127,10 @@
 					rows.delete(row);
 				}
 				if (!rows.size) return;
+				const preferences = displayPreferences.snapshot();
 				const entries = tavernViewTabEntries(slots), current = items(entries);
-				rows.forEach(function (_observer, row) { applyTavernViewTabRow(row, entries, current); });
+				const availability = { polishEnabled: preferences?.polishEnabled, galleryEnabled: Boolean(tavernUiExtensions.illustrator()) };
+				rows.forEach(function (_observer, row) { applyTavernViewTabRow(row, entries, current, availability); });
 			}
 			function schedule() {
 				if (frame) return;
@@ -159,8 +163,10 @@
 			observer.observe(doc.body, { childList: true, subtree: true });
 			discover();
 			const stopPreferences = typeof displayPreferences.subscribe === "function" ? displayPreferences.subscribe(schedule) : function () { };
+			const stopIllustrators = tavernUiExtensions.subscribe(schedule);
 			return function () {
 				stopPreferences();
+				stopIllustrators();
 				observer.disconnect();
 				rows.forEach(item => item.disconnect());
 				rows.clear();
@@ -288,7 +294,7 @@
 				h("ul", { className: "dsh-tavern-view-tab-list" }, items.map(row)),
 				h("div", { className: "dsh-tavern-view-tab-catalog" },
 					h("strong", { className: "dsh-tavern-settings-title" }, "可添加的标签"),
-					h("p", { className: "dsh-tavern-settings-desc" }, "移除的标签会到这里，点一下加回末尾；手机上放不下时可左右滑动。"),
+				h("p", { className: "dsh-tavern-settings-desc" }, "点击将标签加回末尾。画廊随配图开启。在「开局默认 → 功能」开启精修后，精修标签才会显示。手机端可左右滑动。"),
 					h("div", { className: "dsh-tavern-view-tab-chips" },
 						addable.length
 							? addable.map(entry => h("button", { key: entry.id, type: "button", className: "dsh-tavern-view-tab-chip", disabled: busy, onClick: function () { void toggle(entry.id); } },

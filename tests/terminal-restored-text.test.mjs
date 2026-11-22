@@ -47,6 +47,7 @@ test('末轮恢复正文不同于原座位时，全量、增量和冷读都显�
   Object.assign(chat, { cardPath: fixture.chat.cardPath, cardName: fixture.chat.cardName, mvu: fixture.chat.mvu })
   const before = await fixture.projection.project.full(chat)
   chat.messages.at(-1).text = '恢复后的不同正文'
+  chat._storageRevision++
   const projection = {
     data: {
       ...data,
@@ -62,10 +63,11 @@ test('末轮恢复正文不同于原座位时，全量、增量和冷读都显�
   const event = sessionEvents(session).findLast((event) => event.data?.message?.id === 'tavern-regen:restored')
   assert.deepEqual(event.sourceEventSeqs, [prior.seq])
   assert.ok(session.surface.nodes.includes(cleanup.seq))
+  const dirty = await fixture.projection.project.dirty(chat, before, [4], { busy: false, phase: 'idle' })
   const views = [
     await fixture.projection.project.full(chat),
-    await fixture.projection.project.cached(chat, before, { busy: false, phase: 'idle' }),
-    await fixture.projection.project.dirty(chat, before, [4], { busy: false, phase: 'idle' }),
+    await fixture.projection.project.cached(chat, dirty, { busy: false, phase: 'idle' }),
+    dirty,
   ]
   session = Session.fromRestore(session.id, JSON.parse(JSON.stringify(sessionEvents(session))))
   views.push(await fixture.projection.project.full(chat))

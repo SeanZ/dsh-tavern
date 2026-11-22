@@ -254,12 +254,15 @@ async function renderFrames({plan,plannedFiles = [],tempRoot,renderer,audio = []
     }
     onProgress({phase:'encode',step:'mix',frame:0,totalFrames:plan.frames})
     const mix = clipAudioInputs(audio,plan.frames,fps), mixed = join(temporary,'master.wav')
+    // FFmpeg 9 移除了旧选项；两种写法均从文件加载大型混音图。
+    const {stdout: encoderVersion} = await clipRun(ffmpeg, ['-version'], {signal})
+    const filterFileOption = Number(/^ffmpeg version (?:n)?(\d+)/m.exec(encoderVersion)?.[1]) >= 9 ? '-/filter_complex' : '-filter_complex_script'
     const mixScript=join(temporary,'mix.filter');await wait('mix-script',()=>writeFile(mixScript,mix.filter),'encode')
     // The replay graph already includes the stored voice gain and user volumes. Never normalize again.
-    await wait('mix',()=>clipRun(ffmpeg,[...baseArgs,...progressArgs,'-i',intermediate,...mix.args,'-filter_complex_script',mixScript,'-map','[mix]','-c:a','pcm_f32le',mixed],{signal,timeoutMs:0,onTime:seconds=>onProgress({phase:'encode',step:'mix',frame:Math.min(plan.frames,Math.round(seconds*fps)),totalFrames:plan.frames})}),'encode')
+    await wait('mix',()=>clipRun(ffmpeg,[...baseArgs,...progressArgs,'-i',intermediate,...mix.args,filterFileOption,mixScript,'-map','[mix]','-c:a','pcm_f32le',mixed],{signal,timeoutMs:0,onTime:seconds=>onProgress({phase:'encode',step:'mix',frame:Math.min(plan.frames,Math.round(seconds*fps)),totalFrames:plan.frames})}),'encode')
     const background=join(temporary,'background.wav'),bed=clipAudioInputs(audio.filter(row=>row.kind!=='voice'),plan.frames,fps),bedScript=join(temporary,'background.filter')
     await writeFile(bedScript,bed.filter)
-    await wait('background',()=>clipRun(ffmpeg,[...baseArgs,...progressArgs,'-i',intermediate,...bed.args,'-filter_complex_script',bedScript,'-map','[mix]','-c:a','pcm_f32le',background],{signal,timeoutMs:0,onTime:seconds=>onProgress({phase:'encode',step:'background',frame:Math.min(plan.frames,Math.round(seconds*fps)),totalFrames:plan.frames})}),'encode')
+    await wait('background',()=>clipRun(ffmpeg,[...baseArgs,...progressArgs,'-i',intermediate,...bed.args,filterFileOption,bedScript,'-map','[mix]','-c:a','pcm_f32le',background],{signal,timeoutMs:0,onTime:seconds=>onProgress({phase:'encode',step:'background',frame:Math.min(plan.frames,Math.round(seconds*fps)),totalFrames:plan.frames})}),'encode')
     const videos=await wait('streams',()=>streams?.finish(),'encode')
     onProgress({phase:'encode',step:'mix',frame:plan.frames,totalFrames:plan.frames,capture:diagnostics()})
     return {plan,temporary,intermediate,mixed,background,references,audio,evidence,videos,close}

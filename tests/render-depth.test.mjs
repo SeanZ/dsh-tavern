@@ -16,8 +16,8 @@ test('超出渲染深度的轮次：正文照常显示，卡片 HTML 换成一�
   const client = loadClient()
   const projection = { parts: [
     { kind: 'markdown', text: '正文' },
-    { kind: 'html', content: '<div style="color:red">状态栏</div>' },
-    { kind: 'html', content: '<div style="color:blue">另一块</div>' },
+    { kind: 'html', fenced: true, content: '<div style="color:red">状态栏</div>' },
+    { kind: 'html', fenced: true, content: '<div style="color:blue">另一块</div>' },
   ] }
   let clicked = 0
   const deferred = client.renderTavernProjection(projection, { deferHtml: () => { clicked++ } })

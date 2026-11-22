@@ -4,15 +4,15 @@ import { pathToFileURL } from 'node:url'
 import { parseExpressionAt } from 'acorn'
 
 const pluginRequire = createRequire(new URL('../../tavern-plugin/package.json', import.meta.url))
-const hostRequire = createRequire(pluginRequire.resolve('@deepseek-ai/dsh-tools'))
+const hostRequire = createRequire(process.env.DSH_BOOT_MODULE || pluginRequire.resolve('@deepseek-ai/dsh-tools'))
 const client = await readFile(new URL('../../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
 const host = await readFile(hostRequire.resolve('@deepseek-ai/dsh-client-ui-conversation/client'), 'utf8')
-function cssOf(source) {
-  return [...source.matchAll(/\bconst css(?:\$\d+)?\s*=\s*(?=["`])/g)].map(match => {
+export function cssOf(source) {
+  return [...source.matchAll(/(?:\bconst css(?:\$\d+)?\s*=\s*|\btext:\s*(?:\w+|\(\w+\))\s*=>\s*)(?=["`])/g)].map(match => {
     const literal = parseExpressionAt(source, match.index + match[0].length, { ecmaVersion: 'latest' })
     if (literal.type === 'Literal') return literal.value
     if (literal.type === 'TemplateLiteral' && literal.expressions.length === 0) return literal.quasis[0].value.cooked
-    throw Error('宿主 CSS 已不再使用静态字符串')
+    return ''
   })
 }
 const cssStrings = cssOf(host)
@@ -30,9 +30,11 @@ const panelPrefix = sidebarCss.match(/\.([\w]+)_panel\{/)[1]
 const frontendAssets = new URL('./dist/assets/', pathToFileURL(hostRequire.resolve('@deepseek-ai/dsh-web-frontend/package.json')))
 const frontendCss = (await Promise.all((await readdir(frontendAssets)).filter(name => /^index-.*\.css$/.test(name)).map(name => readFile(new URL(name, frontendAssets), 'utf8')))).join('\n')
 const dockHash = frontendCss.match(/\._tabHost_(\w+?)_\d+\{/)?.[1]
-if (!dockHash) throw Error('宿主 dockkit 样式已变化，请更新移动端 fixture')
-const dock = Object.fromEntries([...frontendCss.matchAll(new RegExp('\\._(\\w+?)_' + dockHash + '_(\\d+)', 'g'))].map(m => [m[1], `_${m[1]}_${dockHash}_${m[2]}`]))
-const dockCss = frontendCss.match(new RegExp('[^{}]*_' + dockHash + '_[^{}]*\\{[^{}]*\\}', 'g')).join('\n')
+const dockBundle = dockHash ? '' : await readFile(hostRequire.resolve('@deepseek-ai/dsh-client-ui-dockkit'), 'utf8')
+const dock = dockHash ? Object.fromEntries([...frontendCss.matchAll(new RegExp('\\._(\\w+?)_' + dockHash + '_(\\d+)', 'g'))].map(m => [m[1], `_${m[1]}_${dockHash}_${m[2]}`])) : Object.fromEntries([...dockBundle.matchAll(/"(\w+)":\s*"([\w-]+_\1)"/g)].map(m => [m[1], m[2]]))
+const dockCss = dockHash ? frontendCss.match(new RegExp('[^{}]*_' + dockHash + '_[^{}]*\\{[^{}]*\\}', 'g')).join('\n') : cssOf(dockBundle).find(css => css.includes(dock.tabHost))
+if (!dockCss || !dock.tabHost) throw Error('缺少宿主 dockkit 布局样式')
+
 const css = await readFile(new URL('../../tavern-plugin/lib/client-assets/tavern.css', import.meta.url), 'utf8')
 const viewportCode = client.slice(client.indexOf('function composerOffsetPx('), client.indexOf('function nativeFullscreenElement('))
 const questionCode = client.slice(client.indexOf('function CandidateQuestion(props)'), client.indexOf('function CandidateGuidePanel(props)'))

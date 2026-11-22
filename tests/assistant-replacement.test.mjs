@@ -4,9 +4,11 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import vm from 'node:vm'
+import path from 'node:path'
 
-const require = createRequire(import.meta.url)
-const load = (pkg, file) => import(new URL('./types/client/' + file, pathToFileURL(require.resolve(pkg + '/client'))))
+// 发行包只携带声明和 bundle；独立模块测试可指向同一提交的宿主构建。
+const require = createRequire(process.env.DSH_TEST_CLIENT_SOURCE ? path.join(process.env.DSH_TEST_CLIENT_SOURCE, 'package.json') : import.meta.url)
+const load = (pkg, file) => import(new URL('./types/client/' + file, pathToFileURL(process.env.DSH_TEST_CLIENT_SOURCE ? path.join(process.env.DSH_TEST_CLIENT_SOURCE, 'packages/client', pkg.replace('@deepseek-ai/dsh-client-', ''), 'lib/client.js') : require.resolve(pkg + '/client'))))
 const conversation = '@deepseek-ai/dsh-client-ui-conversation'
 const { ConversationNodeAssembler } = await load(conversation, 'conversation/assembler.js')
 const { ConversationEventRegistry } = await load(conversation, 'conversation/event-registry.js')

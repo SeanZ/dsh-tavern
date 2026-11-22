@@ -1,3 +1,4 @@
+import { tavernRequestRejection } from "../../../lib/http/connection-admission.js";
 import { access, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
@@ -3429,8 +3430,8 @@ async function etagOf(name, chunkDir) {
 * chunk scripts live in (overridable for tests).
 */
 function createBundleRouteHandler(fence, chunkDir = LIB_DIR) {
-	return async (req, res) => {
-		if (!fence(req)) {
+	return async (req, res, peer) => {
+		if (!fence(req, peer)) {
 			res.writeHead(403);
 			res.end("forbidden");
 			return;
@@ -8918,7 +8919,7 @@ async function importLegacyPrefs(ctx, settings, ns) {
 */
 function apply(ctx, config) {
 	const resolved = resolveSidebarConfig(config);
-	const fence = (req) => ctx.connection.requestRejection(req) === void 0;
+	const fence = (req, peer) => tavernRequestRejection(ctx.connection, req, peer) === undefined;
 	const agentOpenRegistry = new AgentOpenRegistry();
 	let settingsFace;
 	let openToolsDisposers = null;
@@ -8990,8 +8991,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "prefix",
 		path: "/sidebar/api",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				writeJson(res, 403, {
 					ok: false,
 					error: {
@@ -9039,8 +9040,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: "/sidebar/upload",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				writeJson(res, 403, {
 					ok: false,
 					error: {
@@ -9084,8 +9085,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: "/sidebar/write",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				writeJson(res, 403, {
 					ok: false,
 					error: {
@@ -9132,8 +9133,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "exact",
 		path: "/sidebar/archive",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				writeJson(res, 403, {
 					ok: false,
 					error: {
@@ -9167,8 +9168,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "prefix",
 		path: "/sidebar/file",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				res.writeHead(403);
 				res.end("forbidden");
 				return;
@@ -9206,8 +9207,8 @@ function apply(ctx, config) {
 	ctx.effect(() => ctx.webServer.register({
 		kind: "prefix",
 		path: "/sidebar/html",
-		handler: async (req, res) => {
-			if (!fence(req)) {
+		handler: async (req, res, peer) => {
+			if (!fence(req, peer)) {
 				res.writeHead(403);
 				res.end("forbidden");
 				return;
@@ -9243,8 +9244,8 @@ function apply(ctx, config) {
 	const agentOpenWss = new WebSocketServer({ noServer: true });
 	ctx.effect(() => ctx.webServer.registerUpgrade({
 		path: "/sidebar/ws/agent-opens",
-		handler: (req, socket, head) => {
-			if (!fence(req)) {
+		handler: (req, socket, head, peer) => {
+			if (!fence(req, peer)) {
 				socket.destroy();
 				return;
 			}
@@ -9256,8 +9257,8 @@ function apply(ctx, config) {
 	const fsWatchWss = new WebSocketServer({ noServer: true });
 	ctx.effect(() => ctx.webServer.registerUpgrade({
 		path: "/sidebar/ws/fs-watch",
-		handler: (req, socket, head) => {
-			if (!fence(req)) {
+		handler: (req, socket, head, peer) => {
+			if (!fence(req, peer)) {
 				socket.destroy();
 				return;
 			}
@@ -9273,8 +9274,8 @@ function apply(ctx, config) {
 	}, "dsh-better-sidebar: side-chat push hub");
 	ctx.effect(() => ctx.webServer.registerUpgrade({
 		path: "/sidebar/ws/sidechat",
-		handler: (req, socket, head) => {
-			if (!fence(req)) {
+		handler: (req, socket, head, peer) => {
+			if (!fence(req, peer)) {
 				socket.destroy();
 				return;
 			}

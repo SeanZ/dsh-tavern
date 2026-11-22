@@ -80,5 +80,6 @@ export function projectVirtualWorldbookPrefix(worldBook, chat, { restore = true,
   const allowed = restoreRefs === undefined ? null : new Set(restoreRefs)
   const snapshots = restore ? entries.filter(entry => classifyWorldbookEntry(entry).dynamic && isWorldbookRuntimeEntry(entry) && (!allowed || allowed.has(entry.ref)) && (state.entries[entry.ref]?.contextText ?? state.entries[entry.ref]?.text)).map(entry => state.entries[entry.ref].contextText ?? state.entries[entry.ref].text).join('\n\n') : ''
   return { staticPrefix, snapshots, prefixContext: [staticPrefix, snapshots].filter(Boolean).join('\n\n'),
+    ...(worldBook?.view?.entries?.some(hasWorldbookPreprocessingSyntax) ? { preprocessed: true } : {}),
     ...(visible === null ? { visibilityPending: true } : {}) }
 }

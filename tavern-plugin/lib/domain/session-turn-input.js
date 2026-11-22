@@ -78,7 +78,7 @@ export function inputEventForTurn(session, turn) {
   }
   for (let index = start + 1; index < events.length; index++) {
     const event = events[index]
-    if (event?.type === 'turn/start' || event?.type === 'turn/end') break
+    if (event?.type === 'turn/end' || event?.type === 'turn/start') break
     if (isNewTurnInput(event)) return event
   }
   return null

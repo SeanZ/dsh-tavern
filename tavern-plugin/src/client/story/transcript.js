@@ -37,11 +37,12 @@ function createStoryTranscriptAdapter({ createTavernStoryTranscriptDataModule, t
 			if (row.role !== 'assistant' || row.streaming) continue;
 			const native = counts.get(row.legacyTurn) === 1 && (nativeRounds?.floors || []).find(item => item.story === row.legacyTurn && item.reply.text === (row.message.sourceText ?? row.message.text ?? row.text));
 			const history = Array.isArray(row.message.storyResults) ? row.message.storyResults.map(item => ({ ...item, seq: item.id, current: item.id === row.message.storyResultId })) : native?.history || [];
+			const projection = (counts.get(row.legacyTurn) === 1 && tavernProjectionForTurn(state.view, row.legacyTurn)) || row.projection;
 			result.push(Object.freeze({
 				story: row.floorNo, messageUid: row.messageUid, legacyTurn: row.legacyTurn, target,
-				projection: (!row.streaming && counts.get(row.legacyTurn) === 1 && tavernProjectionForTurn(state.view, row.legacyTurn)) || row.projection, streaming: row.streaming, greeting: row.greeting,
+				projection, streaming: row.streaming, greeting: row.greeting,
 				inputs: Object.freeze(inputs), history: Object.freeze(history),
-				reply: Object.freeze({ seq: bodyKey(row.messageUid, row.text), turn: row.legacyTurn, text: row.text,
+				reply: Object.freeze({ seq: bodyKey(row.messageUid, JSON.stringify([row.text, projection?.parts ?? projection?.text])), turn: row.legacyTurn, text: row.text,
 					incomplete: row.message.incomplete === true, incompleteReason: row.message.incompleteReason || '' })
 			}));
 			inputs = [];
@@ -68,7 +69,7 @@ function createStoryTranscriptAdapter({ createTavernStoryTranscriptDataModule, t
 	async function older(sessionId) {
 		const item = entry(sessionId), from = item.store.getSnapshot().transcript?.from;
 		if (!(from > 0)) return false;
-		item.from = Math.max(0, from - 120);
+		item.from = Math.max(0, from - 60);
 		await read(sessionId);
 		return true;
 	}

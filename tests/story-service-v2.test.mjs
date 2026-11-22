@@ -18,19 +18,23 @@ test('v2 列表以逻辑消息为准：重复轮号、零轮号和原生窗口�
 })
 
 test('旧历史分页复用同一消息身份，切局各自保留读取窗口', async t => {
-  const f = await fixture(t, { messages: rows(100), initialFrom: 160 })
+  const f = await fixture(t, { messages: rows(100), initialFrom: 190 })
   const uid = f.snapshot().floors.at(-1).messageUid
-  assert.equal(f.snapshot().floors[0].story, 81)
+  assert.equal(f.snapshot().floors[0].story, 96)
   assert.equal(f.snapshot().hasMore, true)
   await f.service.loadOlder('s1')
-  assert.equal(f.snapshot().floors[0].story, 21)
+  assert.equal(f.snapshot().floors[0].story, 66)
   assert.equal(f.snapshot().floors.at(-1).messageUid, uid)
   f.chats.set('s2', { messages: rows(2), revision: 3, from: 0 })
   f.views.set('s2', { mode: 'story', canRegenerate: true })
   f.windows.s2 = eventWindow()
   await f.open('s2')
   assert.equal(f.snapshot('s2').floors.length, 2)
-  assert.equal(f.snapshot('s1').floors[0].story, 21)
+  assert.equal(f.snapshot('s1').floors[0].story, 66)
+  await f.service.loadOlder('s1')
+  assert.equal(f.snapshot().floors[0].story, 36)
+  await f.service.loadOlder('s1')
+  assert.equal(f.snapshot().floors[0].story, 6)
   await f.service.loadOlder('s1')
   assert.equal(f.snapshot().floors[0].story, 1)
   assert.equal(f.snapshot().hasMore, false)
@@ -251,4 +255,18 @@ test('编辑回执保留上游排队状态，不把未应用的修改当作已�
   } })
   assert.deepEqual(plain(await f.service.editReply.save('s1', f.target(), { token: 'token', texts: ['排队正文'] })), { view: null, queued: true })
   assert.deepEqual(plain(await f.service.editInput('s1', f.target(), '排队输入')), { view: null, queued: true })
+})
+
+test('同一正文改变显示正则后不再命中旧楼层快照', async t => {
+  const f = await fixture(t)
+  const floor = f.snapshot().floors.at(-1)
+  const rendererVersion = f.render.rendererVersion
+  f.replies.getFloorSnapshots = { snapshots: { [floor.story]: { reply: floor.reply.seq, rendererVersion, html: '<p>旧排版</p>' } } }
+  f.view({ mode: 'story', replyProjections: [{ turn: floor.legacyTurn, version: 2, parts: [{ kind: 'markdown', text: '新的显示内容' }] }], displayRevision: 1 })
+  await delay(150)
+  const next = f.snapshot().floors.at(-1)
+  assert.equal(next.messageUid, floor.messageUid)
+  assert.equal(next.reply.text, floor.reply.text)
+  assert.notEqual(next.reply.seq, floor.reply.seq)
+  assert.equal(await f.service.readFloorSnapshot('s1', next), null)
 })

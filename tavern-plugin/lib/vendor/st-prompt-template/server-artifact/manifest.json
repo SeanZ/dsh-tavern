@@ -3,8 +3,8 @@
   "version": "1.17.9",
   "files": {
     "engine.js": {
-      "bytes": 3708269,
-      "sha256": "6365ec0a577d4e787b8898c4d2b713f5beb03901007a584da5d920c1471a5959"
+      "bytes": 3707654,
+      "sha256": "619f9c0f7e70e987fb0915112ba3bb730517edade677c24e5ceaef30fa6352fd"
     },
     "engine.js.LICENSE.txt": {
       "bytes": 739,

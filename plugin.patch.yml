@@ -36,6 +36,7 @@
         sandbox: danger-full-access
         approval: never
 - id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
     root: !!js dshHomePath('profile-data', 'tavern', 'sessions')
 - id: storage-json
@@ -63,6 +64,8 @@
 # Tavern 固定使用酒馆预设，不给玩家切换 Agent 预设的设置页。插件设置页保留：
 # 没有自己界面的插件（如 dsh-ops）只能在那里改配置。
 - id: ui-agent-preset
+  disabled: true
+- id: skill-office
   disabled: true
 - insert:
     - id: tavern-cordis-inspect

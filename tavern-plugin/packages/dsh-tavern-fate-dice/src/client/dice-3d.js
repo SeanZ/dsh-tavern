@@ -1279,6 +1279,7 @@ uniform float u_time;
 uniform int u_theme;
 uniform int u_tier;
 uniform int u_dieIndex;
+uniform int u_contestSide; // 0: normal, 1: ally (left/emerald), 2: rival (right/crimson)
 uniform int u_winningFace;
 uniform int u_maxFaceIdx;
 uniform int u_styleAtlasOffset;
@@ -1287,6 +1288,19 @@ uniform float u_climax;
 uniform int u_faceTiles[20];
 
 const float PI = 3.14159265359;
+
+vec3 applyContestSideTint(vec3 col, float glyphMask, float edgeLine, float rim) {
+  if (u_contestSide == 1) {
+    vec3 bodyTint = col * vec3(0.84, 1.06, 0.96) + vec3(0.01, 0.04, 0.03);
+    col = mix(col, bodyTint, 0.36 * (1.0 - glyphMask));
+    col += vec3(0.22, 0.88, 0.64) * (edgeLine * 0.34 + rim * 0.28) * (1.0 - glyphMask * 0.7);
+  } else if (u_contestSide == 2) {
+    vec3 bodyTint = col * vec3(1.18, 0.60, 0.54) + vec3(0.14, 0.02, 0.02);
+    col = mix(col, bodyTint, 0.54 * (1.0 - glyphMask));
+    col += vec3(0.98, 0.34, 0.24) * (edgeLine * 0.44 + rim * 0.34) * (1.0 - glyphMask * 0.7);
+  }
+  return max(col, vec3(0.0));
+}
 
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
@@ -1460,7 +1474,7 @@ void main() {
       body = mix(body, pixInk, glyphMask);
       if (u_settled > 0.5 && !isWinFace) body *= 0.68;
 
-      fragColor = vec4(body, objIdAlpha);
+      fragColor = vec4(applyContestSideTint(body, glyphMask, ridgeLine, fresnel), objIdAlpha);
       return;
     }
 
@@ -1501,7 +1515,7 @@ void main() {
       col = mix(col, redInkGlyph ? cinnabar : ironInk, glyphMask);
       if (u_settled > 0.5 && !isWinFace) col = mix(vellum * 0.88, col, 0.76);
 
-      fragColor = vec4(col, objIdAlpha);
+      fragColor = vec4(applyContestSideTint(col, glyphMask, ridgeLine, fresnel), objIdAlpha);
       return;
     }
 
@@ -1541,7 +1555,7 @@ void main() {
         vec3 specular = (F * env * (1.0 - rough * 0.42) + F * (spec1 + chamferGlint) * vec3(1.15, 1.02, 0.84)) * antiGlare;
         specular += vec3(0.06) * pow(max(dot(v_faceN, H1), 0.0), 64.0) * glyphMask;
 
-        fragColor = vec4((diffuse + specular) * focusDim, objIdAlpha);
+        fragColor = vec4(applyContestSideTint((diffuse + specular) * focusDim, glyphMask, ridgeLine, fresnel), objIdAlpha);
         return;
       } else {
         float boneGrain = sin((v_localPos.x * 15.0 + v_localPos.y * 13.0) + noise3(v_localPos * 4.5) * 2.2) * 0.5 + 0.5;
@@ -1558,7 +1572,7 @@ void main() {
         float spec = pow(max(dot(N, H1), 0.0), 54.0) * 0.26 * antiGlare;
         col += vec3(1.0, 0.96, 0.88) * spec + env * fresnel * 0.14 * antiGlare;
 
-        fragColor = vec4(col * focusDim, objIdAlpha);
+        fragColor = vec4(applyContestSideTint(col * focusDim, glyphMask, ridgeLine, fresnel), objIdAlpha);
         return;
       }
     }
@@ -1593,7 +1607,7 @@ void main() {
       vec3 specular = (env * coatFresnel * 0.42 + vec3(1.2, 1.12, 1.0) * clearcoatSpec) * (1.0 - glyphMask * 0.75);
       specular += makieGold * pow(max(dot(N, H1), 0.0), 26.0) * 0.42 * glyphMask;
 
-      fragColor = vec4((diffuse + specular) * focusDim, objIdAlpha);
+      fragColor = vec4(applyContestSideTint((diffuse + specular) * focusDim, glyphMask, ridgeLine, fresnel), objIdAlpha);
       return;
     }
 
@@ -1625,7 +1639,7 @@ void main() {
       col = mix(col, glyphAlbedo * (0.76 + 0.28 * max(dot(v_faceN, L1), 0.0)), glyphMask);
       if (u_settled > 0.5 && !isWinFace) col *= 0.85;
 
-      fragColor = vec4(col, objIdAlpha);
+      fragColor = vec4(applyContestSideTint(col, glyphMask, ridgeLine, fresnel), objIdAlpha);
       return;
     }
 
@@ -1661,7 +1675,7 @@ void main() {
     float spec = pow(max(dot(N, H1), 0.0), 78.0) * 1.35;
     vec3 specular = (env * (0.06 + 0.82 * fresnel) * 0.52 + vec3(1.15, 1.25, 1.3) * spec) * antiGlare;
 
-    fragColor = vec4((body + specular) * focusDim, objIdAlpha);
+    fragColor = vec4(applyContestSideTint((body + specular) * focusDim, glyphMask, ridgeLine, fresnel), objIdAlpha);
     return;
   }
 
@@ -1800,7 +1814,7 @@ void main() {
 
   specular += F * bevelMask * pow(max(dot(v_smoothN, H1), 0.0), 42.0) * 1.75 * antiGlare;
 
-  vec3 finalHDR = diffuse + specular + emissive;
+  vec3 finalHDR = applyContestSideTint(diffuse + specular + emissive, glyphMask, ridgeLine, fresnel);
   fragColor = vec4(max(finalHDR, vec3(0.0)), 1.0);
 }
 `
@@ -2384,7 +2398,7 @@ class WebGLDiceRenderer {
     this.diceProg = cacheUniforms(linkProgram(gl, DICE_VERT, DICE_FRAG), [
       'u_viewProj', 'u_rotMat', 'u_diePos', 'u_dieRadius',
       'u_atlas', 'u_camPos', 'u_time', 'u_theme', 'u_tier',
-      'u_dieIndex', 'u_winningFace', 'u_maxFaceIdx', 'u_styleAtlasOffset',
+      'u_dieIndex', 'u_contestSide', 'u_winningFace', 'u_maxFaceIdx', 'u_styleAtlasOffset',
       'u_settled', 'u_climax', 'u_faceTiles[0]'
     ])
 
@@ -2742,6 +2756,7 @@ class WebGLDiceRenderer {
       gl.uniform3f(du.u_diePos, d.x, d.y, d.z)
       gl.uniform1f(du.u_dieRadius, d.radius)
       gl.uniform1i(du.u_dieIndex, i)
+      gl.uniform1i(du.u_contestSide, d.side === 'ally' ? 1 : (d.side === 'rival' ? 2 : 0))
       gl.uniform1i(du.u_winningFace, d.targetFace ? d.targetFace.index : 0)
       gl.uniform1i(du.u_maxFaceIdx, gpu.maxFaceIdx)
       gl.uniform1f(du.u_settled, d.settled ? 1.0 : 0.0)
@@ -4394,6 +4409,13 @@ const SIM_DT = 1 / 120
 const MAX_STEPS = 380
 const PARTICLE_CAP = 900
 
+function dieFloorZ(meshKey, radius) {
+  if (meshKey === 'd4') return radius / 3
+  if (meshKey === 'd6' || meshKey === 'df' || meshKey === 'd8') return radius * 0.57735
+  if (meshKey === 'd10' || meshKey === 'd100_tens' || meshKey === 'd100_ones') return radius * 0.6687
+  return radius * 0.7947
+}
+
 function qMul(ax, ay, az, aw, bx, by, bz, bw, out) {
   out[0] = aw * bx + ax * bw + ay * bz - az * by
   out[1] = aw * by - ax * bz + ay * bw + az * bx
@@ -4524,9 +4546,9 @@ class CinematicDiceStage {
     this.dragHistory = []
     this.pendingSpecBuilder = options.buildSpecOnDragRelease || null
 
-    this.baseEye = [0, -395, 435]
-    this.camEye = [0, -395, 435]
-    this.camTarget = [0, 8, 14]
+    this.baseEye = [0, -148, 485]
+    this.camEye = [0, -148, 485]
+    this.camTarget = [0, 4, 12]
     this.camFov = (38 * Math.PI) / 180
     this.shakeAmp = 0
     this.chroma = 0.06
@@ -4595,8 +4617,9 @@ class CinematicDiceStage {
     const aspect = w / Math.max(1, h)
     const distScale = aspect > 2.1 ? 0.66 : aspect < 0.9 ? 1.15 : 0.88
     this.baseEye[0] = 0
-    this.baseEye[1] = -335 * distScale
-    this.baseEye[2] = 395 * distScale
+    this.baseEye[1] = -148 * distScale
+    this.baseEye[2] = 485 * distScale
+    if (!this.running) this._snapCameraToRest()
     this.renderSingleFrame()
   }
 
@@ -4741,6 +4764,7 @@ class CinematicDiceStage {
     }
     this.particles.active.fill(0)
     this.particles.aliveCount = 0
+    this._snapCameraToRest()
     this.renderSingleFrame()
   }
 
@@ -4985,6 +5009,7 @@ class CinematicDiceStage {
 
     this.tier = spec.tier || 'success'
     this.mode = spec.mode || 'normal'
+    this.contestMeta = spec.contestMeta || null
     this.revealed = false
     this.total = spec.total !== undefined ? spec.total : diceSpecs.reduce((s, d) => s + d.targetValue, 0)
     this.checkName = spec.checkName || '命运裁定'
@@ -5023,7 +5048,7 @@ class CinematicDiceStage {
       }
 
       const radius = baseR * (ds.meshKey === 'd4' ? 1.12 : 1.0)
-      const floorZ = radius * (ds.meshKey === 'd4' ? 0.52 : ds.meshKey === 'd6' || ds.meshKey === 'df' ? 0.62 : 0.76)
+      const floorZ = dieFloorZ(ds.meshKey, radius)
       const fromPos = !spec.silentStatic && spec.fromPositions && spec.fromPositions[i] ? spec.fromPositions[i] : null
       const prevPos = prevDiceSnap && prevDiceSnap[i] ? prevDiceSnap[i] : null
 
@@ -5139,6 +5164,27 @@ class CinematicDiceStage {
         wx = (Math.random() < 0.5 ? -1 : 1) * nSpin
         wy = (Math.random() < 0.5 ? -1 : 1) * nSpin * 0.92
         wz = (Math.random() - 0.5) * nSpin * 1.1
+      } else if (!spec.silentStatic && this.mode === 'contest') {
+        // ⚔️ 双边分庭对抗：我方在左半场独立落骰，对手在右半场独立落骰，中线硬隔离绝不串边混杂
+        const isRival = ds.side === 'rival'
+        const sideSign = isRival ? 1 : -1
+        const allyCount = Math.max(1, diceSpecs.filter(s => s.side !== 'rival').length)
+        const sideLane = isRival ? Math.max(0, i - allyCount) : i
+        const laneCount = isRival ? Math.max(1, count - allyCount) : allyCount
+        const laneOffset = laneCount > 1 ? ((sideLane / (laneCount - 1)) - 0.5) : 0
+        startX = sideSign * boundX * (0.94 + Math.random() * 0.05)
+        startY = -boundY * (0.64 + (sideLane % 2) * 0.22) + (Math.random() - 0.5) * 12
+        startZ = baseR + (this.theaterMode ? 116 : 96) + sideLane * 14 + Math.random() * 22
+        const halfCenter = Math.max(boundX * 0.48, baseR * 2.1)
+        const aimX = sideSign * Math.min(boundX * 0.78, halfCenter + (sideLane % 2 === 0 ? -baseR * 0.45 : baseR * 0.55))
+        const aimY = laneOffset * Math.min(boundY * 0.72, baseR * 1.65) + 4
+        const tFlight = (this.theaterMode ? 0.46 : 0.35) + Math.random() * 0.05
+        vx = (aimX - startX) / tFlight + (Math.random() - 0.5) * 28
+        vy = (aimY - startY) / tFlight + (Math.random() - 0.5) * 28
+        vz = (this.theaterMode ? 148 : 126) + Math.random() * 64
+        wx = (Math.random() < 0.5 ? -1 : 1) * (16 + Math.random() * 12)
+        wy = (Math.random() < 0.5 ? -1 : 1) * (15 + Math.random() * 12)
+        wz = (Math.random() - 0.5) * 18
       } else {
         // 🎲 普通短按投掷（及静态摆盘）：经典双翼弧线抛入
         const side = (i % 2 === 0 ? -1 : 1) * (0.86 + Math.random() * 0.12)
@@ -5170,6 +5216,8 @@ class CinematicDiceStage {
         meshKey: ds.meshKey,
         sides: ds.sides || mesh.faceCount,
         faceValue: ds.targetValue,
+        side: ds.side || null,
+        ownerLabel: ds.ownerLabel || '',
         targetFace,
         radius,
         x: startX, y: startY, z: startZ,
@@ -5209,11 +5257,12 @@ class CinematicDiceStage {
     }
   }
 
-  _bakeTrajectoriesAndExactLanding(dice, boundX, boundY) {
+  _runSinglePhysicsTake(dice, boundX, boundY, takeJitter) {
     const count = dice.length
     const gravity = 1680
     const isFate = this.mode === 'fate'
     const isPush = this.mode === 'push'
+    const isContest = this.mode === 'contest'
     const power = this.lastChargePower || 0
     const maxBounces = isFate ? 2 : (isPush ? (power > 0 ? 6 : 5) : (power > 0 ? 5 : 4))
     const minBounceImpV = (isPush || power > 0) ? 38 : 60
@@ -5221,18 +5270,43 @@ class CinematicDiceStage {
     const wallSpin = isPush ? 8.5 : 5.0
     const maxReboundVz = this.theaterMode ? 405 : 510
 
-    this.bounceQueue.length = 0
+    const sim = dice.map((d, idx) => {
+      const a = takeJitter ? (idx * 2.39996 + takeJitter) : 0
+      const dvx = takeJitter ? Math.cos(a) * takeJitter * 18 : 0
+      const dvy = takeJitter ? Math.sin(a) * takeJitter * 16 : 0
+      return {
+        x: d.x, y: d.y, z: d.z,
+        vx: d.vx + dvx, vy: d.vy + dvy, vz: d.vz,
+        wx: d.wx, wy: d.wy, wz: d.wz,
+        qx: d.qx, qy: d.qy, qz: d.qz, qw: d.qw,
+        radius: d.radius,
+        meshKey: d.meshKey,
+        side: d.side,
+        bounces: 0,
+        _simSettled: false,
+        settleStep: MAX_STEPS - 1,
+        trajPos: new Float32Array(MAX_STEPS * 3),
+        trajQuat: new Float32Array(MAX_STEPS * 4),
+        trajSpeed: new Float32Array(MAX_STEPS)
+      }
+    })
+
+    const bounceQueue = []
     const dq = new Float32Array(4)
     const qNext = new Float32Array(4)
     let maxSettleStep = 48
     let peakAvgZ = -Infinity
     let peakStep = 24
+    let pairCollisions = 0
+    const contestDivider = isContest
+      ? Math.min(boundX * 0.26, Math.max(18, (dice[0]?.radius || 18) * 1.25))
+      : 0
 
     for (let step = 0; step < MAX_STEPS; step++) {
       let sumZ = 0
       for (let i = 0; i < count; i++) {
-        const d = dice[i]
-        const floorZ = d.radius * (d.meshKey === 'd4' ? 0.52 : d.meshKey === 'd6' || d.meshKey === 'df' ? 0.62 : 0.76)
+        const d = sim[i]
+        const floorZ = dieFloorZ(d.meshKey, d.radius)
 
         if (!d._simSettled) {
           d.vz -= gravity * SIM_DT
@@ -5245,6 +5319,15 @@ class CinematicDiceStage {
 
           if (d.x < -boundX) { d.x = -boundX; d.vx = Math.abs(d.vx) * wallRest; d.wz += wallSpin }
           else if (d.x > boundX) { d.x = boundX; d.vx = -Math.abs(d.vx) * wallRest; d.wz -= wallSpin }
+          if (isContest && d.side === 'ally' && d.x > -contestDivider) {
+            d.x = -contestDivider
+            d.vx = -Math.abs(d.vx) * wallRest
+            d.wz -= wallSpin * 0.8
+          } else if (isContest && d.side === 'rival' && d.x < contestDivider) {
+            d.x = contestDivider
+            d.vx = Math.abs(d.vx) * wallRest
+            d.wz += wallSpin * 0.8
+          }
           if (d.y < -boundY) { d.y = -boundY; d.vy = Math.abs(d.vy) * wallRest; d.wx += wallSpin }
           else if (d.y > boundY) { d.y = boundY; d.vy = -Math.abs(d.vy) * wallRest; d.wx -= wallSpin }
 
@@ -5267,7 +5350,7 @@ class CinematicDiceStage {
               d.wy = d.wy * (isFate ? 0.55 : 0.66) + d.vx * 0.05 + (Math.random() - 0.5) * spinKick
               d.wz *= isFate ? 0.58 : 0.72
               const strengthBoost = (d.bounces === 0 && (isPush || power > 0)) ? (0.18 + power * 0.25) : 0
-              this.bounceQueue.push({
+              bounceQueue.push({
                 simTime: step * SIM_DT,
                 x: d.x,
                 y: d.y,
@@ -5281,8 +5364,9 @@ class CinematicDiceStage {
               d.vz = 0
               d.vx *= isFate ? 0.68 : 0.80
               d.vy *= isFate ? 0.68 : 0.80
-              d.wx *= isFate ? 0.66 : 0.76
-              d.wy *= isFate ? 0.66 : 0.76
+              // 地面摩擦滚动耦合：线性滑移顺势带出细腻角速度衰减
+              d.wx = d.wx * (isFate ? 0.66 : 0.76) - d.vy * 0.004
+              d.wy = d.wy * (isFate ? 0.66 : 0.76) + d.vx * 0.004
               d.wz *= isFate ? 0.66 : 0.76
               if (Math.hypot(d.vx, d.vy) < 5.5 && Math.hypot(d.wx, d.wy, d.wz) < 0.42 && step > 40) {
                 d.vx = 0; d.vy = 0; d.vz = 0
@@ -5315,10 +5399,10 @@ class CinematicDiceStage {
         }
       }
 
-      const pairRest = isPush ? 0.90 : 0.84
+      const pairRest = isPush ? 0.90 : (isContest ? 0.92 : 0.84)
       for (let i = 0; i < count; i++) {
         for (let j = i + 1; j < count; j++) {
-          const a = dice[i], b = dice[j]
+          const a = sim[i], b = sim[j]
           const minDist = (a.radius + b.radius) * 0.96
           const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
           const d2 = dx * dx + dy * dy + dz * dz
@@ -5328,9 +5412,16 @@ class CinematicDiceStage {
             const overlap = (minDist - dist) * 0.52
             a.x -= nx * overlap; a.y -= ny * overlap
             b.x += nx * overlap; b.y += ny * overlap
+            if (isContest) {
+              if (a.side === 'ally' && a.x > -contestDivider) a.x = -contestDivider
+              if (a.side === 'rival' && a.x < contestDivider) a.x = contestDivider
+              if (b.side === 'ally' && b.x > -contestDivider) b.x = -contestDivider
+              if (b.side === 'rival' && b.x < contestDivider) b.x = contestDivider
+            }
             const rvx = b.vx - a.vx, rvy = b.vy - a.vy, rvz = b.vz - a.vz
             const vn = rvx * nx + rvy * ny + rvz * nz
             if (vn < 0) {
+              pairCollisions += 1
               const imp = -pairRest * vn
               a.vx -= nx * imp; a.vy -= ny * imp; a.vz -= nz * imp * 0.35
               b.vx += nx * imp; b.vy += ny * imp; b.vz += nz * imp * 0.35
@@ -5339,8 +5430,8 @@ class CinematicDiceStage {
                 b._simSettled = false
               }
               const hs = Math.min(1, imp / 260)
-              if (hs > 0.25 && this.bounceQueue.length < 96) {
-                this.bounceQueue.push({
+              if (hs > 0.25 && bounceQueue.length < 96) {
+                bounceQueue.push({
                   simTime: step * SIM_DT,
                   x: (a.x + b.x) * 0.5,
                   y: (a.y + b.y) * 0.5,
@@ -5356,7 +5447,7 @@ class CinematicDiceStage {
       }
 
       for (let i = 0; i < count; i++) {
-        const d = dice[i]
+        const d = sim[i]
         const po = step * 3
         d.trajPos[po] = d.x; d.trajPos[po + 1] = d.y; d.trajPos[po + 2] = d.z
         d.trajSpeed[step] = Math.hypot(d.vx, d.vy, d.vz)
@@ -5366,16 +5457,79 @@ class CinematicDiceStage {
     }
 
     for (let i = 0; i < count; i++) {
-      if (!dice[i]._simSettled) {
-        dice[i].settleStep = MAX_STEPS - 2
+      if (!sim[i]._simSettled) {
+        sim[i].settleStep = MAX_STEPS - 2
         maxSettleStep = MAX_STEPS - 2
       }
     }
-    this.maxSimDuration = maxSettleStep * SIM_DT
-    this.fateApexTime = Math.max(0.08, peakStep * SIM_DT)
+
+    // 构图质量评分（越低越好）：中心聚集度 + 防重叠 + 防过散 + 对抗阵营不串边
+    let centerX = 0
+    let centerY = 0
+    for (let i = 0; i < count; i++) {
+      centerX += sim[i].x
+      centerY += sim[i].y
+    }
+    centerX /= Math.max(1, count)
+    centerY /= Math.max(1, count)
+    const targetHalfX = Math.max(boundX * 0.46, (dice[0]?.radius || 18) * 2.1)
+    let layoutCost = isContest ? Math.abs(centerY) * 0.8 : Math.hypot(centerX, centerY) * 0.9
+    for (let i = 0; i < count; i++) {
+      const a = sim[i]
+      if (isContest && a.side === 'ally') {
+        layoutCost += Math.abs(a.x + targetHalfX) * 0.85
+        if (a.x > -contestDivider) layoutCost += (a.x + contestDivider) * 8.0
+      } else if (isContest && a.side === 'rival') {
+        layoutCost += Math.abs(a.x - targetHalfX) * 0.85
+        if (a.x < contestDivider) layoutCost += (contestDivider - a.x) * 8.0
+      }
+      for (let j = i + 1; j < count; j++) {
+        const b = sim[j]
+        const sep = Math.hypot(a.x - b.x, a.y - b.y)
+        const minSep = (a.radius + b.radius) * 1.15
+        const maxSep = (a.radius + b.radius) * 4.2
+        if (sep < minSep) layoutCost += (minSep - sep) * 4.5
+        else if (!isContest || a.side === b.side) {
+          if (sep > maxSep) layoutCost += (sep - maxSep) * 1.4
+        }
+      }
+    }
+
+    return { sim, bounceQueue, maxSettleStep, peakStep, layoutCost }
+  }
+
+  _bakeTrajectoriesAndExactLanding(dice, boundX, boundY) {
+    const count = dice.length
+    const isFate = this.mode === 'fate'
+    const isContest = this.mode === 'contest'
+    const takeCount = (count >= 2 && (this.mode === 'normal' || isContest)) ? 8 : 1
+    let best = null
+    for (let t = 0; t < takeCount; t++) {
+      const jitter = t === 0 ? 0 : (t * 0.95)
+      const candidate = this._runSinglePhysicsTake(dice, boundX, boundY, jitter)
+      if (!best || candidate.layoutCost < best.layoutCost) best = candidate
+    }
+
+    for (let i = 0; i < count; i++) {
+      const d = dice[i]
+      const s = best.sim[i]
+      d.x = s.x; d.y = s.y; d.z = s.z
+      d.vx = s.vx; d.vy = s.vy; d.vz = s.vz
+      d.wx = s.wx; d.wy = s.wy; d.wz = s.wz
+      d.qx = s.qx; d.qy = s.qy; d.qz = s.qz; d.qw = s.qw
+      d.bounces = s.bounces
+      d.settleStep = s.settleStep
+      d.trajPos = s.trajPos
+      d.trajQuat = s.trajQuat
+      d.trajSpeed = s.trajSpeed
+    }
+
+    this.bounceQueue = best.bounceQueue
+    this.maxSimDuration = best.maxSettleStep * SIM_DT
+    this.fateApexTime = Math.max(0.08, best.peakStep * SIM_DT)
     this.bounceQueue.sort((a, b) => a.simTime - b.simTime)
 
-    // 逆向四元数对齐：确保目标面最终稳稳朝上微倾面向摄像机，且 det(W * L^T) = (-1)*(-1) = +1 严格属于 SO(3)！
+    // 逆向四元数对齐：确保骰子底面平贴台面（D4 以对面平放桌面、目标面斜朝向镜头，其余骰目标面严格朝上），且 det(W * L^T) = (-1)*(-1) = +1 严格属于 SO(3)！
     const qDesired = new Float32Array(4)
     const qInit = new Float32Array(4)
     const qBaked = new Float32Array(4)
@@ -5383,14 +5537,21 @@ class CinematicDiceStage {
     for (let i = 0; i < count; i++) {
       const d = dice[i]
       const tf = d.targetFace
-      const tiltCam = d.meshKey === 'd4' ? 0.44 : 0.28
-      const wnX = 0, wnY = -Math.sin(tiltCam), wnZ = Math.cos(tiltCam)
+      const tiltCam = d.meshKey === 'd4' ? Math.acos(1 / 3) : 0
+      const wn0Y = -Math.sin(tiltCam), wn0Z = Math.cos(tiltCam)
+      const wv0Y = -Math.cos(tiltCam), wv0Z = -Math.sin(tiltCam)
 
       const yaw = (Math.random() - 0.5) * (isFate ? 0.10 : 0.22)
       const cy = Math.cos(yaw), sy = Math.sin(yaw)
-      const wvX = sy
-      const wvY = -cy * Math.cos(tiltCam)
-      const wvZ = -cy * Math.sin(tiltCam)
+
+      // 绕世界 Z 轴施加偏航 yaw，保证无论是否为 D4，底面都平贴水平桌面
+      const wnX = -sy * wn0Y
+      const wnY = cy * wn0Y
+      const wnZ = wn0Z
+
+      const wvX = -sy * wv0Y
+      const wvY = cy * wv0Y
+      const wvZ = wv0Z
 
       const wuX = wnY * wvZ - wnZ * wvY
       const wuY = wnZ * wvX - wnX * wvZ
@@ -5409,7 +5570,7 @@ class CinematicDiceStage {
       const m21 = wuZ * uy + wvZ * vy + wnZ * ny
 
       const m02 = wuX * uz + wvX * vz + wnX * nz
-      const m12 = wuY * uz + wvY * vz + wnZ * nz
+      const m12 = wuY * uz + wvY * vz + wnY * nz
       const m22 = wuZ * uz + wvZ * vz + wnZ * nz
 
       mat3ToQuat(m00, m10, m20, m01, m11, m21, m02, m12, m22, qDesired)
@@ -6249,16 +6410,31 @@ class CinematicDiceStage {
     p.aliveCount = alive
   }
 
-  _updateSpringCamera(dt) {
-    let cx = 0, cy = 8, cz = 14
+  _computeCameraFocus() {
+    let cx = 0, cy = 4, cz = 12
     if (this.dice.length > 0) {
       let sx = 0, sy = 0, sz = 0
       for (const d of this.dice) { sx += d.x; sy += d.y; sz += d.z }
-      cx = (sx / this.dice.length) * 0.42
-      cy = (sy / this.dice.length) * 0.42
+      cx = (sx / this.dice.length) * 0.52
+      cy = (sy / this.dice.length) * 0.52
       const zWeight = (this.charging && this.chargeMode === 'fate') || this.fateSlowAmount > 0.05 ? 0.46 : 0.35
       cz = Math.min(this.theaterMode ? 54 : 66, (sz / this.dice.length) * zWeight)
     }
+    return [cx, cy, cz]
+  }
+
+  _snapCameraToRest() {
+    const [cx, cy, cz] = this._computeCameraFocus()
+    this.camTarget[0] = cx
+    this.camTarget[1] = cy
+    this.camTarget[2] = cz
+    this.camEye[0] = cx * 0.65
+    this.camEye[1] = this.baseEye[1] + cy * 0.72
+    this.camEye[2] = this.baseEye[2] + cz * 0.35
+  }
+
+  _updateSpringCamera(dt) {
+    const [cx, cy, cz] = this._computeCameraFocus()
 
     let zoom = 1.0
     if (this.cinematicCamEnabled) {
@@ -6286,9 +6462,9 @@ class CinematicDiceStage {
     const shakeY = (Math.random() - 0.5) * 2 * this.shakeAmp
     const shakeZ = (Math.random() - 0.5) * 1.4 * this.shakeAmp
 
-    const targetEyeX = cx * 0.35 + shakeX
-    const targetEyeY = this.baseEye[1] * zoom + cy * 0.25 + shakeY
-    const targetEyeZ = this.baseEye[2] * zoom + shakeZ
+    const targetEyeX = cx * 0.65 + shakeX
+    const targetEyeY = this.baseEye[1] * zoom + cy * 0.72 + shakeY
+    const targetEyeZ = this.baseEye[2] * zoom + cz * 0.35 + shakeZ
 
     const smooth = Math.min(1, dt * 8.5)
     this.camEye[0] += (targetEyeX - this.camEye[0]) * smooth
@@ -6631,6 +6807,37 @@ class CinematicDiceStage {
     const mode = resolveThemeMode(roll, roll.hidden)
     const tier = fdTierOf(roll.tier)
 
+    if (roll.checkType === "contest" && roll.contest && Array.isArray(roll.contest.rivalDice) && roll.contest.rivalDice.length && !roll.hidden) {
+      const cSides = rule === "d20" ? 20 : rule === "d10" ? 10 : rule === "d100" ? 10 : (Number(roll.sides) || 6)
+      const cMk = meshKeyForSides(cSides)
+      const cMax = GL_MESHES[cMk] ? GL_MESHES[cMk].faceCount : cSides
+      const toSpec = (v, side, label) => ({
+        meshKey: cMk,
+        sides: cSides,
+        targetValue: rule === "d100"
+          ? Math.max(1, Math.min(cMax, Math.ceil((Number(v) || 50) / 10)))
+          : Math.max(1, Math.min(cMax, Math.round(Number(v) || 1))),
+        side,
+        ownerLabel: label
+      })
+      const allySpecs = rawDice.slice(0, 6).map(v => toSpec(v, "ally", "我方"))
+      const rivalSpecs = roll.contest.rivalDice.slice(0, 6).map(v => toSpec(v, "rival", roll.contest.rivalName || "对手"))
+      return {
+        diceSpecs: [...allySpecs, ...rivalSpecs],
+        tier,
+        mode: mode === "normal" ? "contest" : mode,
+        total: Number(roll.total) || 0,
+        checkName: roll.check || "交锋对抗",
+        contestMeta: {
+          allyLabel: "我方",
+          rivalLabel: roll.contest.rivalName || "对手",
+          allyTotal: Number(roll.total),
+          rivalTotal: Number(roll.contest.rivalTotal),
+          margin: Number(roll.contest.margin) || 0
+        }
+      }
+    }
+
     if (rule === "d100") {
       const pct = Math.max(1, Math.min(100, Math.round(Number(rawDice[0]) || Number(roll.total) || 50)))
       const tens = pct === 100 ? 0 : Math.floor(pct / 10) * 10
@@ -6711,11 +6918,9 @@ class CinematicDiceStage {
       const aspect = w / Math.max(1, h)
       const distScale = aspect > 2.15 ? 0.64 : aspect < 0.9 ? 1.12 : 0.84
       this.baseEye[0] = 0
-      this.baseEye[1] = -325 * distScale
-      this.baseEye[2] = 385 * distScale
-      this.camEye[0] = this.baseEye[0]
-      this.camEye[1] = this.baseEye[1]
-      this.camEye[2] = this.baseEye[2]
+      this.baseEye[1] = -142 * distScale
+      this.baseEye[2] = 475 * distScale
+      if (!this.running) this._snapCameraToRest()
     }
 
     _renderAll() {
@@ -6770,7 +6975,7 @@ class CinematicDiceStage {
       this._drawChargeAndFateHud(ctx, W, H, isLightSurface)
 
       const sealWindow = this.pinSettled ? Infinity : (this.theaterMode ? 3.5 : 2.5)
-      if (this.settled && !this.charging && !hiddenMask && this.settleTime < sealWindow && !this.compactMode) {
+      if (this.mode !== "contest" && this.settled && !this.charging && !hiddenMask && this.settleTime < sealWindow && !this.compactMode) {
         const panelRightMargin = this.theme.themeIndex >= 6 ? 56 : 46
         drawThemeSealOverlay(ctx, {
           themeIndex: this.theme.themeIndex,
@@ -6783,6 +6988,102 @@ class CinematicDiceStage {
           fadeStart: this.pinSettled ? Infinity : (this.theaterMode ? 2.85 : 1.9),
           pinSettled: Boolean(this.pinSettled)
         })
+      }
+
+      if (this.mode === "contest" && !this.charging && !hiddenMask && !this.compactMode) {
+        const settleFade = (!this.settled || this.pinSettled)
+          ? 1
+          : (this.settleTime > 2.6 ? Math.max(0, 1 - (this.settleTime - 2.6) / 0.8) : 1)
+        if (settleFade > 0.01) {
+          ctx.save()
+          ctx.globalAlpha = settleFade
+
+          // 左右阵营环境色微染色，一眼区分半场
+          const leftGrad = ctx.createLinearGradient(0, 0, W * 0.48, 0)
+          leftGrad.addColorStop(0, isLightSurface ? "rgba(16, 185, 129, 0.14)" : "rgba(52, 211, 153, 0.13)")
+          leftGrad.addColorStop(1, "rgba(52, 211, 153, 0)")
+          ctx.fillStyle = leftGrad
+          ctx.fillRect(0, 0, W * 0.5, H)
+
+          const rightGrad = ctx.createLinearGradient(W, 0, W * 0.52, 0)
+          rightGrad.addColorStop(0, isLightSurface ? "rgba(225, 29, 72, 0.14)" : "rgba(244, 63, 94, 0.14)")
+          rightGrad.addColorStop(1, "rgba(244, 63, 94, 0)")
+          ctx.fillStyle = rightGrad
+          ctx.fillRect(W * 0.5, 0, W * 0.5, H)
+
+          // 中央垂直分割线 + 发光 VS 徽章
+          const midX = Math.round(W * 0.5) + 0.5
+          const midY = Math.round(H * 0.52)
+          const lineGrad = ctx.createLinearGradient(midX, 16, midX, H - 16)
+          lineGrad.addColorStop(0, "rgba(255, 215, 140, 0)")
+          lineGrad.addColorStop(0.22, isLightSurface ? "rgba(180, 130, 60, 0.48)" : "rgba(255, 215, 140, 0.42)")
+          lineGrad.addColorStop(0.5, isLightSurface ? "rgba(180, 130, 60, 0.78)" : "rgba(255, 224, 158, 0.78)")
+          lineGrad.addColorStop(0.78, isLightSurface ? "rgba(180, 130, 60, 0.48)" : "rgba(255, 215, 140, 0.42)")
+          lineGrad.addColorStop(1, "rgba(255, 215, 140, 0)")
+          ctx.strokeStyle = lineGrad
+          ctx.lineWidth = 1.5
+          ctx.setLineDash([4, 4])
+          ctx.beginPath()
+          ctx.moveTo(midX, 18)
+          ctx.lineTo(midX, H - 18)
+          ctx.stroke()
+          ctx.setLineDash([])
+
+          const vsR = this.theaterMode ? 17 : 14
+          ctx.fillStyle = isLightSurface ? "rgba(252, 246, 236, 0.94)" : "rgba(14, 16, 26, 0.92)"
+          ctx.strokeStyle = isLightSurface ? "rgba(180, 128, 52, 0.85)" : "rgba(245, 200, 118, 0.85)"
+          ctx.lineWidth = 1.5
+          ctx.beginPath()
+          ctx.arc(midX, midY, vsR, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.stroke()
+
+          ctx.font = `800 ${this.theaterMode ? 11.5 : 10}px system-ui, -apple-system, "PingFang SC", sans-serif`
+          ctx.textAlign = "center"
+          ctx.textBaseline = "middle"
+          ctx.fillStyle = isLightSurface ? "#9a5d14" : "#f7d488"
+          ctx.fillText("VS", midX, midY + 0.5)
+
+          // 左右半场顶部阵营铭牌（投掷全程常驻，落定后亮出总点数）
+          const meta = this.contestMeta || {}
+          const allyName = meta.allyLabel || "我方"
+          const rivalName = meta.rivalLabel || (this.dice.find(d => d.side === "rival")?.ownerLabel) || "对手"
+          const showScore = this.settled && Number.isFinite(meta.allyTotal) && Number.isFinite(meta.rivalTotal)
+          const allyWin = showScore && meta.allyTotal > meta.rivalTotal
+          const rivalWin = showScore && meta.rivalTotal > meta.allyTotal
+          const pills = [
+            {
+              cx: W * 0.25,
+              text: showScore ? `⚔ ${allyName} · ${meta.allyTotal}` : `⚔ ${allyName}`,
+              color: isLightSurface ? "#0f766e" : "#4ad295",
+              win: allyWin
+            },
+            {
+              cx: W * 0.75,
+              text: showScore ? `🛡 ${rivalName} · ${meta.rivalTotal}` : `🛡 ${rivalName}`,
+              color: isLightSurface ? "#be123c" : "#fb7185",
+              win: rivalWin
+            }
+          ]
+          ctx.font = `700 ${this.theaterMode ? 12 : 11}px system-ui, -apple-system, "PingFang SC", sans-serif`
+          const pillY = this.theaterMode ? 52 : 24
+          for (const p of pills) {
+            const tw = Math.ceil(ctx.measureText(p.text).width) + 20
+            const ph = this.theaterMode ? 24 : 21
+            ctx.fillStyle = isLightSurface ? "rgba(250, 246, 238, 0.92)" : "rgba(10, 12, 20, 0.86)"
+            ctx.strokeStyle = p.color
+            ctx.lineWidth = p.win ? 2.0 : 1.2
+            ctx.beginPath()
+            if (typeof ctx.roundRect === "function") ctx.roundRect(p.cx - tw / 2, pillY - ph / 2, tw, ph, ph / 2)
+            else ctx.rect(p.cx - tw / 2, pillY - ph / 2, tw, ph)
+            ctx.fill()
+            ctx.stroke()
+            ctx.fillStyle = p.color
+            ctx.fillText(p.text, p.cx, pillY + 0.5)
+          }
+
+          ctx.restore()
+        }
       }
 
       if (this.theme.themeIndex === 3 && this.settled && !this.charging && !hiddenMask && (this.pinSettled || this.settleTime < 2.4) && this.dice.length <= 4 && !this.compactMode) {

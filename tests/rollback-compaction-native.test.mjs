@@ -96,7 +96,7 @@ for (const kind of ['error', 'regeneration']) test('真实压缩纳入未结算�
     appendSessionEvent(session, 'turn/start', { turn })
     appendSessionEvent(session, 'step/start', { turn, step: 1 })
     appendSessionEvent(session, 'user/message', { id: 'input-' + turn, role: 'user', source: { kind: turn === 4 && kind === 'regeneration' ? 'plugin:dsh-tavern-regen' : 'user' }, content: [{ type: 'text', text: '本轮输入' }] }, { surfaceOp: 'append' })
-    appendSessionEvent(session, 'assistant/message', { turn, step: 1, message: { id: 'reply-' + turn, role: 'assistant', source: { kind: 'model', provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: '尝试文本'.repeat(200) }] } }, { surfaceOp: 'append' })
+    appendSessionEvent(session, 'assistant/message', { turn, step: 1, message: { id: 'reply-' + turn, role: 'assistant', source: { kind: 'model', provider: 'initialization-fixture', model: 'text' }, content: [{ type: 'text', text: '尝试文本'.repeat(200) }] } }, { surfaceOp: 'append' })
     appendSessionEvent(session, 'step/end', { turn, step: 1 })
     appendSessionEvent(session, 'turn/end', { turn, reason: { kind: turn === 4 && kind === 'error' ? 'error' : 'completed', ...(turn === 4 && kind === 'error' ? { error: { message: '第二步失败' } } : {}) } })
   }

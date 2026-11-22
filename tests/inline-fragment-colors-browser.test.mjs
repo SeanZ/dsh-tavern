@@ -18,10 +18,10 @@ test('trusted inline prose installs quote highlights and releases them on replac
   ` })
   await page.evaluate(() => mount('<p>她说：“你好。”</p><pre>“代码”</pre><p style="color:red">“卡片颜色”</p>'))
   // Wait for the highlighter's batched refresh, then inspect actual browser ranges.
-  await page.waitForTimeout(100)
+  await page.waitForFunction(() => ranges().length > 0)
   assert.deepEqual(await page.evaluate(() => ranges()), ['“你好。”'])
   await page.evaluate(() => { cleanup(); mount('<p>“新的段落。”</p>') })
-  await page.waitForTimeout(100)
+  await page.waitForFunction(() => ranges().length > 0)
   assert.deepEqual(await page.evaluate(() => ranges()), ['“新的段落。”'])
   await page.evaluate(() => cleanup())
   assert.equal(await page.evaluate(() => CSS.highlights.size), 0)
@@ -116,12 +116,13 @@ test('静态故事快照在 Shadow DOM 内恢复配色，随主题变化并在�
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.setContent('<style>body{color:rgb(30,30,30);--dsw-alias-brand-primary:blue}</style><div id="root"></div>')
-  const sources = await Promise.all(['text-colors.js', 'story/render.js'].map(file => readFile(new URL('../tavern-plugin/src/client/' + file, import.meta.url), 'utf8')))
+  const sources = await Promise.all(['../../lib/domain/body-dom.cjs', 'text-colors.js', 'story/render.js'].map(file => readFile(new URL('../tavern-plugin/src/client/' + file, import.meta.url), 'utf8')))
   await page.addScriptTag({ content: `
+    const module = {exports:{}};
     const React = {useRef:()=>({current:document.querySelector('#root')}), useLayoutEffect:fn=>{window.cleanup=fn()}, createElement(){}};
     function bindTavernFontZoom(){return ()=>{}}
     ${sources.map(s=>s.replace(/^export \{[^}]+\};?$/gm,'')).join('\n')}
-    const render=createStoryRenderAdapter({window,React,bindTavernFontZoom,installTavernTextColors,findTavernQuoteRanges}).createTavernStoryRender({});
+    const render=createStoryRenderAdapter({window,React,storyTranscript:{older(){}},sanitizeTavernBodyHtml,bindTavernFontZoom,installTavernTextColors,findTavernQuoteRanges}).createTavernStoryRender({});
     render.StaticHtml({html:'<p>“快照对白。”</p><p><em>快照动作</em></p><p style="color:red">“卡片颜色”</p><script>throw Error("不可执行")<\\/script>'});
     window.ranges = () => [...CSS.highlights.values()].flatMap(h=>[...h].map(r=>r.toString()));
   ` })

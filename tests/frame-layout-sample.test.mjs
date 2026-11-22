@@ -86,6 +86,7 @@ test('视口 class 只在状态变化时写入；隐藏恢复和短视口边界�
     assert.equal(classes.takeRecords().length, 1)
     assert.equal(html.style.getPropertyValue('--dsh-vv-height'), '279px')
     // 回到桌面：一次性移除并还原变量，之后的重算不再写入。
+    window.innerWidth = 1280
     window.media.narrow = false
     resync()
     assert.deepEqual([...html.classList], [])
@@ -95,6 +96,7 @@ test('视口 class 只在状态变化时写入；隐藏恢复和短视口边界�
     resync()
     assert.equal(classes.takeRecords().length, 0)
     // 再回到窄屏：恢复钉住布局。
+    window.innerWidth = 390
     window.media.narrow = true
     window.visualViewport.height = 600
     resync()

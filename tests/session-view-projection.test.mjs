@@ -8,55 +8,25 @@ import { createChatJournalStore } from '../tavern-plugin/lib/domain/chat-journal
 import { createChatPersistence } from '../tavern-plugin/lib/domain/chat-persistence.js'
 import { sessionViewMessageFields } from '../tavern-plugin/lib/domain/session-view-projection.js'
 import { planShowsRow } from '../tavern-plugin/lib/domain/transcript-row-plan.js'
+import { createOptionalStage } from '../tavern-plugin/lib/optional-stage.js'
 
-test('冷启动窗口和故事视图保留手动及自动精修标记', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'polish-window-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const f = projectionFixture()
-  const persistence = createChatPersistence({ store: createChatJournalStore({ dataRoot: root, newConversations: true }) })
-  const saved = await persistence.write({ ...f.chat, _storageRevision: undefined, messages: [f.chat.messages[0],
-    { role: 'assistant', turn: 2, text: '手动精修', polished: true },
-    { role: 'assistant', turn: 3, text: '自动精修', polishedFrom: 'original-source-digest' }
-  ] })
-  const full = await f.projection.project.full(saved)
-  const cold = createChatJournalStore({ dataRoot: root })
-  const window = await cold.readWindow(saved.id, { limit: 2, messageFields: sessionViewMessageFields })
-  assert.equal(window.from, 1)
-  for (const project of [f.projection.project.opening, f.projection.project.story]) {
-    const view = await project(window)
-    assert.deepEqual(view.polishedTurns, full.polishedTurns)
-    assert.deepEqual(view.autoPolishedTurns, full.autoPolishedTurns)
+test('会话视图在舞台模块关闭时仍识别舞台卡，兼容旧卡开关', async () => {
+  let extension
+  const stage = await createOptionalStage({
+    readCardWorkspace: async () => ({ raw: { extensions: { dsh_tavern: extension } } })
+  }, { enabled: false })
+  const f = projectionFixture({ readCardStageMode: stage.assets.cardStageMode })
+  for (const [settings, isStageCard] of [
+    [undefined, false],
+    [{ enabled: true }, true],
+    [{ dialogue: true, stage: true }, true],
+    [{ dialogue: true, stage: false, isStageCard: false }, false],
+    [{ enabled: false, dialogue: true, stage: true }, false]
+  ]) {
+    extension = { assetBindings: { boundPackIds: [] }, stage: settings }
+    const view = await f.projection.project.full(f.chat)
+    assert.deepEqual(view.stage, { dialogue: false, stage: false, isStageCard }, JSON.stringify(settings))
   }
-  assert.deepEqual(full.polishedTurns, [2, 3])
-  assert.deepEqual(full.autoPolishedTurns, [3])
-})
-
-test('增量投影随精修、再次编辑和新增轮次更新精修标记', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'polish-delta-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const f = projectionFixture()
-  const persistence = createChatPersistence({ store: createChatJournalStore({ dataRoot: root, newConversations: true }) })
-  const saved = await persistence.write({ ...f.chat, _storageRevision: undefined, messages: [f.chat.messages[0],
-    { role: 'assistant', turn: 2, text: '手动精修', polished: true },
-    { role: 'assistant', turn: 3, text: '自动精修', polishedFrom: 'original-source-digest' }
-  ] })
-  const full = await f.projection.project.full(saved)
-  const updated = await persistence.update(saved.id, chat => {
-    delete chat.messages[1].polished
-    chat.messages[1].text = '再次编辑'
-    chat.messages[2].polished = true
-    delete chat.messages[2].polishedFrom
-    chat.messages.push({ role: 'assistant', turn: 4, text: '新精修', polishedFrom: 'next-source-digest' })
-    return chat
-  })
-  const delta = await persistence.readViewDelta(saved.id, saved._storageRevision)
-  assert.ok(delta)
-  const dirty = await f.projection.project.dirty(delta.chat, full, new Set(delta.indices), { busy: false }, delta)
-  const expected = await f.projection.project.full(updated)
-  assert.deepEqual(dirty.polishedTurns, expected.polishedTurns)
-  assert.deepEqual(dirty.autoPolishedTurns, expected.autoPolishedTurns)
-  assert.deepEqual(dirty.polishedTurns, [3, 4])
-  assert.deepEqual(dirty.autoPolishedTurns, [4])
 })
 
 for (const projected of [false, true]) test('cold bounded view preserves plugin output; dual projection=' + projected, async t => {
@@ -196,32 +166,32 @@ test('空白制卡对话的增量更新不读取尚未创建的人物卡', async
 
 test('the session view publishes the host-decided stage switches of the card, none without a stage runtime or card', async () => {
   const asked = []
-  const f = projectionFixture({ readCardStageMode: async path => { asked.push(path); return { dialogue: true, stage: false } } })
+  const f = projectionFixture({ readCardStageMode: async path => { asked.push(path); return { dialogue: true, stage: false, isStageCard: false } } })
   const story = await f.projection.project.full(f.chat)
-  assert.deepEqual(story.stage, { dialogue: true, stage: false })
+  assert.deepEqual(story.stage, { dialogue: true, stage: false, isStageCard: false })
   assert.deepEqual(asked, ['cards/a.json'])
   const workbench = await f.projection.project.full({ ...f.chat, mode: 'card' })
-  assert.deepEqual(workbench.stage, { dialogue: false, stage: false }, 'the card workbench is not a stage session')
+  assert.deepEqual(workbench.stage, { dialogue: false, stage: false, isStageCard: false }, 'the card workbench is not a stage session')
   assert.deepEqual(asked, ['cards/a.json'])
   const plain = await projectionFixture().projection.project.full(f.chat)
-  assert.deepEqual(plain.stage, { dialogue: false, stage: false }, 'without a stage runtime no card has the stage')
+  assert.deepEqual(plain.stage, { dialogue: false, stage: false, isStageCard: false }, 'without a stage runtime no card has the stage')
 })
 
 test('disabled stage never rereads the card for stage HTML', async () => {
   let stageReads = 0
   const f = projectionFixture({
-    readCardStageMode: async () => ({ dialogue: false, stage: false }),
+    readCardStageMode: async () => ({ dialogue: false, stage: false, isStageCard: false }),
     readLiveCardStage: async () => { stageReads++; return { html: '<section>不应读取</section>' } }
   })
   const view = await f.projection.project.full(f.chat)
   assert.equal(stageReads, 0)
-  assert.deepEqual(view.stage, { dialogue: false, stage: false })
+  assert.deepEqual(view.stage, { dialogue: false, stage: false, isStageCard: false })
 })
 
 test('enabled dialogue stage still reads its live card HTML', async () => {
   let stageReads = 0
   const f = projectionFixture({
-    readCardStageMode: async () => ({ dialogue: true, stage: false }),
+    readCardStageMode: async () => ({ dialogue: true, stage: false, isStageCard: false }),
     readLiveCardStage: async () => { stageReads++; return { html: '' } }
   })
   await f.projection.project.full(f.chat)

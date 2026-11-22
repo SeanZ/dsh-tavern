@@ -50,18 +50,18 @@ test('真实宿主：后台关闭世界书时既不声明也不执行，持久�
   let enabled = false
   const runtime = await createBackgroundNativeRuntime(process.env.DSH_BOOT_MODULE, {
     residentOptions: { resolveWorldbookSkills: async () => enabled },
-    modelResponse: (_input, n) => n === 1 ? [{ type: 'tool-call', id: 'closed-worldbook', name: 'worldbook_list', arguments: '{}' }] : [{ type: 'text', text: '后台完成' }]
+    modelResponse: (_input, n) => n === 1 ? [{ type: 'tool-call', id: 'closed-worldbook', name: 'list_lorebook', arguments: '{}' }] : [{ type: 'text', text: '后台完成' }]
   })
   t.after(() => runtime.dispose())
   const input = { sessionId: 'scene-parent', task: 'candidate', persistent: true,
     selection: { provider: 'scene-fixture', model: 'fixture-text' }, messages: [], tools: [] }
   const first = await runtime.runBackground(input)
-  for (const request of runtime.requests) assert.ok(!request.tools.some(tool => ['read', 'worldbook_list', 'worldbook_grep'].includes(tool.name)))
+  for (const request of runtime.requests) assert.ok(!request.tools.some(tool => ['read', 'list_lorebook', 'grep_lorebook'].includes(tool.name)))
   const denied = runtime.traceEvents(first.traceSessionId).find(event => event.type === 'tool/result' && event.data.message?.toolCallId === 'closed-worldbook')
   assert.equal(denied?.data.message.isError, true)
   assert.match(denied.data.message.content[0].text, /该工具未在当前任务开放|该工具在当前 Tavern 会话或任务中已关闭/)
   enabled = true
   const second = await runtime.runBackground({ ...input, persistentSessionId: first.traceSessionId })
   assert.equal(second.traceSessionId, first.traceSessionId)
-  for (const name of ['read', 'worldbook_list', 'worldbook_grep']) assert.ok(runtime.requests.at(-1).tools.some(tool => tool.name === name), name)
+  for (const name of ['read', 'list_lorebook', 'grep_lorebook']) assert.ok(runtime.requests.at(-1).tools.some(tool => tool.name === name), name)
 })

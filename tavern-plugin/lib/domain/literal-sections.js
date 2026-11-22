@@ -4,7 +4,7 @@
 // Marking at the two assembly exits covers every Tavern section, including events
 // recorded before the mark existed, without rewriting them.
 export function markTavernSectionsLiteral(assembly) {
-  assembly.sections = (assembly.sections || []).map(section =>
-    section && typeof section.name === 'string' && section.name.startsWith('tavern:') ? { ...section, interpolate: false } : section)
+  assembly.sections = (assembly.sections || []).map((section, order) =>
+    section && typeof section.name === 'string' && section.name.startsWith('tavern:') ? { order, ...section, interpolate: false } : section)
   return assembly
 }

@@ -30215,7 +30215,7 @@ function taskCatalogReads(projections, rootId) {
 					const disposeType = tabs.register({
 						id,
 						kind: descriptor.id,
-						keepMounted: true,
+						keepMounted: descriptor.keepMounted !== false,
 						...isEditor ? {
 							patterns: ["dsh-resource://file/**"],
 							canOpen: (address) => {
@@ -30260,7 +30260,7 @@ function taskCatalogReads(projections, rootId) {
 					const disposeType = tabs.register({
 						id,
 						kind: FILES_KIND,
-						keepMounted: true,
+						keepMounted: false,
 						priority: "extension",
 						title: () => t("files"),
 						guide: [{

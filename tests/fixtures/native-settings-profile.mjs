@@ -24,7 +24,7 @@ export async function nativeSettingsProfile(t, { ownerSource, ownerUrl, ownerId 
   await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture-profile', version: '1.0.0', dsh: { profile: { bundles: ['fixture-bundle'] } } }))
   await fs.writeFile(configPath, '[]'); await fs.writeFile(patchPath, JSON.stringify(initialOverrides))
   if (legacy) await fs.writeFile(path.join(home, 'settings.yaml.imported'), JSON.stringify(typeof legacy === 'function' ? legacy(home) : legacy))
-  const profile = { home, dir, patchPath, installAnchor: path.join(dir, 'package.json'), overlays: [] }
+  const profile = { home, dir, patchPath, installAnchor: path.join(dir, 'package.json'), overlays: [], overlayPaths: [] }
   const errors = []
   ctx = await boot('dsh', configPath, [...base, ...initialOverrides], root => {
     root.provide('profileContext', profile)

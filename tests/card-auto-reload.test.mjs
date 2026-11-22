@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CARD_RELOAD_BUSY, createPlayCardUpdate } from '../tavern-plugin/lib/domain/card-auto-reload.js'
+import { CARD_RELOAD_BUSY, createCardAutoReload, createPlayCardUpdate } from '../tavern-plugin/lib/domain/card-auto-reload.js'
 
 const status = { available: true, cardChanged: true, digest: 'card-v2' }
 
@@ -45,14 +45,14 @@ test('准备更新期间前台开始生成，自动和手动更新都在提交�
     }
     assert.equal(writes, 0)
     assert.equal(chat.tavernHelperLifecycleRevision, 4)
-    assert.deepEqual(published, [])
+    assert.deepEqual(published, automatic ? ['session'] : [])
 
     running = false
     startDuringPrepare = false
     if (automatic) {
       await updates.notice('session')
       await jobs.shift()()
-      assert.deepEqual(published, ['session'])
+      assert.deepEqual(published, ['session', 'session'])
     } else {
       await updates.applyManual('session', status.digest)
     }
@@ -66,7 +66,7 @@ test('准备更新期间前台开始生成，自动和手动更新都在提交�
 test('仅刷新显示读取更新状态，不调度人物卡内容写入', async () => {
   const jobs = []
   const updates = createPlayCardUpdate({
-    snapshots:()=>({currentStatus:async()=>status}),
+    native: { agent: () => undefined }, snapshots:()=>({currentStatus:async()=>status}),
     defer:job=>jobs.push(job)
   })
   const chat = {id:'chat',sessionId:'session'}
@@ -75,4 +75,23 @@ test('仅刷新显示读取更新状态，不调度人物卡内容写入', async
   assert.equal(jobs.length,0)
   await updates.status(chat)
   assert.equal(jobs.length,1)
+})
+
+test('自动更新失败也发布已结束的状态，旧的正在更新视图失效', async () => {
+  const jobs = []
+  const published = []
+  const reload = createCardAutoReload({
+    apply: async () => { throw new Error('更新失败') },
+    published: sessionId => { published.push({ running: reload.running(sessionId), revision: reload.revision(sessionId) }) },
+    defer: job => jobs.push(job),
+    logger: { warn() {} }
+  })
+  assert.equal(reload.revision('session'), 0)
+  assert.equal(reload.schedule('session', status), true)
+  assert.equal(reload.running('session'), true)
+  assert.equal(reload.revision('session'), 1)
+  await jobs.shift()()
+  assert.deepEqual(published, [{ running: false, revision: 2 }])
+  assert.equal(reload.failure('session', status.digest), '更新失败')
+  assert.equal(reload.schedule('session', status), false)
 })

@@ -115,11 +115,11 @@ test('standard package ships runtime resources without local links, host copies 
 })
 
 test('standard bundle and sidebar distribution match their maintained sources', async () => {
-  const { patchSidebarTeams } = await import('../bin/sidebar-team-compat.mjs')
+  const { patchSidebarAdmission, patchSidebarTeams } = await import('../bin/sidebar-team-compat.mjs')
   execFileSync(process.execPath, ['bin/build-plugin-package.mjs', '--check'], { cwd: root })
   for (const name of ['index.js', 'client.js', 'client-registry.js', 'client-terminal.js', 'client-editor.js', 'client-mermaid.js', 'client-locale.js']) {
     const source = patchSidebarTeams(read(`node_modules/dsh-better-sidebar/lib/${name}`), name)
-    const expected = source
+    const expected = name === 'index.js' ? patchSidebarAdmission(source) : source
     assert.equal(read(`tavern-plugin/packages/dsh-better-sidebar/lib/${name}`), expected)
   }
   assert.match(read('tavern-plugin/packages/dsh-better-sidebar/lib/index.js'), /function threadOwnLogEvents\(/)

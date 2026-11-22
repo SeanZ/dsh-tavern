@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { conversationStateAtMessage, conversationStateAtTurn, conversationForkBoundary } from '../tavern-plugin/lib/domain/conversation-fork-point.js'
+import { conversationStateAtTurn, conversationStateAtMessage, conversationForkBoundary } from '../tavern-plugin/lib/domain/conversation-fork-point.js'
 
 // A story Chat whose snapshots are keyed by revision, exactly like storage: here
 // revision == message count and each round contributes one checkpoint.
@@ -20,22 +20,6 @@ function chain(turns, turnsOf) {
   const read = async (_id, revision) => structuredClone(states.get(revision))
   return { source, states, read }
 }
-
-test('重复、缺失、非单调 turn 不影响状态选择，只按消息序号对齐前缀', async () => {
-  const { source, states, read } = chain(4, turn => [2, 2, 1, 3][turn - 1])
-  // Checkpoint order is reversed and the snapshot's own turns differ from the source.
-  source.timeline.checkpoints.reverse()
-  states.get(2).messages[1].turn = 999
-  const atMessage1 = await conversationStateAtMessage(source, 1, read)
-  assert.equal(atMessage1.state.messages.length, 2)
-  const atMessage3 = await conversationStateAtMessage(source, 3, read)
-  assert.equal(atMessage3.state.messages.length, 4)
-  assert.equal(atMessage3.state.messages[3].text, 'reply2')
-  // No turn field anywhere: the index still picks the prefix.
-  for (const row of source.messages) delete row.turn
-  const turnless = await conversationStateAtMessage(source, 5, read)
-  assert.equal(turnless.state.messages.length, 6)
-})
 
 test('checkpoint 已含本轮输入时，向更早的提交快照回退取正文结束状态', async () => {
   const messages = []

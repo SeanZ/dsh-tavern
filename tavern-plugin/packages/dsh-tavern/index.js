@@ -1,6 +1,7 @@
+import { tavernRequestRejection } from '../../lib/http/connection-admission.js'
 // Queue a directory switch for when Desktop exits, then ask it to quit and reopen it.
 import { basename, join } from 'node:path'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { inspectInstallation, validateInstallationRequest } from './lib/installation.mjs'
 import { captureOwnedProcesses } from './lib/processes.mjs'
@@ -12,6 +13,7 @@ import { consumeProfileContinuation, initializeDefaultProfile, setDefaultProfile
 
 /** Shared RPC channel owned by this plugin; the browser half calls it by name. */
 const CHANNEL = '/profile-bridge'
+const LOGO_PATH = `${CHANNEL}/logo.png`
 
 /** Control requests are tiny; anything larger is refused instead of buffered. */
 const BODY_LIMIT_BYTES = 64 * 1024
@@ -169,16 +171,8 @@ async function handleCall(ctx, endpoint, payload) {
  * @param {import('node:http').IncomingMessage} req - incoming request.
  * @returns {401 | 403 | undefined} rejection status, or undefined to proceed.
  */
-function rejectRequest(ctx, req) {
-  try {
-    const rejection = ctx.connection?.requestRejection?.({ headers: req.headers })
-    if (rejection !== undefined) return rejection
-    if (typeof ctx.connection?.requestRejection === 'function') return undefined
-  } catch {
-    /* fall through to the local rule */
-  }
-  const host = String(req.headers.host ?? '').replace(/:\d+$/u, '').replace(/^\[|\]$/gu, '')
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1' ? undefined : 403
+function rejectRequest(ctx, req, peer) {
+  return tavernRequestRejection(ctx.connection, req, peer)
 }
 
 /**
@@ -235,6 +229,20 @@ export function apply(ctx) {
       if (mode) await runSwitch(mode, paths, { target: 'tavern' })
     }).catch(error => ctx.logger?.warn?.(`默认配置未能应用：${error.message}`))
   }
+  const logo = readFileSync(new URL('./assets/dsh-tavern-app-icon-192.png', import.meta.url))
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: LOGO_PATH,
+    handler(req, res) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { allow: 'GET, HEAD' }).end()
+        return
+      }
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': logo.length })
+      res.end(req.method === 'HEAD' ? undefined : logo)
+    },
+  }), 'profile-bridge: Tavern logo')
+
   // Preferred: the Connection service's own channel registry (it also applies the
   // browser-trust fence and session authentication).
   try {
@@ -249,9 +257,9 @@ export function apply(ctx) {
   const route = {
     kind: 'prefix',
     path: CHANNEL,
-    handler: async (req, res) => {
+    handler: async (req, res, peer) => {
       try {
-        const rejection = rejectRequest(ctx, req)
+        const rejection = rejectRequest(ctx, req, peer)
         if (rejection !== undefined) {
           res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' })
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden')

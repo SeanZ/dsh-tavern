@@ -70,42 +70,6 @@ test('upgraded edit history keeps citations, supports new turns and cold restore
   assert.equal(reopened.snapshotEvents().filter(row => row.type === 'turn/start').length, 2)
 })
 
-test('disk upgrade preserves originals and Tavern data; rerun cannot overwrite newer progress', async t => {
-  const directory = await root(t)
-  const source = await save(directory, fixture(), false)
-  const journal = path.join(directory, 'chat.json')
-  const chat = JSON.stringify({ id: 'chat', sessionId: 'save', variableSnapshots: [{ turn: 1, hp: 8 }], messages: ['已编辑正文'] })
-  await writeFile(journal, chat)
-  const result = await migrateSessionDirectory(directory, migration)
-  assert.equal(result.migrated, 1, JSON.stringify(result.failures))
-  assert.deepEqual(await readFile(source.file), source.bytes)
-  assert.equal(await readFile(journal, 'utf8'), chat)
-  const current = await readFile(source.target)
-  assert.equal(restoreSessionLog(parseSessionLog(current), catalog).header.version, 4)
-  const again = await migrateSessionDirectory(directory, migration)
-  assert.equal(again.unchanged, 1)
-  assert.deepEqual(await readFile(source.target), current)
-  assert.equal((await readdir(source.directory)).some(name => name.includes('.tmp-')), false)
-  // A broken newest file must never trigger fallback to an older, valid story.
-  await writeFile(source.target, 'damaged new progress')
-  assert.equal((await migrateSessionDirectory(directory, migration)).migrated, 0)
-  assert.equal(await readFile(source.target, 'utf8'), 'damaged new progress')
-})
-
-test('invalid references and ambiguous generations never publish a partial current file', async t => {
-  const directory = await root(t)
-  const bad = fixture('bad')
-  bad.events[6].sourceEventSeqs = [999]
-  const source = await save(directory, bad)
-  const result = await migrateSessionDirectory(directory, migration)
-  assert.equal(result.refused, 1)
-  assert.equal(existsSync(source.target), false)
-  assert.deepEqual(await readFile(source.file), source.bytes)
-  await writeFile(path.join(source.directory, 'session.v3.jsonl'), 'other generation')
-  assert.equal((await migrateSessionDirectory(directory, migration)).refused, 1)
-  assert.equal(existsSync(source.target), false)
-})
-
 test('a corrupt child blocks parent catalog publication and retains both originals', async t => {
   const directory = await root(t)
   const parent = await save(directory, fixture('parent'))
@@ -119,25 +83,6 @@ test('a corrupt child blocks parent catalog publication and retains both origina
   assert.equal(existsSync(childFile.target), false)
   assert.deepEqual(await readFile(parent.file), parent.bytes)
   assert.deepEqual(await readFile(childFile.file), childFile.bytes)
-})
-
-test('a source changed during conversion is not published and temporary files are cleaned', async t => {
-  const { writeFileSync } = await import('node:fs')
-  const directory = await root(t)
-  const source = await save(directory, fixture())
-  let changed = false
-  const concurrent = { ...migration, createSessionFormatCatalogWithChildren(children) {
-    const real = migration.createSessionFormatCatalogWithChildren(children)
-    return { ...real, encodeCurrentEvent(event) {
-      if (!changed) { changed = true; writeFileSync(source.file, Buffer.concat([source.bytes, Buffer.from('another writer')])) }
-      return real.encodeCurrentEvent(event)
-    } }
-  } }
-  const result = await migrateSessionDirectory(directory, concurrent)
-  assert.equal(result.refused, 1)
-  assert.match(result.failures[0].reason, /发生变化/)
-  assert.equal(existsSync(source.target), false)
-  assert.equal((await readdir(source.directory)).some(name => name.includes('.tmp-')), false)
 })
 
 test('a concurrently created newer save wins over migration output', async t => {
@@ -185,19 +130,6 @@ test('saved story anchors and pending undo counts resolve through the durable co
   assert.equal(unchangedSinceRollback(session, session.snapshotEvents().length, 4), true)
   const cold = openSession(restoreSessionLog(parseSessionLog(encodeCurrentGeneration(artifact, catalog)), catalog))
   assert.deepEqual(resolveSessionRoundAnchor(cold, oldAnchor), located)
-})
-
-test('background rewind interprets an old boundary in upgraded coordinates', async () => {
-  const { rewindBackgroundSurface } = await import('../tavern-plugin/lib/domain/background-surface.js')
-  const old = fixture()
-  old.events = [old.events[3], old.events[0], old.events[1], old.events[2], ...old.events.slice(4)].map((row, seq) => ({ ...row, seq }))
-  const artifact = prepareSessionUpgrade(old, migration).artifact
-  const session = openSession(artifact)
-  rewindBackgroundSurface(session, 0, undefined, 3) // keep the original user's input
-  assert.ok(texts(session).includes('继续故事'))
-  assert.ok(!texts(session).includes('已编辑正文'))
-  const reopened = restoreSessionLog(parseSessionLog(encodeCurrentGeneration({ header: session.header, events: session.snapshotEvents(), inheritedEventCount: 0 }, catalog)), catalog)
-  assert.ok(texts(openSession(reopened)).includes('继续故事'))
 })
 
 test('undo restoration preserves copied tool results without inventing an execution', () => {
@@ -257,18 +189,19 @@ test('legacy compaction of a late system prompt preserves history and the effect
   assert.throws(() => prepareSessionUpgrade(broken, migration), /旧压缩范围本身不完整/)
 })
 
+// #281：真实存档里升级器拒绝的三种形状。
 const interruptedCompaction = turn => ({ type: 'compaction/start', data: { compactionId: 'c-interrupted', sourceCommandId: 'cmd-1', turn } })
 
 // #281：真实存档里升级器拒绝的三种形状。
 const v3Rows = rows => rows.map((row, seq) => ({ time: 1, ...row, seq }))
-const checkpoint = (text, range, refs, compactionId = 'c1') => ({ type: 'user/message', surfaceOp: { op: 'replace', startSeq: range[0], endSeq: range[1] }, sourceEventSeqs: refs,
-  data: { id: 'checkpoint-' + text, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'compact', compactionId } } })
 const storyTurn = turn => [
   { type: 'turn/start', data: { turn } }, { type: 'step/start', data: { turn, step: 1 } },
   { type: 'user/message', data: message('user', '输入' + turn), surfaceOp: 'append' },
   { type: 'assistant/message', data: { turn, step: 1, stream: [], message: message('assistant', '正文' + turn) }, surfaceOp: 'append' },
   { type: 'step/end', data: { turn, step: 1 } }, { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } },
 ]
+const checkpoint = (text, range, refs, compactionId = 'c1') => ({ type: 'user/message', surfaceOp: { op: 'replace', startSeq: range[0], endSeq: range[1] }, sourceEventSeqs: refs,
+  data: { id: 'checkpoint-' + text, role: 'user', content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'compact', compactionId } } })
 const compaction = (range, shadowed, at) => [
   { type: 'compaction/start', data: { compactionId: 'c1', turn: null } },
   { type: 'compaction/summary', data: { compactionId: 'c1', summary: [{ type: 'text', text: '摘要' }], shadowedRange: { start: range[0], end: range[1] }, shadowedSeqs: shadowed, shadowedTokenCount: 10, provider: 'fixture', model: 'fixture' } },

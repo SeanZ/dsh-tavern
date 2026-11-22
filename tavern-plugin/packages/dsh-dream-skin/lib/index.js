@@ -1,3 +1,4 @@
+import { tavernRequestRejection } from "../../../lib/http/connection-admission.js";
 import {createFontLibrary, FONT_ROUTE} from './font-library.js';
 import {createInterfaceSkins} from './interface-skins.js';
 import {createSkinStore} from './skin-store.js';
@@ -316,13 +317,13 @@ export function apply(ctx) {
 	for (const route of [API_PREFIX, FONT_ROUTE]) ctx.effect(() => ctx.webServer.register({
 		kind: "prefix",
 		path: route,
-		handler: async (req, res) => {
+		handler: async (req, res, peer) => {
 			if (!isTrustedApiRequest(req, trustedHosts(ctx))) {
 				writeJson(res, 403, { ok: false, error: { code: "forbidden", message: "forbidden" } });
 				return;
 			}
 			const connection = ctx.get("connection");
-			const rejection = typeof connection?.requestRejection === "function" ? connection.requestRejection(req) : 503;
+			const rejection = tavernRequestRejection(connection, req, peer);
 			if (rejection) {
 				const code = rejection === 401 ? "unauthorized" : rejection === 403 ? "forbidden" : "unavailable";
 				writeJson(res, rejection, { ok: false, error: { code, message: code } });

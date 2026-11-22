@@ -26,7 +26,7 @@ export function createTemplateServices(context, rpc) {
         const declaration = statusViewDeclaration(rule)
         if (!declaration || !/<(?:script|iframe|object|embed)\b/i.test(rule.replaceString || '')) return rule
         const content = String(rule.replaceString).replace(/^\s*```(?:html|htm)?\s*\n([\s\S]*?)\n```\s*$/i, '$1')
-        return {...rule,replaceString:`<div data-dsh-template-status="${index}" data-dsh-status-key="${encodeURIComponent(declaration.key)}">${content}</div>`}
+        return {...rule,replaceString:`<div markdown="0" data-dsh-template-status="${index}" data-dsh-status-key="${encodeURIComponent(declaration.key)}">${content}</div>`}
       }) : scripts
       return applyTavernRegexText(value, displayScripts, { ...options, placement }).text
     },

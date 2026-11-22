@@ -70,6 +70,17 @@ function replaceOnce(source, before, after) {
   return source.replace(before, after)
 }
 
+// 内嵌侧栏通过新宿主路由收到已鉴权 Peer；旧宿主继续调用原来的鉴权接口。
+export function patchSidebarAdmission(source) {
+  if (source.includes('import { tavernRequestRejection }')) return source
+  const fence = 'const fence = (req) => ctx.connection.requestRejection(req) === void 0;'
+  return 'import { tavernRequestRejection } from "../../../lib/http/connection-admission.js";\n' +
+    replaceOnce(source, fence, 'const fence = (req, peer) => tavernRequestRejection(ctx.connection, req, peer) === undefined;')
+      .replace(/(\(req, res)(\) => \{\s*if \(!fence\(req\)\))/g, '$1, peer$2')
+      .replace(/(handler: \(req, socket, head)(\) => \{\s*if \(!fence\(req\)\))/g, '$1, peer$2')
+      .replaceAll('if (!fence(req))', 'if (!fence(req, peer))')
+}
+
 export function patchSidebarTeams(source, name) {
   if (!['client.js', 'client-registry.js', 'index.js'].includes(name)) return source
   const marker = '// Tavern rc.2 Tasks 接口适配'

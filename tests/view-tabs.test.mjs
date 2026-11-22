@@ -63,7 +63,7 @@ test('顶部标签未设置时服务端下发 null，对话固定首位；保存
 
 function loadModule(extra = {}) {
   const context = vm.createContext(Object.assign({ React }, extra))
-  vm.runInContext(moduleSource + '\nthis.api = { tavernViewTabItems, tavernViewTabEntries, tavernViewTabPlan, applyTavernViewTabRow, TavernViewTabsSettings, tavernViewTabCatalog };', context)
+  vm.runInContext(moduleSource + '\nthis.api = { tavernViewTabItems, tavernViewTabEntries, tavernViewTabPlan, applyTavernViewTabRow, installTavernViewTabLayout, TavernViewTabsSettings, tavernViewTabCatalog };', context)
   return context.api
 }
 
@@ -94,7 +94,7 @@ test('客户端标签行按设置的清单显示与排序，隐藏当前标签�
   try {
     // 默认按注册顺序显示，完整上下文按需添加。
     let row = tabRow(dom)
-    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, api.tavernViewTabItems(null, TAB_ENTRIES)), 4)
+    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, api.tavernViewTabItems(null, TAB_ENTRIES), { polishEnabled: true, galleryEnabled: true }), 4)
     assert.deepEqual(styleOf(row).map(item => [item.id, item.display, item.order]), [
       ['chat', '', '0'], ['trajectory', '', '1'], ['dsh-tavern:full-context', 'none', ''], ['dsh-tavern:gallery', '', '2'], ['dsh-tavern:polish', '', '3']
     ])
@@ -102,15 +102,54 @@ test('客户端标签行按设置的清单显示与排序，隐藏当前标签�
     // 只留对话 + 完整上下文，并把画廊藏起来（它正被选中）。
     let clicked = 0
     row.querySelectorAll('button[role="tab"]')[0].addEventListener('click', () => { clicked += 1 })
-    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, ['chat', 'dsh-tavern:full-context']), 2)
+    assert.equal(api.applyTavernViewTabRow(row, TAB_ENTRIES, ['chat', 'dsh-tavern:full-context'], { polishEnabled: true, galleryEnabled: true }), 2)
     assert.deepEqual(styleOf(row).map(item => item.display === 'none' ? null : item.id).filter(Boolean), ['chat', 'dsh-tavern:full-context'])
     assert.equal(clicked, 1, '当前「画廊」被隐藏后切回「对话」')
 
     // 开发者工具关闭时宿主不画「轨迹」：按钮少一个也要对齐正确。
     row = tabRow(dom, ['对话', '完整上下文', '画廊', '精修'])
-    api.applyTavernViewTabRow(row, TAB_ENTRIES, TAB_IDS)
+    api.applyTavernViewTabRow(row, TAB_ENTRIES, TAB_IDS, { polishEnabled: true, galleryEnabled: true })
     assert.deepEqual(styleOf(row).map(item => item.id), ['chat', 'dsh-tavern:full-context', 'dsh-tavern:gallery', 'dsh-tavern:polish'])
   } finally { dom.window.close() }
+})
+
+test('配图切换即时显示或隐藏画廊，关闭时从画廊回到对话', t => {
+  const dom = new JSDOM('<body></body>', { pretendToBeVisual: true })
+  t.after(() => dom.window.close())
+  const row = tabRow(dom, undefined, '对话')
+  const chat = row.querySelector('button')
+  const gallery = [...row.querySelectorAll('button')].find(button => button.textContent === '画廊')
+  let fallbackClicks = 0
+  chat.addEventListener('click', () => { fallbackClicks++ })
+  let frame, onIllustratorChange, illustrator = null
+  dom.window.requestAnimationFrame = callback => { frame = callback; return 1 }
+  const api = loadModule({
+    displayPreferences: { snapshot: () => ({ viewTabs: { items: TAB_IDS } }) },
+    tavernUiExtensions: {
+      illustrator: () => illustrator,
+      subscribe(listener) { onIllustratorChange = listener; return () => { onIllustratorChange = undefined } }
+    }
+  })
+  const dispose = api.installTavernViewTabLayout({
+    document: dom.window.document,
+    slots: { entries: () => TAB_ENTRIES.map(options => ({ options })) }
+  })
+  try {
+    frame()
+    assert.equal(gallery.style.display, 'none')
+    illustrator = { draw() {} }
+    onIllustratorChange()
+    frame()
+    assert.equal(gallery.style.display, '')
+    chat.setAttribute('aria-selected', 'false')
+    gallery.setAttribute('aria-selected', 'true')
+    illustrator = null
+    onIllustratorChange()
+    frame()
+    assert.equal(gallery.style.display, 'none')
+    assert.equal(fallbackClicks, 1)
+  } finally { dispose() }
+  assert.equal(onIllustratorChange, undefined)
 })
 
 test('客户端清单读取时也把对话补到首位，旧配置或手改配置不会把它删掉', () => {
@@ -223,7 +262,7 @@ test('外部插件页签按槽位顺序排在对话前时，默认清单对话�
     const row = tabRow(dom, ['对话', '故事', '轨迹', '完整上下文', '画廊', '精修'], '故事')
     let clicks = 0
     row.querySelector('button').addEventListener('click', () => { clicks += 1 })
-    assert.equal(api.applyTavernViewTabRow(row, entries, items), 5)
+    assert.equal(api.applyTavernViewTabRow(row, entries, items, { polishEnabled: true, galleryEnabled: true }), 5)
     const story = styleOf(row).find(item => item.id === 'tavern-story')
     assert.deepEqual([story.display, story.order], ['', '1'])
     assert.deepEqual(styleOf(row)[0], { label: '对话', id: 'chat', display: '', order: '0' })
@@ -252,7 +291,7 @@ test('按钮文字都取不到时按位置兜底，对话先提到首位，不�
     const entries = api.tavernViewTabEntries(STORY_SLOTS)
     const row = tabRow(dom, entries.map(() => ''), '')
     // 只保存了对话与画廊：位置错一格就会隐藏对话或把故事配到对话按钮上。
-    assert.equal(api.applyTavernViewTabRow(row, entries, ['chat', 'dsh-tavern:gallery']), 2)
+    assert.equal(api.applyTavernViewTabRow(row, entries, ['chat', 'dsh-tavern:gallery'], { polishEnabled: true, galleryEnabled: true }), 2)
     const plan = styleOf(row)
     assert.deepEqual(plan[0], { label: '', id: 'chat', display: '', order: '0' })
     assert.equal(plan[1].id, 'tavern-story')

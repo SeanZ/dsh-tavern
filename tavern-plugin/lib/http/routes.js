@@ -1,3 +1,4 @@
+import { tavernRequestRejection } from './connection-admission.js'
 import { MAX_PLUGIN_DATA } from '../domain/plugin-data-store.js'
 import { bodyGenerationFailure } from '../domain/body-generation-failure.js'
 import { createReadStream } from 'node:fs'
@@ -128,7 +129,7 @@ export function registerTavernHttpRoutes({
     ctx.effect(() => webServer.register({
       kind: 'prefix',
       path: '/api/dsh-tavern',
-      handler: (req, res) => handleTavernRequest(req, res, true)
+      handler: (req, res, peer) => handleTavernRequest(req, res, true, peer)
     }), 'dsh-tavern: web route')
     if (typeof webServer.registerUpgrade === 'function') {
       const wsRpcServer = createTavernWsRpcServer({
@@ -139,19 +140,44 @@ export function registerTavernHttpRoutes({
       ctx.effect(() => {
         const unregister = webServer.registerUpgrade({
           path: TAVERN_WS_RPC_PATH,
-          handler: (req, socket, head) => wsRpcServer.handleUpgrade(req, socket, head),
+          handler: (req, socket, head, peer) => wsRpcServer.handleUpgrade(req, socket, head, peer),
         })
         return () => {
           unregister?.()
           wsRpcServer.close()
         }
       }, 'dsh-tavern: ws rpc route')
+      ctx.inject?.(['ttsEnabledState'], child => {
+        const state = child.get('ttsEnabledState')
+        if (!state || typeof state.get !== 'function' || typeof state.subscribe !== 'function') return
+        child.effect(() => wsRpcServer.registerTopic('tts-enabled', ({ push }) => {
+          push({ enabled: Boolean(state.get()) })
+          return state.subscribe(enabled => {
+            push({ enabled: Boolean(enabled) })
+          })
+        }), 'dsh-tavern: ws tts-enabled topic')
+      })
+      ctx.inject?.(['assetPackFeed'], child => {
+        const feed = child.get('assetPackFeed')
+        if (!feed || typeof feed.read !== 'function' || typeof feed.subscribe !== 'function') return
+        child.effect(() => wsRpcServer.registerTopic('asset-pack-changes', ({ args, push }) => {
+          let cursor = Number.isSafeInteger(args?.since) && args.since >= 0 ? args.since : 0
+          const initial = feed.read(cursor)
+          cursor = initial.sequence
+          push({ ...feed.capabilities(), feed: initial })
+          return feed.subscribe(() => {
+            const next = feed.read(cursor)
+            cursor = next.sequence
+            push({ feed: next })
+          })
+        }), 'dsh-tavern: ws asset-pack-changes topic')
+      })
     }
   }
-  // In-process callers (the server script runtime) share these exact routes.
-  exposeHandler?.(handleTavernRequest)
+  // The script executor validates the method and pins the session before reaching this entry.
+  exposeHandler?.((req, res) => handleTavernRequest(req, res, false))
 
-  async function handleTavernRequest(req, res, external = false) {
+  async function handleTavernRequest(req, res, external = true, peer) {
       {
         let pathname
         try { pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname) }
@@ -166,14 +192,16 @@ export function registerTavernHttpRoutes({
         const readsCachedAsset = req.method === 'GET' && cachedAssetMatch
         const readsCapability = req.method === 'GET' && ['/api/dsh-tavern/session-resource', '/api/dsh-tavern/helper-history'].includes(pathname)
         const cookieFree = req.method === 'GET' && (readsCapability || readsCachedAsset || readsStaticAsset || readsOfficialMvu || readsFullTemplate || readsRuntimeAsset || readsClientAsset || readsPluginAsset)
-        if (cookieFree) {
-          if (!isTrustedHostRequest(req, ctx.get('connection')?.trustedHosts)) {
-            res.writeHead(403); res.end('forbidden'); return
+        if (external) {
+          if (cookieFree) {
+            if (!isTrustedHostRequest(req, ctx.get('connection')?.trustedHosts)) {
+              res.writeHead(403); res.end('forbidden'); return
+            }
+          } else {
+            const connection = ctx.get('connection')
+            const rejection = tavernRequestRejection(connection, req, peer)
+            if (rejection) { res.writeHead(rejection); res.end('forbidden'); return }
           }
-        } else {
-          const connection = ctx.get('connection')
-          const rejection = connection ? connection.requestRejection(req) : 503
-          if (rejection) { res.writeHead(rejection); res.end('forbidden'); return }
         }
         const origin = req.headers.origin
         if (!isSameOriginRequest({ host: req.headers.host, origin }) && !(cookieFree && origin === 'null')) {

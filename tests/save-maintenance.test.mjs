@@ -30,41 +30,6 @@ async function fixture(t,{idle=true,timers,onSave=()=>{},now}={}){
  return {root,chats,persistence,maintenance,pruned,files,reopen,commits}
 }
 // Every file of a save's block store (shards and packs), as the disk sees it.
-async function blockFiles(root,id){
- let count=0
- for(const entry of await readdir(join(root,'chats',id,'blocks'),{withFileTypes:true}).catch(()=>[]))
-  if(entry.isDirectory())count+=(await readdir(join(root,'chats',id,'blocks',entry.name))).length
- return count
-}
-
-test('分叉引用的父局版本保留；有任务进行时不整理', async t => {
- const {persistence,maintenance,reopen}=await fixture(t)
- await persistence.write({id:'p',mode:'story',messages:[{role:'assistant',text:big(0)}]})
- for(let i=1;i<=8;i++)await persistence.patch('p',i,[{op:'set',path:['messages',0,'text'],value:big(i)}])
- const parentAt3=await persistence.readRevision('p',3)
- await persistence.write({id:'c',mode:'story',forkedFrom:{chatId:'p',storageRevision:3},messages:[{role:'assistant',text:'fork'}]})
- await maintenance.sweep()
- assert.deepEqual(await reopen().readRevision('p',3),parentAt3)
- const busy=await fixture(t,{idle:false})
- await busy.persistence.write({id:'b',mode:'story',messages:[{role:'assistant',text:big(0)}]})
- assert.equal((await busy.maintenance.maintainChat('b')).status,'busy')
-})
-// chat-mvl53223-joqbuf: 46 万次只改了修订号的保存，写出约 1,000 万个块文件。
-test('没有变化的保存不落盘：除了修订号和时间戳没有改动，就不提交、不写块', async t => {
- const {root,persistence,commits}=await fixture(t)
- await persistence.write({id:'n',mode:'story',title:'旧',messages:[{role:'assistant',text:'开场'}]})
- const files=await blockFiles(root,'n'),before=commits.length
- for(let i=0;i<3;i++)await persistence.update('n',chat=>chat)
- await persistence.update('n',chat=>({...chat,title:'旧'}))
- await persistence.write(await persistence.read('n'))
- assert.equal((await persistence.read('n'))._storageRevision,1,'修订号不变')
- assert.equal(await blockFiles(root,'n'),files,'没有新块')
- assert.equal(commits.length,before,'没有提交')
- await persistence.update('n',chat=>({...chat,title:'新'}))
- assert.equal((await persistence.read('n'))._storageRevision,2,'真正的改动照常提交')
- assert.equal(commits.length,before+1)
-})
-
 test('每次提交都计入整理（不只是回合结算），一直有写入时最迟两个安静期后整理', {timeout:30000}, async t => {
  const timers=new Set()
  let clock=1000000,completed

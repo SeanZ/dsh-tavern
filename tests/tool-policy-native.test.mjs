@@ -12,9 +12,10 @@ const { default: Tools, defineTool } = await load('@deepseek-ai/dsh-tools')
 const NativeExecutor = await load('@deepseek-ai/dsh-tool-executor-native')
 const { createScope } = await load('@deepseek-ai/dsh-scope')
 
-test('真实 alpha.2 装配分离工具声明，执行管线仍拒绝会话关闭的工具', async t => {
+test('真实宿主装配分离工具声明，执行管线仍拒绝会话关闭的工具', async t => {
   const ctx = new Context()
   t.after(() => ctx.fiber.dispose())
+  await ctx.plugin((await load('@deepseek-ai/dsh-session-projection')).default)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(Tools)
   await ctx.plugin(NativeExecutor)

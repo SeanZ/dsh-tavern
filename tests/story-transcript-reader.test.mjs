@@ -33,7 +33,7 @@ function fixture(messages, { paged = true, revision = 7, regeneratedDshTurns, re
       chat: { ...header, regeneratedDshTurns, _storageRevision: state.revision,
         messages: state.messages.slice(from, end).map(message => messageFields
           ? projectFields(message, messageFields) : { ...message }) },
-      from, to: end - 1, messageCount: state.messages.length, revision: state.revision
+      from, to: end - 1, messageCount: state.messages.length, revision: state.revision, stamp: state.stamp
     }
   }
   const reader = createStoryTranscriptReader({
@@ -46,7 +46,7 @@ function fixture(messages, { paged = true, revision = 7, regeneratedDshTurns, re
     readRecentSummaries: async (_chatId, count, options = {}) => {
       state.summariesCalled++
       if (options.revision !== state.revision) return null
-      return { from: 0, messageCount: state.messages.length, messages: state.messages.map(summary), revision: state.revision }
+      return { from: 0, messageCount: state.messages.length, messages: state.messages.map(summary), revision: state.revision, stamp: state.stamp }
     },
     readChat: async () => {
       state.fullReads++

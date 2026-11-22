@@ -26,7 +26,7 @@ test('气泡渲染抛错时退回普通 Markdown，正文不消失', async t => 
     galStageAvailable:{subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn)},get:()=>enabled},
     tavernErrorHub: { report: (label, error) => reports.push([label, error.message]) },
     BubblePublication() { throw new Error('bubble failed') },
-    TavernColoredMarkdown: props => React.createElement('p', { id: 'story' }, props.text) })
+    TavernBodyMarkdown: props => React.createElement('p', { id: 'story' }, props.text) })
   vm.runInContext(fragment('let tavernStageBoundaryClass = null', '\n\t\t}\n') + '\n\t\t}', context)
   const Safe = vm.runInContext(fragment('function bubbleProseText(', 'let bubblePublicationMemo') + '; BubbleSafePublication', context)
   root = createRoot(document.getElementById('root'), { onCaughtError() {} })
@@ -58,7 +58,7 @@ test('舞台关闭时 @bubble 行仍渲染为气泡（不显示原始标记）�
     galStageAvailable:{subscribe:()=>()=>{},get:()=>false},
     tavernErrorHub: { report() {} },
     BubblePublication: props => { seen.push(props.staged); return React.createElement('div', { id: 'bubbles' }, props.text) },
-    TavernColoredMarkdown: props => React.createElement('p', { id: 'story' }, props.text) })
+    TavernBodyMarkdown: props => React.createElement('p', { id: 'story' }, props.text) })
   vm.runInContext(fragment('let tavernStageBoundaryClass = null', '\n\t\t}\n') + '\n\t\t}', context)
   const Safe = vm.runInContext(fragment('function bubbleProseText(', 'let bubblePublicationMemo') + '; BubbleSafePublication', context)
   root = createRoot(document.getElementById('root'))

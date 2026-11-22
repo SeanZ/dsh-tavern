@@ -21,6 +21,7 @@ try {
   const control=host.services.get('tavernStageControl')
   for(let cycle=0;cycle<(process.env.DSH_TEST_STAGE_UNAVAILABLE ? 0 : 2);cycle++) {
     await host.loadStage()
+    await control.enable()
     assert.equal(control.status(),'ready')
     assert.ok((await clientAssets.read(overlay)).body.length)
     assert.ok(host.services.get('tavernAssetCards'))

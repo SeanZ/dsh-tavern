@@ -38,7 +38,7 @@ function lineage(events) {
 }
 
 /** Resolve many anchors against one surface; the lineage is computed once. */
-export function createRoundAnchorResolver({ events, nodes }) {
+export function createRoundAnchorResolver({ events, nodes }, { allowRollbackInput = false } = {}) {
   const of = lineage(events)
   const references = upgradeReferences(events)
   const surface = nodes.map(Number)
@@ -85,7 +85,7 @@ export function createRoundAnchorResolver({ events, nodes }) {
       const roots = of(seq)
       const event = bySeq.get(seq)
       const checkpoint = isCompactionCheckpoint(event)
-      if (input === null && roots.has(anchor.input) && (event?.type === 'user/message' || checkpoint)) input = seq
+      if (input === null && roots.has(anchor.input) && (event?.type === 'user/message' || checkpoint || (allowRollbackInput && roots.has(anchor.reply) && event?.type === 'assistant/message' && event.data?.message?.content?.length === 0))) input = seq
       if (roots.has(anchor.reply) && (event?.type === 'assistant/message' || checkpoint)) reply = seq
     }
     return { input, reply }

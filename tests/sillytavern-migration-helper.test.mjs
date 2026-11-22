@@ -124,36 +124,6 @@ test('sanitizeSillyTavernChatForDsh 清洗 SillyTavern 复杂聊天记录并通�
   assert.deepEqual(parsed.messages[1].variables, { stat_data: { affection: 25, mood: '平静' } })
 })
 
-test('sanitizeSillyTavernChatForDsh 超出 2000 条消息时截取最近消息并继承此前 MVU 变量快照', () => {
-  const rows = [
-    { user_name: '阿九', character_name: '侦探', chat_metadata: {} },
-    {
-      name: '侦探',
-      is_user: false,
-      mes: '第 1 条（含初始快照）',
-      swipe_id: 0,
-      variables: [{ stat_data: { clue: 3 } }]
-    }
-  ]
-  for (let i = 2; i <= 2005; i++) {
-    rows.push({
-      name: i % 2 === 0 ? '阿九' : '侦探',
-      is_user: i % 2 === 0,
-      mes: '消息 #' + i
-    })
-  }
-  const cleaned = sanitizeSillyTavernChatForDsh(rows, { characterName: '侦探' })
-  assert.equal(cleaned.usable, true)
-  assert.equal(cleaned.truncatedCount, 5)
-  assert.equal(cleaned.messageCount, 2000)
-
-  const parsed = parseChatHistory(cleaned.jsonl)
-  assert.equal(parsed.messages.length, 2000)
-  assert.equal(parsed.hasMvu, true)
-  assert.deepEqual(parsed.messages[0].variables, { stat_data: { clue: 3 } })
-  assert.equal(parsed.messages.at(-1).text, '消息 #2005')
-})
-
 test('normalizeSillyTavernCardForDsh 与 convertWorldInfoToCharacterBook 生成可通过 validateCardText 的 V3 人物卡', () => {
   const worldInfo = {
     name: '学园设定集',

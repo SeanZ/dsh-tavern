@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
-import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
-
-const require = createRequire(process.env.DSH_BOOT_MODULE || import.meta.url)
-const { HostConnectionService } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-client-connection')).href)
+import './host-runtime-preload.mjs'
 
 // Host adapters only: apply(), HTTP dispatch, storage, and projections stay real.
 // Call from an isolated child process with its own DSH_HOME.
@@ -33,10 +29,9 @@ export async function createPluginHost({ withTools = false, composition, config,
     ['settings', settings], ['llm', { listProviders: () => [] }],
     ['tokenMeter', { _foldEvent() {} }], ['skills', { registerProvider() {} }],
     ['agentPresets', { resolvedRoots: [] }], ['agents', Object.assign(new Map(), { list() { return [...this.values()] } })], ['sessions', new Map()],
-    ['connection', { trustedHosts: [], browserAuth: { isAuthenticated: req => req.headers.cookie === 'test-cookie', authenticateApi: () => undefined },
-      owner: { get: name => services.get(name) }, peers: new Map(), browserPeer: { principal: { kind: 'owner' } },
-      admit: HostConnectionService.prototype.admit, isTrusted: HostConnectionService.prototype.isTrusted,
-      requestRejection(req) { return HostConnectionService.prototype.requestRejection.call(this, req) } }],
+    ['connection', { trustedHosts: [], requestRejection(req) {
+      return req.headers.host === 'localhost:3081' && req.headers.cookie === 'test-cookie' ? undefined : 403
+    } }],
     ['webServer', { register(route) { routes.set(route.path, route.handler); return () => routes.delete(route.path) } }]
   ])
   for (const [name, value] of Object.entries(provide)) services.set(name, value)

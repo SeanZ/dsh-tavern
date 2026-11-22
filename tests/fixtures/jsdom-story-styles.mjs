@@ -4,9 +4,10 @@ export function omitUnsupportedSidebarRule(document) {
   for (const sheet of document.styleSheets) {
     for (let index = sheet.cssRules.length - 1; index >= 0; index--) {
       const selector = sheet.cssRules[index].selectorText || ''
-      if (selector.includes('[data-sidebar-drawer]') && selector.includes(':is(') && selector.includes(':has(')) {
-        sheet.deleteRule(index)
-      }
+      if (!selector.includes(':has(') && !selector.includes(':is(')) continue
+      try { document.documentElement.matches(selector) }
+      catch { sheet.deleteRule(index) }
+
     }
   }
 }

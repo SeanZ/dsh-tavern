@@ -175,10 +175,11 @@ test('回合结束后的追加、正文提交折叠与原生上下文修复都�
     ] }
     const result = applyNativeSurfaceRepair(session, { id: 'chat' }, plan, { repairId: 'r1' })
     valid(session)
-    assert.equal(sessionEvents(session).filter(event => event.type === 'turn/start').length, 3, '每轮修复独立开闭可绘制步骤')
+    assert.equal(sessionEvents(session).filter(event => event.type === 'turn/start').length, 2, '批量修复共享一个有效的原生编辑轮')
     const replies = sessionEvents(session).filter(event => event.data?.message?.source?.model === 'native-repair')
     assert.deepEqual(replies.map(storyEventTurn), [34, 35], 'each reply keeps its story turn')
-    assert.deepEqual(result.anchors.map(item => item.anchor.turn), [34, 35])
+    assert.deepEqual(result.anchors.map(item => item.anchor.turn), replies.map(event => event.data.turn))
+    assert.deepEqual(result.anchors.map(item => item.anchor.reply), replies.map(event => event.seq))
   }
 })
 

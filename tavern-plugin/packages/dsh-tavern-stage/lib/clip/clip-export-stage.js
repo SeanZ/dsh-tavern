@@ -1,3 +1,4 @@
+import {tavernRequestRejection} from '../../../../lib/http/connection-admission.js'
 import {spawn} from 'node:child_process'
 import path from 'node:path'
 import {serveAssetFile} from '../../../../lib/http-file.js'
@@ -43,14 +44,14 @@ export function createStageClipExport({ctx, deps, stageDirector, modService, car
     return () => {const index = deploymentWork.indexOf(work);if (index >= 0) deploymentWork.splice(index,1)}
   }, 'dsh-tavern-stage: clip export deployment activity')
   const webServer = ctx.get('webServer')
-  if (webServer) ctx.effect(() => webServer.register({kind:'prefix', path:CLIP_FILE_ROUTE, handler:(req, res) => serveClipFile(ctx, clipExport, req, res)}), 'dsh-tavern-stage: clip file route')
+  if (webServer) ctx.effect(() => webServer.register({kind:'prefix', path:CLIP_FILE_ROUTE, handler:(req, res, peer) => serveClipFile(ctx, clipExport, req, res, peer)}), 'dsh-tavern-stage: clip file route')
   return clipExport
 }
 
 // GET/HEAD /dsh-tavern-stage/clip-file?sessionId&jobId&file: the same connection and same-origin fence as the core's routes.
-async function serveClipFile(ctx, clipExport, req, res) {
+async function serveClipFile(ctx, clipExport, req, res, peer) {
   const connection = ctx.get('connection')
-  const rejection = connection ? connection.requestRejection(req) : 503
+  const rejection = tavernRequestRejection(connection, req, peer)
   if (rejection) { res.writeHead(rejection); res.end('forbidden'); return }
   const origin = req.headers.origin
   if (origin && origin !== 'http://' + req.headers.host && origin !== 'https://' + req.headers.host) { res.writeHead(403); res.end('forbidden'); return }

@@ -73,7 +73,7 @@ for(const count of [20,400,10000])test(`Helper hydration does not broadcast to $
 for(const count of [20,400,10000])test(`assistant field subscriptions exclude input and debug updates across ${count} floors`,()=>{
  const h=harness()
  const main=fs.readFileSync(new URL('../tavern-plugin/lib/client.js',import.meta.url),'utf8')
- const paths=vm.runInContext(main.slice(main.indexOf('function tavernAssistantViewPaths('),main.indexOf('function TavernInlineStatusRuntime('))+';tavernAssistantViewPaths()',h)
+ const paths=vm.runInContext(main.slice(main.indexOf('function tavernAssistantViewPaths('),main.indexOf('function tavernReceiptViewPaths('))+';tavernAssistantViewPaths()',h)
  const live=h.createLiveTavernViewModule({deduplicateViews:true,pollWhileBusy:false,schedule(){},cancel(){},load:async()=>({})})
  let view={mode:'story',replyProjections:[],tavernHelper:{variables:{hp:10}},inputSources:{}}
  live.setView('s',view)
@@ -89,7 +89,7 @@ for(const count of [20,400,10000])test(`assistant field subscriptions exclude in
  assert.equal(notices,count,'arbitrary script dependencies must remain live')
  const assistant=main.slice(main.indexOf('function TavernAssistantNodeView('),main.indexOf('function TavernForkAssistantAction('))
  assert.match(assistant,/useLiveTavernView\(props.sessionId, revision, tavernAssistantViewPaths\(storyTurn,/)
- assert.match(assistant,/React.createElement\(TavernInlineStatusRuntime,/)
+ assert.match(assistant,/React.createElement\(TavernAutomaticStatusRuntime,/)
 })
 
 for(const count of [20,400,10000])test(`keyed receipt delta wakes only its turn among ${count} subscribers`,async()=>{

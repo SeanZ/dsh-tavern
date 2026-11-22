@@ -106,8 +106,9 @@ export async function prepareExpandedPatch(runtime) {
     const { sessionFormatCatalog: catalog } = catalogs
     // 0.2.1 exposes the plugin apply() rather than the backend class.
     // Export the pinned internal class only from our in-memory module.
+    const nativeJsonl = await load('@deepseek-ai/dsh-session-persistence-jsonl')
     const { JsonlSessionPersistence: PatchedPersistence } = await compile('@deepseek-ai/dsh-session-persistence-jsonl',
-      text => text + '\nexport { JsonlSessionPersistence };')
+      text => Object.hasOwn(nativeJsonl, 'JsonlSessionPersistence') ? text : text + '\nexport { JsonlSessionPersistence };')
     // Guard #74: Windows create/rename path does `await import("koffi")`. If the
     // bare specifier survived into the data: module, new chats fail immediately.
     {
