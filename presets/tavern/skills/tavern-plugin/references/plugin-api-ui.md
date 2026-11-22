@@ -2,6 +2,8 @@
 
 通用插件 API 见社区 Wiki 的[插件接口总览](https://github.com/flizzywine/dsh-tavern/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%EF%BC%9A%E6%8E%A5%E5%8F%A3%E6%80%BB%E8%A7%88)。本文件记录 trunkbase 的故事视图契约与本轮浏览器接口更新。
 
+舞台插件面板支持 `registerPanel({ stage: true, stageOnly: true, stageSize: "full", ... })`。只注册舞台入口的面板由舞台打开和关闭；独立故事页沿用自己的楼层视图。
+
 ## 故事视图契约（本 fork）
 
 实现边界：服务端 `lib/story/` 复用 Tavern 的存档与历史事务。浏览器端 `src/client/story/service.js` 和 `render.js` 是显式依赖工厂，`bindings.js` 集中接入上游能力。独立 new-ui 只消费 `tavernStory`，不读取存档、不深导入 Tavern 模块，也不复制重生成或分叉状态。调整上游接口时，先更新接线与契约回归；聊天历史读取规则不随界面拆分迁移。

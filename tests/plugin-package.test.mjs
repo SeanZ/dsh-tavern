@@ -122,6 +122,8 @@ test('standard bundle and sidebar distribution match their maintained sources', 
     const expected = name === 'index.js' ? patchSidebarAdmission(source) : source
     assert.equal(read(`tavern-plugin/packages/dsh-better-sidebar/lib/${name}`), expected)
   }
+  // 剧情导演通过内嵌侧栏挂载侧聊；只更新源码包而漏打侧栏补丁会让面板回退为升级提示。
+  assert.match(read('tavern-plugin/packages/dsh-better-sidebar/lib/client.js'), /service\.renderSideChat = renderSideChat/)
   assert.match(read('tavern-plugin/packages/dsh-better-sidebar/lib/index.js'), /function threadOwnLogEvents\(/)
 })
 

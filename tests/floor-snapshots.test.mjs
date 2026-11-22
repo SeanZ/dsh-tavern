@@ -81,6 +81,12 @@ test('只保留最近 200 层：更早楼层的快照被删除', async t => {
   const turns = Object.keys((await snapshots.read({ sessionId: 'session-a' })).snapshots).map(Number)
   assert.equal(turns.length, 200)
   assert.equal(Math.min(...turns), 4)
+  const requested = [203, ...Array.from({ length: 201 }, (_, i) => i + 1)]
+  const selected = (await snapshots.read({ sessionId: 'session-a', turns: requested })).snapshots
+  assert.ok(selected[201])
+  assert.ok(selected[203])
+  assert.equal(selected[202], undefined)
+  assert.equal(Object.keys(selected).length, 199)
 })
 
 test('RPC 快照使用真实磁盘存储，删除后冷读为空', async t => {

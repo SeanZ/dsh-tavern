@@ -88,7 +88,10 @@ export function createFloorSnapshots({ store, chatIdFor, now = Date.now }) {
   /** Snapshots by story turn: the floors asked for, or every stored one. */
   async function read(input = {}) {
     const chatId = await chatOf(input.sessionId)
-    const turns = Array.isArray(input.turns) ? [...new Set(input.turns.map(storyTurn))].slice(0, MAX_FLOORS) : await storedTurns(chatId)
+    const requested = Array.isArray(input.turns) ? new Set(input.turns.map(storyTurn)) : null
+    // 长列表按实际存留的文件取交集，避免前面的旧楼占满读取名额。
+    const turns = requested && requested.size <= MAX_FLOORS ? requested
+      : (await storedTurns(chatId)).filter(turn => !requested || requested.has(turn))
     const snapshots = {}
     for (const turn of turns) {
       const record = await readOne(chatId, turn)
