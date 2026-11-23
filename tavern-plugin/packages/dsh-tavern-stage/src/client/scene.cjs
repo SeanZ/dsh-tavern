@@ -247,6 +247,8 @@ function galCreateScene(host, options, own) {
     own(textures,value=>value.dispose());
     const figureAssets=stageViews.figureAssets.create({PIXI,renderer:app.renderer,screen:app.screen,textures,document,centred:math.galCentredAnatomy});
     own(figureAssets,value=>value.dispose());
+    const figureVideos=stageViews.figureVideos.create({PIXI});
+    own(figureVideos,value=>value.dispose());
     const renderers=new Map();
     for(const [kind,factory] of figureRenderers)renderers.set(kind,own(factory({PIXI,app,state,emotes:emotesBox,figures:figuresBox,onError,commit:commitFigureReplacement,lifeOn:figureLifeOn,tune,spine:createSpineRenderer}),value=>value.dispose()));
     const loadTexture=textures.load;
@@ -341,6 +343,7 @@ function galCreateScene(host, options, own) {
         release(()=>entry.appearance.dispose());
         if(entry.contact){const contact=entry.contact;entry.contact=null;release(()=>contact.destroy());}
         release(()=>entry.pose.dispose());
+        if(entry.video){const video=entry.video;entry.video=null;release(()=>video.destroy());}
         release(()=>entry.figureAsset?.destroy());
         entry.figureAsset=null;entry.spineFigure=null;
         for(const item of entry.fading)release(()=>item.asset?.destroy());
@@ -414,7 +417,7 @@ function galCreateScene(host, options, own) {
     // scheduler runs on (foreground-paused) timers and only flips child visibility.
     function clearBlink(entry) { entry.blink.reset(); }
     function blinkAllowed(entry) {
-        return !state.destroyed && !entry.dead && !entry.leaving && entry.container.visible && world.visible && !document.hidden && !galBlinkCalm();
+        return !state.destroyed && !entry.dead && !entry.leaving && entry.container.visible && world.visible && !document.hidden && !galBlinkCalm() && !entry.videoShown;
     }
     // A replace blink only sets the phase: layeredSpriteTickScene repaints the eyes on the layered canvas. An over-blend
     // blink is two child sprites whose visibility the scheduler flips.
@@ -422,11 +425,31 @@ function galCreateScene(host, options, own) {
         entry.blink.update({bundle:entry.figure.blinkBundle,sprite:entry.sprite,baseTexture:entry.baseTexture,
             ready:entry.loadedIdentity===entry.figure.identity,rhythm:entry.idle.jitter.blink});
     }
+    // 动态立绘 (figure-video.cjs): the loaded still's looping videos play over it while the figure stands on a visible stage
+    // with motion allowed - its talking loop while it speaks - and the still shows otherwise: a tap reaction's still, a skip,
+    // reduced motion, or a line spoken through the still's mouths because no talking loop can play. One set of videos per
+    // loaded picture; a new picture releases the old one's.
+    function tickFigureVideo(entry, figure, desc, dt) {
+        const video = entry.loadedIdentity === figure.identity ? figure.video : null;
+        const key = video ? JSON.stringify([video.source.packId, video.source.bundleKey, video.source.hash, video.talk?.bundleKey, video.talk?.hash, video.rect]) : '';
+        if (entry.videoKey !== key || entry.videoSprite !== entry.sprite) {
+            const old = entry.video; entry.video = null; entry.videoShown = false;
+            old?.destroy();
+            entry.video = key && entry.sprite ? figureVideos.attach(entry.sprite, video) : null;
+            entry.videoKey = key; entry.videoSprite = entry.sprite;
+        }
+        if (!entry.video) return;
+        const tapped = Boolean(entry.tapTexture && entry.sprite.texture === entry.tapTexture.texture);
+        const talking = Boolean(figure.speaking && !desc.skipping);
+        const stillSpeaks = talking && Boolean(figure.spriteBundle) && !entry.video.talks();
+        entry.video.update({on: !entry.leaving && entry.container.visible && world.visible && !desc.reducedMotion && !desc.skipping && !tapped && !stillSpeaks, talking});
+        entry.videoShown = entry.video.tick(dt);
+    }
     const GAL_NO_FIGURES = [];
     // the viewport layout of the directed cast (galFigureLayout), recomputed only
     // when the stage size, text box, ruler, cast or priority change. The fit eases like the face rest (700 ms).
-    // widthSeen: each present figure's widest measured picture so far, so the cast does not shift whenever one of them
-    // changes expression or pose; forgotten when the figure leaves.
+    // widthSeen: each present figure's measured pictures so far (by picture), the widest of them standing for it, so the cast
+    // does not shift whenever one of them changes expression or pose; forgotten when the figure leaves.
     let castMeasure=null;const widthSeen=new Map();
     function figureLayout(desc,W,H,now) {
         // Missing lower-body artwork contributes to the shared viewport fit; each figure's height and ground stand the ruler
@@ -446,15 +469,22 @@ function galCreateScene(host, options, own) {
             if(anatomy&&anatomy.feet>anatomy.visibleBottom)crops[figure.alias]=(anatomy.feet-anatomy.visibleBottom)/(anatomy.feet-(anatomy.headTop??anatomy.figureTop));
             const size=input&&resolveFigureSizing({...input,canvas:input.metrics?.canvas,W:1,H:1});
             if(size?.mode==='physical')sizes[figure.alias]={cm:size.heightCm,ground:size.restHead?(size.support.y-size.restHead.top)/size.displayPx:1};
-            // How far the picture's ink reaches either side of where it stands, and its face's half width, per displayed
-            // body: the layout keeps every face clear of its neighbours' pictures (galFigureLayout widths).
+            // How far the picture's ink reaches either side of where it stands (its farthest ink and its body's mass), and its
+            // face's half width, per displayed body: the layout keeps every face clear of its neighbours' pictures and
+            // spaces the bodies (galFigureLayout widths).
+            // Heights are above the ground, per displayed body; bands keep each row's farthest ink for the faces at its height.
             const ink=!entry?.model&&entry?.sprite?.forkInkX;
-            const seen=widthSeen.get(figure.alias);
             if(size?.mode==='physical'&&ink&&size.restHead&&size.displayPx>0){
-                const per=size.scale/size.displayPx,now={left:(size.supportX-ink[0])*per,right:(ink[1]-size.supportX)*per,face:size.restHead.width/2/size.displayPx};
-                widthSeen.set(figure.alias,seen?{left:Math.max(seen.left,now.left),right:Math.max(seen.right,now.right),face:Math.max(seen.face,now.face)}:now);
+                const per=size.scale/size.displayPx,X=size.supportX,up=y=>(size.groundY-y)/size.displayPx,at=c=>up(size.y+c*size.scale);
+                const pictures=widthSeen.get(figure.alias)||new Map();
+                pictures.set(ink,{left:(X-ink.x[0])*per,right:(ink.x[1]-X)*per,bodyLeft:Math.max(0,X-ink.body[0])*per,bodyRight:Math.max(0,ink.body[1]-X)*per,
+                    face:size.restHead.width/2/size.displayPx,faceTop:up(size.restHead.top),faceChin:up(size.restHead.chin),
+                    bands:ink.bands.map(([top,bottom,l,r])=>[at(top),at(bottom),(X-l)*per,(r-X)*per])});
+                widthSeen.set(figure.alias,pictures);
             }
-            if(widthSeen.has(figure.alias))widths[figure.alias]=widthSeen.get(figure.alias);
+            const pictures=[...(widthSeen.get(figure.alias)?.values()||[])];
+            if(pictures.length)widths[figure.alias]={...Object.fromEntries(['left','right','bodyLeft','bodyRight','face','faceTop','faceChin'].map(k=>[k,Math.max(...pictures.map(p=>p[k]))])),
+                bands:pictures.flatMap(p=>p.bands)};
         }
         const present=new Set((desc.figures||[]).map(figure=>figure?.alias));
         for(const alias of widthSeen.keys())if(!present.has(alias))widthSeen.delete(alias);
@@ -749,9 +779,12 @@ function galCreateScene(host, options, own) {
                 renderer.tick(entry,figure,desc,{now,dt,W,H,framing,reducedHop});
                 if(!renderer.spriteBased)return;
             }else {
-                if (!layeredSpriteTickScene(entry, textures, PIXI, !desc.skipping && figure.speaking)) entry.sprite.texture = entry.baseTexture;
+                // A talking loop on screen speaks with its own mouth: the still under its crossfade keeps its mouth shut.
+                const videoTalks = Boolean(entry.videoShown && entry.video?.talks());
+                if (!layeredSpriteTickScene(entry, textures, PIXI, !desc.skipping && figure.speaking && !videoTalks)) entry.sprite.texture = entry.baseTexture;
                 tickBlink(entry);
                 tapTextureStatic(entry, now);
+                tickFigureVideo(entry, figure, desc, dt * 1000);
             }
             const pose=entry.pose.update({sprite:entry.sprite,fading:entry.fading,now,reduced:reducedHop,
                 command:figure.act,idle:staticIdle(entry,desc,dt,now),framing,W,H,x:entry.cx.v,flip:entry.flip.v,lift:entry.lift.v,size:figure.size,ground:figure.ground});

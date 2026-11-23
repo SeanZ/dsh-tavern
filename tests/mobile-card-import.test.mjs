@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
-import { mkdir, rm, truncate, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, truncate, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { resourceUsage } from 'node:process'
 import test from 'node:test'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { createFileSymlink } from './helpers/file-symlink.mjs'
-import { mkdtemp } from 'node:fs/promises'
 
+import { createCardFiles } from '../tavern-plugin/lib/domain/card-files.js'
 import { createMobileCardImport } from '../tavern-plugin/lib/domain/mobile-card-import.js'
+import { createAssetPackService } from '../tavern-plugin/packages/dsh-asset-library/lib/pack-v2/service.js'
 
 test('Android 下载目录人物卡只列出受限目录里的 PNG/JSON，并按选择读取', { skip: process.platform === 'win32' ? 'Requires symlinks, which Windows only allows with extra privileges' : false }, async function (t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-mobile-card-'))
@@ -41,15 +45,14 @@ test('Android 下载目录人物卡只列出受限目录里的 PNG/JSON，并按
   })
 })
 
-test('Android 下载目录允许直接读取 1 GiB 的 DSH 和 CHARX 卡包，PNG/JSON 限制为 32 MiB', async t => {
+test('Android 下载目录直接读取任意大小的 DSH 卡包、CHARX 和素材包 ZIP，PNG/JSON 限制为 32 MiB', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-mobile-archive-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  const names = ['辉夜姬.DSHCARD', '舞台.CHARX']
-  const max = 1024 ** 3
-  for (const name of names) {
-    const file = path.join(root, name)
-    await writeFile(file, '')
-    await truncate(file, max)
+  const big = 3 * 1024 ** 3
+  const archives = ['示例卡.DSHCARD', '舞台.CHARX', '示例素材包.zip']
+  for (const name of archives) {
+    await writeFile(path.join(root, name), '')
+    await truncate(path.join(root, name), big)
   }
   for (const extension of ['json', 'png']) {
     const legacy = path.join(root, 'large.' + extension)
@@ -59,14 +62,37 @@ test('Android 下载目录允许直接读取 1 GiB 的 DSH 和 CHARX 卡包，PN
 
   const imports = createMobileCardImport({ runtimeHost: 'android', roots: [{ id: 'download', label: 'Download', path: root }] })
   const { files } = await imports.list()
-  assert.deepEqual(files.map(item => item.name).sort(), names.slice().sort())
-  for (const { id, name, size } of files) {
-    const file = path.join(root, name)
-    assert.equal(size, max)
-    assert.deepEqual(await imports.archive(id), { file, name })
-    await truncate(file, max + 1)
-    await assert.rejects(imports.archive(id), /过大/)
+  assert.deepEqual(files.map(item => [item.name, item.size]).sort(), archives.map(name => [name, big]).sort())
+  for (const item of files) {
+    assert.deepEqual(await imports.archive(item.id), { file: path.join(root, item.name), name: item.name })
+    await assert.rejects(imports.read(item.id), /请通过卡包入口/)
   }
 
-  assert.deepEqual((await imports.list()).files, [])
+  await rm(path.join(root, '示例素材包.zip'))
+  assert.deepEqual((await imports.list()).files.map(item => item.name).sort(), ['舞台.CHARX', '示例卡.DSHCARD'].sort())
+  await assert.rejects(imports.archive(files.find(item => item.name.endsWith('.zip')).id), /不存在|过大/)
+})
+
+test('Android 下载目录的大素材包通过真实素材库安装，峰值内存不随全部媒体大小增长', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-mobile-pack-'))
+  const assetRoot = path.join(root, 'library'), downloads = path.join(root, 'Download')
+  const service = createAssetPackService({ assetRoot })
+  t.after(async () => { await service.dispose(); await rm(root, { recursive: true, force: true }) })
+  await mkdir(downloads)
+  // 制作测试包不属于手机下载导入路径，单独进程避免把压缩器驻留内存计入导入峰值。
+  const MiB = 1024 ** 2, file = path.join(downloads, 'large.zip')
+  const manifest = JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL('./fixtures/large-audio-pack.mjs', import.meta.url)), file], { encoding: 'utf8' }))
+
+  const imports = createMobileCardImport({ runtimeHost: 'android', roots: [{ id: 'download', label: 'Download', path: downloads }] })
+  const { files: [item] } = await imports.list()
+  assert.ok(item.size > 1024 * MiB)
+  const source = await imports.archive(item.id)
+  const cards = createCardFiles({ assetLibrary: () => service })
+  assert.deepEqual(await cards.importPackArchiveFile(source.file), { packs: [{ id: manifest.id, title: manifest.name, status: 'installed' }] })
+  const installed = await service.getPackSnapshot({ packId: manifest.id, readOnly: true })
+  assert.equal(installed.manifest.contentHash, manifest.contentHash)
+  assert.deepEqual((await readdir(path.join(assetRoot, 'ingress'), { recursive: true, withFileTypes: true })).filter(entry => entry.isFile()), [])
+  const peakMiB = Math.ceil(resourceUsage().maxRSS / 1024)
+  t.diagnostic(`${Math.round(item.size / MiB)} MiB ZIP; peak RSS ${peakMiB} MiB`)
+  assert.ok(peakMiB < 384, `peak RSS ${peakMiB} MiB exceeds the 384 MiB regression ceiling`)
 })

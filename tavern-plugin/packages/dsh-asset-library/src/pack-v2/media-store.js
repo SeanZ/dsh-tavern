@@ -39,7 +39,7 @@ export function createMediaStore({ root, linkFile = link, copyOnly = process.env
   }
   // ref is host-only: a previously validated descriptor, never an untrusted declared hash.
   // Byte inputs reuse it without hashing again; new streams derive their identity once.
-  async function put(source, { maxBytes = Infinity, ref } = {}) {
+  async function put(source, { maxBytes = Infinity, ref, expected } = {}) {
     if (ref) {
       validate(ref)
       check(source instanceof Uint8Array && source.byteLength === ref.size, '$.ref', 'Media byte size mismatch', 'FILE_CLOSURE_MISMATCH')
@@ -58,6 +58,7 @@ export function createMediaStore({ root, linkFile = link, copyOnly = process.env
     try {
       await pipeline(source instanceof Uint8Array ? Readable.from([source]) : source, meter, createWriteStream(temporary, { flags: 'wx', flush: true }))
       const stored = { sha256: ref?.sha256 || hash.digest('hex'), size }
+      if (expected) check(stored.sha256 === expected.sha256 && stored.size === expected.size, '$.ref', 'Spooled media changed', 'CONTENT_HASH_MISMATCH')
       await publish(temporary, stored)
       return stored
     } finally {

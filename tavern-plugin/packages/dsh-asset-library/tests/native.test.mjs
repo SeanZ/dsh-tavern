@@ -54,12 +54,13 @@ test('package root mounts only v2; native settings and Connection can arrive lat
 })
 test('actual Connection rejects unauthenticated requests before a plugin handler', t => {
   const ctx=new Context();t.after(()=>ctx.fiber.dispose())
-  const check = HostConnectionService.prototype.requestRejection
   let authenticated = false
+  ctx.provide('connection.authentication', { authenticate: () => authenticated ? { peer: connection.browserPeer } : { rejection: 401 } })
   const connection = new HostConnectionService(ctx,[],{isAuthenticated:() => authenticated,authenticateApi:()=>undefined})
+  const check = request => connection.admit(request).rejection
   const request = {headers:{host:'localhost:123', origin:'http://localhost:123', 'sec-fetch-site':'same-origin'}}
-  assert.equal(check.call(connection, request), 401)
+  assert.equal(check(request), 401)
   authenticated = true
-  assert.equal(check.call(connection, request), undefined)
-  assert.equal(check.call(connection, {headers:{...request.headers, origin:'https://evil.invalid'}}), 403)
+  assert.equal(check(request), undefined)
+  assert.equal(check({headers:{...request.headers, origin:'https://evil.invalid'}}), 403)
 })

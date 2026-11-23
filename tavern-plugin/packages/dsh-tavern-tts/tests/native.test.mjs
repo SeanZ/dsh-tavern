@@ -41,14 +41,15 @@ test('real Cordis mounts the tts service, settings and authenticated routes; unl
   await ctx.fiber.dispose()
 })
 test('runtime Connection authentication delegates to browser auth and origin/host fence',async t => {
-  const proto=HostConnectionService.prototype
   let allowed=false
   const ctx=new Context();t.after(()=>ctx.fiber.dispose())
+  ctx.provide('connection.authentication', { authenticate: () => allowed ? { peer: connection.browserPeer } : { rejection: 401 } })
   const connection=new HostConnectionService(ctx,[],{isAuthenticated:() => allowed,authenticateApi:()=>undefined})
+  const check=request => connection.admit(request).rejection
   const request={headers:{host:'localhost:123',origin:'http://localhost:123','sec-fetch-site':'same-origin'}}
-  assert.equal(proto.requestRejection.call(connection,request),401)
-  allowed=true;assert.equal(proto.requestRejection.call(connection,request),undefined)
-  assert.equal(proto.requestRejection.call(connection,{headers:{...request.headers,origin:'https://evil.test'}}),403)
+  assert.equal(check(request),401)
+  allowed=true;assert.equal(check(request),undefined)
+  assert.equal(check({headers:{...request.headers,origin:'https://evil.test'}}),403)
 })
 
 test('native enabled setting withdraws and restores service; management and live stream remain available',async t => {

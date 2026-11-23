@@ -4,7 +4,7 @@ import { analyzeVariableSchema } from '../../../../lib/domain/variable-bindings/
 import { widgetVariableProjection } from '../../../../lib/domain/widget-variable-provider.js'
 import { activeWidgetKeys, widgetIsActive } from '../../../../lib/domain/widget-availability.js'
 // Inactive P4 consumer. P6 supplies authorized services and mounts its projections.
-import {figureCatalogue, resolution} from '../../../../lib/domain/figure-catalogue.js'
+import {figureCatalogue, figureRefKey, resolution} from '../../../../lib/domain/figure-catalogue.js'
 import skinContract from '../../../dsh-presentation-protocol/src/stage-skin.cjs'
 import performanceContract from '../../../dsh-presentation-protocol/src/performance-contract.cjs'
 import { effectiveCardStage, activeStageSkin, cardStageSkin, cardStageSkinPackIds } from '../../../../lib/domain/card-stage-settings.js'
@@ -18,6 +18,7 @@ import { assetPackBackgroundVariant } from '../../../dsh-presentation-protocol/s
 import {assetContent} from '../../../dsh-presentation-protocol/src/asset-variant-content.js'
 import {selectAssetVariant} from '../../../dsh-presentation-protocol/src/asset-variants.js'
 import {cgPlaybackAvailable} from '../scene-cg.js'
+import {projectStageVideo} from './stage-video.js'
 import {stageTimeLook} from '../../../dsh-presentation-protocol/src/stage-time.js'
 import { triggerEvidence, normalizeCatalogueText, codepointCompare } from '../../../../lib/domain/asset-pack-lexical.js'
 import spriteEmotions from '../../../../shared/sprite-emotions.cjs'
@@ -93,6 +94,15 @@ export function selectPackFigure(figure, sprites, {outfitKey, emotion, imageSele
 // else the outfit's, else any of its other states' (one outfit's pictures share the canvas and the pose). The stage looks
 // for the head's centre only there, so a hammer head or a scythe blade beside the head at the same height is not taken
 // for it (scene-math galCentredAnatomy). null when nothing in the outfit was framed.
+// 动态立绘: the shown still's looping videos, {source: the idle loop's 视频 projection, talk: the talking loop's or null, rect},
+// or null - the still alone - when the image has none, its idle entry is off or gone, or it is no figure video (alpha
+// 'right'); a talking loop off or gone leaves speech to the still's mouths. Decided once here; the stage only plays them.
+export function packFigureVideo(pack, selection) {
+  const authored = selection.form === 'sprite' ? selection.outfit?.sprite?.videos?.[selection.state?.id] : null
+  const figureVideo = id => { const source = id ? projectStageVideo(pack, id) : null; return source?.alpha === 'right' ? source : null }
+  const source = authored ? figureVideo(authored.video) : null
+  return source ? {source, talk:figureVideo(authored.talk), rect:[...authored.rect]} : null
+}
 function packFaceSpan(outfit, stateId) {
   const crop = packSpriteCrop(outfit, stateId) || Object.values(outfit.sprite?.avatarCrop || {})[0] || Object.values(outfit.sprite?.avatarCropAuto || {})[0]
   return crop ? [crop.x, crop.x + crop.w] : null
@@ -223,7 +233,14 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
     async figureRows(roster = {}) {
       const allowed = getAllowedPackIds?.() || extension.assetBindings.boundPackIds
       const packs = await Promise.all(allowed.map(snapshot))
-      return figureCatalogue({snapshots:packs.filter(Boolean),bindings:extension.assetBindings,globalEnabledPackIds:allowed,roster})
+      const rows = figureCatalogue({snapshots:packs.filter(Boolean),bindings:extension.assetBindings,globalEnabledPackIds:allowed,roster})
+      // 借用形象: the figure a stage actor stands in with (stage-stand-in.js) is shown whether or not the card has its pack;
+      // 自动素材 lent it from the library. Only the figures worn, so no other library figure answers to a name here.
+      const worn = Object.values(roster).filter(actor => actor?.standIn && actor.figure && !allowed.includes(actor.figure.packId)).map(actor => actor.figure)
+      if (!worn.length) return rows
+      const lentIds = [...new Set(worn.map(ref => ref.packId))], wornKeys = new Set(worn.map(figureRefKey))
+      const lent = figureCatalogue({snapshots:(await Promise.all(lentIds.map(snapshot))).filter(Boolean),bindings:{boundPackIds:lentIds}})
+      return [...rows, ...lent.filter(row => wornKeys.has(figureRefKey(row.ref)))]
     },
     async resolveName(segment, roster = {}) {
       return resolution.resolveFigureName(await api.figureRows(roster),segment,roster)
@@ -265,7 +282,8 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
       const identity = actor?.figure ? resolution.resolveFigureName(figureRows || await api.figureRows({[alias]:actor}),actor.figure)
         : !historical ? resolution.resolveFigureName(figureRows || await api.figureRows(),alias) : null
       const ref = identity?.status === 'resolved' ? identity.ref : null
-      if (!ref || !(getAllowedPackIds?.() || extension.assetBindings.boundPackIds).includes(ref.packId)) return {alias, ref:null, form:null, diagnostics:['figure-unbound']}
+      const lent = actor?.standIn && actor.figure && figureRefKey(actor.figure) === (ref && figureRefKey(ref))
+      if (!ref || !lent && !(getAllowedPackIds?.() || extension.assetBindings.boundPackIds).includes(ref.packId)) return {alias, ref:null, form:null, diagnostics:['figure-unbound']}
       if (historical && !Object.hasOwn(actor, 'outfitKey')) return {alias, ref:clone(ref), form:null, diagnostics:['historical-outfit-missing']}
       {
         const resolved = await resolveFigure(ref)
@@ -275,7 +293,7 @@ export function createAssetPackPresentation({raw, getEngine, getService, getAllo
         const signature = JSON.stringify([alias,ref,resolved.revision,actor?.outfitKey,actor?.stateId,actor?.imageSelection,emotion,resolved.value.appearance,historical,live2d,spine])
         if (!projections.has(signature)) {
           const selection = selectPackFigure(resolved.value, pack.sprites, {outfitKey:actor?.outfitKey, emotion:actor?.stateId || emotion, imageSelection:actor?.imageSelection || (historical ? {} : undefined), appearance:resolved.value.appearance, live2d, spine})
-          projections.set(signature, freeze({alias, ref:clone(ref), revision:resolved.revision, ...selection,
+          projections.set(signature, freeze({alias, ref:clone(ref), revision:resolved.revision, ...selection, video:packFigureVideo(pack, selection),
             contentHash:['live2d','spine'].includes(selection.form) ? pack.manifest.bundles[selection.outfit[selection.form].bundleKey].contentHash : null,
             geometry:{stage:packGeometryKey(selection,pack,'stage'), portrait:packGeometryKey(selection,pack,'portrait')}}))
           while (projections.size > 256) projections.delete(projections.keys().next().value)

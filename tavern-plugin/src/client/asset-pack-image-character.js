@@ -1,11 +1,11 @@
 // 配图人物库 in the figure's 「生图」 tab. The 配图 plugin's 人物库 is the one store of a figure's per-view 外貌, its
 // outfits' text and its reference images (registerImageLibrary records, schema 4): every edit here writes that record,
 // never a copy in the pack. Each write carries the record it was read from; a record changed elsewhere is reloaded.
-// The record's 参考图 follow the figure's 设定图 by themselves (setteiReferences, on every write of the figure).
+// The figure's 设定图 stay in its pack: 配图 reads them from there by the record's link (ADR 0012), the record holds no copy.
 const IMAGE_TRAIT_FIELDS=[['feature','身份特征'],['face','五官外貌'],['faceBack','五官外貌背面'],['bodySFW','上半身SFW'],['bodySFWBack','上半身SFW背面'],['lowerSFW','下半身SFW'],['lowerSFWBack','下半身SFW背面'],
   ['bodyNSFW','上半身NSFW'],['bodyNSFWBack','上半身NSFW背面'],['lowerNSFW','下半身NSFW'],['lowerNSFWBack','下半身NSFW背面'],['negative','负面']];
 const IMAGE_OUTFIT_FIELDS=[['upper','上衣'],['lower','下装'],['shoes','鞋袜'],['accessory','配饰'],['full','全身'],['back','背面'],['negative','负面']];
-const IMAGE_CHARACTER_HELP='外貌按配图人物库的分视角写法，写在这里就是写进配图人物库；素材库生图读正面的五官外貌、上半身与下半身。人物设定图和各套服装设定图会自动作为配图人物库的参考图。';
+const IMAGE_CHARACTER_HELP='外貌按配图人物库的分视角写法，写在这里就是写进配图人物库；素材库生图读正面的五官外貌、上半身与下半身。场景配图直接用这里的人物设定图和各套服装设定图做参考图；没有服装设定图的服装借用平静立绘。换掉或撤下设定图，下一张配图就跟着变。';
 function ImageCharacterSection({binding,pack,figure,outfit}) {
   const packId=pack.manifest.id,snapshot=React.useRef(null),active=React.useRef(true),epoch=React.useRef(0);
   const state=useLoad(binding,async()=>{const next=await binding.rpc('getFigureImageCharacter',{packId,figureId:figure.id});snapshot.current=next;return next;},[packId,figure.id]);
@@ -38,7 +38,6 @@ function ImageCharacterSection({binding,pack,figure,outfit}) {
   return h('section',{className:'ap-fe-section','aria-label':'配图人物库','aria-busy':busy||undefined},head,h(ErrorBox,{error}),
     h(InlineGrid,{label:'人物库外貌'},
       h(InlineField,{kind:'text',label:'名字',controlLabel:'人物库名字',value:character.name,disabled:busy,validate:v=>v.trim()?'':'名字不能为空',onCommit:v=>patch('保存名字',()=>({name:v}))}),
-      h(InlineField,{kind:'text',label:'别名',controlLabel:'人物库别名',hideEmpty:true,placeholder:'用逗号分隔',value:character.match||'',disabled:busy,onCommit:v=>patch('保存别名',()=>({match:v}))}),
       IMAGE_TRAIT_FIELDS.map(([key,label])=>h(InlineField,{key,kind:'text',multiline:true,wide:true,label,controlLabel:'人物库'+label,hideEmpty:key!=='face',maxLength:8000,value:character.traits?.[key]||'',disabled:busy,
         onCommit:v=>patch('保存'+label,()=>({traits:{[key]:v}}))}))),
     outfit&&h(InlineGrid,{label:'服装「'+outfit.label+'」'},

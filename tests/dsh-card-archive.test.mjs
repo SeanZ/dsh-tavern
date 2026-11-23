@@ -8,7 +8,8 @@ import { deflateRawSync } from 'node:zlib'
 import { createMediaStore } from '../tavern-plugin/packages/dsh-asset-library/src/pack-v2/media-store.js'
 import { createAssetPacks, packMediaType } from '../tavern-plugin/lib/domain/asset-packs.js'
 import { readCardArchive } from '../tavern-plugin/lib/domain/card-archive.js'
-import { createUploads } from '../tavern-plugin/lib/domain/uploads.js'
+import { createCardArchiveUploads, createUploads, MAX_CARD_UPLOAD_BYTES } from '../tavern-plugin/lib/domain/uploads.js'
+import { createCardHandlers } from '../tavern-plugin/lib/rpc/cards.js'
 import { openZipFile, zipEntryPath } from '../tavern-plugin/lib/domain/zip-file.js'
 import { writeZipEntries } from '../tavern-plugin/lib/domain/zip-entries.js'
 
@@ -174,6 +175,44 @@ test('上传：原始请求体落盘，超过上限拒绝；取走后可删除�
   await assert.rejects(uploads.take(old.id), /不存在/)
 })
 
+test('卡包分段上传预留总空间，完成后只交给流式卡包导入', async t => {
+  const root = await temp(t)
+  assert.equal(MAX_CARD_UPLOAD_BYTES, 8 * 1024 ** 3)
+  const chunkBytes = 16 * 1024 ** 2
+  const total = chunkBytes + 3
+  const archives = createCardArchiveUploads({ root, maxBytes: total })
+  const regular = createUploads({ root })
+  const upload = (body, offset = 0, uploadId = '', size = total) =>
+    archives.receive(Readable.from([body]), new URLSearchParams({ size, offset, uploadId }))
+  const { id, size } = await upload(Buffer.alloc(chunkBytes, 'a'))
+  assert.equal(size, chunkBytes)
+  await assert.rejects(archives.take(id), /不存在/)
+  await assert.rejects(regular.take(id), /不存在/)
+  await assert.rejects(upload(Buffer.from('xyz'), 0, '', 3), /暂存空间/)
+  await assert.rejects(upload(Buffer.from('xyz'), chunkBytes - 1, id), /位置/)
+  assert.equal((await upload(Buffer.from('xyz'), chunkBytes, id)).size, total)
+  const released = []
+  const handlers = createCardHandlers({
+    discardCardArchivePreview: async file => released.push(file),
+    uploads: regular, cardArchiveUploads: archives, str: value => String(value ?? ''),
+    previewCardArchiveFile: async file => ({ size: (await stat(file)).size }),
+    importCardArchiveFile: async (file, name) => ({ name, bytes: (await readFile(file)).subarray(-3).toString() })
+  })
+  assert.deepEqual(await handlers.previewCardUpload({ uploadId: id }), { size: total })
+  await assert.rejects(handlers.importCardUpload({ uploadId: id, name: 'fake.png' }), /仅支持/)
+  assert.deepEqual(await handlers.importCardUpload({ uploadId: id, name: 'card.dshcard' }), { card: { name: 'card.dshcard', bytes: 'xyz' } })
+  await assert.rejects(archives.take(id), /不存在/)
+  const restarted = await upload(Buffer.from('abc'), 0, '', 3)
+  await archives.sweep(Date.now() + 25 * 60 * 60 * 1000)
+  await assert.rejects(archives.take(restarted.id), /不存在/)
+  await assert.rejects(upload(Buffer.from('ab'), 0, '', 3), /长度/)
+  const retry = await upload(Buffer.from('abc'), 0, '', 3)
+  const retryFile = (await archives.take(retry.id)).file
+  await handlers.discardCardUpload({ uploadId: retry.id })
+  assert.equal(released.at(-1), retryFile)
+  await assert.rejects(archives.take(retry.id), /不存在/)
+})
+
 test('卡内插件：导入时放在一边不加载；启用后进 plugins/；内容相同的多张卡共用一份，最后一张放手才删；同名不同内容拒绝；改名跟随', async t => {
   const { createCardPlugins } = await import('../tavern-plugin/lib/domain/card-plugins.js')
   const { existsSync } = await import('node:fs')
@@ -320,4 +359,12 @@ test('卡包声明 defaults.stage 时，人物卡自己带上对话气泡与舞�
   assert.deepEqual(bound.data.extensions.dsh_tavern.stage, { widgets: false, enabled: true })
   const fresh = await read({ defaults: { stage: true }, packs: [{ id: packId, path: 'assets/a/' }] }, { data: { name: 'C' } })
   assert.deepEqual(fresh.data.extensions.dsh_tavern, { schemaVersion: 1, assetBindings: { boundPackIds: [packId] }, stage: { enabled: true } })
+})
+
+
+test('落盘媒体内容改变时拒绝发布，不留下可读取的错误文件', async t => {
+  const store = createMediaStore({ root: await temp(t) })
+  const expected = { size: 3, sha256: '0'.repeat(64) }
+  await assert.rejects(store.put(Readable.from([Buffer.from('abc')]), { expected }), { code: 'CONTENT_HASH_MISMATCH' })
+  assert.equal(await store.resolve(expected), undefined)
 })

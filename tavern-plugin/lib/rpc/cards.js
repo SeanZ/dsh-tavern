@@ -2,16 +2,27 @@ import { waitForWritableSession } from '../domain/agent-readiness.js'
 import { normalizeResourcePath } from '../domain/file-resources.js'
 import { pngPayload } from '../domain/mobile-card-import.js'
 import { readFile, rm } from 'node:fs/promises'
+import { isCardArchiveUpload } from '../domain/uploads.js'
 import { encryptCardArchiveFile, isCardPasswordError } from '../domain/card-encryption.js'
+import { createScriptCardUpdate } from '../domain/script-card-update.js'
 
 // Card library, card workspace and card import requests.
 // `deps` carries the services ../index.js builds; dispatchMethod routes by method name.
 export function createCardHandlers(deps) {
   const { agentRegistry, cardMemory, cardOrganization, cardPacksOf, cardPlugins, cardPreparation,
     cardTaskPrompts, castAssets, chatForSession, deleteCard, ensureNativeCardWorkspace, fileResources,
-    importCard, importCardArchiveFile, importPluginCardFile, previewCardArchiveFile, replaceCard, revertCardUpdate, listCards, mobileCardImport, pluginApi,
+    importCard, importCardArchiveFile, importPackArchiveFile, importPluginCardFile, previewCardArchiveFile, discardCardArchivePreview, replaceCard, revertCardUpdate, listCards, mobileCardImport, pluginApi,
     readCardWorkspace, runtimePrompt, sessionStore, setCardPlugins, sleep, str, updateCard, uploads,
     worldBooks } = deps
+  const scriptCard = createScriptCardUpdate({ presentCardText: path => deps.presentCardText(path), readCardWorkspace,
+    readCardImage: path => fileResources.readCardImage(path), replaceCard })
+  async function sessionCardPath(args) {
+    const chat = await chatForSession(args?.sessionId)
+    if (!chat?.cardPath) throw new Error('找不到对话或人物卡')
+    return chat.cardPath
+  }
+
+  const cardUploadFor = id => isCardArchiveUpload(id) ? deps.cardArchiveUploads : uploads
 
   async function readSessionScripts(sessionId) {
     const chat = await chatForSession(sessionId)
@@ -21,6 +32,15 @@ export function createCardHandlers(deps) {
   }
 
   return {
+    // A card script updating its own card (script-card-update.js): the session's card only.
+    async getScriptCard(args) {
+      const cardPath = await sessionCardPath(args)
+      return { path: cardPath, ...await scriptCard.read(cardPath) }
+    },
+    async replaceScriptCard(args) {
+      const card = await scriptCard.replace(await sessionCardPath(args), { card: args?.card, world: args?.world || null, cover: str(args?.cover) })
+      return { card }
+    },
     async getCardOrganization(args) {
       return { groups: (await cardOrganization.read()).groups }
     },
@@ -77,7 +97,11 @@ export function createCardHandlers(deps) {
     },
     async importMobileCard(args) {
       const archive = await mobileCardImport.archive(args && args.id)
-      return { card: archive ? await importCardArchiveFile(archive.file, archive.name, { password: args?.password }) : await importCard(await mobileCardImport.read(args && args.id)) }
+      if (!archive) return { card: await importCard(await mobileCardImport.read(args && args.id)) }
+      if (/\.zip$/i.test(archive.name)) return await importPackArchiveFile(archive.file)
+      if (args?.discard) { await discardCardArchivePreview(archive.file); return {} }
+      if (args?.preview) return { preview: await previewCardArchiveFile(archive.file, archive.name, { password: args.password }) }
+      return { card: await importCardArchiveFile(archive.file, archive.name, { password: args?.password, packDecisions: args?.packDecisions, acceptMissingPacks: args?.acceptMissingPacks === true, previewed: args?.previewed === true }) }
     },
     async importCard(args) {
       return { card: args?.replacePath ? await replaceCard(args.replacePath, { payload: args.payload }) : await importCard(args && args.payload) }
@@ -85,37 +109,44 @@ export function createCardHandlers(deps) {
     // An uploaded card archive before it is imported or replaces a card: its name, version, cover and the installed
     // packs it carries another version of (card-files.js previewCardArchiveFile). The upload stays for importCardUpload.
     async previewCardUpload(args) {
-      const upload = await uploads.take(args?.uploadId)
+      const upload = await cardUploadFor(args?.uploadId).take(args?.uploadId)
       return await previewCardArchiveFile(upload.file, str(args?.name) || '人物卡.dshcard', { password: args?.password })
     },
     // packDecisions: pack id → 'update' | 'merge', for the packs previewCardUpload listed.
     async importCardUpload(args) {
-      const upload = await uploads.take(args && args.uploadId)
       const name = str(args && args.name) || '人物卡.dshcard'
+      if (isCardArchiveUpload(args?.uploadId) && !/\.(charx|dshcard)$/i.test(name)) throw new Error('分段上传仅支持 CHARX 和 DSHCARD 人物卡')
+      const upload = await cardUploadFor(args?.uploadId).take(args?.uploadId)
       const packDecisions = args?.packDecisions ?? {}
       if (!packDecisions || typeof packDecisions !== 'object' || Array.isArray(packDecisions) || Object.values(packDecisions).some(value => typeof value !== 'string')) throw new Error('素材包的更新方式无效')
       let keepForPasswordRetry = false
       try {
         if (args?.replacePath) {
-          if (/\.(charx|dshcard)$/i.test(name)) return { card: await replaceCard(args.replacePath, { file: upload.file, name, password: args.password, packDecisions }) }
+          if (/\.(charx|dshcard)$/i.test(name)) return { card: await replaceCard(args.replacePath, { file: upload.file, name, password: args.password, packDecisions, acceptMissingPacks: args.acceptMissingPacks === true, previewed: args.previewed === true }) }
           if (/\.png$/i.test(name)) return { card: await replaceCard(args.replacePath, { payload: pngPayload(await readFile(upload.file), name) }) }
           throw new Error('更新支持 PNG、JSON、CHARX 和 DSHCARD 人物卡')
         }
-        if (/\.(charx|dshcard)$/i.test(name)) return { card: await importCardArchiveFile(upload.file, name, { password: args?.password, packDecisions }) }
+        if (/\.(charx|dshcard)$/i.test(name)) return { card: await importCardArchiveFile(upload.file, name, { password: args?.password, packDecisions, acceptMissingPacks: args?.acceptMissingPacks === true, previewed: args?.previewed === true }) }
         if (/\.(dshcard|charx)\.png$/i.test(name)) throw new Error('卡包请使用 .dshcard 文件')
         if (/\.png$/i.test(name)) return { card: await importCard(pngPayload(await readFile(upload.file), name)) }
         if (await pluginApi.cardImporterFor(name)) return { card: await importPluginCardFile(upload.file, name) }
         throw new Error('无法识别的人物卡文件（需要 PNG、JSON、CHARX、DSH 人物卡 .dshcard，或装上能导入这种文件的插件）')
       }
       catch (error) { keepForPasswordRetry = isCardPasswordError(error); throw error }
-      finally { if (!keepForPasswordRetry) await upload.remove() }
+      finally { if (!keepForPasswordRetry) { await discardCardArchivePreview(upload.file); await upload.remove() } }
     },
     async revertCardUpdate(args) {
       return await revertCardUpdate(args?.updateId)
     },
     async discardCardUpload(args) {
-      const upload = await uploads.take(args?.uploadId)
-      await upload.remove()
+      if (isCardArchiveUpload(args?.uploadId)) {
+        const file = await deps.cardArchiveUploads.discard(args.uploadId)
+        if (file) await discardCardArchivePreview(file)
+      } else {
+        const upload = await uploads.take(args?.uploadId)
+        await discardCardArchivePreview(upload.file)
+        await upload.remove()
+      }
       return { removed: true }
     },
     async encryptCardUpload(args) {

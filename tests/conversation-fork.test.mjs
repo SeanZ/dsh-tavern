@@ -38,3 +38,8 @@ test('分叉只接受没有前台或后台未完成工作的游玩对话', () =>
   dangling.messages.push({ role: 'user', text: '未完成' })
   assert.throws(() => assertConversationForkable(dangling), /尚未产生正文/)
 })
+
+test('当前会话尚在结算时拒绝分叉', () => {
+  const chat = { ...sourceChat(), settleStatus: 'pending' }
+  assert.throws(() => assertConversationForkable(chat), /尚未完成状态结算/)
+})

@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { createReadStream } from 'node:fs'
 import { channel } from 'node:diagnostics_channel'
 const readTiming = channel('dsh.asset.read')
 import { lstat, readdir, mkdir, readFile, open, rename, rm, rmdir, copyFile } from 'node:fs/promises'
@@ -7,7 +8,7 @@ import { absent, checkedPath } from './storage-path.js'
 import { createMediaStore } from './media-store.js'
 export { checkedPath } from './storage-path.js'
 import { check, relativePath, validateUuid } from '../asset-packs/common.js'
-import { readDocument, jsonBytes, budget, StoredFile } from './validation.js'
+import { readDocument, jsonBytes, budget, StoredFile, SpooledFile } from './validation.js'
 import { FIGURE_DOCUMENT, FIGURE_RECORD_UNAVAILABLE, figureWithIdentity, freshenFigureRows, isStoredWithoutIdentity } from './figure-records.js'
 import { FIGURE_IMAGE_EXTENSION } from '../asset-packs/figure.js'
 
@@ -177,6 +178,17 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
     if (info.isDirectory()) await rmdir(await locate(relative))
     else await rm(await locate(relative), {force:true})
   }
+  // The only place a failed write or failed rollback becomes RECOVERY_REQUIRED. The original error, the rollback error
+  // and the operation are kept in the message and in the staging tree's failure.json, which recovery reads and extends.
+  const describe = error => ({code:error?.code ?? null, message:String(error?.message ?? error)})
+  const text = entry => (entry.code ? entry.code + ': ' : '') + entry.message
+  // Best effort: a record that cannot be written must not hide the error it describes.
+  const record = async (tx, name, value) => { try { await rm(await locate(tx + '/' + name), {force:true}); await durableWrite(await locate(tx + '/' + name), jsonBytes(value)) } catch { /* the message still carries it */ } }
+  async function recoveryRequired(tx, operation, write, rollbackError) {
+    const failure = {operation, at:new Date().toISOString(), write:describe(write), rollback:describe(rollbackError)}
+    await record(tx, 'failure.json', failure)
+    return Object.assign(new Error(`Pack rollback requires recovery (${operation}); write failed with ${text(failure.write)}; rollback failed with ${text(failure.rollback)}`, {cause:rollbackError}), {code:'RECOVERY_REQUIRED', failure})
+  }
   async function rollback(tx, journal) {
     if (journal.version === 3) {
       for (const name of [...journal.files, '@local']) {
@@ -215,6 +227,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
         check(entry.isDirectory() && !entry.isSymbolicLink(), tx, 'Unsafe staging tree', 'RECOVERY_REQUIRED')
         if (!await recoverable(tx)) continue
         check(!readOnly, tx, 'Recovery must complete before a read-only operation', 'RECOVERY_REQUIRED')
+        try {
         const bytes = await read(tx + '/journal.json')
         if (bytes) {
           const journal = readDocument(bytes)
@@ -240,6 +253,13 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
           }
         }
         await erase(tx)
+        } catch (error) {
+          // Keep what the first failure recorded next to what stops recovery now, so neither is lost between restarts.
+          const prior = await read(tx + '/failure.json').then(bytes => bytes && readDocument(bytes), () => undefined)
+          const detail = prior ? `; the original ${prior.operation} failure was: write ${text(prior.write)}, rollback ${text(prior.rollback)}` : ''
+          await record(tx, 'recovery-failure.json', {at:new Date().toISOString(), recovery:describe(error)})
+          throw Object.assign(new Error(`Recovery of ${tx} failed: ${text(describe(error))}${detail}`, {cause:error}), {code:'RECOVERY_REQUIRED'})
+        }
       }
     }
   }
@@ -270,7 +290,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
       shared.queue.push({reading, reject,
         async recover() {
           const recovery = performance.now()
-          try { await recover(readOnly) } catch (cause) { throw Object.assign(new Error('Pack recovery required', {cause}), {code:'RECOVERY_REQUIRED'}) }
+          try { await recover(readOnly) } catch (cause) { throw Object.assign(new Error('Pack recovery required: ' + text(describe(cause)), {cause}), {code:'RECOVERY_REQUIRED'}) }
           if (readTiming.hasSubscribers) readTiming.publish({name:'pack.recovery', packIds:ids, durationMs:performance.now() - recovery})
         },
         start() {
@@ -315,12 +335,19 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
     const figures = []
     for (const [name, bytes] of pack.files) {
       const descriptor = descriptors.get(name)
+      if (bytes instanceof SpooledFile) {
+        // 压缩包媒体在预览阶段已落盘，发布时沿用同一份文件并核对流式摘要。
+        const file = await locate(path.relative(root, bytes.file).split(path.sep).join('/'))
+        const ref = await mediaStore.put(createReadStream(file), {expected: descriptor, maxBytes: bytes.length})
+        await mediaStore.materialize(ref, await locate(base + '/' + name))
+        continue
+      }
       // Lazy export/merge inputs hydrate one file at a time, not the entire source pack.
       const source = bytes instanceof StoredFile ? await read(path.relative(root, bytes.file).split(path.sep).join('/'), bytes.length) : bytes
       const figureId = /^figures\/([0-9a-f-]{36})\.json$/.exec(name)?.[1]
       if (figureId) {
         const figure = readDocument(source)
-        check(!figure.extensions?.[FIGURE_RECORD_UNAVAILABLE], name, '人物资料暂时读不到，不能修改这个人物', 'ASSET_UNAVAILABLE')
+        check(!figure.extensions?.[FIGURE_RECORD_UNAVAILABLE], name, '人物的名字和触发词存在配图人物库的记录里，现在读不到（配图插件没启用，或这个人物的记录不见了），所以不能修改这个人物。先启用配图插件再改；插件已启用还是读不到，就是记录被删了，请从备份恢复配图人物库', 'ASSET_UNAVAILABLE')
         if (figureRecords) {
           const intent = intents?.get(figureId)
           const staged = intent === 'held' ? (await storedFigure(id, figureId, source, {manifest:pack.manifest, intent})).bytes : source
@@ -386,7 +413,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
       await durableWrite(await locate(tx + '/committed'), Buffer.from('1'))
     } catch (error) {
       try { if (await exists(tx + '/journal.json')) await rollback(tx, journal); await erase(tx) }
-      catch (cause) { throw Object.assign(new Error('Pack rollback requires recovery', {cause}), {code:'RECOVERY_REQUIRED'}) }
+      catch (cause) { throw await recoveryRequired(tx, 'publish', error, cause) }
       throw error
     }
     // Cleanup failure is recoverable on the next entry, never a failed committed edit.
@@ -448,7 +475,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
       await durableWrite(await locate(tx + '/committed'), Buffer.from('1'))
     } catch (error) {
       try { if (await exists(tx + '/journal.json')) await rollback(tx, staged.journal); await erase(tx) }
-      catch (cause) { throw Object.assign(new Error('Pack rollback requires recovery', {cause}), {code:'RECOVERY_REQUIRED'}) }
+      catch (cause) { throw await recoveryRequired(tx, 'metadata', error, cause) }
       throw error
     }
     await foldCommittedFigures(tx, staged.figures)
@@ -478,7 +505,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
         if (await exists(tx + '/journal.json')) for (const {journal} of staged.reverse()) await rollback(tx + '/' + journal.id, journal)
         await erase(tx)
       } catch (cause) {
-        throw Object.assign(new Error('Pack rollback requires recovery', {cause}), {code:'RECOVERY_REQUIRED'})
+        throw await recoveryRequired(tx, 'metadata-batch', error, cause)
       }
       throw error
     }
@@ -537,7 +564,7 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
         // A durable card write is the commit point even if its acknowledgement was lost.
       } catch (cause) {
         if (cause === error) throw error
-        throw Object.assign(new Error('Card bundle recovery required', {cause}), {code:'RECOVERY_REQUIRED'})
+        throw await recoveryRequired(tx, 'card-bundle', error, cause)
       }
     }
     // Never discard the journal before recording the durable commit decision.
@@ -576,6 +603,18 @@ export function createPackStorage({assetRoot, limits, cardTransactions, mediaSto
       await mkdir(await locate('export-outbox'), {recursive:true})
       await rename(source, file)
       return {file, size:(await lstat(file)).size, dispose:() => erase(relative)}
+    },
+    // An import's spool: archive entries kept on disk until its previews go. A spool left by a process that is gone
+    // is removed when the next one opens.
+    async spool() {
+      for (const name of await readdir(await locate('ingress')).catch(error => error.code === 'ENOENT' ? [] : Promise.reject(error))) {
+        const pid = Number(name.split('.')[0])
+        if (!Number.isSafeInteger(pid) || pid === process.pid) continue
+        try { process.kill(pid, 0) } catch (error) { if (error.code === 'ESRCH') await erase('ingress/' + name) }
+      }
+      const relative = `ingress/${process.pid}.${ownerToken}/${randomUUID()}`
+      await mkdir(await locate(relative), {recursive:true})
+      return {dir:await locate(relative), dispose:() => erase(relative)}
     },
     async temporary(task) {
       const tx = await createTransaction()

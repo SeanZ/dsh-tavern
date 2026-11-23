@@ -1,5 +1,6 @@
 // Pack integrity and bounded media validation.
 import path from 'node:path'
+import { open, readFile } from 'node:fs/promises'
 import {assetContent,assetContents,assetContentMedia,assetDocument} from '../shared/asset-variant-content.js'
 import { PACK_BUDGET } from './budget.js'
 import {validateModPrivate} from './mod-private.js'
@@ -10,12 +11,12 @@ import entranceContract from '../shared/stage-entrance.cjs'
 import videoContract from '../shared/stage-video.cjs'
 import widgetContract from '../shared/widget-schema.cjs'
 import {validatePerformancePack, validatePerformanceKeyframeBundle} from './performance-bundle.js'
-import {decodeSkinSvg} from './skin-svg.js'
+import {decodeSkinSvgs} from './skin-svg.js'
 const {validateStageSkin, stageSkinFiles} = skinContract
 import { imageKind, audioKind, imageDimensions, pngSize, wavInfo, MEDIA_PURPOSE_LIMITS, STAGE_IMAGE_MAX_BYTES } from './media.js'
 import { modelReferences } from './model.js'
 import { BLOB_MIME_TYPES, FIGURE_IMAGE_EXTENSION, figureImageReferenceMedia, validatePackIdentities, validateFigureClosure, verifyPackHashes, verifyPackFiles, computeContentHash, computeBundleHash, canonicalJson, parseJson, sha256 } from '../asset-packs/index.js'
-import { check, relativePath, compareCodePoints } from '../asset-packs/common.js'
+import { check, relativePath, compareCodePoints, SpooledFile } from '../asset-packs/common.js'
 import { validateSpineBundle } from '../asset-packs/spine.js'
 
 export const PACK_LIMITS = Object.freeze({ entries:20000, entrySize:512 * 1024 ** 2, ...PACK_BUDGET, ratio:200, previews:16, uploads:512, previewTtlMs:15 * 60000 })
@@ -26,12 +27,21 @@ export const cloneFiles = files => new Map([...files].map(([name, bytes]) => [na
 export class StoredFile {
   constructor(size, file) { this.length = size; if (file !== undefined) this.file = file; Object.freeze(this) }
 }
+export { SpooledFile }
+// An import's spooled entry, read for one check and dropped again.
+export async function spooledBytes(ref) {
+  const bytes = await readFile(ref.file)
+  check(bytes.length === ref.length, ref.file, 'Spooled file size changed', 'FILE_CLOSURE_MISMATCH')
+  return bytes
+}
+// The bytes a pack holds in memory: stored and spooled files stay on disk.
+export const heldBytes = files => [...files.values()].reduce((sum, bytes) => sum + (bytes instanceof Uint8Array ? bytes.length : 0), 0)
 export function budget(files, limits) {
   check(files instanceof Map && files.size <= limits.entries, '$.files', 'File count budget exceeded', 'LIMIT_EXCEEDED')
   let total = 0
   for (const [name, bytes] of files) {
     relativePath(name)
-    check((bytes instanceof Uint8Array || bytes instanceof StoredFile) && Number.isSafeInteger(bytes.length) && bytes.length >= 0 && bytes.length <= limits.entrySize, name, 'File size budget exceeded', 'LIMIT_EXCEEDED')
+    check((bytes instanceof Uint8Array || bytes instanceof StoredFile || bytes instanceof SpooledFile) && Number.isSafeInteger(bytes.length) && bytes.length >= 0 && bytes.length <= limits.entrySize, name, 'File size budget exceeded', 'LIMIT_EXCEEDED')
     total += bytes.length
   }
   check(total <= limits.totalSize, '$.files', 'Pack budget exceeded', 'LIMIT_EXCEEDED')
@@ -39,7 +49,7 @@ export function budget(files, limits) {
 }
 // The installed plugin supplies a trusted structural validator for compressed codecs.
 export async function inspectMedia(input, descriptor, decodeMedia, {settei = false} = {}) {
-  const bytes = Buffer.from(input), ext = imageKind(bytes) || audioKind(bytes)
+  const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input), ext = imageKind(bytes) || audioKind(bytes)
   check(ext && descriptor.ext === ext && descriptor.mime === BLOB_MIME_TYPES[ext] && descriptor.size === bytes.length, '$.blobs', 'Media signature/ext/MIME mismatch')
   const image = descriptor.mime.startsWith('image/')
   check(image&&settei || bytes.length <= (image ? STAGE_IMAGE_MAX_BYTES : MEDIA_PURPOSE_LIMITS.audio), '$.media', 'Media byte limit', 'LIMIT_EXCEEDED')
@@ -50,7 +60,7 @@ export async function inspectMedia(input, descriptor, decodeMedia, {settei = fal
   else if (ext === 'wav') decoded = wavInfo(bytes)
   else {
     check(typeof decodeMedia === 'function', '$.media', 'A trusted media validator is required for ' + ext, 'ASSET_UNAVAILABLE')
-    decoded = await decodeMedia(bytes, {...descriptor})
+    decoded = await decodeMedia(Buffer.from(bytes), {...descriptor})
   }
   if (image) check(decoded && decoded.width === dimensions[0] && decoded.height === dimensions[1], '$.media', 'Validated image dimensions mismatch')
   else check(Number.isFinite(decoded?.durationMs) && decoded.durationMs > 0, '$.media', 'Invalid audio duration')
@@ -67,7 +77,7 @@ export async function sealPack(manifest, files, previous, hashed) {
   const prior = new Map((previous?.manifest.files || []).map(file => [file.path, file]))
   const listed = new Set((manifest.files || []).map(file => file.path))
   const names = [...listed].filter(name => files.has(name)).concat([...files.keys()].filter(name => !listed.has(name)).sort(compareCodePoints))
-  manifest.files = await Promise.all(names.map(async path => previous?.files.get(path) === files.get(path) && prior.has(path) ? prior.get(path) : {path, size:files.get(path).length, sha256:hashed?.get(path) ?? await sha256(files.get(path))}))
+  manifest.files = await Promise.all(names.map(async path => previous?.files.get(path) === files.get(path) && prior.has(path) ? prior.get(path) : {path, size:files.get(path).length, sha256:hashed?.get(path) ?? files.get(path).sha256 ?? await sha256(files.get(path))}))
   const grouped = groupBundleFiles(manifest.files), priorGrouped = previous && groupBundleFiles(previous.manifest.files)
   for (const [key, bundle] of Object.entries(manifest.bundles)) {
     const prefix = `bundles/${key}/`
@@ -102,6 +112,7 @@ export async function verifyBytes(manifest, files, {limits = PACK_LIMITS, decode
   let beforeSkinNormalization
   async function materialize(name) {
     const ref = files.get(name)
+    if (ref instanceof SpooledFile) return spooledBytes(ref)
     if (!(ref instanceof StoredFile)) return ref
     check(sealed && previous?.files.get(name) === ref && readStoredFile, name, 'Stored bytes unavailable', 'ASSET_UNAVAILABLE')
     const bytes = await readStoredFile(name, ref.length)
@@ -145,11 +156,28 @@ export async function verifyBytes(manifest, files, {limits = PACK_LIMITS, decode
     const info = size && {width:size[0], height:size[1]}
     images.set(hash, info); return info
   }
+  // 落盘媒体逐项校验；同一批文件复用读取缓冲，避免每段音轨都分配整块内存。
+  let mediaBuffer
+  async function inspectFile(name, ref, descriptor, options) {
+    if (!(ref instanceof SpooledFile)) return inspectMedia(await materialize(name), descriptor, decodeMedia, options)
+    const handle = await open(ref.file, 'r')
+    try {
+      check((await handle.stat()).size === ref.length, name, 'Spooled file size changed', 'FILE_CLOSURE_MISMATCH')
+      if (!mediaBuffer || mediaBuffer.length < ref.length) mediaBuffer = Buffer.allocUnsafe(ref.length)
+      const bytes = mediaBuffer.subarray(0, ref.length)
+      for (let offset = 0; offset < bytes.length;) {
+        const {bytesRead} = await handle.read(bytes, offset, bytes.length - offset, offset)
+        check(bytesRead > 0, name, 'Spooled file truncated', 'FILE_CLOSURE_MISMATCH')
+        offset += bytesRead
+      }
+      return await inspectMedia(bytes, descriptor, decodeMedia, options)
+    } finally { await handle.close() }
+  }
   for (const [hash, descriptor] of Object.entries(manifest.blobs)) {
     const name = `media/${hash}.${descriptor.ext}`, bytes = files.get(name)
     if(stageMedia.has(hash)&&descriptor.mime.startsWith('image/'))check(bytes.length<=STAGE_IMAGE_MAX_BYTES,name,'Stage media byte limit','LIMIT_EXCEEDED')
     if (!unchanged(name) || !previous.manifest.blobs[hash] || canonicalJson(previous.manifest.blobs[hash]) !== canonicalJson(descriptor)) {
-      images.set(hash, await inspectMedia(await materialize(name), descriptor, decodeMedia, {settei:boards.has(hash)&&!stageMedia.has(hash)}))
+      images.set(hash, await inspectFile(name, bytes, descriptor, {settei:boards.has(hash)&&!stageMedia.has(hash)}))
     }
   }
   for (const [name, bytes] of files) if (name.startsWith('credits/')) {
@@ -160,6 +188,8 @@ export async function verifyBytes(manifest, files, {limits = PACK_LIMITS, decode
   const bundleFiles = Map.groupBy(files, ([name]) => name.startsWith('bundles/') ? name.split('/')[1] : null)
   const bundleAssets = Map.groupBy(manifest.assets.flatMap(asset=>assetContents(asset).map(content=>({...asset,...content}))), asset => asset.bundleKey)
   const previousAssets = previous && Map.groupBy(previous.manifest.assets.flatMap(asset=>assetContents(asset).map(content=>({...asset,...content}))), asset => asset.bundleKey)
+  // Static SVGs must pass both the inert drawing policy and a full image decode at ingress, the whole pack's in one batch.
+  const drawings = []
   for (const [key, bundle] of Object.entries(manifest.bundles)) {
     const prefix = `bundles/${key}/`, entries = bundleFiles.get(key) || [], assets = bundleAssets.get(key) || []
     if (previous?.manifest.bundles[key] && canonicalJson(previous.manifest.bundles[key]) === canonicalJson(bundle)
@@ -249,8 +279,7 @@ export async function verifyBytes(manifest, files, {limits = PACK_LIMITS, decode
         check(name === entry || dependencies.has(name), name, 'Executable or undeclared skin/performance resource rejected')
         // skin images take the media checks; only sounds have the three-second limit.
         // a skin's own font face is inert WOFF2 data (signature, 16 MiB), never media.
-        // Static SVGs must pass both the inert drawing policy and a full image decode at ingress.
-        if (name !== entry && /\.svg$/.test(name)) {if (!unchanged(name)) try {await decodeSkinSvg(await materialize(name))} catch (error) {check(false, name, error.message, 'INVALID_SKIN')} continue}
+        if (name !== entry && /\.svg$/.test(name)) {if (!unchanged(name)) drawings.push([name, await materialize(name)]); continue}
         if (name !== entry && /\.woff2$/.test(name)) {check(bytes.length >= 48 && bytes.length <= 16 * 1024 ** 2 && Buffer.from(bytes.subarray(0,4)).toString('latin1') === 'wOF2', name, 'Skin font face is not a WOFF2 file within 16 MiB'); continue}
         if (name !== entry && !overlayFiles.has(name) && !keyframeFiles.has(name)) {const ext = path.posix.extname(name).slice(1); const info = await inspect(bytes,{ext,mime:BLOB_MIME_TYPES[ext],size:bytes.length},decodeMedia); if (!/^(png|webp)$/.test(ext)) check(info.durationMs <= 3000,name,'Skin sound exceeds three seconds')}
       }
@@ -282,6 +311,7 @@ export async function verifyBytes(manifest, files, {limits = PACK_LIMITS, decode
       }
     }
   }
+  if (drawings.length) try {await decodeSkinSvgs(drawings)} catch (error) {check(false, error.file, error.message, 'INVALID_SKIN')}
   for (const figure of Object.values(figures)) for (const outfit of figure.outfits) if (outfit.sprite) {
     const sprite = sprites[outfit.sprite.manifestKey]
     async function walk(value) {

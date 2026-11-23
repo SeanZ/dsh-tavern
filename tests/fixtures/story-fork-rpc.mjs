@@ -422,6 +422,10 @@ try {
   e.chat.settleStatus = 'running'
   e.save()
   const E = await importGame(e)
+  const { createChatJournalStore } = await import('../../tavern-plugin/lib/domain/chat-journal-store.js')
+  const journal = createChatJournalStore({ dataRoot })
+  assert.equal((await journal.read(E.chatId)).settleStatus, 'idle', '导入后旧任务不再运行')
+  await journal.update(E.chatId, current => ({ ...current, _storageRevision: current._storageRevision + 1, settleStatus: 'running' }))
   await assert.rejects(prepare({ sessionId: E.sessionId, ...await floorTarget(E.sessionId, 2) }), /状态结算/)
   await assert.rejects(prepare({ sessionId: E.sessionId, ...await floorTarget(E.sessionId, 1) }), /状态结算/)
   passed('5c 后台结算中拒绝')

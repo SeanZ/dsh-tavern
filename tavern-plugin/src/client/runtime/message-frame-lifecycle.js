@@ -39,7 +39,29 @@ async function bubbleCardFaceBlobs(sessionId, names) {
         url = url || avatarCache.ready(face);
         return url ? {name, blob: await (await fetch(url)).blob()} : null;
     }));
-    return faces.filter(Boolean);}		const TAVERN_FRAME_MAX_HEIGHT = 32000;
+    return faces.filter(Boolean);}
+// A chat card frame's media (its window.DshCardAssets.asset, frame-document.js), as a stage card page's DshCardPage.asset:
+// {kind, id, variant?, file?, size?} → an image of the card's own bound packs, located by the stage's one lookup
+// (locateCardPageAsset, in binding order). The frame shows it at size CSS px (default 256) and cannot resample, so the
+// stage picks the thumbnail for size x devicePixelRatio; it is fetched here and handed over as a Blob (a sandboxed frame
+// cannot load the host's URLs). No such image in the card's packs (or no stage) rejects, and the page shows its own placeholder.
+function cardFrameAssetRef(args) {
+    const text = value => typeof value === "string" && value.length > 0 && value.length <= 200;
+    const optional = value => value === undefined || value === null || text(value);
+    const size = args?.size === undefined || args?.size === null ? 256 : Number(args.size);
+    if (!text(args?.kind) || !text(args?.id) || !optional(args.variant) || !optional(args.file) || !(size > 0 && size <= 4096))
+        throw new Error("DshCardAssets.asset 需要 {kind, id, variant?, file?, size?}");
+    return {ref: {kind: args.kind, id: args.id, ...(args.variant ? {variant: args.variant} : {}), ...(args.file ? {file: args.file} : {})}, size};
+}
+async function cardFrameAssetBlob(sessionId, args) {
+    const {ref, size} = cardFrameAssetRef(args);
+    const px = Math.ceil(size * (Number(window.devicePixelRatio) || 1));
+    const place = (await rpc("locateCardFrameAsset", {sessionId, ref, px}, sessionId))?.place;
+    if (!place?.hash) throw new Error("本卡的素材包里没有图片 " + ref.kind + " / " + ref.id);
+    const response = await fetch("/api/dsh-asset-library/v2/thumbnail?v=2&packId=" + encodeURIComponent(place.packId) + "&hash=" + encodeURIComponent(place.hash) + "&size=" + place.size, {credentials: "same-origin"});
+    if (!response.ok) throw new Error("素材读取失败 " + response.status);
+    return await response.blob();
+}		const TAVERN_FRAME_MAX_HEIGHT = 32000;
 		function clampTavernFrameHeight(value) {
 			const height = Number(value);
 			return Number.isFinite(height) ? Math.max(48, Math.min(TAVERN_FRAME_MAX_HEIGHT, Math.ceil(height))) : 48;
@@ -301,7 +323,7 @@ async function bubbleCardFaceBlobs(sessionId, names) {
 				let previewRelayFrame = null, releasePreviewRelay = null;
 			let height = (props.openingPreview ? 160 : restoredTavernFrameHeight(visible.heightKey, visible.content));
 			function documentKey() {
-				const values = [props.sessionId, props.content, props.persistent === true ? 0 : props.turn, props.observeMvuView, props.runtimeReporting, props.persistent, props.trustedCardMode, Boolean(props.helperContext), JSON.stringify(props.openingPreview), JSON.stringify(props.frameSizing), refreshRevision, props.helperContext?.frameStorageScope?.cardPath];
+				const values = [props.sessionId, props.content, props.persistent === true ? 0 : props.turn, props.observeMvuView, props.runtimeReporting, props.persistent, props.trustedCardMode, Boolean(props.helperContext), JSON.stringify(props.openingPreview), JSON.stringify(props.frameSizing), refreshRevision, props.helperContext?.frameStorageScope?.cardPath, props.hostSized === true];
 				if (!documentInputs || values.some(function (value, index) { return value !== documentInputs[index]; })) {
 					documentInputs = values;
                     const keyValues = values.slice();
@@ -321,7 +343,7 @@ async function bubbleCardFaceBlobs(sessionId, names) {
 				};
 				document.storage = forkFrameStorage.capability({ sessionId: props.sessionId, cardPath: helperContext && helperContext.frameStorageScope && helperContext.frameStorageScope.cardPath }, hostWindow); // storage token is separate from helper tokens
 				document.zoomCard = helperContext?.frameStorageScope?.cardPath || "";
-				document.html = buildTavernFrameDocument({ frameTheme: forkFrameTheme.seed(hostWindow), frameZoom: forkFrameZoom.seed(document.zoomCard), frameStorage: document.storage, content: props.content, frameSizing: props.frameSizing, panelId: props.panelId, token: document.token, openingPreview: props.openingPreview, helperContext: tavernFrameHelperContext(helperContext, props.turn), trustedCardMode: props.trustedCardMode === true, turn: props.turn, observeMvuView: props.observeMvuView, runtimeReporting: props.runtimeReporting, persistent: props.persistent, preserveInstance: props.preserveInstance, textColorsEnabled: tavernTextColorsEnabled(hostWindow), colorScheme: hostWindow.document?.body && typeof hostWindow.getComputedStyle === "function" ? currentTavernHostTheme(hostWindow).colorScheme : undefined });
+				document.html = buildTavernFrameDocument({ frameTheme: forkFrameTheme.seed(hostWindow), frameZoom: forkFrameZoom.seed(document.zoomCard), frameStorage: document.storage, content: props.content, frameSizing: props.frameSizing, panelId: props.panelId, token: document.token, openingPreview: props.openingPreview, helperContext: tavernFrameHelperContext(helperContext, props.turn), trustedCardMode: props.trustedCardMode === true, turn: props.turn, observeMvuView: props.observeMvuView, runtimeReporting: props.runtimeReporting, persistent: props.persistent, hostSized: props.hostSized === true, preserveInstance: props.preserveInstance, textColorsEnabled: tavernTextColorsEnabled(hostWindow), colorScheme: hostWindow.document?.body && typeof hostWindow.getComputedStyle === "function" ? currentTavernHostTheme(hostWindow).colorScheme : undefined });
 				const channel = createTavernFrameContextChannel(document);
 				// Stable callback identity preserves the per-document delta baseline.
 				document.ref = function (node) {
@@ -722,6 +744,15 @@ async function bubbleCardFaceBlobs(sessionId, names) {
 					if (data.method === "getCardFaces") {
 						const names = Array.isArray(data.args && data.args.names) ? data.args.names.slice(0, 32).map(String) : [];
 						bubbleCardFaceBlobs(props.sessionId, names).then(function (result) {
+							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result: result }, "*");
+						}, function (error) {
+							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: String(error && error.message || error) }, "*");
+						});
+						return;
+					}
+					// window.DshCardAssets.asset(ref): an image of the card's own bound packs (cardFrameAssetBlob).
+					if (data.method === "getCardAsset") {
+						cardFrameAssetBlob(props.sessionId, data.args).then(function (result) {
 							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: true, result: result }, "*");
 						}, function (error) {
 							if (current()) event.source.postMessage({ type: "dsh-tavern-helper-response", token: data.token, requestId: data.requestId, ok: false, error: String(error && error.message || error) }, "*");

@@ -74,13 +74,13 @@ const PENDING_MEDIA_KINDS = ['backgrounds', 'cg', 'props', 'music', 'sfx', 'ambi
 const contentFields = kind => PENDING_MEDIA_KINDS.includes(kind) && !ASSET_CONTENT_FIELDS[kind].includes('pendingMedia') ? [...ASSET_CONTENT_FIELDS[kind], 'pendingMedia'] : ASSET_CONTENT_FIELDS[kind]
 export function validateAsset(value, path = '$') {
   assertJson(value)
-  // a standalone skin entry is only an imported theme — no 启用 / 关闭 state.
+  // a standalone skin entry's 启用 / 关闭 (enabled) is optional: skins imported before it existed carry none and stay on.
   const common = value?.kind === 'skins' ? ['kind', 'id', 'name', 'recall', 'directorNote'] : ['kind', 'id', 'name', 'enabled', 'recall', 'directorNote']
   check(value && ASSET_KINDS.includes(value.kind), path + '.kind')
-  shape(value, [...common, ...(value.kind === 'skins' ? [] : ['skin']), 'remark', ...(value.kind === 'props' ? ['inventoryId'] : []), ...metadata.filter(field=>!value.variants || !ASSET_CONTENT_FIELDS[value.kind].includes(field)), ...(value.variants ? ['variants'] : contentFields(value.kind))], common, path)
+  shape(value, [...common, ...(value.kind === 'skins' ? ['enabled'] : ['skin']), 'remark', ...(value.kind === 'props' ? ['inventoryId'] : []), ...metadata.filter(field=>!value.variants || !ASSET_CONTENT_FIELDS[value.kind].includes(field)), ...(value.variants ? ['variants'] : contentFields(value.kind))], common, path)
   if (value.skin !== undefined) validateShortId(value.skin, path + '.skin')
   if (value.inventoryId !== undefined) text(value.inventoryId, path + '.inventoryId', 256)
-  validateShortId(value.id, path + '.id'); text(value.name, path + '.name'); if (value.kind !== 'skins') bool(value.enabled, path + '.enabled')
+  validateShortId(value.id, path + '.id'); text(value.name, path + '.name'); if (value.kind !== 'skins' || value.enabled !== undefined) bool(value.enabled, path + '.enabled')
   if (value.remark !== undefined) check(typeof value.remark === 'string', path + '.remark')
   validateCopiedFrom(value.extensions,value.kind,path + '.extensions')
   validateRecall(value.recall, path + '.recall', 2, {when: !UNRECALLED_KINDS.includes(value.kind)}); text(value.directorNote, path + '.directorNote', 300, 0); validateMetadata(value, path)
@@ -272,8 +272,12 @@ export function validatePackManifest(value, path = '$') {
       if (asset.kind === 'entrances' && content.bundleKey !== undefined)
         check(value.bundles[content.bundleKey]?.kind === 'entrance' && value.bundles[content.bundleKey].entry === entranceContract.stageEntranceFiles(content.entrance)[0],path+'.assets','Missing entrance bundle','MISSING_DEPENDENCY')
       // The video an entrance plays is a 视频 entry of the same pack.
-      if (asset.kind === 'entrances' && content.entrance.layers.video)
-        check(value.assets.some(row => row.kind === 'videos' && row.id === content.entrance.layers.video.asset),path+'.assets','Missing video entry: '+content.entrance.layers.video.asset,'MISSING_DEPENDENCY')
+      if (asset.kind === 'entrances' && content.entrance.layers.video) {
+        const video = value.assets.find(row => row.kind === 'videos' && row.id === content.entrance.layers.video.asset)
+        check(video,path+'.assets','Missing video entry: '+content.entrance.layers.video.asset,'MISSING_DEPENDENCY')
+        // The page player shows a video as it is: a figure video's matte half is for the stage's figures only.
+        check((video.alpha ?? 'none') === 'none',path+'.assets','An entrance plays an opaque video, not a figure video (alpha: right): '+video.id)
+      }
       // A video's bundle holds it (its entry) and its poster.
       if (asset.kind === 'videos')
         check(value.bundles[content.bundleKey]?.kind === 'video' && value.bundles[content.bundleKey].entry === content.entry,path+'.assets','Missing video bundle','MISSING_DEPENDENCY')
