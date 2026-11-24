@@ -38,6 +38,7 @@ function harness(scripts, onAppend, ready = Promise.resolve()) {
     }
   }
   const document = {
+    baseURI: "https://tavern.test/sessions/current",
     // Composer controls are preinstalled; this harness exercises module loading.
     getElementById(id) { return ['send_textarea', 'send_but'].includes(id) ? {} : null },
     createElement(tag) {
@@ -58,6 +59,18 @@ function harness(scripts, onAppend, ready = Promise.resolve()) {
   return { window, events, elements, listeners, lifecycleListeners,
     run: () => vm.runInContext('(async()=>{' + loader(scripts) + '})()', context) }
 }
+
+test('共享沙箱按宿主地址加载固定模块，旧版缓存引用也可复用', async () => {
+  const path = '/api/dsh-tavern/remote-assets/' + 'a'.repeat(64) + '/mvu_zod.js'
+  const source = `import { schema } from '${path}?host=1'; const url = "${path}?host=2"; await import(url);`
+  const run = harness([{ id: 'schema', content: source }], ({ element, complete }) => {
+    assert.ok(element.textContent.includes(`from 'https://tavern.test${path}?host=2'`))
+    assert.ok(element.textContent.includes(`const url = "https://tavern.test${path}?host=2"`))
+    complete()
+  })
+  await run.run()
+  assert.deepEqual(run.events, [['start', 'schema'], ['ready', 'schema'], ['done']])
+})
 
 test('前一个脚本的迟到异常不使正在加载的样式模块失败', async () => {
   const run = harness([{ id: 'style', content: 'await style()' }], ({ complete, listeners }) => {
